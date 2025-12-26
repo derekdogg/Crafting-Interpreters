@@ -31,40 +31,26 @@ uses
 procedure TForm4.Button1Click(Sender: TObject);
 var
   Chunk : pChunk;
+  ValueRecord : pValueRecord;
+  idx : integer;
 begin
 
   chunk := nil;
+  ValueRecord := nil;
 
   InitChunk(Chunk);
+  InitValueRecord(ValueRecord);
   writeChunk(Chunk,OP_RETURN);
-  Assert(Chunk.Capacity = 8, 'expected 8');
-  writeChunk(Chunk,OP_FOO);
-  writeChunk(Chunk,3);
-  writeChunk(Chunk,4);
-  writeChunk(Chunk,5);
-  writeChunk(Chunk,6);
-  writeChunk(Chunk,7);
-  writeChunk(Chunk,8);
 
-  writeChunk(Chunk,1);
-  Assert(Chunk.Capacity = 16, 'expected 16');
-  writeChunk(Chunk,2);
-  writeChunk(Chunk,3);
-  writeChunk(Chunk,4);
-  writeChunk(Chunk,5);
-  writeChunk(Chunk,6);
-  writeChunk(Chunk,7);
-  writeChunk(Chunk,8);
-
-  Assert(Chunk.Capacity = 16, 'expected 16');
-  writeChunk(Chunk,1);
-  Assert(Chunk.Capacity = 32, 'expected 32');
+  idx := AddConstant(valueRecord,12.12);
+  writeChunk(Chunk,OP_CONSTANT);
+  writeChunk(Chunk,idx);
 
   Memo1.Lines.clear;
-  printChunk(Chunk,Memo1.Lines);
+  printChunk(Chunk,valueRecord,Memo1.Lines);
 
   freeChunk(Chunk);
-
+  freeValueRecord(ValueRecord);
 
 
 end;

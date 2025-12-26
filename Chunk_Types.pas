@@ -18,6 +18,7 @@ type
 
   OpCode = (
     OP_RETURN,
+    OP_CONSTANT,
     OP_FOO
 
   );
@@ -49,7 +50,8 @@ procedure initChunk(var chunk: pChunk);
 procedure freeChunk(var chunk: pChunk);
 procedure writeChunk(chunk: pChunk; value: byte); overload;
 procedure writeChunk(chunk: pChunk; value: OpCode); overload;
-procedure printChunk(chunk: pChunk; strings : TStrings);
+function AddConstant(valueRecord: pValueRecord; const value: Double): Integer;
+procedure printChunk(chunk: pChunk; valueRecord: pValueRecord; strings: TStrings);
 
 procedure initValueRecord(var valueRecord : pValueRecord);
 procedure writeValueRecord(valueRecord : pValueRecord; Value : Double);
@@ -136,12 +138,35 @@ begin
 end;
 
 
-procedure printChunk(chunk: pChunk; strings: TStrings);
+function AddConstant(valueRecord: pValueRecord; const value: Double): Integer;
+begin
+  Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
+
+  // Add the value to the ValueRecord
+  writeValueRecord(valueRecord, value);
+
+  // Return the index of the newly added value
+  Result := valueRecord.Count - 1;
+end;
+
+
+
+function InstructionSize(op: Byte): Integer;
+begin
+  case op of
+    Ord(OP_CONSTANT): Result := 2; // opcode + 1-byte operand (index)
+    else
+      Result := 1; // all other instructions are 1 byte
+  end;
+end;
+
+
+procedure printChunk(chunk: pChunk; valueRecord: pValueRecord; strings: TStrings);
 const
   Chunk_Header = 'Chunk starts at address $%p';
-  OPCODE_FIELD_WIDTH = 50;  // fixed width for opcode column
+  OPCODE_FIELD_WIDTH = 30;  // fixed width for opcode column
 var
-  i: Integer;
+  i, idx: Integer;
   b: Byte;
   codeName: string;
 begin
@@ -149,12 +174,16 @@ begin
   Assert(chunk.Initialised, 'Chunk is not initialised');
   Assert(Assigned(strings), 'Output strings is not assigned');
 
+
+  Assert(Assigned(ValueRecord),'Value record is not assigned');
+
   strings.Clear;
   strings.Add(Format(Chunk_Header, [Pointer(chunk)]));
 
   {$R-}
   try
-    for i := 0 to chunk.Count - 1 do
+    i := 0;
+    while i < chunk.Count do
     begin
       b := chunk.Code^[i];
 
@@ -163,16 +192,27 @@ begin
       else
         codeName := 'UNKNOWN';
 
-      // pad opcode name to fixed width
+      // Print opcode
       codeName := codeName + StringOfChar(' ', OPCODE_FIELD_WIDTH - Length(codeName));
 
-      // Index, fixed-width opcode, Decimal, Hex
-      strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, b, b]));
+      if b = Ord(OP_CONSTANT) then
+      begin
+        idx := chunk.Code^[i+1]; // operand
+        strings.Add(Format('%.6d  %s  %4d  0x%.2X  -> %g',
+                    [i, codeName, b, b, valueRecord.Values^[idx]]));
+      end
+      else
+        strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, b, b]));
+
+      i := i + InstructionSize(b); // move to the next instruction
     end;
+
   finally
     {$R+}
   end;
 end;
+
+
 
 
 
