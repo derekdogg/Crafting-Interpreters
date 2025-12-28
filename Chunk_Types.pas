@@ -52,7 +52,7 @@ type
   //Virtual Machine
   VirtualMachine = record
     Chunk : pChunk;
-    ip    : pByte;
+    ip    : integer;
   end;
 
 var
@@ -336,13 +336,36 @@ begin
 end;
 
 
+function ReadByte() : byte; inline;  // #define READ_BYTE() (*vm.ip++)  this is the c version...
+begin
+  Result := vm.chunk.Code[vm.ip];
+  Inc(vm.ip);
+end;
+
+function Run : TInterpretResult;
+var
+  instruction: Byte;
+begin
+  while True do
+  begin
+    instruction := ReadByte();
+    case OpCode(instruction) of
+      OP_RETURN: Exit(INTERPRET_OK);
+      // other cases go here
+    end;
+  end;
+end;
+
 function InterpretResult(chunk : pChunk) : TInterpretResult;
 begin
   Assert(Assigned(Chunk),'Chunk is not assigned');
   Assert(Assigned(VM),'VM is not assigned');
 
   vm.chunk := chunk;
-  vm.ip := vm.chunk.code;
+  vm.ip := 0;  //instead of using a pointer here (since we're using indexed array pointers) we just use an integer.
+  (*We initialize ip by pointing it at the first byte of code in the chunk. We
+   haven’t executed that instruction yet, so ip points to the instruction about
+  to be executed.*)
   Result := Run;
 end;
 
