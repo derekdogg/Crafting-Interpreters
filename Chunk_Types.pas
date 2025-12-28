@@ -169,7 +169,7 @@ end;
 
 procedure AddConstant(valueRecord : pValueRecord; chunk : pChunk; const value : Double);
 var
-  idx : integer;
+  idx : byte;
 begin
   Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
   Assert(Assigned(chunk), 'Chunk is not assigned');
@@ -326,33 +326,52 @@ begin
   end;
 end;
 
-
-
 procedure InitVM;
 begin
   new(VM);
   VM.Chunk := nil;
-  initChunk(VM.Chunk);
+  //initChunk(VM.Chunk); we don't do this since this will be assigned when we 'InterpretResult'
 end;
 
 
-function ReadByte() : byte; inline;  // #define READ_BYTE() (*vm.ip++)  this is the c version...
+function ReadByte(): Byte; inline;
 begin
+  Assert(vm.ip < vm.chunk.Count, 'VM is beyond chunk count');
+
+   {$R-}
   Result := vm.chunk.Code[vm.ip];
+   {$R+}
+
   Inc(vm.ip);
 end;
 
 function Run : TInterpretResult;
 var
   instruction: Byte;
+  idx : byte;
 begin
-  while True do
-  begin
-    instruction := ReadByte();
-    case OpCode(instruction) of
-      OP_RETURN: Exit(INTERPRET_OK);
-      // other cases go here
+  {$R-}  //turn off range checking since array is indexed [0..0]
+  try
+    Assert(Assigned(VM),'VM is not assigned');
+    Assert(Assigned(VM.Chunk),'VM Chunk is not assigned');
+    Assert(Assigned(VM.Chunk.Code),'VM chunk code is not assigned');
+
+    while True do
+    begin
+      instruction := ReadByte();
+      case OpCode(instruction) of
+
+        OP_CONSTANT : begin
+
+          //presumably here we will read the index after the opcode , get the constant, and then exit;
+          idx := ReadByte;
+        end;
+
+        OP_RETURN: Exit(INTERPRET_OK);
+      end;
     end;
+  finally
+    {$R+}
   end;
 end;
 
@@ -371,7 +390,6 @@ end;
 
 procedure FreeVM;
 begin
-  FreeChunk(VM.Chunk);
   dispose(VM);
 end;
 

@@ -40,13 +40,22 @@ begin
 
   InitChunk(Chunk);
   InitValueRecord(ValueRecord);
-  writeChunk(Chunk,OP_RETURN);
+
 
   //add constant
   AddConstant(valueRecord,chunk,12.12);
 
+  writeChunk(Chunk,OP_RETURN);
+
   Memo1.Lines.clear;
   printChunk(Chunk,valueRecord,Memo1.Lines);
+
+
+
+  //VM
+
+  InterpretResult(chunk);
+
 
   freeChunk(Chunk);
   freeValueRecord(ValueRecord);
