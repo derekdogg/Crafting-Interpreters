@@ -42,9 +42,8 @@ begin
   InitValueRecord(ValueRecord);
   writeChunk(Chunk,OP_RETURN);
 
-  idx := AddConstant(valueRecord,12.12);
-  writeChunk(Chunk,OP_CONSTANT);
-  writeChunk(Chunk,idx);
+  //add constant
+  AddConstant(valueRecord,chunk,12.12);
 
   Memo1.Lines.clear;
   printChunk(Chunk,valueRecord,Memo1.Lines);

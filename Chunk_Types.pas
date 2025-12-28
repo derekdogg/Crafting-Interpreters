@@ -28,7 +28,7 @@ type
   Chunk = record
     Count       : Integer;
     Capacity    : Integer;
-    Code        : PByteArray;
+    Code        : PByteArray;  //there is a fundamental flaw here in that the index into the constants can be greater > 256 max byte per slot into values idx...   We leave for simplicity for now. Can split into two later...
     Initialised : boolean;     // uint8_t* code
   end;
 
@@ -44,13 +44,31 @@ type
     Values    : pValues;
   end;
 
+  //Virtual Machine result
+  TInterpretResult = (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
+
+
+  pVirtualMachine = ^VirtualMachine;
+  //Virtual Machine
+  VirtualMachine = record
+    Chunk : pChunk;
+    ip    : pByte;
+  end;
+
+var
+  VM : pVirtualMachine;
+
+//virtual machine methods will be operating on a single global -- for now.
+procedure InitVM();
+function InterpretResult(chunk : pChunk) : TInterpretResult;
+procedure FreeVM();
 
 
 procedure initChunk(var chunk: pChunk);
 procedure freeChunk(var chunk: pChunk);
 procedure writeChunk(chunk: pChunk; value: byte); overload;
 procedure writeChunk(chunk: pChunk; value: OpCode); overload;
-function AddConstant(valueRecord: pValueRecord; const value: Double): Integer;
+procedure AddConstant(valueRecord : pValueRecord; chunk : pChunk; const value : Double);
 procedure printChunk(chunk: pChunk; valueRecord: pValueRecord; strings: TStrings);
 
 procedure initValueRecord(var valueRecord : pValueRecord);
@@ -138,7 +156,7 @@ begin
 end;
 
 
-function AddConstant(valueRecord: pValueRecord; const value: Double): Integer;
+function AddValueConstant(valueRecord: pValueRecord; const value: Double): Integer;
 begin
   Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
 
@@ -148,6 +166,22 @@ begin
   // Return the index of the newly added value
   Result := valueRecord.Count - 1;
 end;
+
+procedure AddConstant(valueRecord : pValueRecord; chunk : pChunk; const value : Double);
+var
+  idx : integer;
+begin
+  Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
+  Assert(Assigned(chunk), 'Chunk is not assigned');
+
+  //add constant, 1st into value's array of the value record
+  idx := AddValueConstant(valueRecord,12.12);
+  //add constant op code into the chunk array
+  writeChunk(Chunk,OP_CONSTANT);
+  //followed by the index of the value inserted into the value array
+  writeChunk(Chunk,idx);
+end;
+
 
 
 
@@ -167,7 +201,7 @@ const
   OPCODE_FIELD_WIDTH = 30;  // fixed width for opcode column
 var
   i, idx: Integer;
-  b: Byte;
+  b: byte;
   codeName: string;
 begin
   Assert(Assigned(chunk), 'Chunk is not assigned');
@@ -294,11 +328,35 @@ end;
 
 
 
+procedure InitVM;
+begin
+  new(VM);
+  VM.Chunk := nil;
+  initChunk(VM.Chunk);
+end;
 
 
+function InterpretResult(chunk : pChunk) : TInterpretResult;
+begin
+  Assert(Assigned(Chunk),'Chunk is not assigned');
+  Assert(Assigned(VM),'VM is not assigned');
 
+  vm.chunk := chunk;
+  vm.ip := vm.chunk.code;
+  Result := Run;
+end;
 
+procedure FreeVM;
+begin
+  FreeChunk(VM.Chunk);
+  dispose(VM);
+end;
 
+initialization
+  InitVM;
+
+finalization
+  FreeVM;
 
 end.
 
