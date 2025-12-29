@@ -24,11 +24,13 @@ type
   );
 
   pChunk = ^Chunk;
+  pValueRecord = ^ValueRecord;
 
   Chunk = record
     Count       : Integer;
     Capacity    : Integer;
     Code        : PByteArray;  //there is a fundamental flaw here in that the index into the constants can be greater > 256 max byte per slot into values idx...   We leave for simplicity for now. Can split into two later...
+    Constants   : pValueRecord;
     Initialised : boolean;     // uint8_t* code
   end;
 
@@ -36,7 +38,6 @@ type
 
   TValues = array[0..0] of double;
 
-  pValueRecord = ^ValueRecord;
 
   ValueRecord = record
     Count     : Integer;
@@ -68,8 +69,8 @@ procedure initChunk(var chunk: pChunk);
 procedure freeChunk(var chunk: pChunk);
 procedure writeChunk(chunk: pChunk; value: byte); overload;
 procedure writeChunk(chunk: pChunk; value: OpCode); overload;
-procedure AddConstant(valueRecord : pValueRecord; chunk : pChunk; const value : Double);
-procedure printChunk(chunk: pChunk; valueRecord: pValueRecord; strings: TStrings);
+procedure AddConstant(chunk : pChunk; const value : Double);
+procedure printChunk(chunk: pChunk;  strings: TStrings);
 
 procedure initValueRecord(var valueRecord : pValueRecord);
 procedure writeValueRecord(valueRecord : pValueRecord; Value : Double);
@@ -92,7 +93,10 @@ begin
   chunk.Count := 0;
   chunk.Capacity := 0;
   chunk.Code := nil;
+  InitValueRecord(chunk.Constants);
   chunk.Initialised := true;
+
+
 
 end;
 
@@ -106,6 +110,9 @@ begin
     FreeMem(chunk.Code, Chunk.Capacity * SizeOf(Byte));
     chunk.Code := nil;
   end;
+
+  freeValueRecord(chunk.Constants);
+
 
   Dispose(chunk);
   chunk := nil;
@@ -167,15 +174,16 @@ begin
   Result := valueRecord.Count - 1;
 end;
 
-procedure AddConstant(valueRecord : pValueRecord; chunk : pChunk; const value : Double);
+procedure AddConstant(chunk : pChunk; const value : Double);
 var
   idx : byte;
 begin
-  Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
+
   Assert(Assigned(chunk), 'Chunk is not assigned');
+  Assert(Assigned(chunk.Constants), 'ValueRecord is not assigned');
 
   //add constant, 1st into value's array of the value record
-  idx := AddValueConstant(valueRecord,12.12);
+  idx := AddValueConstant(chunk.Constants,12.12);
   //add constant op code into the chunk array
   writeChunk(Chunk,OP_CONSTANT);
   //followed by the index of the value inserted into the value array
@@ -195,7 +203,7 @@ begin
 end;
 
 
-procedure printChunk(chunk: pChunk; valueRecord: pValueRecord; strings: TStrings);
+procedure printChunk(chunk: pChunk; strings: TStrings);
 const
   Chunk_Header = 'Chunk starts at address $%p';
   OPCODE_FIELD_WIDTH = 30;  // fixed width for opcode column
@@ -205,11 +213,12 @@ var
   codeName: string;
 begin
   Assert(Assigned(chunk), 'Chunk is not assigned');
+  Assert(Assigned(chunk.Constants),'Constants is not assigned');
   Assert(chunk.Initialised, 'Chunk is not initialised');
   Assert(Assigned(strings), 'Output strings is not assigned');
 
 
-  Assert(Assigned(ValueRecord),'Value record is not assigned');
+
 
   strings.Clear;
   strings.Add(Format(Chunk_Header, [Pointer(chunk)]));
@@ -233,7 +242,7 @@ begin
       begin
         idx := chunk.Code^[i+1]; // operand
         strings.Add(Format('%.6d  %s  %4d  0x%.2X  -> %g',
-                    [i, codeName, b, b, valueRecord.Values^[idx]]));
+                    [i, codeName, b, b, Chunk.Constants.Values^[idx]]));
       end
       else
         strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, b, b]));
@@ -334,13 +343,14 @@ begin
 end;
 
 
+
+
 function ReadByte(): Byte; inline;
 begin
   Assert(vm.ip < vm.chunk.Count, 'VM is beyond chunk count');
-
-   {$R-}
+  {$R-}
   Result := vm.chunk.Code[vm.ip];
-   {$R+}
+  {$R+}
 
   Inc(vm.ip);
 end;
@@ -350,8 +360,7 @@ var
   instruction: Byte;
   idx : byte;
 begin
-  {$R-}  //turn off range checking since array is indexed [0..0]
-  try
+
     Assert(Assigned(VM),'VM is not assigned');
     Assert(Assigned(VM.Chunk),'VM Chunk is not assigned');
     Assert(Assigned(VM.Chunk.Code),'VM chunk code is not assigned');
@@ -370,9 +379,7 @@ begin
         OP_RETURN: Exit(INTERPRET_OK);
       end;
     end;
-  finally
-    {$R+}
-  end;
+
 end;
 
 function InterpretResult(chunk : pChunk) : TInterpretResult;

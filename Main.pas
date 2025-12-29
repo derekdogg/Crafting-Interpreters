@@ -31,26 +31,21 @@ uses
 procedure TForm4.Button1Click(Sender: TObject);
 var
   Chunk : pChunk;
-  ValueRecord : pValueRecord;
+
   idx : integer;
 begin
 
   chunk := nil;
-  ValueRecord := nil;
 
   InitChunk(Chunk);
-  InitValueRecord(ValueRecord);
-
 
   //add constant
-  AddConstant(valueRecord,chunk,12.12);
+  AddConstant(chunk,12.12);
 
   writeChunk(Chunk,OP_RETURN);
 
   Memo1.Lines.clear;
-  printChunk(Chunk,valueRecord,Memo1.Lines);
-
-
+  printChunk(Chunk,Memo1.Lines);
 
   //VM
 
@@ -58,8 +53,6 @@ begin
 
 
   freeChunk(Chunk);
-  freeValueRecord(ValueRecord);
-
 
 end;
 
