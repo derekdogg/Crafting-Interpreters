@@ -33,27 +33,22 @@ var
   Chunk : pChunk;
 
   idx : integer;
+
+
+  value : TValue;
 begin
 
   chunk := nil;
 
   InitChunk(Chunk);
 
-  //add constant
-  AddConstant(chunk,12.12);
+  AddConstant(chunk,123);
 
-  writeChunk(Chunk,OP_RETURN);
+  writeChunk(Chunk, OP_NEGATE);
 
-  Memo1.Lines.clear;
-  printChunk(Chunk,Memo1.Lines);
-
-  //VM
-
-  InterpretResult(chunk);
-
+  InterpretResult(chunk,Memo1.Lines);
 
   freeChunk(Chunk);
-
 end;
 
 procedure TForm4.Button2Click(Sender: TObject);
