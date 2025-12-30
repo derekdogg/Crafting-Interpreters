@@ -10,7 +10,9 @@ type
   TForm4 = class(TForm)
     Button1: TButton;
     Memo1: TMemo;
+    Button2: TButton;
     procedure Button1Click(Sender: TObject);
+    procedure Button2Click(Sender: TObject);
 
   private
     { Private declarations }
@@ -108,6 +110,36 @@ begin
   freeChunk(Chunk);
 end;
 
+procedure ComplexExpressionTest(strings: TStrings);
+var
+  chunk: pChunk;
+  vmResult: TInterpretResult;
+begin
+  chunk := nil;
+  InitChunk(chunk);
+
+  // Push constants
+  AddConstant(chunk, 1);     // 1
+  AddConstant(chunk, 2);     // 2
+  AddConstant(chunk, 3);     // 3
+  WriteChunk(chunk, OP_MULTIPLY); // 2 * 3
+
+  WriteChunk(chunk, OP_ADD);      // 1 + (2*3)
+
+  AddConstant(chunk, 4);          // 4
+  AddConstant(chunk, -5);         // -5
+  WriteChunk(chunk, OP_DIVIDE);   // 4 / -5
+
+  WriteChunk(chunk, OP_SUBTRACT); // (1 + 2*3) - (4 / -5)
+
+  WriteChunk(chunk, OP_RETURN);
+
+  vmResult := InterpretResult(chunk, strings);
+
+  assert(Abs(vmResult.Value - 7.8) < 1e-10);
+
+  FreeChunk(chunk);
+end;
 
 procedure TenMinusTwenty(strings: TStrings);
 var
@@ -162,7 +194,22 @@ begin
   TwentyMinusSeven(memo1.lines);
   TenMinusTwenty(memo1.lines);
   ThreePointFivePlusTwoPointTwo(memo1.lines);
+  ComplexExpressionTest(memo1.lines);
   freeChunk(Chunk);
+end;
+
+
+
+procedure TForm4.Button2Click(Sender: TObject);
+var
+  c : Char;
+begin
+  InitScanner(PChar(Memo1.Lines.Text));
+  while not isAtEnd do
+  begin
+    c := advance;
+  end;
+
 end;
 
 
