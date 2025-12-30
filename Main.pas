@@ -46,6 +46,8 @@ begin
 
   writeChunk(Chunk, OP_NEGATE);
 
+  writeChunk(Chunk, OP_RETURN);
+
   InterpretResult(chunk,Memo1.Lines);
 
   freeChunk(Chunk);
