@@ -29,13 +29,4 @@ object Form4: TForm4
       'Memo1')
     TabOrder = 1
   end
-  object Button2: TButton
-    Left = 24
-    Top = 64
-    Width = 89
-    Height = 25
-    Caption = 'Init Values'
-    TabOrder = 2
-    OnClick = Button2Click
-  end
 end

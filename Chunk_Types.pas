@@ -22,6 +22,10 @@ type
   OpCode = (
     OP_CONSTANT,
     OP_NEGATE,
+    OP_ADD,
+    OP_SUBTRACT,
+    OP_MULTIPLY,
+    OP_DIVIDE,
     OP_RETURN
   );
 
@@ -48,7 +52,11 @@ type
   end;
 
   //Virtual Machine result
-  TInterpretResult = (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
+  TInterpretResult = record
+    result : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
+    value : TValue;
+  end;
+
 
 
   pVirtualMachine = ^VirtualMachine;
@@ -59,6 +67,8 @@ type
     StackTop : pValue;
     ip    : integer;
   end;
+
+  TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide);
 
 var
   VM : pVirtualMachine;
@@ -77,8 +87,9 @@ procedure freeValueRecord(var ValueRecord : pValueRecord);
 procedure printValueRecord(valueRecord: pValueRecord; strings: TStrings);
 procedure InitVM();
 procedure ResetStack;
-procedure PushValue(const value : TValue);
-function PopValue : TValue;
+procedure push(const value : TValue);
+function pop : TValue;
+procedure BinaryOp(Op: TBinaryOperation);
 function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
 procedure FreeVM();
 
@@ -178,7 +189,7 @@ begin
   Assert(Assigned(chunk.Constants), 'ValueRecord is not assigned');
 
   //add constant, 1st into value's array of the value record
-  idx := AddValueConstant(chunk.Constants,12.12);
+  idx := AddValueConstant(chunk.Constants,value);
   //add constant op code into the chunk array
   writeChunk(Chunk,OP_CONSTANT);
   //followed by the index of the value inserted into the value array
@@ -348,14 +359,20 @@ function Run(const output : TStrings) : TInterpretResult;
   end;
 
   function ReadValue : TValue; inline;
+  var
+    idx : byte;
   begin
-    result := vm.Chunk.Constants.Values[ReadByte];
+    idx := ReadByte;
+    {$R-}
+    result := vm.Chunk.Constants.Values[idx];
+    {$R+}
   end;
 
 var
   instruction: Byte;
   idx : byte;
   value : TValue;
+  InterpretResult : TInterpretResult;
 begin
 
     Assert(Assigned(VM),'VM is not assigned');
@@ -369,22 +386,29 @@ begin
 
         OP_CONSTANT : begin
           value := ReadValue;
-          pushValue(value);
+          push(value);
         end;
 
         OP_NEGATE : begin
 
-          value := -popValue;
+          value := -pop;
 
-          pushValue(value);
+          push(value);
         end;
 
 
+        OP_ADD      : BinaryOp(boAdd);
+        OP_SUBTRACT : BinaryOp(boSubtract);
+        OP_MULTIPLY : BinaryOP(boMultiply);
+        OP_DIVIDE   : BinaryOp(boDivide);
+
 
         OP_RETURN: begin
-           value := popValue; //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
+           value := pop; //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
            output.Add(floattostr(value));
-           Exit(INTERPRET_OK);
+           InterpretResult.result := INTERPRET_OK;
+           InterpretResult.value := value;
+           Exit(InterpretResult);
         end;
       end;
     end;
@@ -397,7 +421,7 @@ begin
   VM.StackTop := @VM.Stack[0];
 end;
 
-procedure PushValue(const value : TValue);
+procedure push(const value : TValue);
 var
   Limit: pValue;
 
@@ -411,12 +435,32 @@ begin
   Inc(vm.StackTop);
 end;
 
-function PopValue : TValue;
+function pop : TValue;
 begin
    Dec(Vm.StackTop);
    result := Vm.StackTop^;
 end;
 
+
+
+procedure BinaryOp(Op: TBinaryOperation);
+var
+  a, b, res: TValue;
+begin
+  b := Pop();
+  a := Pop();
+
+  case Op of
+    boAdd:      res := a + b;
+    boSubtract: res := a - b;
+    boMultiply: res := a * b;
+    boDivide:   res := a / b;
+  else
+    raise Exception.Create('Unknown operator');
+  end;
+
+  Push(res);
+end;
 
 //entry point into vm
 function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
@@ -425,7 +469,7 @@ begin
   Assert(Assigned(Chunk),'Chunk is not assigned');
   Assert(Assigned(VM),'VM is not assigned');
 
-  output.clear;
+  //output.clear;
 
   vm.chunk := chunk;
   vm.ip := 0;  //instead of using a pointer here (since we're using indexed array pointers) we just use an integer.
