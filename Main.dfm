@@ -2,8 +2,8 @@ object Form4: TForm4
   Left = 0
   Top = 0
   Caption = 'Form4'
-  ClientHeight = 441
-  ClientWidth = 624
+  ClientHeight = 685
+  ClientWidth = 1140
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -24,27 +24,61 @@ object Form4: TForm4
     Left = 144
     Top = 32
     Width = 409
-    Height = 369
+    Height = 417
     Lines.Strings = (
-      'Memo1')
+      '// Test all token types'
+      ''
+      'class Person {'
+      '  var name;'
+      '  var age;'
+      ''
+      '  fun greet() {'
+      '    print "Hello, " + name + "!";'
+      '  }'
+      '}'
+      ''
+      '// Variables and numbers'
+      'var x = 42;'
+      'var y = 3.14;'
+      'var person = "Alice";'
+      ''
+      '// If/Else control flow'
+      'if x > 10 and y < 5.0 {'
+      '  print "x and y are in range.";'
+      '} else {'
+      '  print "Out of range.";'
+      '}'
+      ''
+      '// Boolean literals and nil'
+      'var flagTrue = true;'
+      'var flagFalse = false;'
+      'var nothing = nil;'
+      ''
+      '// While loop'
+      'while x > 0 {'
+      '  x = x - 1;'
+      '}'
+      ''
+      '// Comments should be skipped'
+      '// This is a line comment')
     TabOrder = 1
   end
   object Button2: TButton
-    Left = 24
-    Top = 64
-    Width = 89
+    Left = 569
+    Top = 144
+    Width = 72
     Height = 25
-    Caption = 'Scanner'
+    Caption = 'Scanner >>'
     TabOrder = 2
     OnClick = Button2Click
   end
-  object Button3: TButton
-    Left = 32
-    Top = 104
-    Width = 75
-    Height = 25
-    Caption = 'Button3'
+  object Memo2: TMemo
+    Left = 656
+    Top = 32
+    Width = 417
+    Height = 417
+    Lines.Strings = (
+      'Memo2')
     TabOrder = 3
-    OnClick = Button3Click
   end
 end

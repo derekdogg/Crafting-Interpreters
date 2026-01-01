@@ -10,6 +10,17 @@ const
   START_CAPACITY = 256;
   GROWTH_FACTOR = 2;
   STACK_MAX  = 256;
+
+
+  //scanner
+  CHAR_SPACE    = ' ';
+  CHAR_TAB      = #9;   // '\t'
+  CHAR_LF       = #10;  // '\n'
+  CHAR_CR       = #13;  // '\r'
+  CHAR_SLASH    = '/';
+  CHAR_NUL      = #0;
+  CHAR_QUOTE  = '"';
+  CHAR_DOT = '.';
 type
 
 
@@ -134,11 +145,14 @@ procedure FreeVM();
 procedure InitScanner(source : pchar);
 function advance : char;
 function isAtEnd : boolean;
+procedure compile(source : pChar; output : TStrings);
+
+
 
 
 implementation
 uses
- sysutils, typinfo;
+ sysutils, strUtils, typinfo;
 
 
 
@@ -183,6 +197,7 @@ begin
   if Count < Capacity then Exit;
 
   Capacity := Capacity * GROWTH_FACTOR;
+
   Assert(Capacity <= MAX_SIZE);
 
   ReallocMem(list, Capacity * ElemSize);
@@ -526,6 +541,342 @@ end;
 function isAtEnd : boolean;
 begin
   result := scanner.current^ = #0;
+end;
+
+function MakeToken(const tokenType : TTokenType)  : TToken;
+begin
+  result.tokenType := tokenType;
+  result.start := scanner.start;
+  result.length := scanner.current - scanner.start;
+  result.line := scanner.line;
+end;
+
+
+function ErrorToken(msg : pChar) : TToken;
+begin
+
+  result.Tokentype := TOKEN_ERROR;
+  result.start := msg;
+  result.length := strlen(msg);
+  result.line := scanner.line;
+end;
+
+
+
+
+function match(expected : char) : boolean;
+begin
+  if isAtEnd then exit(false);
+
+  if scanner.current^ <> expected then exit(false);
+
+  inc(scanner.current);
+
+  result := true;
+end;
+
+function peek : char;
+begin
+  result := scanner.current^;
+end;
+
+function PeekNext: Char;
+begin
+  if IsAtEnd then
+    Exit(#0);
+
+  Result := (scanner.current + 1)^;
+end;
+
+procedure SkipWhitespace;
+var
+  c: Char;
+begin
+  while True do
+  begin
+    c := Peek;
+
+    case c of
+      CHAR_SPACE,
+      CHAR_TAB,
+      CHAR_CR:
+        Advance;
+
+      CHAR_LF:
+        begin
+          Inc(scanner.Line);
+          Advance;
+        end;
+
+      CHAR_SLASH:
+        begin
+          // Line comment "//"
+          if PeekNext = CHAR_SLASH then
+          begin
+            // Consume until end of line or EOF
+            while (Peek <> CHAR_LF) and (not IsAtEnd) do
+              Advance;
+          end
+          else
+            Exit;
+        end;
+
+    else
+      Exit;
+    end;
+  end;
+end;
+
+
+function isDigit(c : char) : boolean;
+begin
+  Result := (c >= '0') and (c <= '9');
+end;
+
+(*
+static bool isAlpha(char c) {
+  return (c >= 'a' && c <= 'z') ||
+         (c >= 'A' && c <= 'Z') ||
+          c == '_';
+} *)
+
+
+function isAlpha(c : char) : boolean;
+begin
+  result := ((c >= 'a') and (c <= 'z')) or
+            ((c >= 'A') and (c <= 'Z')) or
+            (c = '_');
+end;
+
+function ScanString: TToken;
+begin
+  while (Peek <> CHAR_QUOTE) and (not IsAtEnd) do
+  begin
+    if Peek = CHAR_LF then
+      Inc(scanner.Line);
+
+    Advance;
+  end;
+
+  if IsAtEnd then
+    Exit(ErrorToken('Unterminated string.'));
+
+  // Consume the closing quote
+  Advance;
+
+  Result := MakeToken(TOKEN_STRING);
+end;
+
+
+function ScanNumber: TToken;
+begin
+  while IsDigit(Peek) do
+    Advance;
+
+  // Look for a fractional part
+  if (Peek = CHAR_DOT) and IsDigit(PeekNext) then
+  begin
+    // Consume the '.'
+    Advance;
+
+    while IsDigit(Peek) do
+      Advance;
+  end;
+
+  Result := MakeToken(TOKEN_NUMBER);
+end;
+
+
+function CheckKeyword(start, length: Integer; const rest: PChar;
+  tokenType: TTokenType): TTokenType;
+begin
+  if (scanner.current - scanner.start = start + length) and
+     (CompareMem(scanner.start + start, rest, length)) then
+    Exit(tokenType);
+
+  Result := TOKEN_IDENTIFIER;
+end;
+
+function identifierType : TTokenType;
+begin
+    case scanner.start^ of
+      'a': Exit(CheckKeyword(1, 2, 'nd',    TOKEN_AND));
+      'c': Exit(CheckKeyword(1, 4, 'lass',  TOKEN_CLASS));
+      'e': Exit(CheckKeyword(1, 3, 'lse',   TOKEN_ELSE));
+      'f':
+      begin
+        if (scanner.current - scanner.start > 1) then
+        begin
+          case (scanner.start + 1)^ of
+            'a': Exit(CheckKeyword(2, 3, 'lse', TOKEN_FALSE));
+            'o': Exit(CheckKeyword(2, 1, 'r',   TOKEN_FOR));
+            'u': Exit(CheckKeyword(2, 1, 'n',   TOKEN_FUN));
+          end;
+        end;
+      end;
+      'i': Exit(CheckKeyword(1, 1, 'f',     TOKEN_IF));
+      'n': Exit(CheckKeyword(1, 2, 'il',    TOKEN_NIL));
+      'o': Exit(CheckKeyword(1, 1, 'r',     TOKEN_OR));
+      'p': Exit(CheckKeyword(1, 4, 'rint',  TOKEN_PRINT));
+      'r': Exit(CheckKeyword(1, 5, 'eturn', TOKEN_RETURN));
+      's': Exit(CheckKeyword(1, 4, 'uper',  TOKEN_SUPER));
+      't':
+      begin
+        if (scanner.current - scanner.start > 1) then
+        begin
+          case (scanner.start + 1)^ of
+            'h': Exit(CheckKeyword(2, 2, 'is', TOKEN_THIS));
+            'r': Exit(CheckKeyword(2, 2, 'ue', TOKEN_TRUE));
+          end;
+        end;
+      end;
+      'v': Exit(CheckKeyword(1, 2, 'ar',    TOKEN_VAR));
+      'w': Exit(CheckKeyword(1, 4, 'hile',  TOKEN_WHILE));
+    end;
+    result := TOKEN_IDENTIFIER;
+end;
+
+
+function Identifier : TToken;
+begin
+  while (isAlpha(peek()) or isDigit(peek())) do advance();
+  result := makeToken(identifierType());
+end;
+
+function ScanToken : TToken;
+var
+  c : char;
+begin
+
+  skipWhitespace;
+
+  Scanner.start := Scanner.Current;
+
+  if (isAtEnd()) then Exit(makeToken(TOKEN_EOF));
+
+  c := Advance;
+
+
+  if (isAlpha(c)) then Exit(identifier);
+
+  if (isDigit(c)) then Exit(ScanNumber);
+
+
+  case (c) of
+      '(': result :=  makeToken(TOKEN_LEFT_PAREN);
+
+      ')': result :=  makeToken(TOKEN_RIGHT_PAREN);
+
+      '{': result :=  makeToken(TOKEN_LEFT_BRACE);
+
+      '}': result :=  makeToken(TOKEN_RIGHT_BRACE);
+
+      ';': result :=  makeToken(TOKEN_SEMICOLON);
+
+      ',': result :=  makeToken(TOKEN_COMMA);
+
+      '.': result :=  makeToken(TOKEN_DOT);
+
+      '-': result :=  makeToken(TOKEN_MINUS);
+
+      '+': result :=  makeToken(TOKEN_PLUS);
+
+      '/': result :=  makeToken(TOKEN_SLASH);
+
+      '*': result :=  makeToken(TOKEN_STAR);
+
+     '!':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_BANG_EQUAL)
+          else
+            Result := MakeToken(TOKEN_BANG);
+        end;
+
+      '=':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_EQUAL_EQUAL)
+          else
+            Result := MakeToken(TOKEN_EQUAL);
+        end;
+
+      '<':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_LESS_EQUAL)
+          else
+            Result := MakeToken(TOKEN_LESS);
+        end;
+
+      '>':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_GREATER_EQUAL)
+          else
+            Result := MakeToken(TOKEN_GREATER);
+        end;
+
+        CHAR_QUOTE :
+        begin
+           Result := ScanString;
+        end
+
+        else
+          result := errorToken('Unexpected character.');
+  end
+
+end;
+
+
+procedure DumpTokens(output: TStrings);
+var
+  token: TToken;
+  lexeme: string;
+  lastLine: Integer;
+begin
+  lastLine := -1;
+
+  while True do
+  begin
+    token := ScanToken();
+
+    // Convert pointer+length to a proper Delphi string
+    SetString(lexeme, token.Start, token.Length);
+
+    // Print line number only once per line
+    if token.Line <> lastLine then
+    begin
+      output.Add(Format('%4d: %-15s %s', [
+        token.Line,
+        GetEnumName(TypeInfo(TTokenType), Ord(token.TokenType)),
+        lexeme
+      ]));
+      lastLine := token.Line;
+    end
+    else
+    begin
+      output.Add(Format('     | %-15s %s', [
+        GetEnumName(TypeInfo(TTokenType), Ord(token.TokenType)),
+        lexeme
+      ]));
+    end;
+
+    if token.TokenType = TOKEN_EOF then
+      Break;
+  end;
+end;
+
+procedure compile(source : pChar; output : TStrings);
+var
+  line : integer;
+  token : TToken;
+begin
+   assert(assigned(source), 'Source code is not assigned');
+   assert(assigned(output), 'Output strings is not assigned');
+   output.clear;
+   initScanner(source);
+   dumpTokens(output);
 end;
 
 
