@@ -10,6 +10,15 @@ const
   START_CAPACITY = 256;
   GROWTH_FACTOR = 2;
   STACK_MAX  = 256;
+
+
+  //scanner
+  CHAR_SPACE    = ' ';
+  CHAR_TAB      = #9;   // '\t'
+  CHAR_LF       = #10;  // '\n'
+  CHAR_CR       = #13;  // '\r'
+  CHAR_SLASH    = '/';
+  CHAR_NUL      = #0;
 type
 
 
@@ -134,11 +143,14 @@ procedure FreeVM();
 procedure InitScanner(source : pchar);
 function advance : char;
 function isAtEnd : boolean;
+procedure compile(source : pChar; output : TStrings);
+
+
 
 
 implementation
 uses
- sysutils, typinfo;
+ sysutils, strUtils, typinfo;
 
 
 
@@ -526,6 +538,175 @@ end;
 function isAtEnd : boolean;
 begin
   result := scanner.current^ = #0;
+end;
+
+function MakeToken(const tokenType : TTokenType)  : TToken;
+begin
+  result.tokenType := tokenType;
+  result.start := scanner.start;
+  result.length := scanner.current - scanner.start;
+  result.line := scanner.line;
+end;
+
+
+function ErrorToken(msg : pChar) : TToken;
+begin
+
+  result.Tokentype := TOKEN_ERROR;
+  result.start := msg;
+  result.length := strlen(msg);
+  result.line := scanner.line;
+end;
+
+
+
+
+function match(expected : char) : boolean;
+begin
+  if isAtEnd then exit(false);
+
+  if scanner.current^ <> expected then exit(false);
+
+  inc(scanner.current);
+
+  result := true;
+end;
+
+function peek : char;
+begin
+  result := scanner.current^;
+end;
+
+function PeekNext: Char;
+begin
+  if IsAtEnd then
+    Exit(#0);
+
+  Result := (scanner.current + 1)^;
+end;
+
+procedure SkipWhitespace;
+var
+  c: Char;
+begin
+  while True do
+  begin
+    c := Peek;
+
+    case c of
+      CHAR_SPACE,
+      CHAR_TAB,
+      CHAR_CR:
+        Advance;
+
+      CHAR_LF:
+        begin
+          Inc(scanner.Line);
+          Advance;
+        end;
+
+      CHAR_SLASH:
+        begin
+          // Line comment "//"
+          if PeekNext = CHAR_SLASH then
+          begin
+            // Consume until end of line or EOF
+            while (Peek <> CHAR_LF) and (not IsAtEnd) do
+              Advance;
+          end
+          else
+            Exit;
+        end;
+
+    else
+      Exit;
+    end;
+  end;
+end;
+
+
+
+
+function ScanToken : TToken;
+var
+  c : char;
+begin
+
+  skipWhitespace;
+
+  Scanner.start := Scanner.Current;
+
+  if (isAtEnd()) then Exit(makeToken(TOKEN_EOF));
+
+  c := Advance;
+
+
+  case (c) of
+      '(': result :=  makeToken(TOKEN_LEFT_PAREN);
+
+      ')': result :=  makeToken(TOKEN_RIGHT_PAREN);
+
+      '{': result :=  makeToken(TOKEN_LEFT_BRACE);
+
+      '}': result :=  makeToken(TOKEN_RIGHT_BRACE);
+
+      ';': result :=  makeToken(TOKEN_SEMICOLON);
+
+      ',': result :=  makeToken(TOKEN_COMMA);
+
+      '.': result :=  makeToken(TOKEN_DOT);
+
+      '-': result :=  makeToken(TOKEN_MINUS);
+
+      '+': result :=  makeToken(TOKEN_PLUS);
+
+      '/': result :=  makeToken(TOKEN_SLASH);
+
+      '*': result :=  makeToken(TOKEN_STAR);
+
+     '!':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_BANG_EQUAL)
+          else
+            Result := MakeToken(TOKEN_BANG);
+        end;
+
+      '=':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_EQUAL_EQUAL)
+          else
+            Result := MakeToken(TOKEN_EQUAL);
+        end;
+
+      '<':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_LESS_EQUAL)
+          else
+            Result := MakeToken(TOKEN_LESS);
+        end;
+
+      '>':
+        begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_GREATER_EQUAL)
+          else
+            Result := MakeToken(TOKEN_GREATER);
+        end
+        else
+          result := errorToken('Unexpected character.');
+  end
+
+end;
+
+
+procedure compile(source : pChar; output : TStrings);
+begin
+   assert(assigned(source), 'Source code is not assigned');
+   assert(assigned(output), 'Output strings is not assigned');
+   initScanner(source);
 end;
 
 
