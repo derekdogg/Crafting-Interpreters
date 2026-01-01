@@ -26,7 +26,33 @@ object Form4: TForm4
     Width = 409
     Height = 369
     Lines.Strings = (
-      'Memo1')
+      '// Test all token types'
+      'var x = 42;'
+      'var y = 3.14;'
+      'var name = "Alice";'
+      ''
+      'fun greet() {'
+      '  print "Hello, " + name + "!";'
+      '}'
+      ''
+      'if x > 10 and y < 5.0 {'
+      '  print "x and y are in range.";'
+      '} else {'
+      '  print "Out of range.";'
+      '}'
+      ''
+      '// Boolean literals'
+      'var flagTrue = true;'
+      'var flagFalse = false;'
+      'var nothing = nil;'
+      ''
+      '// While loop'
+      'while x > 0 {'
+      '  x = x - 1;'
+      '}'
+      ''
+      '// Comments should be skipped'
+      '// This is a line comment')
     TabOrder = 1
   end
   object Button2: TButton

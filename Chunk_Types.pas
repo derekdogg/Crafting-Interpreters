@@ -757,9 +757,9 @@ begin
   c := Advance;
 
 
-  if (isAlpha(c)) then result := identifier;
+  if (isAlpha(c)) then Exit(identifier);
 
-  if (isDigit(c)) then result := ScanNumber;
+  if (isDigit(c)) then Exit(ScanNumber);
 
 
   case (c) of
@@ -829,6 +829,45 @@ begin
 end;
 
 
+procedure DumpTokens(output: TStrings);
+var
+  token: TToken;
+  lexeme: string;
+  lastLine: Integer;
+begin
+  lastLine := -1;
+
+  while True do
+  begin
+    token := ScanToken();
+
+    // Convert pointer+length to a proper Delphi string
+    SetString(lexeme, token.Start, token.Length);
+
+    // Print line number only once per line
+    if token.Line <> lastLine then
+    begin
+      output.Add(Format('%4d: %-15s %s', [
+        token.Line,
+        GetEnumName(TypeInfo(TTokenType), Ord(token.TokenType)),
+        lexeme
+      ]));
+      lastLine := token.Line;
+    end
+    else
+    begin
+      output.Add(Format('     | %-15s %s', [
+        GetEnumName(TypeInfo(TTokenType), Ord(token.TokenType)),
+        lexeme
+      ]));
+    end;
+
+    if token.TokenType = TOKEN_EOF then
+      Break;
+  end;
+end;
+
+
 procedure compile(source : pChar; output : TStrings);
 var
   line : integer;
@@ -838,26 +877,7 @@ begin
    assert(assigned(output), 'Output strings is not assigned');
    output.clear;
    initScanner(source);
-   line := -1;
-
-  while True do
-  begin
-    token := ScanToken();
-
-    if token.Line <> line then
-    begin
-      output.add(Format('%4d ', [token.Line]));
-      line := token.Line;
-    end
-    else
-      output.add('   | ');
-
-    // Print token type and lexeme
-    output.add(Format('%2d ''%.*s''', [Ord(token.TokenType), token.Length, token.Start]));
-
-    if token.TokenType = TOKEN_EOF then
-      Break;
-  end;
+   dumpTokens(output);
 end;
 
 
