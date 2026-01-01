@@ -188,6 +188,8 @@ begin
 end;
 
 
+   //exception here
+   freeMem(buffer,400);
 
 procedure TForm4.Button2Click(Sender: TObject);
 var

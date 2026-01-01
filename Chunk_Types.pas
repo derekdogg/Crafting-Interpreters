@@ -879,6 +879,63 @@ begin
    dumpTokens(output);
 end;
 
+procedure BinaryOp(Op: TBinaryOperation);
+var
+  a, b, res: TValue;
+begin
+  b := Pop();
+  a := Pop();
+
+  case Op of
+    boAdd:      res := a + b;
+    boSubtract: res := a - b;
+    boMultiply: res := a * b;
+    boDivide:   res := a / b;
+  else
+    raise Exception.Create('Unknown operator');
+  end;
+
+  Push(res);
+end;
+
+//entry point into vm
+function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
+begin
+  Assert(Assigned(output),'strings is not assigned');
+  Assert(Assigned(Chunk),'Chunk is not assigned');
+  Assert(Assigned(VM),'VM is not assigned');
+
+  //output.clear;
+
+  vm.chunk := chunk;
+  vm.ip := vm.chunk.Code;
+  Result := Run(output);
+end;
+
+procedure FreeVM;
+begin
+  dispose(VM);
+end;
+
+procedure InitScanner(source : pchar);
+begin
+  scanner.start := source;
+  scanner.current := source;
+  scanner.line := 1;
+end;
+
+
+function advance : char;
+begin
+  inc(scanner.Current);
+  result := scanner.current[-1];
+end;
+
+function isAtEnd : boolean;
+begin
+  result := scanner.current^ = #0;
+end;
+
 
 initialization
   InitVM;
