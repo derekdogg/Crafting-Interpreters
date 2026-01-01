@@ -301,9 +301,13 @@ end;
 procedure initValueRecord(var valueRecord : pValueRecord);
 begin
   assert(valueRecord = nil,'values is not assigned');
+
   new(valueRecord);
+
   valueRecord.Count := 0;
+
   valueRecord.Capacity := 0;
+
   valueRecord.Values := nil;
 end;
 
@@ -443,6 +447,7 @@ begin
   Assert(Assigned(VM),'VM is not assigned');
   VM.StackTop := @VM.Stack[0];
 end;
+
 
 procedure push(const value : TValue);
 var
