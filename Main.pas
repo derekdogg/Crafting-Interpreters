@@ -11,8 +11,11 @@ type
     Button1: TButton;
     Memo1: TMemo;
     Button2: TButton;
+    Button3: TButton;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
+    procedure Button3Click(Sender: TObject);
+
   private
     { Private declarations }
   public
@@ -28,67 +31,200 @@ uses
 
 {$R *.dfm}
 
-procedure TForm4.Button1Click(Sender: TObject);
+
+procedure TenPlusTen(strings : TStrings);   //10 + 10
+var
+  Chunk : pChunk;
+  vmResult : TInterpretResult;
+begin
+   chunk := nil;
+   InitChunk(Chunk);
+   AddConstant(chunk,10);
+   AddConstant(chunk,10);
+   writeChunk(Chunk, OP_ADD);
+   writeChunk(Chunk, OP_RETURN);
+   vmResult := InterpretResult(chunk,strings);
+   assert(vmResult.value = 20);
+   freeChunk(Chunk);
+end;
+
+
+procedure SixTimesSeven(strings: TStrings);
+var
+  Chunk : pChunk;
+  vmResult : TInterpretResult;
+begin
+  chunk := nil;
+  InitChunk(Chunk);
+  AddConstant(chunk, 6);
+  AddConstant(chunk, 7);
+  WriteChunk(chunk, OP_MULTIPLY);
+  WriteChunk(chunk, OP_RETURN);
+  vmResult := InterpretResult(chunk,strings);
+  assert(vmResult.Value = 42);
+  freeChunk(Chunk);
+end;
+
+procedure TwentyMinusSeven(strings: TStrings);
+var
+  chunk: pChunk;
+  vmResult: TInterpretResult;
+begin
+  chunk := nil;
+  InitChunk(chunk);
+  AddConstant(chunk, 20);
+  AddConstant(chunk, 7);
+  WriteChunk(chunk, OP_SUBTRACT);
+  WriteChunk(chunk, OP_RETURN);
+  vmResult := InterpretResult(chunk, strings);
+  assert(vmResult.Value = 13);
+  FreeChunk(chunk);
+end;
+
+procedure FortyEightDividedBySix(strings: TStrings);
+var
+  Chunk : pChunk;
+
+begin
+   chunk := nil;
+   InitChunk(Chunk);
+   AddConstant(chunk, 48);
+   AddConstant(chunk, 6);
+   WriteChunk(chunk, OP_DIVIDE);
+   WriteChunk(chunk, OP_RETURN);
+   InterpretResult(chunk, strings);
+   freeChunk(Chunk);
+end;
+
+procedure FivePlusThreeTimesTwo(strings: TStrings);  //(5 + 3) * 2
 var
   Chunk : pChunk;
 begin
-
   chunk := nil;
-
   InitChunk(Chunk);
-  writeChunk(Chunk,OP_RETURN);
-  Assert(Chunk.Capacity = 8, 'expected 8');
-  writeChunk(Chunk,OP_FOO);
-  writeChunk(Chunk,3);
-  writeChunk(Chunk,4);
-  writeChunk(Chunk,5);
-  writeChunk(Chunk,6);
-  writeChunk(Chunk,7);
-  writeChunk(Chunk,8);
-
-  writeChunk(Chunk,1);
-  Assert(Chunk.Capacity = 16, 'expected 16');
-  writeChunk(Chunk,2);
-  writeChunk(Chunk,3);
-  writeChunk(Chunk,4);
-  writeChunk(Chunk,5);
-  writeChunk(Chunk,6);
-  writeChunk(Chunk,7);
-  writeChunk(Chunk,8);
-
-  Assert(Chunk.Capacity = 16, 'expected 16');
-  writeChunk(Chunk,1);
-  Assert(Chunk.Capacity = 32, 'expected 32');
-
-  Memo1.Lines.clear;
-  printChunk(Chunk,Memo1.Lines);
-
+  AddConstant(chunk, 5);
+  AddConstant(chunk, 3);
+  WriteChunk(chunk, OP_ADD);
+  AddConstant(chunk, 2);
+  WriteChunk(chunk, OP_MULTIPLY);
+  WriteChunk(chunk, OP_RETURN);
+  InterpretResult(chunk, strings);
   freeChunk(Chunk);
+end;
 
+procedure ComplexExpressionTest(strings: TStrings);
+var
+  chunk: pChunk;
+  vmResult: TInterpretResult;
+begin
+  chunk := nil;
+  InitChunk(chunk);
 
+  // Push constants
+  AddConstant(chunk, 1);     // 1
+  AddConstant(chunk, 2);     // 2
+  AddConstant(chunk, 3);     // 3
+  WriteChunk(chunk, OP_MULTIPLY); // 2 * 3
+
+  WriteChunk(chunk, OP_ADD);      // 1 + (2*3)
+
+  AddConstant(chunk, 4);          // 4
+  AddConstant(chunk, -5);         // -5
+  WriteChunk(chunk, OP_DIVIDE);   // 4 / -5
+
+  WriteChunk(chunk, OP_SUBTRACT); // (1 + 2*3) - (4 / -5)
+
+  WriteChunk(chunk, OP_RETURN);
+
+  vmResult := InterpretResult(chunk, strings);
+
+  assert(Abs(vmResult.Value - 7.8) < 1e-10);
+
+  FreeChunk(chunk);
+end;
+
+procedure TenMinusTwenty(strings: TStrings);
+var
+  chunk: pChunk;
+  vmResult: TInterpretResult;
+begin
+  chunk := nil;
+  InitChunk(chunk);
+  AddConstant(chunk, 10);
+  AddConstant(chunk, 20);
+  WriteChunk(chunk, OP_SUBTRACT);
+  WriteChunk(chunk, OP_RETURN);
+  vmResult := InterpretResult(chunk, strings);
+  assert(vmResult.Value = -10);
+  FreeChunk(chunk);
+end;
+
+procedure ThreePointFivePlusTwoPointTwo(strings: TStrings);
+var
+  chunk: pChunk;
+  vmResult: TInterpretResult;
+begin
+  chunk := nil;
+  InitChunk(chunk);
+  AddConstant(chunk, 3.5);
+  AddConstant(chunk, 2.2);
+  WriteChunk(chunk, OP_ADD);
+  WriteChunk(chunk, OP_RETURN);
+  vmResult := InterpretResult(chunk, strings);
+  assert(Abs(vmResult.Value - 5.7) < 1e-10); // floating-point comparison
+  FreeChunk(chunk);
+end;
+
+procedure TForm4.Button1Click(Sender: TObject);
+begin
+  TenPlusTen(memo1.Lines);
+  SixTimesSeven(memo1.lines);
+  FivePlusThreeTimesTwo(Memo1.Lines);
+  FortyEightDividedBySix(Memo1.Lines);
+  TwentyMinusSeven(memo1.lines);
+  TenMinusTwenty(memo1.lines);
+  ThreePointFivePlusTwoPointTwo(memo1.lines);
+  ComplexExpressionTest(memo1.lines);
 
 end;
 
+
+
 procedure TForm4.Button2Click(Sender: TObject);
 var
-  ValueRecord : pValueRecord;
+  c : Char;
 begin
-  ValueRecord := nil;
-  initValueRecord(ValueRecord);
-  Assert(Assigned(ValueRecord), 'Value Record is not assigned');
-  writeValueRecord(ValueRecord,12.12);
-  writeValueRecord(ValueRecord,12.12);
-  writeValueRecord(ValueRecord,12.12);
-  writeValueRecord(ValueRecord,12.12);
-  writeValueRecord(ValueRecord,12.12);
-  writeValueRecord(ValueRecord,12.12);
-  writeValueRecord(ValueRecord,12.12);
+  InitScanner(PChar(Memo1.Lines.Text));
+  while not isAtEnd do
+  begin
+    c := advance;
+  end;
 
-  printValueRecord(ValueRecord,Memo1.Lines);
+end;
 
 
-  freeValueRecord(ValueRecord);
 
+procedure TForm4.Button3Click(Sender: TObject);
+var
+   buffer : pByte;
+   current : pByte;
+
+
+begin
+   getMem(buffer,400);
+
+   current := buffer;
+
+
+
+   current^ := 10;
+
+
+   Showmessage(inttostr(current^));
+
+
+   //exception here
+   freeMem(buffer,400);
 
 end;
 

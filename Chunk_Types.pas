@@ -1,5 +1,5 @@
 unit Chunk_Types;
-
+{$POINTERMATH ON}
 interface
 uses
   classes;
@@ -7,41 +7,110 @@ uses
 
 const
   MAX_SIZE = 5000-1;
-  START_CAPACITY = 8;
+  START_CAPACITY = 256;
   GROWTH_FACTOR = 2;
-
+  STACK_MAX  = 256;
 type
 
-  PByteArray = ^TByteArray;
 
-  TByteArray = array[0..0] of byte;
 
   OpCode = (
-    OP_RETURN,
-    OP_FOO
-
+    OP_CONSTANT,
+    OP_NEGATE,
+    OP_ADD,
+    OP_SUBTRACT,
+    OP_MULTIPLY,
+    OP_DIVIDE,
+    OP_RETURN
   );
 
   pChunk = ^Chunk;
+  pValueRecord = ^ValueRecord;
+
+  pCode = ^TCode;
+  TCode = byte;
 
   Chunk = record
     Count       : Integer;
     Capacity    : Integer;
-    Code        : PByteArray;
+    Code        : pCode;
+    Constants   : pValueRecord;
     Initialised : boolean;     // uint8_t* code
   end;
 
-  pValues = ^TValues;
+  pValue = ^TValue;
+  TValue = double;
 
-  TValues = array[0..0] of double;
-
-  pValueRecord = ^ValueRecord;
 
   ValueRecord = record
     Count     : Integer;
     Capacity  : Integer;
-    Values    : pValues;
+    Values    : pValue;
   end;
+
+  //Virtual Machine result
+  TInterpretResult = record
+    result : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
+    value : TValue;
+  end;
+
+  pVirtualMachine = ^VirtualMachine;
+  //Virtual Machine
+  VirtualMachine = record
+    Chunk : pChunk;
+    Stack : Array[0..STACK_MAX-1] of TValue;
+    StackTop : pValue;
+    ip    : pCode;
+  end;
+
+  TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide);
+
+
+   TScanner = record
+     start    : pchar;
+     current  : pchar;
+     line     : integer;
+   end;
+
+
+
+  TTokenType = (
+    // Single-character tokens
+    TOKEN_LEFT_PAREN, TOKEN_RIGHT_PAREN,
+    TOKEN_LEFT_BRACE, TOKEN_RIGHT_BRACE,
+    TOKEN_COMMA, TOKEN_DOT, TOKEN_MINUS, TOKEN_PLUS,
+    TOKEN_SEMICOLON, TOKEN_SLASH, TOKEN_STAR,
+
+    // One or two character tokens
+    TOKEN_BANG, TOKEN_BANG_EQUAL,
+    TOKEN_EQUAL, TOKEN_EQUAL_EQUAL,
+    TOKEN_GREATER, TOKEN_GREATER_EQUAL,
+    TOKEN_LESS, TOKEN_LESS_EQUAL,
+
+    // Literals
+    TOKEN_IDENTIFIER, TOKEN_STRING, TOKEN_NUMBER,
+
+    // Keywords
+    TOKEN_AND, TOKEN_CLASS, TOKEN_ELSE, TOKEN_FALSE,
+    TOKEN_FOR, TOKEN_FUN, TOKEN_IF, TOKEN_NIL, TOKEN_OR,
+    TOKEN_PRINT, TOKEN_RETURN, TOKEN_SUPER, TOKEN_THIS,
+    TOKEN_TRUE, TOKEN_VAR, TOKEN_WHILE,
+
+    TOKEN_ERROR, TOKEN_EOF
+  );
+
+   TToken = record
+      tokenType : TTokenType;
+      start : pchar;
+      length : integer;
+      line : integer;
+   end;
+
+
+
+var
+  VM : pVirtualMachine;
+  Scanner : TScanner;
 
 
 
@@ -49,14 +118,22 @@ procedure initChunk(var chunk: pChunk);
 procedure freeChunk(var chunk: pChunk);
 procedure writeChunk(chunk: pChunk; value: byte); overload;
 procedure writeChunk(chunk: pChunk; value: OpCode); overload;
-procedure printChunk(chunk: pChunk; strings : TStrings);
-
+procedure AddConstant(chunk : pChunk; const value : TValue);
+procedure printChunk(chunk: pChunk;  strings: TStrings);
 procedure initValueRecord(var valueRecord : pValueRecord);
-procedure writeValueRecord(valueRecord : pValueRecord; Value : Double);
+procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
 procedure freeValueRecord(var ValueRecord : pValueRecord);
-
 procedure printValueRecord(valueRecord: pValueRecord; strings: TStrings);
-
+procedure InitVM();
+procedure ResetStack;
+procedure push(const value : TValue);
+function pop : TValue;
+procedure BinaryOp(Op: TBinaryOperation);
+function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
+procedure FreeVM();
+procedure InitScanner(source : pchar);
+function advance : char;
+function isAtEnd : boolean;
 
 
 implementation
@@ -72,8 +149,8 @@ begin
   chunk.Count := 0;
   chunk.Capacity := 0;
   chunk.Code := nil;
+  InitValueRecord(chunk.Constants);
   chunk.Initialised := true;
-
 end;
 
 procedure freeChunk(var chunk: pChunk);
@@ -86,6 +163,9 @@ begin
     FreeMem(chunk.Code, Chunk.Capacity * SizeOf(Byte));
     chunk.Code := nil;
   end;
+
+  freeValueRecord(chunk.Constants);
+
 
   Dispose(chunk);
   chunk := nil;
@@ -108,12 +188,6 @@ begin
   ReallocMem(list, Capacity * ElemSize);
 end;
 
-procedure CheckBufferEnd(Buffer: Pointer; ElemSize, Capacity: Integer; LastElemAddr: Pointer);
-begin
-  Assert(NativeUInt(LastElemAddr) = NativeUInt(Buffer) + Capacity * ElemSize - 1,
-         'Buffer end mismatch');
-end;
-
 
 procedure writeChunk(chunk: pChunk; value: OpCode);
 begin
@@ -126,77 +200,125 @@ begin
 
   assert(chunk.Initialised = true, 'Chunk is not initialised');
 
-  GrowArray(pointer(chunk.Code), Chunk.Capacity, Chunk.Count, sizeof(byte));
+  GrowArray(Pointer(chunk.Code), Chunk.Capacity, Chunk.Count, sizeof(byte));
 
-  {$R-}
   chunk.Code[chunk.Count] := value;
-  {$R+}
 
   Inc(chunk.Count);
+end;
+
+
+function AddValueConstant(valueRecord: pValueRecord; const value: TValue): Integer;
+begin
+  Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
+
+  // Add the value to the ValueRecord
+  writeValueRecord(valueRecord, value);
+
+  // Return the index of the newly added value
+  Result := valueRecord.Count - 1;
+end;
+
+procedure AddConstant(chunk : pChunk; const value : TValue);
+var
+  idx : byte;
+begin
+
+  Assert(Assigned(chunk), 'Chunk is not assigned');
+  Assert(Assigned(chunk.Constants), 'ValueRecord is not assigned');
+
+  //add constant, 1st into value's array of the value record
+  idx := AddValueConstant(chunk.Constants,value);
+  //add constant op code into the chunk array
+  writeChunk(Chunk,OP_CONSTANT);
+  //followed by the index of the value inserted into the value array
+  writeChunk(Chunk,idx);
+end;
+
+
+
+
+function InstructionSize(op: Byte): Integer;
+begin
+  case op of
+    Ord(OP_CONSTANT): Result := 2; // opcode + 1-byte operand (index)
+    else
+      Result := 1; // all other instructions are 1 byte
+  end;
 end;
 
 
 procedure printChunk(chunk: pChunk; strings: TStrings);
 const
   Chunk_Header = 'Chunk starts at address $%p';
-  OPCODE_FIELD_WIDTH = 50;  // fixed width for opcode column
+  OPCODE_FIELD_WIDTH = 30;  // fixed width for opcode column
 var
-  i: Integer;
-  b: Byte;
+  i, idx: Integer;
+  codePtr: pCode;
+  valuePtr : pValue;
   codeName: string;
 begin
   Assert(Assigned(chunk), 'Chunk is not assigned');
+  Assert(Assigned(chunk.Constants),'Constants is not assigned');
   Assert(chunk.Initialised, 'Chunk is not initialised');
   Assert(Assigned(strings), 'Output strings is not assigned');
-
   strings.Clear;
   strings.Add(Format(Chunk_Header, [Pointer(chunk)]));
 
-  {$R-}
-  try
-    for i := 0 to chunk.Count - 1 do
+  codePtr := Chunk.Code;
+  valuePtr := Chunk.Constants.Values;
+  i := 0;
+  while i < chunk.Count do
+  begin
+
+    inc(codePtr,i);
+
+    if (codePtr^ >= Ord(Low(OpCode))) and (codePtr^ <= Ord(High(OpCode))) then
+      codeName := GetEnumName(TypeInfo(OpCode), codePtr^)
+    else
+      codeName := 'UNKNOWN';
+
+    // Print opcode
+    codeName := codeName + StringOfChar(' ', OPCODE_FIELD_WIDTH - Length(codeName));
+
+    if codePtr^ = Ord(OP_CONSTANT) then
     begin
-      b := chunk.Code^[i];
+      inc(CodePtr); //read next Byte (index into constants)
+      inc(valuePtr,CodePtr^); //go to the correct index in value array
+      strings.Add(Format('%.6d  %s  %4d  0x%.2X  -> %g',
+                  [i, codeName, CodePtr^, CodePtr^, valuePtr^]));
+    end
+    else
+      strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, CodePtr^, CodePtr^]));
 
-      if (b >= Ord(Low(OpCode))) and (b <= Ord(High(OpCode))) then
-        codeName := GetEnumName(TypeInfo(OpCode), b)
-      else
-        codeName := 'UNKNOWN';
-
-      // pad opcode name to fixed width
-      codeName := codeName + StringOfChar(' ', OPCODE_FIELD_WIDTH - Length(codeName));
-
-      // Index, fixed-width opcode, Decimal, Hex
-      strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, b, b]));
+    i := i + InstructionSize(CodePtr^); // move to the next instruction
     end;
-  finally
-    {$R+}
-  end;
+
+
 end;
-
-
 
 
 procedure initValueRecord(var valueRecord : pValueRecord);
 begin
   assert(valueRecord = nil,'values is not assigned');
-  new(valueRecord);
-  valueRecord.Count := 0;
-  valueRecord.Capacity := 0;
-  valueRecord.Values := nil;
 
+  new(valueRecord);
+
+  valueRecord.Count := 0;
+
+  valueRecord.Capacity := 0;
+
+  valueRecord.Values := nil;
 end;
 
 
-procedure writeValueRecord(valueRecord : pValueRecord; Value : Double);
+procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
 begin
   assert(assigned(valueRecord),'valueRecord is not assigned');
 
-  GrowArray(pointer(valueRecord.Values), valueRecord.Capacity, valueRecord.Count,sizeof(Double));
+  GrowArray(pointer(valueRecord.Values), valueRecord.Capacity, valueRecord.Count,sizeof(TValue));
 
-  {$R-}
   valueRecord.Values[valueRecord.Count] := value;
-  {$R+}
 
   Inc(valueRecord.Count);
 end;
@@ -208,7 +330,7 @@ begin
 
   if (ValueRecord.Capacity) > 0 then
   begin
-    FreeMem(ValueRecord.Values, ValueRecord.Capacity * SizeOf(Double));
+    FreeMem(ValueRecord.Values, ValueRecord.Capacity * SizeOf(TValue));
     ValueRecord.Values := nil;
   end;
 
@@ -224,7 +346,7 @@ const
 var
   i: Integer;
   valStr: string;
-  val: Double;
+  valuePtr: pValue;
 begin
   Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
   Assert(Assigned(strings), 'Output strings is not assigned');
@@ -232,14 +354,16 @@ begin
   strings.Clear;
   strings.Add(Format(VR_Header, [Pointer(valueRecord)]));
 
-  {$R-}
-  try
+  ValuePtr := valueRecord.Values;
+
+
+
     for i := 0 to valueRecord.Count - 1 do
     begin
-      val := valueRecord.Values^[i];
+      inc(ValuePtr,i);
 
       // format value as general format with up to 12 significant digits
-      valStr := Format('%.12g', [val]);
+      valStr := Format('%.12g', [ValuePtr^]);
 
       // pad to fixed width
       valStr := valStr + StringOfChar(' ', VALUE_FIELD_WIDTH - Length(valStr));
@@ -247,18 +371,169 @@ begin
       // Index + fixed-width value
       strings.Add(Format('%.6d  %s', [i, valStr]));
     end;
-  finally
-    {$R+}
+
+end;
+
+procedure InitVM;
+begin
+  new(VM);
+  VM.Chunk := nil;
+  ResetStack;
+  //initChunk(VM.Chunk); we don't do this since this will be assigned when we 'InterpretResult'
+end;
+
+
+function Run(const output : TStrings) : TInterpretResult;
+
+  function ReadByte: Byte; inline;
+  begin
+     result := vm.ip^;
+     inc(vm.Ip);
   end;
+
+  function ReadConstant : TValue; inline;
+  begin
+    result := vm.Chunk.Constants.Values[ReadByte];
+  end;
+
+var
+  instruction: Byte;
+  idx : byte;
+  value : TValue;
+  InterpretResult : TInterpretResult;
+begin
+
+    Assert(Assigned(VM),'VM is not assigned');
+    Assert(Assigned(VM.Chunk),'VM Chunk is not assigned');
+    Assert(Assigned(VM.Chunk.Code),'VM chunk code is not assigned');
+
+    while True do
+    begin
+      instruction := ReadByte();
+      case OpCode(instruction) of
+
+        OP_CONSTANT : begin
+          value := ReadConstant;
+          push(value);
+        end;
+
+        OP_NEGATE : begin
+
+          value := -pop;
+
+          push(value);
+        end;
+
+        OP_ADD      : BinaryOp(boAdd);
+        OP_SUBTRACT : BinaryOp(boSubtract);
+        OP_MULTIPLY : BinaryOP(boMultiply);
+        OP_DIVIDE   : BinaryOp(boDivide);
+
+
+        OP_RETURN: begin
+           value := pop; //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
+           output.Add(floattostr(value));
+           InterpretResult.result := INTERPRET_OK;
+           InterpretResult.value := value;
+           Exit(InterpretResult);
+        end;
+      end;
+    end;
+
+end;
+
+procedure ResetStack;
+begin
+  Assert(Assigned(VM),'VM is not assigned');
+  VM.StackTop := @VM.Stack[0];
+end;
+
+
+procedure push(const value : TValue);
+var
+  Limit: pValue;
+
+begin
+  Limit := @VM.Stack[0];
+  Inc(Limit, STACK_MAX); //note here we are beyond the actual range ot the stack (we are not going to dereference it though)
+
+  Assert(NativeUInt(VM.StackTop) < NativeUInt(Limit), 'Stack overflow');
+
+  vm.StackTop^ := Value;
+  Inc(vm.StackTop);
+end;
+
+function pop : TValue;
+begin
+   Dec(Vm.StackTop);
+   result := Vm.StackTop^;
 end;
 
 
 
+procedure BinaryOp(Op: TBinaryOperation);
+var
+  a, b, res: TValue;
+begin
+  b := Pop();
+  a := Pop();
+
+  case Op of
+    boAdd:      res := a + b;
+    boSubtract: res := a - b;
+    boMultiply: res := a * b;
+    boDivide:   res := a / b;
+  else
+    raise Exception.Create('Unknown operator');
+  end;
+
+  Push(res);
+end;
+
+//entry point into vm
+function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
+begin
+  Assert(Assigned(output),'strings is not assigned');
+  Assert(Assigned(Chunk),'Chunk is not assigned');
+  Assert(Assigned(VM),'VM is not assigned');
+
+  //output.clear;
+
+  vm.chunk := chunk;
+  vm.ip := vm.chunk.Code;
+  Result := Run(output);
+end;
+
+procedure FreeVM;
+begin
+  dispose(VM);
+end;
+
+procedure InitScanner(source : pchar);
+begin
+  scanner.start := source;
+  scanner.current := source;
+  scanner.line := 1;
+end;
 
 
+function advance : char;
+begin
+  inc(scanner.Current);
+  result := scanner.current[-1];
+end;
+
+function isAtEnd : boolean;
+begin
+  result := scanner.current^ = #0;
+end;
 
 
+initialization
+  InitVM;
 
+finalization
+  FreeVM;
 
 end.
 

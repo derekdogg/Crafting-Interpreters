@@ -5,3 +5,4 @@ Interpreter.identcache
 Interpreter.res
 InterpreterGui.dproj.local
 InterpreterGui.identcache
+__recovery/
