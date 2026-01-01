@@ -867,7 +867,6 @@ begin
   end;
 end;
 
-
 procedure compile(source : pChar; output : TStrings);
 var
   line : integer;
