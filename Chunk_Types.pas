@@ -54,8 +54,6 @@ type
     value : TValue;
   end;
 
-
-
   pVirtualMachine = ^VirtualMachine;
   //Virtual Machine
   VirtualMachine = record
