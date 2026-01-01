@@ -12,7 +12,7 @@ const
   STACK_MAX  = 256;
 type
 
-
+  dfdfd
 
   OpCode = (
     OP_CONSTANT,
