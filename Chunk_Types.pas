@@ -1,5 +1,5 @@
 unit Chunk_Types;
-
+{$POINTERMATH ON}
 interface
 uses
   classes;
@@ -7,17 +7,12 @@ uses
 
 const
   MAX_SIZE = 5000-1;
-  START_CAPACITY = 8;
+  START_CAPACITY = 256;
   GROWTH_FACTOR = 2;
   STACK_MAX  = 256;
 type
 
-  pValue = ^TValue;
-  TValue = Double;
 
-  PByteArray = ^TByteArray;
-
-  TByteArray = array[0..0] of byte;
 
   OpCode = (
     OP_CONSTANT,
@@ -32,23 +27,25 @@ type
   pChunk = ^Chunk;
   pValueRecord = ^ValueRecord;
 
+  pCode = ^TCode;
+  TCode = byte;
+
   Chunk = record
     Count       : Integer;
     Capacity    : Integer;
-    Code        : PByteArray;  //there is a fundamental flaw here in that the index into the constants can be greater > 256 max byte per slot into values idx...   We leave for simplicity for now. Can split into two later...
+    Code        : pCode;
     Constants   : pValueRecord;
     Initialised : boolean;     // uint8_t* code
   end;
 
-  pValues = ^TValues;
-
-  TValues = array[0..0] of TValue;
+  pValue = ^TValue;
+  TValue = double;
 
 
   ValueRecord = record
     Count     : Integer;
     Capacity  : Integer;
-    Values    : pValues;
+    Values    : pValue;
   end;
 
   //Virtual Machine result
@@ -65,7 +62,7 @@ type
     Chunk : pChunk;
     Stack : Array[0..STACK_MAX-1] of TValue;
     StackTop : pValue;
-    ip    : integer;
+    ip    : pCode;
   end;
 
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide);
@@ -205,11 +202,9 @@ begin
 
   assert(chunk.Initialised = true, 'Chunk is not initialised');
 
-  GrowArray(pointer(chunk.Code), Chunk.Capacity, Chunk.Count, sizeof(byte));
+  GrowArray(Pointer(chunk.Code), Chunk.Capacity, Chunk.Count, sizeof(byte));
 
-  {$R-}
   chunk.Code[chunk.Count] := value;
-  {$R+}
 
   Inc(chunk.Count);
 end;
@@ -261,7 +256,8 @@ const
   OPCODE_FIELD_WIDTH = 30;  // fixed width for opcode column
 var
   i, idx: Integer;
-  b: byte;
+  codePtr: pCode;
+  valuePtr : pValue;
   codeName: string;
 begin
   Assert(Assigned(chunk), 'Chunk is not assigned');
@@ -271,41 +267,37 @@ begin
   strings.Clear;
   strings.Add(Format(Chunk_Header, [Pointer(chunk)]));
 
-  {$R-}
-  try
-    i := 0;
-    while i < chunk.Count do
+  codePtr := Chunk.Code;
+  valuePtr := Chunk.Constants.Values;
+  i := 0;
+  while i < chunk.Count do
+  begin
+
+    inc(codePtr,i);
+
+    if (codePtr^ >= Ord(Low(OpCode))) and (codePtr^ <= Ord(High(OpCode))) then
+      codeName := GetEnumName(TypeInfo(OpCode), codePtr^)
+    else
+      codeName := 'UNKNOWN';
+
+    // Print opcode
+    codeName := codeName + StringOfChar(' ', OPCODE_FIELD_WIDTH - Length(codeName));
+
+    if codePtr^ = Ord(OP_CONSTANT) then
     begin
-      b := chunk.Code^[i];
+      inc(CodePtr); //read next Byte (index into constants)
+      inc(valuePtr,CodePtr^); //go to the correct index in value array
+      strings.Add(Format('%.6d  %s  %4d  0x%.2X  -> %g',
+                  [i, codeName, CodePtr^, CodePtr^, valuePtr^]));
+    end
+    else
+      strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, CodePtr^, CodePtr^]));
 
-      if (b >= Ord(Low(OpCode))) and (b <= Ord(High(OpCode))) then
-        codeName := GetEnumName(TypeInfo(OpCode), b)
-      else
-        codeName := 'UNKNOWN';
-
-      // Print opcode
-      codeName := codeName + StringOfChar(' ', OPCODE_FIELD_WIDTH - Length(codeName));
-
-      if b = Ord(OP_CONSTANT) then
-      begin
-        idx := chunk.Code^[i+1]; // operand
-        strings.Add(Format('%.6d  %s  %4d  0x%.2X  -> %g',
-                    [i, codeName, b, b, Chunk.Constants.Values^[idx]]));
-      end
-      else
-        strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, b, b]));
-
-      i := i + InstructionSize(b); // move to the next instruction
+    i := i + InstructionSize(CodePtr^); // move to the next instruction
     end;
 
-  finally
-    {$R+}
-  end;
+
 end;
-
-
-
-
 
 
 procedure initValueRecord(var valueRecord : pValueRecord);
@@ -315,7 +307,6 @@ begin
   valueRecord.Count := 0;
   valueRecord.Capacity := 0;
   valueRecord.Values := nil;
-
 end;
 
 
@@ -325,9 +316,7 @@ begin
 
   GrowArray(pointer(valueRecord.Values), valueRecord.Capacity, valueRecord.Count,sizeof(TValue));
 
-  {$R-}
   valueRecord.Values[valueRecord.Count] := value;
-  {$R+}
 
   Inc(valueRecord.Count);
 end;
@@ -355,7 +344,7 @@ const
 var
   i: Integer;
   valStr: string;
-  val: TValue;
+  valuePtr: pValue;
 begin
   Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
   Assert(Assigned(strings), 'Output strings is not assigned');
@@ -363,14 +352,16 @@ begin
   strings.Clear;
   strings.Add(Format(VR_Header, [Pointer(valueRecord)]));
 
-  {$R-}
-  try
+  ValuePtr := valueRecord.Values;
+
+
+
     for i := 0 to valueRecord.Count - 1 do
     begin
-      val := valueRecord.Values^[i];
+      inc(ValuePtr,i);
 
       // format value as general format with up to 12 significant digits
-      valStr := Format('%.12g', [val]);
+      valStr := Format('%.12g', [ValuePtr^]);
 
       // pad to fixed width
       valStr := valStr + StringOfChar(' ', VALUE_FIELD_WIDTH - Length(valStr));
@@ -378,9 +369,7 @@ begin
       // Index + fixed-width value
       strings.Add(Format('%.6d  %s', [i, valStr]));
     end;
-  finally
-    {$R+}
-  end;
+
 end;
 
 procedure InitVM;
@@ -396,22 +385,13 @@ function Run(const output : TStrings) : TInterpretResult;
 
   function ReadByte: Byte; inline;
   begin
-    Assert(vm.ip < vm.chunk.Count, 'VM is beyond chunk count');
-    {$R-}
-    Result := vm.chunk.Code[vm.ip];
-    {$R+}
-
-    Inc(vm.ip);
+     result := vm.ip^;
+     inc(vm.Ip);
   end;
 
-  function ReadValue : TValue; inline;
-  var
-    idx : byte;
+  function ReadConstant : TValue; inline;
   begin
-    idx := ReadByte;
-    {$R-}
-    result := vm.Chunk.Constants.Values[idx];
-    {$R+}
+    result := vm.Chunk.Constants.Values[ReadByte];
   end;
 
 var
@@ -431,7 +411,7 @@ begin
       case OpCode(instruction) of
 
         OP_CONSTANT : begin
-          value := ReadValue;
+          value := ReadConstant;
           push(value);
         end;
 
@@ -517,10 +497,7 @@ begin
   //output.clear;
 
   vm.chunk := chunk;
-  vm.ip := 0;  //instead of using a pointer here (since we're using indexed array pointers) we just use an integer.
-  (*We initialize ip by pointing it at the first byte of code in the chunk. We
-   haven’t executed that instruction yet, so ip points to the instruction about
-  to be executed.*)
+  vm.ip := vm.chunk.Code;
   Result := Run(output);
 end;
 

@@ -11,8 +11,10 @@ type
     Button1: TButton;
     Memo1: TMemo;
     Button2: TButton;
+    Button3: TButton;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
+    procedure Button3Click(Sender: TObject);
 
   private
     { Private declarations }
@@ -174,19 +176,7 @@ begin
 end;
 
 procedure TForm4.Button1Click(Sender: TObject);
-var
-  Chunk : pChunk;
-
-  idx : integer;
-
-
-  value : TValue;
 begin
-
-  chunk := nil;
-
-  InitChunk(Chunk);
-
   TenPlusTen(memo1.Lines);
   SixTimesSeven(memo1.lines);
   FivePlusThreeTimesTwo(Memo1.Lines);
@@ -195,7 +185,7 @@ begin
   TenMinusTwenty(memo1.lines);
   ThreePointFivePlusTwoPointTwo(memo1.lines);
   ComplexExpressionTest(memo1.lines);
-  freeChunk(Chunk);
+
 end;
 
 
@@ -213,5 +203,29 @@ begin
 end;
 
 
+
+procedure TForm4.Button3Click(Sender: TObject);
+var
+   buffer : pByte;
+   current : pByte;
+
+
+begin
+   getMem(buffer,400);
+
+   current := buffer;
+
+
+
+   current^ := 10;
+
+
+   Showmessage(inttostr(current^));
+
+
+   //exception here
+   freeMem(buffer,400);
+
+end;
 
 end.
