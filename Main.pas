@@ -11,10 +11,9 @@ type
     Button1: TButton;
     Memo1: TMemo;
     Button2: TButton;
-    Button3: TButton;
+    Memo2: TMemo;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
-    procedure Button3Click(Sender: TObject);
 
   private
     { Private declarations }
@@ -194,38 +193,10 @@ procedure TForm4.Button2Click(Sender: TObject);
 var
   c : Char;
 begin
-  InitScanner(PChar(Memo1.Lines.Text));
-  while not isAtEnd do
-  begin
-    c := advance;
-  end;
+  compile(PChar(Memo1.Lines.Text),memo2.lines);
 
 end;
 
 
-
-procedure TForm4.Button3Click(Sender: TObject);
-var
-   buffer : pByte;
-   current : pByte;
-
-
-begin
-   getMem(buffer,400);
-
-   current := buffer;
-
-
-
-   current^ := 10;
-
-
-   Showmessage(inttostr(current^));
-
-
-   //exception here
-   freeMem(buffer,400);
-
-end;
 
 end.
