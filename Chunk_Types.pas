@@ -479,7 +479,10 @@ begin
 end;
 
 function pop : TValue;
+var limit : pValue;
 begin
+   limit := @VM.Stack[0];
+   assert(vm.StackTop > limit,'Stack Underflow error');
    Dec(Vm.StackTop);
    result := Vm.StackTop^;
 end;
