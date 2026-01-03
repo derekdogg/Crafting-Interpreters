@@ -246,6 +246,8 @@ end;
 procedure WriteConstantIndex(chunk : pChunk; index : integer);
 begin
   Assert(Assigned(Chunk.Code));
+  Assert(Index >= 0);
+  Assert(Index <= Chunk.Capacity);
   Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity);
 
   PInteger(Chunk.Code + Chunk.Count)^ := index;
