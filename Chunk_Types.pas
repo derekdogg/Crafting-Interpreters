@@ -245,7 +245,7 @@ end;
 //we now write an integer into the byte array
 procedure WriteConstantIndex(chunk : pChunk; index : integer);
 begin
-  Assert(Assigned(Chunk.Code));
+  Assert(Assigned(Chunk.Code), 'Chunk code is not assigned');
   Assert(Index >= 0, ' index is negative');
   Assert(Index <= Chunk.Constants.Capacity, 'index is > constants array');
   Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity,' writing chunk index will exceed chunk capacity');
@@ -439,7 +439,6 @@ function Run(const output : TStrings) : TInterpretResult;
 
 var
   instruction: Byte;
-  idx : byte;
   value : TValue;
   InterpretResult : TInterpretResult;
 begin
@@ -524,6 +523,7 @@ begin
   Inc(Stack.StackTop);
   inc(Stack.Count);
 end;
+
 
 function pop(var stack : pStackRecord) : TValue;
 begin
