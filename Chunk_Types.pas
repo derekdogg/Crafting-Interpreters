@@ -132,11 +132,9 @@ var
   VM : pVirtualMachine;
   Scanner : TScanner;
 
-
-
 procedure initChunk(var chunk: pChunk);
 procedure freeChunk(var chunk: pChunk);
-procedure writeChunk(chunk: pChunk; value: byte); overload;
+
 procedure writeChunk(chunk: pChunk; value: OpCode); overload;
 procedure AddConstant(chunk : pChunk; const value : TValue);
 procedure printChunk(chunk: pChunk;  strings: TStrings);
@@ -221,18 +219,13 @@ end;
 
 procedure writeChunk(chunk: pChunk; value: OpCode);
 begin
-  writeChunk(chunk,ord(value));
-end;
-
-procedure writeChunk(chunk: pChunk; value: byte);
-begin
   assert(assigned(chunk),'Chunk is not assigned');
 
   assert(chunk.Initialised = true, 'Chunk is not initialised');
 
   GrowArray(Pointer(chunk.Code), Chunk.Capacity, Chunk.Count, sizeof(byte));
 
-  chunk.Code[chunk.Count] := value;
+  chunk.Code[chunk.Count] := byte(value);
 
   Inc(chunk.Count);
 end;
@@ -249,9 +242,20 @@ begin
   Result := valueRecord.Count - 1;
 end;
 
+//we now write an integer into the byte array
+procedure WriteConstantIndex(chunk : pChunk; index : integer);
+begin
+  Assert(Assigned(Chunk.Code));
+  Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity);
+
+  PInteger(Chunk.Code + Chunk.Count)^ := index;
+  Inc(Chunk.Count, SizeOf(Integer));
+end;
+
+
 procedure AddConstant(chunk : pChunk; const value : TValue);
 var
-  idx : byte;
+  idx : integer;
 begin
 
   Assert(Assigned(chunk), 'Chunk is not assigned');
@@ -262,7 +266,7 @@ begin
   //add constant op code into the chunk array
   writeChunk(Chunk,OP_CONSTANT);
   //followed by the index of the value inserted into the value array
-  writeChunk(Chunk,idx);
+  WriteConstantIndex(Chunk,idx);
 end;
 
 
@@ -271,7 +275,7 @@ end;
 function InstructionSize(op: Byte): Integer;
 begin
   case op of
-    Ord(OP_CONSTANT): Result := 2; // opcode + 1-byte operand (index)
+    Ord(OP_CONSTANT): Result := 1 + SizeOf(Integer); // opcode + int32 index
     else
       Result := 1; // all other instructions are 1 byte
   end;
@@ -423,9 +427,13 @@ function Run(const output : TStrings) : TInterpretResult;
   end;
 
   function ReadConstant : TValue; inline;
+  var idx : integer;
   begin
-    result := vm.Chunk.Constants.Values[ReadByte];
+    idx := PInteger(vm.IP)^;
+    Inc(vm.IP, SizeOf(Integer));
+    result := vm.Chunk.Constants.Values[idx];
   end;
+
 
 var
   instruction: Byte;
