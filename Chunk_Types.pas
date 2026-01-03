@@ -6,10 +6,10 @@ uses
 
 
 const
-  MAX_SIZE = 5000-1;
+
   START_CAPACITY = 256;
+  MAX_SIZE       = 256 * 256;  // 65,536
   GROWTH_FACTOR = 2;
-  STACK_MAX  = 256;
 
 
   //scanner
@@ -59,6 +59,16 @@ type
     Values    : pValue;
   end;
 
+  pStackRecord = ^StackRecord;
+  StackRecord = record
+    Count     : Integer;
+    Capacity  : Integer;
+    Values    : pValue;
+    StackTop  : pValue;
+  end;
+
+
+
   //Virtual Machine result
   TInterpretResult = record
     result : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
@@ -69,9 +79,8 @@ type
   //Virtual Machine
   VirtualMachine = record
     Chunk : pChunk;
-    Stack : Array[0..STACK_MAX-1] of TValue;
-    StackTop : pValue;
     ip    : pCode;
+    Stack : pStackRecord;
   end;
 
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide);
@@ -136,9 +145,11 @@ procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
 procedure freeValueRecord(var ValueRecord : pValueRecord);
 procedure printValueRecord(valueRecord: pValueRecord; strings: TStrings);
 procedure InitVM();
-procedure ResetStack;
-procedure push(const value : TValue);
-function pop : TValue;
+procedure InitStack(var Stack : pStackRecord);
+procedure FreeStack(var Stack : pStackRecord);
+procedure ResetStack(var stack : pStackRecord);
+procedure push(var stack : pStackRecord;const value : TValue);
+function pop(var stack : pStackRecord) : TValue;
 procedure BinaryOp(Op: TBinaryOperation);
 function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
 procedure FreeVM();
@@ -151,9 +162,30 @@ procedure compile(source : pChar; output : TStrings);
 
 
 implementation
-uses
- sysutils, strUtils, typinfo;
 
+uses
+  sysutils, strUtils, typinfo;
+
+
+function GrowArray(var list: Pointer; var Capacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
+begin
+  if Capacity = 0 then
+  begin
+    Capacity := START_CAPACITY;
+    ReallocMem(list, Capacity * ElemSize);
+    Exit(True);
+  end;
+
+  if Count < Capacity then Exit(False);
+
+  Capacity := Capacity * GROWTH_FACTOR;
+
+  Assert(Capacity <= MAX_SIZE, 'Max size for array growth has been reached.');
+
+  ReallocMem(list, Capacity * ElemSize);
+
+  Result := true;
+end;
 
 
 procedure initChunk(var chunk: pChunk);
@@ -185,23 +217,6 @@ begin
   chunk := nil;
 end;
 
-procedure GrowArray(var list: Pointer; var Capacity: Integer; Count: Integer; ElemSize: Integer);
-begin
-  if Capacity = 0 then
-  begin
-    Capacity := START_CAPACITY;
-    ReallocMem(list, Capacity * ElemSize);
-    Exit;
-  end;
-
-  if Count < Capacity then Exit;
-
-  Capacity := Capacity * GROWTH_FACTOR;
-
-  Assert(Capacity <= MAX_SIZE);
-
-  ReallocMem(list, Capacity * ElemSize);
-end;
 
 
 procedure writeChunk(chunk: pChunk; value: OpCode);
@@ -393,8 +408,9 @@ procedure InitVM;
 begin
   new(VM);
   VM.Chunk := nil;
-  ResetStack;
-  //initChunk(VM.Chunk); we don't do this since this will be assigned when we 'InterpretResult'
+  VM.Stack := nil;
+  InitStack(VM.Stack);
+  ResetStack(vm.Stack);  
 end;
 
 
@@ -429,14 +445,14 @@ begin
 
         OP_CONSTANT : begin
           value := ReadConstant;
-          push(value);
+          push(vm.Stack,value);
         end;
 
         OP_NEGATE : begin
 
-          value := -pop;
+          value := -pop(vm.Stack);
 
-          push(value);
+          push(vm.Stack,value);
         end;
 
         OP_ADD      : BinaryOp(boAdd);
@@ -446,7 +462,7 @@ begin
 
 
         OP_RETURN: begin
-           value := pop; //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
+           value := pop(vm.Stack); //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
            output.Add(floattostr(value));
            InterpretResult.result := INTERPRET_OK;
            InterpretResult.value := value;
@@ -457,44 +473,62 @@ begin
 
 end;
 
-procedure ResetStack;
+procedure InitStack(var Stack : pStackRecord);
 begin
-  Assert(Assigned(VM),'VM is not assigned');
-  VM.StackTop := @VM.Stack[0];
+  new(Stack);
+  Stack.Count := 0;
+  Stack.Capacity := 0;
+  GrowArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue));
+  Stack.StackTop := Stack.Values;
+end;
+
+procedure FreeStack(var Stack : pStackRecord);
+begin
+  assert(Assigned(Stack),'Stack is not assigned - free stack');
+  assert(Assigned(Stack.Values), 'Stack values is not assigned - free stack');
+  if (stack.Capacity > 0) then
+  begin
+    FreeMem(Stack.Values,Stack.Capacity * Sizeof(TValue));
+    Stack.Values := nil;
+  end;
+
+  Dispose(Stack);
+  Stack := nil;
 end;
 
 
-procedure push(const value : TValue);
-var
-  Limit: pValue;
-
+procedure ResetStack(var stack : pStackRecord);
 begin
-  Limit := @VM.Stack[0];
-  Inc(Limit, STACK_MAX); //note here we are beyond the actual range ot the stack (we are not going to dereference it though)
-
-  Assert(NativeUInt(VM.StackTop) < NativeUInt(Limit), 'Stack overflow');
-
-  vm.StackTop^ := Value;
-  Inc(vm.StackTop);
+  Assert(Assigned(stack),'stack is not assigned');
+  Stack.StackTop := Stack.Values;
 end;
 
-function pop : TValue;
-var limit : pValue;
+procedure push(var stack : pStackRecord;const value : TValue);
 begin
-   limit := @VM.Stack[0];
-   assert(vm.StackTop > limit,'Stack Underflow error');
-   Dec(Vm.StackTop);
-   result := Vm.StackTop^;
+  if GrowArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue)) then
+  begin
+    ResetStack(stack);
+    Stack.StackTop := Stack.Values + Stack.Count;  //move stack top to next pointer available (at count)
+  end;
+  Stack.StackTop^ := Value;
+  Inc(Stack.StackTop);
+  inc(Stack.Count);
 end;
 
-
+function pop(var stack : pStackRecord) : TValue;
+begin
+   Assert(Stack.Count > 0, 'Stack underflow error on stack pop zero count');
+   Dec(Stack.StackTop);
+   result := Stack.StackTop^;
+   Dec(Stack.Count);
+end;
 
 procedure BinaryOp(Op: TBinaryOperation);
 var
   a, b, res: TValue;
 begin
-  b := Pop();
-  a := Pop();
+  b := Pop(Vm.Stack);
+  a := Pop(vm.Stack);
 
   case Op of
     boAdd:      res := a + b;
@@ -505,7 +539,7 @@ begin
     raise Exception.Create('Unknown operator');
   end;
 
-  Push(res);
+  Push(vm.stack,res);
 end;
 
 //entry point into vm
@@ -524,7 +558,8 @@ end;
 
 procedure FreeVM;
 begin
-  dispose(VM);
+  FreeStack(VM.Stack);
+  dispose(VM); 
 end;
 
 procedure InitScanner(source : pchar);
