@@ -246,9 +246,9 @@ end;
 procedure WriteConstantIndex(chunk : pChunk; index : integer);
 begin
   Assert(Assigned(Chunk.Code));
-  Assert(Index >= 0);
-  Assert(Index <= Chunk.Capacity);
-  Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity);
+  Assert(Index >= 0, ' index is negative');
+  Assert(Index <= Chunk.Constants.Capacity, 'index is > constants array');
+  Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity,' writing chunk index will exceed chunk capacity');
 
   PInteger(Chunk.Code + Chunk.Count)^ := index;
   Inc(Chunk.Count, SizeOf(Integer));
