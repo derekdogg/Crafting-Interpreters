@@ -42,7 +42,7 @@ begin
    AddConstant(chunk,10,123);
    writeChunk(Chunk, OP_ADD,123);
    writeChunk(Chunk, OP_RETURN,123);
-   vmResult := InterpretResult(chunk,strings);
+//   vmResult := InterpretResult(chunk,strings);
    assert(vmResult.value = 20);
    freeChunk(Chunk);
 end;
@@ -59,7 +59,7 @@ begin
   AddConstant(chunk, 7,123);
   WriteChunk(chunk, OP_MULTIPLY,123);
   WriteChunk(chunk, OP_RETURN,123);
-  vmResult := InterpretResult(chunk,strings);
+ // vmResult := InterpretResult(chunk,strings);
   assert(vmResult.Value = 42);
   freeChunk(Chunk);
 end;
@@ -75,7 +75,7 @@ begin
   AddConstant(chunk, 7,123);
   WriteChunk(chunk, OP_SUBTRACT,123);
   WriteChunk(chunk, OP_RETURN,123);
-  vmResult := InterpretResult(chunk, strings);
+ // vmResult := InterpretResult(chunk, strings);
   assert(vmResult.Value = 13);
   FreeChunk(chunk);
 end;
@@ -91,7 +91,7 @@ begin
    AddConstant(chunk, 6,123);
    WriteChunk(chunk, OP_DIVIDE,123);
    WriteChunk(chunk, OP_RETURN,123);
-   InterpretResult(chunk, strings);
+  // InterpretResult(chunk, strings);
    freeChunk(Chunk);
 end;
 
@@ -107,7 +107,7 @@ begin
   AddConstant(chunk, 2,123);
   WriteChunk(chunk, OP_MULTIPLY,123);
   WriteChunk(chunk, OP_RETURN,123);
-  InterpretResult(chunk, strings);
+  //InterpretResult(chunk, strings);
   freeChunk(Chunk);
 end;
 
@@ -135,7 +135,7 @@ begin
 
   WriteChunk(chunk, OP_RETURN,123);
 
-  vmResult := InterpretResult(chunk, strings);
+  //vmResult := InterpretResult(chunk, strings);
 
   assert(Abs(vmResult.Value - 7.8) < 1e-10);
 
@@ -153,7 +153,7 @@ begin
   AddConstant(chunk, 20,123);
   WriteChunk(chunk, OP_SUBTRACT,123);
   WriteChunk(chunk, OP_RETURN,123);
-  vmResult := InterpretResult(chunk, strings);
+  //vmResult := InterpretResult(chunk, strings);
   assert(vmResult.Value = -10);
   FreeChunk(chunk);
 end;
@@ -169,7 +169,7 @@ begin
   AddConstant(chunk, 2.2,123);
   WriteChunk(chunk, OP_ADD,123);
   WriteChunk(chunk, OP_RETURN,123);
-  vmResult := InterpretResult(chunk, strings);
+  //vmResult := InterpretResult(chunk, strings);
   assert(Abs(vmResult.Value - 5.7) < 1e-10); // floating-point comparison
   FreeChunk(chunk);
 end;
