@@ -168,7 +168,37 @@ type
     end;
 
 
-    const
+
+
+
+procedure initChunk(var chunk: pChunk);
+procedure freeChunk(var chunk: pChunk);
+procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
+procedure AddConstant(chunk : pChunk; const value : TValue; Line : TLine);
+procedure printChunk(chunk: pChunk;  strings: TStrings);
+procedure initValueRecord(var valueRecord : pValueRecord);
+procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
+procedure freeValueRecord(var ValueRecord : pValueRecord);
+procedure printValueRecord(valueRecord: pValueRecord; strings: TStrings);
+procedure InitVM();
+procedure InitStack(var Stack : pStackRecord);
+procedure FreeStack(var Stack : pStackRecord);
+procedure ResetStack(var stack : pStackRecord);
+procedure push(var stack : pStackRecord;const value : TValue);
+function  pop(var stack : pStackRecord) : TValue;
+procedure BinaryOp(Op: TBinaryOperation);
+function InterpretResult(source : pChar) : TInterpretResult;
+procedure FreeVM();
+procedure InitScanner(source : pchar);
+function  advance : char;
+function  isAtEnd : boolean;
+function compile(source : pChar; chunk : pChunk) : boolean;
+procedure Number;
+procedure grouping;
+procedure unary;
+procedure binary;
+
+const
   Rules: array[TTokenType] of TParseRule = (
     { TOKEN_LEFT_PAREN }
     (Prefix: grouping; Infix: nil;     Precedence: PREC_NONE),
@@ -293,30 +323,6 @@ type
 
 
 
-procedure initChunk(var chunk: pChunk);
-procedure freeChunk(var chunk: pChunk);
-procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
-procedure AddConstant(chunk : pChunk; const value : TValue; Line : TLine);
-procedure printChunk(chunk: pChunk;  strings: TStrings);
-procedure initValueRecord(var valueRecord : pValueRecord);
-procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
-procedure freeValueRecord(var ValueRecord : pValueRecord);
-procedure printValueRecord(valueRecord: pValueRecord; strings: TStrings);
-procedure InitVM();
-procedure InitStack(var Stack : pStackRecord);
-procedure FreeStack(var Stack : pStackRecord);
-procedure ResetStack(var stack : pStackRecord);
-procedure push(var stack : pStackRecord;const value : TValue);
-function  pop(var stack : pStackRecord) : TValue;
-procedure BinaryOp(Op: TBinaryOperation);
-function InterpretResult(source : pChar) : TInterpretResult;
-procedure FreeVM();
-procedure InitScanner(source : pchar);
-function  advance : char;
-function  isAtEnd : boolean;
-function compile(source : pChar; chunk : pChunk) : boolean;
-
-
 var
   VM : pVirtualMachine;
   Scanner : TScanner;
@@ -359,6 +365,7 @@ begin
   chunk.Capacity := 0;
   chunk.Code := nil;
   chunk.Lines := nil;
+  chunk.Constants := nil;
   InitValueRecord(chunk.Constants);
   chunk.Initialised := true;
 end;
@@ -1155,10 +1162,7 @@ begin
 end;
 
 
-procedure Expression;
-begin
 
-end;
 
 
 procedure Consume(TokenKind: TTokenType; const Msg);
@@ -1193,6 +1197,40 @@ begin
   AddConstant(CurrentChunk,value,parser.previous.line);
 end;
 
+
+function  getRule(tokenType : TTokenType) : TParseRule;
+begin
+  result := Rules[tokenType];
+end;
+
+procedure parsePrecedence(precedence : TPrecedence);
+var
+  prefixRule : procedure;
+  infixRule  : procedure;
+begin
+  prefixRule := nil;
+  infixRule  := nil;
+  advance();
+
+  //do prefix
+  prefixRule := getRule(parser.previous.tokenType).prefix;
+  if not(assigned(prefixRule)) then
+  begin
+    error('Expect expression.');
+    exit;
+  end;
+  prefixRule();
+
+  //now do infix
+  while (precedence <= (getRule(parser.current.tokenType).precedence)) do
+  begin
+    advance;
+    infixRule := getRule(parser.previous.tokentype).infix;
+    infixRule;
+  end;
+end;
+
+
 procedure Number;
 var
   Value: TValue;
@@ -1201,6 +1239,11 @@ begin
   EmitConstant(Value);
 end;
 
+procedure Expression;
+begin
+
+  parsePrecedence(PREC_ASSIGNMENT);
+end;
 
 procedure grouping;
 begin
@@ -1220,10 +1263,6 @@ begin
   end;
 end;
 
-procedure parsePrecedence(prec : TPrecedence);
-begin
-
-end;
 
 
 procedure binary;
@@ -1233,9 +1272,9 @@ var
 begin
   tokenType := parser.Previous.tokenType;
   rule := getRule(tokenType);
-  parsePrecedence(TPrecedence(rule.precedence + 1));
+  parsePrecedence(TPrecedence(Ord(Rule.Precedence) + 1));
 
-  case operatorType of
+  case tokenType of
     TOKEN_PLUS : begin
       emitByte(OP_ADD);
     end;
@@ -1254,6 +1293,15 @@ begin
   end;
 
 end;
+
+
+
+
+
+
+
+
+
 
 
 procedure endCompiler;
@@ -1288,7 +1336,7 @@ end;
 
 initialization
   InitVM;
-  Output := TStrings.Create; //not ideal - but ok for now, move here for simplicity
+  Output := TStringList.Create; //not ideal - but ok for now, move here for simplicity
 
 finalization
   FreeVM;

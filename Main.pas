@@ -176,15 +176,15 @@ end;
 
 procedure TForm4.Button1Click(Sender: TObject);
 begin
-  TenPlusTen(memo1.Lines);
+  (*TenPlusTen(memo1.Lines);
   SixTimesSeven(memo1.lines);
   FivePlusThreeTimesTwo(Memo1.Lines);
   FortyEightDividedBySix(Memo1.Lines);
   TwentyMinusSeven(memo1.lines);
   TenMinusTwenty(memo1.lines);
   ThreePointFivePlusTwoPointTwo(memo1.lines);
-  ComplexExpressionTest(memo1.lines);
-
+  ComplexExpressionTest(memo1.lines);*)
+  interpretResult(PChar(Memo1.Lines.Text));
 end;
 
 
