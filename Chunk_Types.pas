@@ -2,7 +2,7 @@ unit Chunk_Types;
 {$POINTERMATH ON}
 interface
 uses
-  classes;
+  Classes;
 
 
 const
@@ -391,12 +391,18 @@ begin
 end;
 
 procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
+var
+  currentCap : integer;
 begin
   assert(assigned(chunk),'Chunk is not assigned');
   assert(chunk.Initialised = true, 'Chunk is not initialised');
 
-  GrowArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode));
-  GrowArray(Pointer(chunk.Lines), Chunk.Capacity, Chunk.Count, sizeof(TLine));
+  currentCap := Chunk.Capacity;
+  if GrowArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode)) then
+  begin
+    //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
+    GrowArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(TLine));
+  end;
 
   chunk.Code[chunk.Count] := value;
   chunk.Lines[chunk.count] := Line;
@@ -985,7 +991,11 @@ begin
 
   Scanner.start := Scanner.Current;
 
-  if (isAtEnd()) then Exit(makeToken(TOKEN_EOF));
+  if (isAtEnd()) then
+  begin
+    result := makeToken(TOKEN_EOF);
+    exit;
+  end;
 
   c := Advance;
 
@@ -1169,7 +1179,7 @@ procedure Consume(TokenKind: TTokenType; const Msg);
 begin
   if Parser.Current.TokenType = TokenKind then
   begin
-    Advance;
+    AdvanceParser;
     Exit;
   end;
 
@@ -1210,7 +1220,7 @@ var
 begin
   prefixRule := nil;
   infixRule  := nil;
-  advance();
+  advanceParser();
 
   //do prefix
   prefixRule := getRule(parser.previous.tokenType).prefix;
@@ -1224,9 +1234,9 @@ begin
   //now do infix
   while (precedence <= (getRule(parser.current.tokenType).precedence)) do
   begin
-    advance;
+    advanceParser;
     infixRule := getRule(parser.previous.tokentype).infix;
-    infixRule;
+    infixRule();
   end;
 end;
 
@@ -1234,8 +1244,11 @@ end;
 procedure Number;
 var
   Value: TValue;
+  numStr: string;
 begin
-  Value := StrToFloat(parser.previous.start);  //TODO this does not look legit at all
+  // Convert the token text to a string properly using start pointer and length
+  SetString(numStr, parser.previous.start, parser.previous.length);
+  Value := StrToFloat(numStr);
   EmitConstant(Value);
 end;
 
