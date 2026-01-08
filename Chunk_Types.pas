@@ -741,6 +741,7 @@ begin
    Assert(Assigned(VM),'VM is not assigned');
 
    chunk := nil;
+   try
    InitChunk(Chunk);
 
    if not compile(source,chunk) then
@@ -753,8 +754,10 @@ begin
    vm.chunk := chunk;
    vm.ip := vm.chunk.Code;
    Result := Run;
+   finally
+    freeChunk(chunk);
+   end;
 
-   freeChunk(chunk);
 end;
 
 procedure FreeVM;
@@ -1254,7 +1257,6 @@ end;
 
 procedure Expression;
 begin
-
   parsePrecedence(PREC_ASSIGNMENT);
 end;
 
@@ -1306,15 +1308,6 @@ begin
   end;
 
 end;
-
-
-
-
-
-
-
-
-
 
 
 procedure endCompiler;
