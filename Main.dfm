@@ -26,41 +26,7 @@ object Form4: TForm4
     Width = 409
     Height = 417
     Lines.Strings = (
-      '// Test all token types'
-      ''
-      'class Person {'
-      '  var name;'
-      '  var age;'
-      ''
-      '  fun greet() {'
-      '    print "Hello, " + name + "!";'
-      '  }'
-      '}'
-      ''
-      '// Variables and numbers'
-      'var x = 42;'
-      'var y = 3.14;'
-      'var person = "Alice";'
-      ''
-      '// If/Else control flow'
-      'if x > 10 and y < 5.0 {'
-      '  print "x and y are in range.";'
-      '} else {'
-      '  print "Out of range.";'
-      '}'
-      ''
-      '// Boolean literals and nil'
-      'var flagTrue = true;'
-      'var flagFalse = false;'
-      'var nothing = nil;'
-      ''
-      '// While loop'
-      'while x > 0 {'
-      '  x = x - 1;'
-      '}'
-      ''
-      '// Comments should be skipped'
-      '// This is a line comment')
+      '(1 + 2*3) - (4 / -5)')
     TabOrder = 1
   end
   object Button2: TButton

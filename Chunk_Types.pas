@@ -2,7 +2,7 @@ unit Chunk_Types;
 {$POINTERMATH ON}
 interface
 uses
-  classes;
+  Classes;
 
 
 const
@@ -21,19 +21,27 @@ const
   CHAR_NUL      = #0;
   CHAR_QUOTE  = '"';
   CHAR_DOT = '.';
+
+  //opcodes within byte range;
+  OP_CONSTANT = 0;
+  OP_NEGATE   = 1;
+  OP_ADD      = 2;
+  OP_SUBTRACT = 3;
+  OP_MULTIPLY = 4;
+  OP_DIVIDE   = 5;
+  OP_RETURN   = 6;
+
+  OP_STRINGS : array[0..6] of string = (
+    'OP_CONSTANT',
+    'OP_NEGATE',
+    'OP_ADD',
+    'OP_SUBTRACT',
+    'OP_MULTIPLY',
+    'OP_DIVIDE',
+    'OP_RETURN');
+
+
 type
-
-
-
-  OpCode = (
-    OP_CONSTANT,
-    OP_NEGATE,
-    OP_ADD,
-    OP_SUBTRACT,
-    OP_MULTIPLY,
-    OP_DIVIDE,
-    OP_RETURN
-  );
 
   pChunk = ^Chunk;
   pValueRecord = ^ValueRecord;
@@ -41,12 +49,16 @@ type
   pCode = ^TCode;
   TCode = byte;
 
+  pLine = ^TLine;
+  TLine = integer;
+
   Chunk = record
     Count       : Integer;
     Capacity    : Integer;
     Code        : pCode;
     Constants   : pValueRecord;
-    Initialised : boolean;     // uint8_t* code
+    Lines       : pLine;
+    Initialised : boolean;
   end;
 
   pValue = ^TValue;
@@ -67,8 +79,6 @@ type
     StackTop  : pValue;
   end;
 
-
-
   //Virtual Machine result
   TInterpretResult = record
     result : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
@@ -81,6 +91,7 @@ type
     Chunk : pChunk;
     ip    : pCode;
     Stack : pStackRecord;
+
   end;
 
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide);
@@ -126,17 +137,44 @@ type
       line : integer;
    end;
 
+   TParser = record
+      Current   : TToken;
+      Previous  : TToken;
+      HadError  : boolean;
+      PanicMode : boolean;
+   end;
 
 
-var
-  VM : pVirtualMachine;
-  Scanner : TScanner;
+   TPrecedence = (
+      PREC_NONE,
+      PREC_ASSIGNMENT,  // =
+      PREC_OR,          // or
+      PREC_AND,         // and
+      PREC_EQUALITY,    // == !=
+      PREC_COMPARISON,  // < > <= >=
+      PREC_TERM,        // + -
+      PREC_FACTOR,      // * /
+      PREC_UNARY,       // ! -
+      PREC_CALL,        // . ()
+      PREC_PRIMARY
+    );
+
+    TParseFn = procedure;
+
+    TParseRule = record
+      prefix : TParseFn;
+      infix  : TParseFn;
+      precedence : TPrecedence;
+    end;
+
+
+
+
 
 procedure initChunk(var chunk: pChunk);
 procedure freeChunk(var chunk: pChunk);
-
-procedure writeChunk(chunk: pChunk; value: OpCode); overload;
-procedure AddConstant(chunk : pChunk; const value : TValue);
+procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
+procedure AddConstant(chunk : pChunk; const value : TValue; Line : TLine);
 procedure printChunk(chunk: pChunk;  strings: TStrings);
 procedure initValueRecord(var valueRecord : pValueRecord);
 procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
@@ -147,17 +185,150 @@ procedure InitStack(var Stack : pStackRecord);
 procedure FreeStack(var Stack : pStackRecord);
 procedure ResetStack(var stack : pStackRecord);
 procedure push(var stack : pStackRecord;const value : TValue);
-function pop(var stack : pStackRecord) : TValue;
+function  pop(var stack : pStackRecord) : TValue;
 procedure BinaryOp(Op: TBinaryOperation);
-function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
+function InterpretResult(source : pChar) : TInterpretResult;
 procedure FreeVM();
 procedure InitScanner(source : pchar);
-function advance : char;
-function isAtEnd : boolean;
-procedure compile(source : pChar; output : TStrings);
+function  advance : char;
+function  isAtEnd : boolean;
+function compile(source : pChar; chunk : pChunk) : boolean;
+procedure Number;
+procedure grouping;
+procedure unary;
+procedure binary;
+
+const
+  Rules: array[TTokenType] of TParseRule = (
+    { TOKEN_LEFT_PAREN }
+    (Prefix: grouping; Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_RIGHT_PAREN }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_LEFT_BRACE }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_RIGHT_BRACE }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_COMMA }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_DOT }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_MINUS }
+    (Prefix: unary;    Infix: binary;  Precedence: PREC_TERM),
+
+    { TOKEN_PLUS }
+    (Prefix: nil;      Infix: binary;  Precedence: PREC_TERM),
+
+    { TOKEN_SEMICOLON }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_SLASH }
+    (Prefix: nil;      Infix: binary;  Precedence: PREC_FACTOR),
+
+    { TOKEN_STAR }
+    (Prefix: nil;      Infix: binary;  Precedence: PREC_FACTOR),
+
+    { TOKEN_BANG }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_BANG_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_EQUAL_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_GREATER }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_GREATER_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_LESS }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_LESS_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_IDENTIFIER }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_STRING }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_NUMBER }
+    (Prefix: number;   Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_AND }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_CLASS }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_ELSE }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_FALSE }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_FOR }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_FUN }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_IF }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_NIL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_OR }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_PRINT }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_RETURN }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_SUPER }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_THIS }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_TRUE }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_VAR }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_WHILE }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_ERROR }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_EOF }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE)
+  );
 
 
 
+var
+  VM : pVirtualMachine;
+  Scanner : TScanner;
+  Parser  : TParser;
+  CompilingChunk : pChunk;
+  Output : TStrings;
 
 implementation
 
@@ -193,6 +364,8 @@ begin
   chunk.Count := 0;
   chunk.Capacity := 0;
   chunk.Code := nil;
+  chunk.Lines := nil;
+  chunk.Constants := nil;
   InitValueRecord(chunk.Constants);
   chunk.Initialised := true;
 end;
@@ -206,6 +379,8 @@ begin
   begin
     FreeMem(chunk.Code, Chunk.Capacity * SizeOf(Byte));
     chunk.Code := nil;
+
+    FreeMem(Chunk.Lines,Chunk.Capacity * Sizeof(TLine));
   end;
 
   freeValueRecord(chunk.Constants);
@@ -215,18 +390,22 @@ begin
   chunk := nil;
 end;
 
-
-
-procedure writeChunk(chunk: pChunk; value: OpCode);
+procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
+var
+  currentCap : integer;
 begin
   assert(assigned(chunk),'Chunk is not assigned');
-
   assert(chunk.Initialised = true, 'Chunk is not initialised');
 
-  GrowArray(Pointer(chunk.Code), Chunk.Capacity, Chunk.Count, sizeof(byte));
+  currentCap := Chunk.Capacity;
+  if GrowArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode)) then
+  begin
+    //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
+    GrowArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(TLine));
+  end;
 
-  chunk.Code[chunk.Count] := byte(value);
-
+  chunk.Code[chunk.Count] := value;
+  chunk.Lines[chunk.count] := Line;
   Inc(chunk.Count);
 end;
 
@@ -255,7 +434,7 @@ begin
 end;
 
 
-procedure AddConstant(chunk : pChunk; const value : TValue);
+procedure AddConstant(chunk : pChunk; const value : TValue; Line : TLine);
 var
   idx : integer;
 begin
@@ -266,7 +445,7 @@ begin
   //add constant, 1st into value's array of the value record
   idx := AddValueConstant(chunk.Constants,value);
   //add constant op code into the chunk array
-  writeChunk(Chunk,OP_CONSTANT);
+  writeChunk(Chunk, OP_CONSTANT,Line);
   //followed by the index of the value inserted into the value array
   WriteConstantIndex(Chunk,idx);
 end;
@@ -309,8 +488,8 @@ begin
 
     inc(codePtr,i);
 
-    if (codePtr^ >= Ord(Low(OpCode))) and (codePtr^ <= Ord(High(OpCode))) then
-      codeName := GetEnumName(TypeInfo(OpCode), codePtr^)
+    if (codePtr^ >= Low(OP_STRINGS)) and (codePtr^ <= High(OP_STRINGS)) then
+      codeName := OP_STRINGS[codePtr^]
     else
       codeName := 'UNKNOWN';
 
@@ -420,7 +599,7 @@ begin
 end;
 
 
-function Run(const output : TStrings) : TInterpretResult;
+function Run : TInterpretResult;
 
   function ReadByte: Byte; inline;
   begin
@@ -450,7 +629,7 @@ begin
     while True do
     begin
       instruction := ReadByte();
-      case OpCode(instruction) of
+      case instruction of
 
         OP_CONSTANT : begin
           value := ReadConstant;
@@ -553,17 +732,32 @@ begin
 end;
 
 //entry point into vm
-function InterpretResult(chunk : pChunk; const output : TStrings) : TInterpretResult;
+function InterpretResult(source : pChar) : TInterpretResult;
+var
+  Chunk : pChunk;
+  vmResult : TInterpretResult;
 begin
-  Assert(Assigned(output),'strings is not assigned');
-  Assert(Assigned(Chunk),'Chunk is not assigned');
-  Assert(Assigned(VM),'VM is not assigned');
+   Assert(Assigned(output),'strings is not assigned');
+   Assert(Assigned(VM),'VM is not assigned');
 
-  //output.clear;
+   chunk := nil;
+   try
+   InitChunk(Chunk);
 
-  vm.chunk := chunk;
-  vm.ip := vm.chunk.Code;
-  Result := Run(output);
+   if not compile(source,chunk) then
+   begin
+     FreeChunk(chunk);
+     vmResult.result :=  INTERPRET_COMPILE_ERROR;
+     Exit(vmResult);
+   end;
+
+   vm.chunk := chunk;
+   vm.ip := vm.chunk.Code;
+   Result := Run;
+   finally
+    freeChunk(chunk);
+   end;
+
 end;
 
 procedure FreeVM;
@@ -800,7 +994,11 @@ begin
 
   Scanner.start := Scanner.Current;
 
-  if (isAtEnd()) then Exit(makeToken(TOKEN_EOF));
+  if (isAtEnd()) then
+  begin
+    result := makeToken(TOKEN_EOF);
+    exit;
+  end;
 
   c := Advance;
 
@@ -877,7 +1075,7 @@ begin
 end;
 
 
-procedure DumpTokens(output: TStrings);
+procedure DumpTokens;
 var
   token: TToken;
   lexeme: string;
@@ -915,24 +1113,239 @@ begin
   end;
 end;
 
-procedure compile(source : pChar; output : TStrings);
+
+
+procedure ErrorAt(const Token: TToken; const Msg: PChar);
+var
+  s: string;
+begin
+
+  if (parser.panicMode) then Exit;
+
+  // "[line %d] Error"
+  s := Format('[line %d] Error', [Token.Line]);
+
+  if Token.TokenType = TOKEN_EOF then
+  begin
+    s := s + ' at end';
+  end
+  else if Token.TokenType = TOKEN_ERROR then
+  begin
+    // Nothing.
+  end
+  else
+  begin
+    // " at '%.*s'"
+    s := s + ' at ''' +
+         Copy(string(Token.Start), 1, Token.Length) +
+         '''';
+  end;
+
+  // ": %s\n"
+  s := s + ': ' + string(Msg);
+
+  Output.Add(s);
+
+  Parser.HadError := True;
+end;
+
+procedure Error(const Msg: PChar);
+begin
+  parser.panicMode := true;
+  ErrorAt(Parser.Previous, Msg);
+end;
+
+
+procedure errorAtCurrent(const msg : pchar);
+begin
+  errorAt(parser.current,msg);
+end;
+
+procedure AdvanceParser();
+begin
+  Parser.Previous := Parser.Current;
+  while true do
+  begin
+    parser.current := ScanToken;
+    if (parser.Current.tokenType <> TOKEN_ERROR) then
+      break;
+
+      errorAtCurrent(Parser.Current.start);
+  end;
+end;
+
+
+
+
+
+procedure Consume(TokenKind: TTokenType; const Msg);
+begin
+  if Parser.Current.TokenType = TokenKind then
+  begin
+    AdvanceParser;
+    Exit;
+  end;
+
+  ErrorAtCurrent(PChar(Msg));
+end;
+
+function currentChunk : pChunk;
+begin
+  result := CompilingChunk;
+end;
+
+
+procedure emitByte(value : byte);
+begin
+  writeChunk(CurrentChunk,value,parser.previous.line);
+end;
+
+procedure EmitReturn;
+begin
+  writeChunk(CurrentChunk,OP_RETURN,parser.previous.line);
+end;
+
+procedure emitConstant(value : TValue);
+begin
+  AddConstant(CurrentChunk,value,parser.previous.line);
+end;
+
+
+function  getRule(tokenType : TTokenType) : TParseRule;
+begin
+  result := Rules[tokenType];
+end;
+
+procedure parsePrecedence(precedence : TPrecedence);
+var
+  prefixRule : procedure;
+  infixRule  : procedure;
+begin
+  prefixRule := nil;
+  infixRule  := nil;
+  advanceParser();
+
+  //do prefix
+  prefixRule := getRule(parser.previous.tokenType).prefix;
+  if not(assigned(prefixRule)) then
+  begin
+    error('Expect expression.');
+    exit;
+  end;
+  prefixRule();
+
+  //now do infix
+  while (precedence <= (getRule(parser.current.tokenType).precedence)) do
+  begin
+    advanceParser;
+    infixRule := getRule(parser.previous.tokentype).infix;
+    infixRule();
+  end;
+end;
+
+
+procedure Number;
+var
+  Value: TValue;
+  numStr: string;
+begin
+  // Convert the token text to a string properly using start pointer and length
+  SetString(numStr, parser.previous.start, parser.previous.length);
+  Value := StrToFloat(numStr);
+  EmitConstant(Value);
+end;
+
+procedure Expression;
+begin
+  parsePrecedence(PREC_ASSIGNMENT);
+end;
+
+procedure grouping;
+begin
+  expression;
+  consume(TOKEN_RIGHT_PAREN,'Expect '')'' after expression.');
+end;
+
+procedure unary;
+var
+  operatorType : TTokenType;
+begin
+  //TODO what asserts go here?
+  operatorType := parser.Previous.tokenType;
+  expression;
+  case operatortype of
+    TOKEN_MINUS: emitByte(OP_NEGATE);
+  end;
+end;
+
+
+
+procedure binary;
+var
+  tokenType : TTokenType;
+  rule : TParseRule;
+begin
+  tokenType := parser.Previous.tokenType;
+  rule := getRule(tokenType);
+  parsePrecedence(TPrecedence(Ord(Rule.Precedence) + 1));
+
+  case tokenType of
+    TOKEN_PLUS : begin
+      emitByte(OP_ADD);
+    end;
+
+    TOKEN_MINUS : begin
+      emitByte(OP_SUBTRACT);
+    end;
+
+    TOKEN_STAR : begin
+      emitByte(OP_MULTIPLY);
+    end;
+
+    TOKEN_SLASH : begin
+      emitByte(OP_DIVIDE);
+    end;
+  end;
+
+end;
+
+
+procedure endCompiler;
+begin
+  emitReturn;
+end;
+
+function compile(source : pChar; chunk : pChunk) : boolean;
 var
   line : integer;
   token : TToken;
 begin
+   assert(assigned(chunk), 'Chunk is not assigned');
    assert(assigned(source), 'Source code is not assigned');
    assert(assigned(output), 'Output strings is not assigned');
    output.clear;
    initScanner(source);
-   dumpTokens(output);
+   compilingChunk := chunk;
+   //dumpTokens(output);
+
+
+   parser.hadError := false;
+   parser.panicMode := false;
+   advanceParser();
+   Expression();
+   consume(TOKEN_EOF, 'Expect end of expression.');
+   endCompiler;
+
+   result := parser.HadError = false;
 end;
 
 
 initialization
   InitVM;
+  Output := TStringList.Create; //not ideal - but ok for now, move here for simplicity
 
 finalization
   FreeVM;
+  Output.free;
 
 end.
-

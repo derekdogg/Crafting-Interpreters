@@ -38,11 +38,11 @@ var
 begin
    chunk := nil;
    InitChunk(Chunk);
-   AddConstant(chunk,10);
-   AddConstant(chunk,10);
-   writeChunk(Chunk, OP_ADD);
-   writeChunk(Chunk, OP_RETURN);
-   vmResult := InterpretResult(chunk,strings);
+   AddConstant(chunk,10,123);
+   AddConstant(chunk,10,123);
+   writeChunk(Chunk, OP_ADD,123);
+   writeChunk(Chunk, OP_RETURN,123);
+//   vmResult := InterpretResult(chunk,strings);
    assert(vmResult.value = 20);
    freeChunk(Chunk);
 end;
@@ -55,11 +55,11 @@ var
 begin
   chunk := nil;
   InitChunk(Chunk);
-  AddConstant(chunk, 6);
-  AddConstant(chunk, 7);
-  WriteChunk(chunk, OP_MULTIPLY);
-  WriteChunk(chunk, OP_RETURN);
-  vmResult := InterpretResult(chunk,strings);
+  AddConstant(chunk, 6,123);
+  AddConstant(chunk, 7,123);
+  WriteChunk(chunk, OP_MULTIPLY,123);
+  WriteChunk(chunk, OP_RETURN,123);
+ // vmResult := InterpretResult(chunk,strings);
   assert(vmResult.Value = 42);
   freeChunk(Chunk);
 end;
@@ -71,11 +71,11 @@ var
 begin
   chunk := nil;
   InitChunk(chunk);
-  AddConstant(chunk, 20);
-  AddConstant(chunk, 7);
-  WriteChunk(chunk, OP_SUBTRACT);
-  WriteChunk(chunk, OP_RETURN);
-  vmResult := InterpretResult(chunk, strings);
+  AddConstant(chunk, 20,123);
+  AddConstant(chunk, 7,123);
+  WriteChunk(chunk, OP_SUBTRACT,123);
+  WriteChunk(chunk, OP_RETURN,123);
+ // vmResult := InterpretResult(chunk, strings);
   assert(vmResult.Value = 13);
   FreeChunk(chunk);
 end;
@@ -87,11 +87,11 @@ var
 begin
    chunk := nil;
    InitChunk(Chunk);
-   AddConstant(chunk, 48);
-   AddConstant(chunk, 6);
-   WriteChunk(chunk, OP_DIVIDE);
-   WriteChunk(chunk, OP_RETURN);
-   InterpretResult(chunk, strings);
+   AddConstant(chunk, 48,123);
+   AddConstant(chunk, 6,123);
+   WriteChunk(chunk, OP_DIVIDE,123);
+   WriteChunk(chunk, OP_RETURN,123);
+  // InterpretResult(chunk, strings);
    freeChunk(Chunk);
 end;
 
@@ -101,13 +101,13 @@ var
 begin
   chunk := nil;
   InitChunk(Chunk);
-  AddConstant(chunk, 5);
-  AddConstant(chunk, 3);
-  WriteChunk(chunk, OP_ADD);
-  AddConstant(chunk, 2);
-  WriteChunk(chunk, OP_MULTIPLY);
-  WriteChunk(chunk, OP_RETURN);
-  InterpretResult(chunk, strings);
+  AddConstant(chunk, 5,123);
+  AddConstant(chunk, 3,123);
+  WriteChunk(chunk, OP_ADD,123);
+  AddConstant(chunk, 2,123);
+  WriteChunk(chunk, OP_MULTIPLY,123);
+  WriteChunk(chunk, OP_RETURN,123);
+  //InterpretResult(chunk, strings);
   freeChunk(Chunk);
 end;
 
@@ -120,22 +120,22 @@ begin
   InitChunk(chunk);
 
   // Push constants
-  AddConstant(chunk, 1);     // 1
-  AddConstant(chunk, 2);     // 2
-  AddConstant(chunk, 3);     // 3
-  WriteChunk(chunk, OP_MULTIPLY); // 2 * 3
+  AddConstant(chunk, 1,123);     // 1
+  AddConstant(chunk, 2,123);     // 2
+  AddConstant(chunk, 3,123);     // 3
+  WriteChunk(chunk, OP_MULTIPLY,123); // 2 * 3
 
-  WriteChunk(chunk, OP_ADD);      // 1 + (2*3)
+  WriteChunk(chunk, OP_ADD,123);      // 1 + (2*3)
 
-  AddConstant(chunk, 4);          // 4
-  AddConstant(chunk, -5);         // -5
-  WriteChunk(chunk, OP_DIVIDE);   // 4 / -5
+  AddConstant(chunk, 4,123);          // 4
+  AddConstant(chunk, -5,123);         // -5
+  WriteChunk(chunk, OP_DIVIDE,123);   // 4 / -5
 
-  WriteChunk(chunk, OP_SUBTRACT); // (1 + 2*3) - (4 / -5)
+  WriteChunk(chunk, OP_SUBTRACT,123); // (1 + 2*3) - (4 / -5)
 
-  WriteChunk(chunk, OP_RETURN);
+  WriteChunk(chunk, OP_RETURN,123);
 
-  vmResult := InterpretResult(chunk, strings);
+  //vmResult := InterpretResult(chunk, strings);
 
   assert(Abs(vmResult.Value - 7.8) < 1e-10);
 
@@ -149,11 +149,11 @@ var
 begin
   chunk := nil;
   InitChunk(chunk);
-  AddConstant(chunk, 10);
-  AddConstant(chunk, 20);
-  WriteChunk(chunk, OP_SUBTRACT);
-  WriteChunk(chunk, OP_RETURN);
-  vmResult := InterpretResult(chunk, strings);
+  AddConstant(chunk, 10,123);
+  AddConstant(chunk, 20,123);
+  WriteChunk(chunk, OP_SUBTRACT,123);
+  WriteChunk(chunk, OP_RETURN,123);
+  //vmResult := InterpretResult(chunk, strings);
   assert(vmResult.Value = -10);
   FreeChunk(chunk);
 end;
@@ -165,25 +165,32 @@ var
 begin
   chunk := nil;
   InitChunk(chunk);
-  AddConstant(chunk, 3.5);
-  AddConstant(chunk, 2.2);
-  WriteChunk(chunk, OP_ADD);
-  WriteChunk(chunk, OP_RETURN);
-  vmResult := InterpretResult(chunk, strings);
+  AddConstant(chunk, 3.5,123);
+  AddConstant(chunk, 2.2,123);
+  WriteChunk(chunk, OP_ADD,123);
+  WriteChunk(chunk, OP_RETURN,123);
+  //vmResult := InterpretResult(chunk, strings);
   assert(Abs(vmResult.Value - 5.7) < 1e-10); // floating-point comparison
   FreeChunk(chunk);
 end;
 
 procedure TForm4.Button1Click(Sender: TObject);
+var
+  IR : TInterpretResult;
 begin
-  TenPlusTen(memo1.Lines);
+  (*TenPlusTen(memo1.Lines);
   SixTimesSeven(memo1.lines);
   FivePlusThreeTimesTwo(Memo1.Lines);
   FortyEightDividedBySix(Memo1.Lines);
   TwentyMinusSeven(memo1.lines);
   TenMinusTwenty(memo1.lines);
   ThreePointFivePlusTwoPointTwo(memo1.lines);
-  ComplexExpressionTest(memo1.lines);
+  ComplexExpressionTest(memo1.lines);*)
+  IR := interpretResult(PChar(Memo1.Lines.Text));
+  if IR.result = INTERPRET_OK then
+  begin
+    memo2.Lines.assign(Output);
+  end;
 
 end;
 
@@ -193,7 +200,7 @@ procedure TForm4.Button2Click(Sender: TObject);
 var
   c : Char;
 begin
-  compile(PChar(Memo1.Lines.Text),memo2.lines);
+  //compile(PChar(Memo1.Lines.Text),memo2.lines);
 
 end;
 
