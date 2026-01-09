@@ -26,7 +26,7 @@ object Form4: TForm4
     Width = 409
     Height = 417
     Lines.Strings = (
-      '1+5;')
+      '(1 + 2*3) - (4 / -5)')
     TabOrder = 1
   end
   object Button2: TButton

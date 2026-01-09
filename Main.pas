@@ -175,6 +175,8 @@ begin
 end;
 
 procedure TForm4.Button1Click(Sender: TObject);
+var
+  IR : TInterpretResult;
 begin
   (*TenPlusTen(memo1.Lines);
   SixTimesSeven(memo1.lines);
@@ -184,7 +186,12 @@ begin
   TenMinusTwenty(memo1.lines);
   ThreePointFivePlusTwoPointTwo(memo1.lines);
   ComplexExpressionTest(memo1.lines);*)
-  interpretResult(PChar(Memo1.Lines.Text));
+  IR := interpretResult(PChar(Memo1.Lines.Text));
+  if IR.result = INTERPRET_OK then
+  begin
+    memo2.Lines.assign(Output);
+  end;
+
 end;
 
 
