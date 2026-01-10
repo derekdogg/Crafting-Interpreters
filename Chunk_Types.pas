@@ -30,21 +30,29 @@ const
   OP_MULTIPLY = 4;
   OP_DIVIDE   = 5;
   OP_RETURN   = 6;
+  OP_TRUE     = 7;
+  OP_FALSE    = 8;
+  OP_NIL      = 9;
+  OP_NOT      = 10;
 
-  OP_STRINGS : array[0..6] of string = (
+  OP_STRINGS : array[0..10] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
     'OP_SUBTRACT',
     'OP_MULTIPLY',
     'OP_DIVIDE',
-    'OP_RETURN');
+    'OP_RETURN',
+    'OP_TRUE',
+    'OP_FALSE',
+    'OP_NIL',
+    'OP_NOT');
 
 
 type
 
-  pChunk = ^Chunk;
-  pValueRecord = ^ValueRecord;
+  pChunk = ^TChunk;
+  pValueArray = ^TValueArray;
 
   pCode = ^TCode;
   TCode = byte;
@@ -52,20 +60,28 @@ type
   pLine = ^TLine;
   TLine = integer;
 
-  Chunk = record
+  TChunk = record
     Count       : Integer;
     Capacity    : Integer;
     Code        : pCode;
-    Constants   : pValueRecord;
+    Constants   : pValueArray;
     Lines       : pLine;
     Initialised : boolean;
   end;
 
   pValue = ^TValue;
-  TValue = double;
+  TValueKind = (vkNumber, vkBoolean, vkNull);
+
+  TValue = record
+    ValueKind: TValueKind;
+    case TValueKind of
+      vkNumber:  (NumberValue: Double);
+      vkBoolean: (BooleanValue: Boolean);
+      vkNull:    (NullValue: Byte);
+  end;
 
 
-  ValueRecord = record
+  TValueArray = record
     Count     : Integer;
     Capacity  : Integer;
     Values    : pValue;
@@ -176,16 +192,18 @@ procedure freeChunk(var chunk: pChunk);
 procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
 procedure AddConstant(chunk : pChunk; const value : TValue; Line : TLine);
 procedure printChunk(chunk: pChunk;  strings: TStrings);
-procedure initValueRecord(var valueRecord : pValueRecord);
-procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
-procedure freeValueRecord(var ValueRecord : pValueRecord);
-procedure printValueRecord(valueRecord: pValueRecord; strings: TStrings);
+procedure initValueArray(var ValueArray : pValueArray);
+procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
+procedure freeValueArray(var ValueArray : pValueArray);
+procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 procedure InitVM();
 procedure InitStack(var Stack : pStackRecord);
 procedure FreeStack(var Stack : pStackRecord);
 procedure ResetStack(var stack : pStackRecord);
-procedure push(var stack : pStackRecord;const value : TValue);
-function  pop(var stack : pStackRecord) : TValue;
+procedure pushStack(var stack : pStackRecord;const value : TValue);
+function peekStack(stack : pStackRecord) : TValue; overload;
+function peekStack(stack : pStackRecord; distanceFromTop : integer) : TValue;overload;
+function  popStack(var stack : pStackRecord) : TValue;
 procedure BinaryOp(Op: TBinaryOperation);
 function InterpretResult(source : pChar) : TInterpretResult;
 procedure FreeVM();
@@ -193,10 +211,11 @@ procedure InitScanner(source : pchar);
 function  advance : char;
 function  isAtEnd : boolean;
 function compile(source : pChar; chunk : pChunk) : boolean;
-procedure Number;
-procedure grouping;
-procedure unary;
-procedure binary;
+procedure Number();
+procedure grouping();
+procedure unary();
+procedure binary();
+procedure literal();
 
 const
   Rules: array[TTokenType] of TParseRule = (
@@ -234,7 +253,7 @@ const
     (Prefix: nil;      Infix: binary;  Precedence: PREC_FACTOR),
 
     { TOKEN_BANG }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: unary;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_BANG_EQUAL }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -276,7 +295,7 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_FALSE }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: literal;  Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_FOR }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -288,7 +307,7 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_NIL }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: literal;  Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_OR }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -306,7 +325,7 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_TRUE }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: literal;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_VAR }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -334,6 +353,58 @@ implementation
 
 uses
   sysutils, strUtils, typinfo;
+
+
+function AS_BOOL(const Value: TValue): Boolean; inline;
+begin
+  Result := Value.BooleanValue;
+end;
+
+function AS_NUMBER(const Value: TValue): Double; inline;
+begin
+  Result := Value.NumberValue;
+end;
+
+function NUMBER_VAL(Value: Double): TValue; inline;
+begin
+  Result.ValueKind := vkNumber;
+  Result.NumberValue := Value;
+end;
+
+function BOOL_VAL(Value: Boolean): TValue; inline;
+begin
+  Result.ValueKind := vkBoolean;
+  Result.BooleanValue := Value;
+end;
+
+function NIL_VAL: TValue; inline;
+begin
+  Result.ValueKind := vkNull;
+  Result.NullValue := 0;
+end;
+
+function IS_NUMBER(const Value: TValue): Boolean; inline;
+begin
+  Result := Value.ValueKind = vkNumber;
+end;
+
+function IS_BOOL(const Value: TValue): Boolean; inline;
+begin
+  Result := Value.ValueKind = vkBoolean;
+end;
+
+function IS_NIL(const Value: TValue): Boolean; inline;
+begin
+  Result := Value.ValueKind = vkNull;
+end;
+
+function IsFalsey(const Value: TValue): Boolean; inline;
+begin
+  Result :=
+    (Value.ValueKind = vkNull) or
+    ((Value.ValueKind = vkBoolean) and (not Value.BooleanValue));
+end;
+
 
 
 function GrowArray(var list: Pointer; var Capacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
@@ -366,7 +437,7 @@ begin
   chunk.Code := nil;
   chunk.Lines := nil;
   chunk.Constants := nil;
-  InitValueRecord(chunk.Constants);
+  InitValueArray(chunk.Constants);
   chunk.Initialised := true;
 end;
 
@@ -383,7 +454,7 @@ begin
     FreeMem(Chunk.Lines,Chunk.Capacity * Sizeof(TLine));
   end;
 
-  freeValueRecord(chunk.Constants);
+  freeValueArray(chunk.Constants);
 
 
   Dispose(chunk);
@@ -410,15 +481,15 @@ begin
 end;
 
 
-function AddValueConstant(valueRecord: pValueRecord; const value: TValue): Integer;
+function AddValueConstant(ValueArray: pValueArray; const value: TValue): Integer;
 begin
-  Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
+  Assert(Assigned(ValueArray), 'ValueArray is not assigned');
 
-  // Add the value to the ValueRecord
-  writeValueRecord(valueRecord, value);
+  // Add the value to the ValueArray
+  writeValueArray(ValueArray, value);
 
   // Return the index of the newly added value
-  Result := valueRecord.Count - 1;
+  Result := ValueArray.Count - 1;
 end;
 
 //we now write an integer into the byte array
@@ -440,7 +511,7 @@ var
 begin
 
   Assert(Assigned(chunk), 'Chunk is not assigned');
-  Assert(Assigned(chunk.Constants), 'ValueRecord is not assigned');
+  Assert(Assigned(chunk.Constants), 'ValueArray is not assigned');
 
   //add constant, 1st into value's array of the value record
   idx := AddValueConstant(chunk.Constants,value);
@@ -501,7 +572,7 @@ begin
       inc(CodePtr); //read next Byte (index into constants)
       inc(valuePtr,CodePtr^); //go to the correct index in value array
       strings.Add(Format('%.6d  %s  %4d  0x%.2X  -> %g',
-                  [i, codeName, CodePtr^, CodePtr^, valuePtr^]));
+                  [i, codeName, CodePtr^, CodePtr^, valuePtr^.numberValue]));
     end
     else
       strings.Add(Format('%.6d  %s  %4d  0x%.2X', [i, codeName, CodePtr^, CodePtr^]));
@@ -513,72 +584,72 @@ begin
 end;
 
 
-procedure initValueRecord(var valueRecord : pValueRecord);
+procedure initValueArray(var ValueArray : pValueArray);
 begin
-  assert(valueRecord = nil,'values is not assigned');
+  assert(ValueArray = nil,'values is not assigned');
 
-  new(valueRecord);
+  new(ValueArray);
 
-  valueRecord.Count := 0;
+  ValueArray.Count := 0;
 
-  valueRecord.Capacity := 0;
+  ValueArray.Capacity := 0;
 
-  valueRecord.Values := nil;
+  ValueArray.Values := nil;
 end;
 
 
-procedure writeValueRecord(valueRecord : pValueRecord; Value : TValue);
+procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
 begin
-  assert(assigned(valueRecord),'valueRecord is not assigned');
+  assert(assigned(ValueArray),'ValueArray is not assigned');
 
-  GrowArray(pointer(valueRecord.Values), valueRecord.Capacity, valueRecord.Count,sizeof(TValue));
+  GrowArray(pointer(ValueArray.Values), ValueArray.Capacity, ValueArray.Count,sizeof(TValue));
 
-  valueRecord.Values[valueRecord.Count] := value;
+  ValueArray.Values[ValueArray.Count] := value;
 
-  Inc(valueRecord.Count);
+  Inc(ValueArray.Count);
 end;
 
-procedure freeValueRecord(var ValueRecord : pValueRecord);
+procedure freeValueArray(var ValueArray : pValueArray);
 begin
-  assert(assigned(ValueRecord),'ValueRecord is not assigned');
+  assert(assigned(ValueArray),'ValueArray is not assigned');
 
 
-  if (ValueRecord.Capacity) > 0 then
+  if (ValueArray.Capacity) > 0 then
   begin
-    FreeMem(ValueRecord.Values, ValueRecord.Capacity * SizeOf(TValue));
-    ValueRecord.Values := nil;
+    FreeMem(ValueArray.Values, ValueArray.Capacity * SizeOf(TValue));
+    ValueArray.Values := nil;
   end;
 
-  Dispose(ValueRecord);
-  ValueRecord := nil;
+  Dispose(ValueArray);
+  ValueArray := nil;
 
 end;
 
-procedure printValueRecord(valueRecord: pValueRecord; strings: TStrings);
+procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 const
-  VR_Header = 'ValueRecord starts at address $%p';
+  VR_Header = 'ValueArray starts at address $%p';
   VALUE_FIELD_WIDTH = 50; // fixed width for the value column
 var
   i: Integer;
   valStr: string;
   valuePtr: pValue;
 begin
-  Assert(Assigned(valueRecord), 'ValueRecord is not assigned');
+  Assert(Assigned(ValueArray), 'ValueArray is not assigned');
   Assert(Assigned(strings), 'Output strings is not assigned');
 
   strings.Clear;
-  strings.Add(Format(VR_Header, [Pointer(valueRecord)]));
+  strings.Add(Format(VR_Header, [Pointer(ValueArray)]));
 
-  ValuePtr := valueRecord.Values;
+  ValuePtr := ValueArray.Values;
 
 
 
-    for i := 0 to valueRecord.Count - 1 do
+    for i := 0 to ValueArray.Count - 1 do
     begin
       inc(ValuePtr,i);
 
       // format value as general format with up to 12 significant digits
-      valStr := Format('%.12g', [ValuePtr^]);
+      valStr := Format('%.12g', [ValuePtr^.NumberValue]);
 
       // pad to fixed width
       valStr := valStr + StringOfChar(' ', VALUE_FIELD_WIDTH - Length(valStr));
@@ -598,6 +669,11 @@ begin
   ResetStack(vm.Stack);  
 end;
 
+
+procedure RunTimeError(const msg : string);
+begin
+  //TODO
+end;
 
 function Run : TInterpretResult;
 
@@ -633,25 +709,40 @@ begin
 
         OP_CONSTANT : begin
           value := ReadConstant;
-          push(vm.Stack,value);
+          pushStack(vm.Stack,value);
         end;
 
         OP_NEGATE : begin
 
-          value := -pop(vm.Stack);
+          if not is_Number(peekStack(vm.stack)) then
+          begin
+             InterpretResult.result := INTERPRET_RUNTIME_ERROR;
+             runtimeError('Operand must be a number.');
+             result := InterpretResult;
+          end;
 
-          push(vm.Stack,value);
+          value := popStack(vm.Stack);
+          value.NumberValue := -Value.NumberValue;
+
+          PushStack(vm.Stack,value);
+
         end;
 
+        OP_NIL      : pushStack(vm.stack, NIL_VAL);
+        OP_TRUE     : pushStack(vm.Stack, BOOL_VAL(true));
+        OP_FALSE    : pushStack(vm.stack, BOOL_VAL(false));
         OP_ADD      : BinaryOp(boAdd);
         OP_SUBTRACT : BinaryOp(boSubtract);
         OP_MULTIPLY : BinaryOP(boMultiply);
         OP_DIVIDE   : BinaryOp(boDivide);
-
+        OP_NOT      : pushStack(vm.Stack,BOOL_VAL(isFalsey(popStack(vm.Stack))));
 
         OP_RETURN: begin
-           value := pop(vm.Stack); //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
-           output.Add(floattostr(value));
+           value := popStack(vm.Stack); //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
+
+
+          //TODO output.Add(floattostr(value.));
+
            InterpretResult.result := INTERPRET_OK;
            InterpretResult.value := value;
            Exit(InterpretResult);
@@ -687,12 +778,15 @@ end;
 
 procedure ResetStack(var stack : pStackRecord);
 begin
-  Assert(Assigned(stack),'stack is not assigned');
+  Assert(Assigned(Stack), 'Stack is not assigned');
+  Assert(Assigned(Stack.values), 'Stack values is not assigned');
   Stack.StackTop := Stack.Values;
 end;
 
-procedure push(var stack : pStackRecord;const value : TValue);
+procedure pushStack(var stack : pStackRecord;const value : TValue);
 begin
+  Assert(Assigned(Stack), 'Stack is not assigned');
+  Assert(Assigned(Stack.values), 'Stack values is not assigned');
   if GrowArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue)) then
   begin
     ResetStack(stack);
@@ -703,32 +797,113 @@ begin
   inc(Stack.Count);
 end;
 
-
-function pop(var stack : pStackRecord) : TValue;
+function peekStack(Stack: pStackRecord; DistanceFromTop: Integer): TValue;
 begin
+  Assert(Assigned(Stack), 'Stack is not assigned');
+  Assert(Assigned(Stack.Values), 'Stack values is not assigned');
+  Assert(DistanceFromTop >= 0, 'Distance from top is negative');
+  Assert(DistanceFromTop < Stack.Count, 'Distance from top is >= Stack.Count');
+
+  Result := Stack.Values[Stack.Count - 1 - DistanceFromTop];
+end;
+
+function peekStack(Stack: pStackRecord): TValue;
+begin
+  Result := peekStack(Stack, 0);
+end;
+
+function popStack(var stack : pStackRecord) : TValue;
+begin
+   Assert(Assigned(Stack), 'Stack is not assigned');
+   Assert(Assigned(Stack.values), 'Stack values is not assigned');
    Assert(Stack.Count > 0, 'Stack underflow error on stack pop zero count');
    Dec(Stack.StackTop);
    result := Stack.StackTop^;
    Dec(Stack.Count);
 end;
 
-procedure BinaryOp(Op: TBinaryOperation);
-var
-  a, b, res: TValue;
+function CheckBinaryNumbers: Boolean;
 begin
-  b := Pop(Vm.Stack);
-  a := Pop(vm.Stack);
+  Result := False;
+  if (not Is_Number(PeekStack(vm.stack,0))) or
+     (not Is_Number(PeekStack(vm.stack,1))) then
+  begin
+    RuntimeError('Operands must be numbers.');
+    exit;
+  end;
+
+  Result := True;
+end;
+
+
+function BinaryOpNumber_Add: boolean;
+var
+  A, B: Double;
+begin
+  if not CheckBinaryNumbers then
+    Exit(false);
+
+  B := As_Number(PopStack(vm.Stack));
+  A := As_Number(PopStack(vm.stack));
+
+  PushStack(vm.stack,Number_Val(A + B));
+  Result := true;
+end;
+
+function BinaryOpNumber_Subtract: boolean;
+var
+  A, B: Double;
+begin
+  if not CheckBinaryNumbers then
+    Exit(false);
+
+  B := As_Number(PopStack(vm.Stack));
+  A := As_Number(PopStack(vm.stack));
+
+  PushStack(vm.stack,Number_Val(A - B));
+  Result := true;
+end;
+
+function BinaryOpNumber_Multiply: boolean;
+var
+  A, B: Double;
+begin
+  if not CheckBinaryNumbers then
+    Exit(false);
+
+  B := As_Number(PopStack(vm.Stack));
+  A := As_Number(PopStack(vm.stack));
+
+  PushStack(vm.stack,Number_Val(A * B));
+  Result := true;
+end;
+
+function BinaryOpNumber_Divide: boolean;
+var
+  A, B: Double;
+begin
+  if not CheckBinaryNumbers then
+    Exit(false);
+
+  B := As_Number(PopStack(vm.Stack));
+  A := As_Number(PopStack(vm.stack));
+
+  PushStack(vm.stack,Number_Val(A / B));
+  Result := true;
+end;
+
+
+procedure BinaryOp(Op: TBinaryOperation);
+begin
 
   case Op of
-    boAdd:      res := a + b;
-    boSubtract: res := a - b;
-    boMultiply: res := a * b;
-    boDivide:   res := a / b;
+    boAdd       : BinaryOpNumber_Add;
+    boSubtract  : BinaryOpNumber_subtract;
+    boMultiply  : BinaryOpNumber_Multiply;
+    boDivide    : BinaryOpNumber_Divide;
   else
     raise Exception.Create('Unknown operator');
   end;
-
-  Push(vm.stack,res);
 end;
 
 //entry point into vm
@@ -742,18 +917,18 @@ begin
 
    chunk := nil;
    try
-   InitChunk(Chunk);
+     InitChunk(Chunk);
 
-   if not compile(source,chunk) then
-   begin
-     FreeChunk(chunk);
-     vmResult.result :=  INTERPRET_COMPILE_ERROR;
-     Exit(vmResult);
-   end;
+     if not compile(source,chunk) then
+     begin
+       FreeChunk(chunk);
+       vmResult.result :=  INTERPRET_COMPILE_ERROR;
+       Exit(vmResult);
+     end;
 
-   vm.chunk := chunk;
-   vm.ip := vm.chunk.Code;
-   Result := Run;
+     vm.chunk := chunk;
+     vm.ip := vm.chunk.Code;
+     Result := Run;
    finally
     freeChunk(chunk);
    end;
@@ -1244,18 +1419,17 @@ begin
 end;
 
 
-procedure Number;
+procedure Number();
 var
   Value: TValue;
   numStr: string;
 begin
-  // Convert the token text to a string properly using start pointer and length
   SetString(numStr, parser.previous.start, parser.previous.length);
-  Value := StrToFloat(numStr);
+  Value := NUMBER_VAL(StrToFloat(numStr));
   EmitConstant(Value);
 end;
 
-procedure Expression;
+procedure Expression();
 begin
   parsePrecedence(PREC_ASSIGNMENT);
 end;
@@ -1266,7 +1440,7 @@ begin
   consume(TOKEN_RIGHT_PAREN,'Expect '')'' after expression.');
 end;
 
-procedure unary;
+procedure unary();
 var
   operatorType : TTokenType;
 begin
@@ -1275,12 +1449,13 @@ begin
   expression;
   case operatortype of
     TOKEN_MINUS: emitByte(OP_NEGATE);
+    TOKEN_BANG: emitByte(OP_NOT);   //TODO finish all the code for token_bang pg 569
   end;
 end;
 
 
 
-procedure binary;
+procedure binary();
 var
   tokenType : TTokenType;
   rule : TParseRule;
@@ -1308,6 +1483,18 @@ begin
   end;
 
 end;
+
+
+procedure literal();
+begin
+  case parser.previous.tokenType of
+      TOKEN_FALSE : EmitByte(OP_FALSE);
+      TOKEN_TRUE  : EmitByte(OP_TRUE);
+      TOKEN_NIL   : EmitByte(OP_NIL);
+  end;
+end;
+
+
 
 
 procedure endCompiler;
