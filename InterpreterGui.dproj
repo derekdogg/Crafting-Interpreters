@@ -127,6 +127,7 @@
             <Form>Form4</Form>
             <FormType>dfm</FormType>
         </DCCReference>
+        <DCCReference Include="Test.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
