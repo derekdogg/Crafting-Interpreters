@@ -34,8 +34,11 @@ const
   OP_FALSE    = 8;
   OP_NIL      = 9;
   OP_NOT      = 10;
+  OP_EQUAL    = 11;
+  OP_GREATER  = 12;
+  OP_LESS     = 13;
 
-  OP_STRINGS : array[0..10] of string = (
+  OP_STRINGS : array[0..13] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -46,7 +49,10 @@ const
     'OP_TRUE',
     'OP_FALSE',
     'OP_NIL',
-    'OP_NOT');
+    'OP_NOT',
+    'OP_EQUAL',
+    'OP_GREATER',
+    'OP_LESS');
 
 
 type
@@ -110,7 +116,7 @@ type
 
   end;
 
-  TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide);
+  TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boGreater, boLess);
 
 
    TScanner = record
@@ -256,25 +262,25 @@ const
     (Prefix: unary;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_BANG_EQUAL }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: binary;     Precedence: PREC_EQUALITY),
 
     { TOKEN_EQUAL }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_EQUAL_EQUAL }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: binary;     Precedence: PREC_EQUALITY),
 
     { TOKEN_GREATER }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: binary;     Precedence: PREC_COMPARISON),
 
     { TOKEN_GREATER_EQUAL }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: binary;     Precedence: PREC_COMPARISON),
 
     { TOKEN_LESS }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: binary;     Precedence: PREC_COMPARISON),
 
     { TOKEN_LESS_EQUAL }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: binary;     Precedence: PREC_COMPARISON),
 
     { TOKEN_IDENTIFIER }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -405,6 +411,19 @@ begin
     ((Value.ValueKind = vkBoolean) and (not Value.BooleanValue));
 end;
 
+
+function ValuesEqual(a, b : TValue) : boolean;
+begin
+  if a.ValueKind <> b.ValueKind then exit(False);
+
+  case a.ValueKind of
+    vkBoolean :  result := AS_BOOL(a) = AS_BOOL(b);
+    vkNull    :  result := true;
+    vkNumber  :  result := AS_NUMBER(a) = AS_NUMBER(b);
+    else
+      result := false;
+  end
+end;
 
 
 function GrowArray(var list: Pointer; var Capacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
@@ -694,7 +713,7 @@ function Run : TInterpretResult;
 
 var
   instruction: Byte;
-  value : TValue;
+  value,ValueB : TValue;
   InterpretResult : TInterpretResult;
 begin
 
@@ -731,14 +750,36 @@ begin
         OP_NIL      : pushStack(vm.stack, NIL_VAL);
         OP_TRUE     : pushStack(vm.Stack, BOOL_VAL(true));
         OP_FALSE    : pushStack(vm.stack, BOOL_VAL(false));
+
+        OP_EQUAL: begin
+          Value := popStack(vm.Stack);
+          ValueB := popStack(vm.Stack);
+          pushStack(vm.stack,BOOL_VAL(valuesEqual(Value, ValueB)));
+        end;
+
+        OP_GREATER  : binaryOp(boGreater);
+
+        OP_LESS     : binaryOp(boLess);
+
         OP_ADD      : BinaryOp(boAdd);
+
         OP_SUBTRACT : BinaryOp(boSubtract);
+
         OP_MULTIPLY : BinaryOP(boMultiply);
+
         OP_DIVIDE   : BinaryOp(boDivide);
+
         OP_NOT      : pushStack(vm.Stack,BOOL_VAL(isFalsey(popStack(vm.Stack))));
 
         OP_RETURN: begin
-           value := popStack(vm.Stack); //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
+           if vm.Stack.count > 0 then
+           begin
+             value := popStack(vm.Stack); //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
+           end
+           else
+           begin
+             value.ValueKind := vknull;
+           end;
 
 
           //TODO output.Add(floattostr(value.));
@@ -892,6 +933,35 @@ begin
   Result := true;
 end;
 
+function BinaryOpNumber_Greater: boolean;
+var
+  A, B: Double;
+begin
+  if not CheckBinaryNumbers then
+    Exit(false);
+
+  B := As_Number(PopStack(vm.Stack));
+  A := As_Number(PopStack(vm.stack));
+
+  PushStack(vm.stack,Bool_Val(A > B));
+  Result := true;
+end;
+
+
+function BinaryOpNumber_Less: boolean;
+var
+  A, B: Double;
+begin
+  if not CheckBinaryNumbers then
+    Exit(false);
+
+  B := As_Number(PopStack(vm.Stack));
+  A := As_Number(PopStack(vm.stack));
+
+  PushStack(vm.stack,Bool_Val(A < B));
+  Result := true;
+end;
+
 
 procedure BinaryOp(Op: TBinaryOperation);
 begin
@@ -901,6 +971,8 @@ begin
     boSubtract  : BinaryOpNumber_subtract;
     boMultiply  : BinaryOpNumber_Multiply;
     boDivide    : BinaryOpNumber_Divide;
+    boGreater   : BinaryOpNumber_Greater;
+    boLess      : BinaryOpNumber_Less;
   else
     raise Exception.Create('Unknown operator');
   end;
@@ -1385,7 +1457,6 @@ begin
   AddConstant(CurrentChunk,value,parser.previous.line);
 end;
 
-
 function  getRule(tokenType : TTokenType) : TParseRule;
 begin
   result := Rules[tokenType];
@@ -1465,6 +1536,34 @@ begin
   parsePrecedence(TPrecedence(Ord(Rule.Precedence) + 1));
 
   case tokenType of
+
+      TOKEN_BANG_EQUAL: begin
+        emitByte(OP_EQUAL);
+        emitByte(OP_NOT);
+      end;
+
+      TOKEN_EQUAL_EQUAL: begin
+        emitByte(OP_EQUAL);
+      end;
+
+      TOKEN_GREATER:    begin
+         emitByte(OP_GREATER);
+      end;
+
+      TOKEN_GREATER_EQUAL: begin
+        emitByte(OP_LESS);
+        emitByte(OP_NOT);
+      end;
+
+      TOKEN_LESS: begin
+        emitByte(OP_LESS);
+      end;
+
+      TOKEN_LESS_EQUAL: begin
+          emitByte(OP_GREATER);
+          emitByte(OP_NOT);
+      end;
+
     TOKEN_PLUS : begin
       emitByte(OP_ADD);
     end;
@@ -1480,6 +1579,9 @@ begin
     TOKEN_SLASH : begin
       emitByte(OP_DIVIDE);
     end;
+
+
+
   end;
 
 end;

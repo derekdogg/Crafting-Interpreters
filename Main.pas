@@ -37,19 +37,16 @@ uses
 procedure TForm4.Button1Click(Sender: TObject);
 var
   IR : TInterpretResult;
+  text : string;
 begin
-  (*TenPlusTen(memo1.Lines);
-  SixTimesSeven(memo1.lines);
-  FivePlusThreeTimesTwo(Memo1.Lines);
-  FortyEightDividedBySix(Memo1.Lines);
-  TwentyMinusSeven(memo1.lines);
-  TenMinusTwenty(memo1.lines);
-  ThreePointFivePlusTwoPointTwo(memo1.lines);
-  ComplexExpressionTest(memo1.lines);*)
   IR := interpretResult(PChar(Memo1.Lines.Text));
   if IR.result = INTERPRET_OK then
   begin
-    memo2.Lines.assign(Output);
+    case IR.value.ValueKind of
+      vkNumber: Memo2.lines.add(IR.value.NumberValue.ToString);
+      vkBoolean:Memo2.Lines.add(BoolToStr(IR.value.BooleanValue,true));
+      vkNull: Memo2.Lines.add('Null');
+    end;
   end;
 
 end;
