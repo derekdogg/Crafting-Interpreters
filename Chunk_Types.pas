@@ -76,7 +76,23 @@ type
   end;
 
   pValue = ^TValue;
-  TValueKind = (vkNumber, vkBoolean, vkNull);
+  TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
+
+  pObject = ^TSomeObject;
+
+  TObjectKind = (okString);
+  //base object record
+  TSomeObject = record
+     ObjectKind : TObjectKind;
+  end;
+
+  //derived object record
+  TObjString = record
+    Obj     : TSomeObject;
+    length  : integer;
+    chars   : pChar;
+  end;
+
 
   TValue = record
     ValueKind: TValueKind;
@@ -84,7 +100,10 @@ type
       vkNumber:  (NumberValue: Double);
       vkBoolean: (BooleanValue: Boolean);
       vkNull:    (NullValue: Byte);
+      vkObject:  (ObjValue : pObject);
   end;
+
+
 
 
   TValueArray = record
@@ -361,47 +380,83 @@ uses
   sysutils, strUtils, typinfo;
 
 
-function AS_BOOL(const Value: TValue): Boolean; inline;
+function isObjectValue(value : TValue) : boolean;
 begin
-  Result := Value.BooleanValue;
+  result := value.valueKind = vkObject;
 end;
 
-function AS_NUMBER(const Value: TValue): Double; inline;
+function GetObject(const value : TValue) : pObject; inline;
 begin
-  Result := Value.NumberValue;
+  assert(isObjectValue(Value), 'value is not an object');
+  result := value.ObjValue;
 end;
 
-function NUMBER_VAL(Value: Double): TValue; inline;
+function CreateObjectValue(value : pObject) : TValue;
 begin
-  Result.ValueKind := vkNumber;
-  Result.NumberValue := Value;
+  assert(assigned(value), 'object value is nil');
+  result.ValueKind := vkObject;
+  result.ObjValue := value;
 end;
 
-function BOOL_VAL(Value: Boolean): TValue; inline;
+function isString(value : TValue) : boolean;
+begin
+  result := isObjectValue(Value) and (value.ObjValue.ObjectKind = okString);
+end;
+
+function CreateStringObject(const value : pChar) : TValue;
+begin
+  result.ValueKind := vkObject;
+end;
+
+function CreateBooleanValue(Value: Boolean): TValue; inline;
 begin
   Result.ValueKind := vkBoolean;
   Result.BooleanValue := Value;
 end;
 
-function NIL_VAL: TValue; inline;
+function isBooleanValue(const Value: TValue): Boolean; inline;
+begin
+  Result := Value.ValueKind = vkBoolean;
+end;
+
+function GetBooleanValue(const Value : TValue) : Boolean;
+begin
+  assert(isBooleanValue(Value),'Value is not boolean');
+  result := Value.BooleanValue;
+end;
+
+function isNumberValue(const Value: TValue): Boolean; inline;
+begin
+  Result := Value.ValueKind = vkNumber;
+end;
+
+function CreateNumberValue(Value: Double): TValue; inline;
+begin
+  Result.ValueKind := vkNumber;
+  Result.NumberValue := Value;
+end;
+
+function GetNumberValue(Value : TValue) : double;
+begin
+  assert(isNumberValue(Value), 'Value is not a number');
+  result := value.NumberValue;
+end;
+
+function CreateNilValue : TValue; inline;
 begin
   Result.ValueKind := vkNull;
   Result.NullValue := 0;
 end;
 
-function IS_NUMBER(const Value: TValue): Boolean; inline;
-begin
-  Result := Value.ValueKind = vkNumber;
-end;
-
-function IS_BOOL(const Value: TValue): Boolean; inline;
-begin
-  Result := Value.ValueKind = vkBoolean;
-end;
-
-function IS_NIL(const Value: TValue): Boolean; inline;
+function isNillValue(const Value: TValue): Boolean; inline;
 begin
   Result := Value.ValueKind = vkNull;
+end;
+
+function GetNilValue(const value : TValue) : byte;
+begin
+  assert(isNillValue(value), 'value is not a nil value');
+  result := Value.NullValue;
 end;
 
 function IsFalsey(const Value: TValue): Boolean; inline;
@@ -417,9 +472,9 @@ begin
   if a.ValueKind <> b.ValueKind then exit(False);
 
   case a.ValueKind of
-    vkBoolean :  result := AS_BOOL(a) = AS_BOOL(b);
+    vkBoolean :  result := GetBooleanValue(a) = GetBooleanValue(b);
     vkNull    :  result := true;
-    vkNumber  :  result := AS_NUMBER(a) = AS_NUMBER(b);
+    vkNumber  :  result := GetNumberValue(a) = GetNumberValue(b);
     else
       result := false;
   end
@@ -733,7 +788,7 @@ begin
 
         OP_NEGATE : begin
 
-          if not is_Number(peekStack(vm.stack)) then
+          if not isNumberValue(peekStack(vm.stack)) then
           begin
              InterpretResult.result := INTERPRET_RUNTIME_ERROR;
              runtimeError('Operand must be a number.');
@@ -747,14 +802,14 @@ begin
 
         end;
 
-        OP_NIL      : pushStack(vm.stack, NIL_VAL);
-        OP_TRUE     : pushStack(vm.Stack, BOOL_VAL(true));
-        OP_FALSE    : pushStack(vm.stack, BOOL_VAL(false));
+        OP_NIL      : pushStack(vm.stack, CreateNilValue);
+        OP_TRUE     : pushStack(vm.Stack, CreateBooleanValue(true));
+        OP_FALSE    : pushStack(vm.stack, CreateBooleanValue(false));
 
         OP_EQUAL: begin
           Value := popStack(vm.Stack);
           ValueB := popStack(vm.Stack);
-          pushStack(vm.stack,BOOL_VAL(valuesEqual(Value, ValueB)));
+          pushStack(vm.stack,CreateBooleanValue(valuesEqual(Value, ValueB)));
         end;
 
         OP_GREATER  : binaryOp(boGreater);
@@ -769,7 +824,7 @@ begin
 
         OP_DIVIDE   : BinaryOp(boDivide);
 
-        OP_NOT      : pushStack(vm.Stack,BOOL_VAL(isFalsey(popStack(vm.Stack))));
+        OP_NOT      : pushStack(vm.Stack,CreateBooleanValue(isFalsey(popStack(vm.Stack))));
 
         OP_RETURN: begin
            if vm.Stack.count > 0 then
@@ -866,8 +921,8 @@ end;
 function CheckBinaryNumbers: Boolean;
 begin
   Result := False;
-  if (not Is_Number(PeekStack(vm.stack,0))) or
-     (not Is_Number(PeekStack(vm.stack,1))) then
+  if (not isNumberValue(PeekStack(vm.stack,0))) or
+     (not isNumberValue(PeekStack(vm.stack,1))) then
   begin
     RuntimeError('Operands must be numbers.');
     exit;
@@ -884,10 +939,10 @@ begin
   if not CheckBinaryNumbers then
     Exit(false);
 
-  B := As_Number(PopStack(vm.Stack));
-  A := As_Number(PopStack(vm.stack));
+  B := GetNumberValue(PopStack(vm.Stack));
+  A := GetNumberValue(PopStack(vm.stack));
 
-  PushStack(vm.stack,Number_Val(A + B));
+  PushStack(vm.stack,CreateNumberValue(A + B));
   Result := true;
 end;
 
@@ -898,10 +953,10 @@ begin
   if not CheckBinaryNumbers then
     Exit(false);
 
-  B := As_Number(PopStack(vm.Stack));
-  A := As_Number(PopStack(vm.stack));
+  B := GetNumberValue(PopStack(vm.Stack));
+  A := GetNumberValue(PopStack(vm.stack));
 
-  PushStack(vm.stack,Number_Val(A - B));
+  PushStack(vm.stack,CreateNumberValue(A - B));
   Result := true;
 end;
 
@@ -912,10 +967,10 @@ begin
   if not CheckBinaryNumbers then
     Exit(false);
 
-  B := As_Number(PopStack(vm.Stack));
-  A := As_Number(PopStack(vm.stack));
+  B := GetNumberValue(PopStack(vm.Stack));
+  A := GetNumberValue(PopStack(vm.stack));
 
-  PushStack(vm.stack,Number_Val(A * B));
+  PushStack(vm.stack,CreateNumberValue(A * B));
   Result := true;
 end;
 
@@ -926,10 +981,10 @@ begin
   if not CheckBinaryNumbers then
     Exit(false);
 
-  B := As_Number(PopStack(vm.Stack));
-  A := As_Number(PopStack(vm.stack));
+  B := GetNumberValue(PopStack(vm.Stack));
+  A := GetNumberValue(PopStack(vm.stack));
 
-  PushStack(vm.stack,Number_Val(A / B));
+  PushStack(vm.stack,CreateNumberValue(A / B));
   Result := true;
 end;
 
@@ -940,10 +995,10 @@ begin
   if not CheckBinaryNumbers then
     Exit(false);
 
-  B := As_Number(PopStack(vm.Stack));
-  A := As_Number(PopStack(vm.stack));
+  B := GetNumberValue(PopStack(vm.Stack));
+  A := GetNumberValue(PopStack(vm.stack));
 
-  PushStack(vm.stack,Bool_Val(A > B));
+  PushStack(vm.stack,CreateBooleanValue(A > B));
   Result := true;
 end;
 
@@ -955,10 +1010,10 @@ begin
   if not CheckBinaryNumbers then
     Exit(false);
 
-  B := As_Number(PopStack(vm.Stack));
-  A := As_Number(PopStack(vm.stack));
+  B := GetNumberValue(PopStack(vm.Stack));
+  A := GetNumberValue(PopStack(vm.stack));
 
-  PushStack(vm.stack,Bool_Val(A < B));
+  PushStack(vm.stack,CreateBooleanValue(A < B));
   Result := true;
 end;
 
@@ -1496,7 +1551,7 @@ var
   numStr: string;
 begin
   SetString(numStr, parser.previous.start, parser.previous.length);
-  Value := NUMBER_VAL(StrToFloat(numStr));
+  Value := CreateNumberValue(StrToFloat(numStr));
   EmitConstant(Value);
 end;
 

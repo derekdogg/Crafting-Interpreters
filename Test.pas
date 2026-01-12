@@ -19,6 +19,7 @@ var
   i     : integer;
 begin
   InitStack(stack);
+
   try
     for i := 0 to 999 do
     begin
@@ -28,8 +29,13 @@ begin
 
     assert(Stack.Count = 1000);
 
-    value := popStack(Stack);
-    assert(Value.NumberValue = 999);
+     // Peek from top down
+    for i := 0 to 999 do
+    begin
+      value := PeekStack(stack, i);
+      Assert(value.NumberValue = 999 - i);
+    end;
+
 
   except
     on E:EAssertionFailed do
@@ -49,14 +55,19 @@ begin
   InitStack(stack);
   try
     for i := 0 to 999 do
+    begin
+      value.NumberValue := i;
       pushStack(stack,value);
+    end;
 
     assert(Stack.Count = 1000);
 
-    for i := 0 to 999 do
-      popStack(Stack);
+    for i := 999 downto 0 do
+    begin
+      value := popStack(Stack);
+      assert(Value.NumberValue = i);
+    end;
 
-    assert(Stack.Count = 0);
 
   except
     on E:EAssertionFailed do
