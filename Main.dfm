@@ -49,11 +49,20 @@ object Form4: TForm4
   end
   object Button3: TButton
     Left = 24
-    Top = 160
-    Width = 75
+    Top = 80
+    Width = 89
     Height = 25
-    Caption = 'Test'
+    Caption = 'Test Stack'
     TabOrder = 4
     OnClick = Button3Click
+  end
+  object Button4: TButton
+    Left = 24
+    Top = 128
+    Width = 89
+    Height = 25
+    Caption = 'Test Strings'
+    TabOrder = 5
+    OnClick = Button4Click
   end
 end
