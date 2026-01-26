@@ -14,7 +14,7 @@ object Form4: TForm4
   object Button1: TButton
     Left = 24
     Top = 24
-    Width = 89
+    Width = 104
     Height = 25
     Caption = 'Init Chunk'
     TabOrder = 0
@@ -50,7 +50,7 @@ object Form4: TForm4
   object Button3: TButton
     Left = 24
     Top = 80
-    Width = 89
+    Width = 104
     Height = 25
     Caption = 'Test Stack'
     TabOrder = 4
@@ -59,10 +59,28 @@ object Form4: TForm4
   object Button4: TButton
     Left = 24
     Top = 128
-    Width = 89
+    Width = 104
     Height = 25
     Caption = 'Test Strings'
     TabOrder = 5
     OnClick = Button4Click
+  end
+  object Button5: TButton
+    Left = 24
+    Top = 176
+    Width = 104
+    Height = 25
+    Caption = 'Test Chunk'
+    TabOrder = 6
+    OnClick = Button5Click
+  end
+  object Button6: TButton
+    Left = 24
+    Top = 216
+    Width = 104
+    Height = 25
+    Caption = 'Test Allocate Array'
+    TabOrder = 7
+    OnClick = Button6Click
   end
 end
