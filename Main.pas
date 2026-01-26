@@ -14,10 +14,14 @@ type
     Memo2: TMemo;
     Button3: TButton;
     Button4: TButton;
+    Button5: TButton;
+    Button6: TButton;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
     procedure Button4Click(Sender: TObject);
+    procedure Button5Click(Sender: TObject);
+    procedure Button6Click(Sender: TObject);
 
   private
     { Private declarations }
@@ -43,7 +47,7 @@ var
   txt : ansiString;
   strObj : pObjString;
 begin
-
+  vm.ownObjects := true;
   txt := Memo1.Lines.Text;
   IR := interpretResult(PAnsiChar(txt));
 
@@ -106,28 +110,20 @@ begin
 end;
 
 procedure TForm4.Button4Click(Sender: TObject);
-var
- valueA : pObjString;
- valueB : pObjString;
- char   : ansiChar;
 begin
-  assert(assigned(ValueA),'Value A is not assigned');
+  TestStringEqual;
+  TestStringUnequal;
+  TestValuesEqual;
+end;
 
-  valueA := CreateString('fred');
-  valueB := CreateString('fred');
-  try
-    assert(StringsEqual(valueA,valueB), 'strings are not equal');
+procedure TForm4.Button5Click(Sender: TObject);
+begin
+  TestInitChunkAndFreeChunk;
+end;
 
-    char := GetChar(valueA,0);
-    char := GetChar(valueA,1);
-    char := GetChar(valueA,2);
-    char := GetChar(valueA,3);
-
-  finally
-    freeString(valueA);
-    freeString(valueB);
-  end;
-
+procedure TForm4.Button6Click(Sender: TObject);
+begin
+  TestAllocateArray;
 end;
 
 end.

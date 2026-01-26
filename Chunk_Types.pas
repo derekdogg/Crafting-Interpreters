@@ -58,7 +58,7 @@ const
 type
   //Alias
   TCode = byte;
-  TLine = integer;
+
 
 
   //Enums
@@ -107,14 +107,12 @@ type
    TLogLevel = (Debug);
 
 
-
-
   //pointers
   pChunk          = ^TChunk;
   pValueArray     = ^TValueArray;
   pCode           = ^TCode;
   pValue          = ^TValue;
-  pLine           = ^TLine;
+
   pObj            = ^TObj;
   pObjString      = ^TObjString;
   pStackRecord    = ^TStackRecord;
@@ -129,13 +127,7 @@ type
 
 
   //Records
-
-  TObj = record
-    ObjectKind : TObjectKind;
-    Next       : pObj; //for GC collection
-  end;
-
-  TLogRecord = record
+    TLogRecord = record
     msg   : string;
     level : TLogLevel;
   end;
@@ -144,6 +136,11 @@ type
     Logs : Array[0..0] of TLogRecord;
   end;
 
+
+  TObj = record
+    ObjectKind : TObjectKind;
+    Next       : pObj; //for GC collection
+  end;
 
   TObjString = record
     Obj     : TObj;
@@ -165,7 +162,7 @@ type
     Capacity    : Integer;
     Code        : pCode;
     Constants   : pValueArray;
-    Lines       : pLine;
+    Lines       : pInteger;
     Initialised : boolean;
   end;
 
@@ -194,6 +191,7 @@ type
     ip      : pCode;
     Stack   : pStackRecord;
     objects : pObj;
+    ownObjects : boolean;
   end;
 
   TScanner = record
@@ -228,9 +226,17 @@ type
   end;
 
 
+//Array allocation routine - returns mem alloc
+function AllocateArray(var list: Pointer; var Capacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
+
 //object creation routines
+procedure AddToCreatedObjects(p : pObj);
 function CreateString(const S: AnsiString): PObjString;
 
+//Log routines
+(*procedure InitLogs(var Logs : pLogs);
+procedure FreeLogs(var logs : pLogs);
+procedure WriteLog(const logs : pLogs; LogRecord : TLogRecord); *)
 
 //Log routines
 (*procedure InitLogs(var Logs : pLogs);
@@ -238,20 +244,24 @@ procedure FreeLogs(var logs : pLogs);
 procedure WriteLog(const logs : pLogs; LogRecord : TLogRecord); *)
 
 //string routines
-procedure ParseString(); //linked via scanning
 function GetChar(const str : pObjString; index : integer) : AnsiChar;
 procedure FreeString(var obj : pObjString);
 function StringsEqual(a, b: PObjString): Boolean;
+function ValuesEqual(a, b : TValue) : boolean;
 function TokenToString(const Token: TToken): AnsiString;
 function ObjStringToAnsiString(S: PObjString): AnsiString;
+function ValueToString(const value : TValue) : pObjString;
+function StringToValue(const value : pObjString) : TValue;
+
 
 //Chunk routines
 procedure initChunk(var chunk: pChunk);
 procedure freeChunk(var chunk: pChunk);
-procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
-procedure AddConstant(chunk : pChunk; const value : TValue; Line : TLine);
+procedure writeChunk(chunk: pChunk; value: byte; Line : Integer);
+procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer);
 procedure initValueArray(var ValueArray : pValueArray);
 procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
+procedure FreeValues(var Values : pValue; Capacity : integer);
 procedure freeValueArray(var ValueArray : pValueArray);
 procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 
@@ -259,6 +269,7 @@ procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 //Virtual Machine
 procedure InitVM();
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
+procedure FreeObjects();
 procedure FreeVM();
 
 //Stack
@@ -283,6 +294,7 @@ procedure grouping();
 procedure unary();
 procedure binary();
 procedure literal();
+procedure ParseString();
 
 //prat parsing rule table used in compilation
 const
@@ -466,14 +478,14 @@ begin
 end;
 
 
-//Chars: array[0..0] of AnsiChar;
 
-procedure FreeString(var obj : pObjString);
+procedure AddToCreatedObjects(p : pObj);
 begin
-  FreeMem(obj);
-  obj := nil;
+  p^.Next := vm.objects;
+  vm.objects := p;
 end;
 
+//Chars: array[0..0] of AnsiChar;
 function AddString(const a, b : AnsiString) : PObjString;
 begin
   result := CreateString(a+b);
@@ -492,25 +504,35 @@ begin
   Result^.Obj.ObjectKind := okString;
   Result^.Length := Len;
 
+
   if Len > 0 then
     Move(PAnsiChar(S)^, Result^.Chars[0], Len);
 
 
-  //TODO - Add in here the linked list stuff for the created object.
+  //track creation in the vm.
+  AddToCreatedObjects(PObj(Result));
+
 end;
 
-function GetString(const value : TValue) : pObjString;
+procedure FreeString(var obj : pObjString);
+begin
+  FreeMem(obj);
+  obj := nil;
+end;
+
+function ValueToString(const value : TValue) : pObjString;
 begin
   assert(isString(value), 'value is not a string value');
+  assert(Assigned(value.ObjValue), 'string pointer is not assigned');
   result := pObjString(value.ObjValue);
 end;
 
 function StringToValue(const value : pObjString) : TValue;
 begin
+  assert(Assigned(value), 'string to value is not assigned');
   result.ValueKind := vkObject;
   result.ObjValue := pObj(value);
 end;
-
 
 procedure Concatenate();
 var
@@ -520,8 +542,8 @@ begin
   Assert(IsString(peekStack(vm.stack)),'Value at top of stack to concatenate is not a string');
   Assert(IsString(peekStack(vm.stack,1)),'Value at position -1 of stack to concatenate is not a string');
 
-  top := GetString(popStack(vm.stack));       // top of stack ("B")
-  below := GetString(popStack(vm.stack));     // below top ("A")
+  top := ValueToString(popStack(vm.stack));       // top of stack ("B")
+  below := ValueToString(popStack(vm.stack));     // below top ("A")
 
   strTop := ObjStringToAnsiString(top);
   strBelow := ObjStringToAnsiString(below);
@@ -595,6 +617,9 @@ function StringsEqual(a, b: PObjString): Boolean;
 begin
   Assert(Assigned(a), 'Value A is not assigned for string compare');
   Assert(Assigned(b), 'Value B is not assigned for string compare');
+  if a.length <> b.length then
+    exit(false);
+
   Result :=
     (a^.Length = b^.Length) and
     CompareMem(@a^.Chars, @b^.Chars, a^.Length);
@@ -605,11 +630,21 @@ begin
   if a.ValueKind <> b.ValueKind then exit(False);
 
   case a.ValueKind of
-    vkBoolean :  result := GetBoolean(a) = GetBoolean(b);
-    vkNull    :  result := true;
-    vkNumber  :  result := GetNumber(a) = GetNumber(b);
+    vkBoolean : result := GetBoolean(a) = GetBoolean(b);
+    vkNull    : result := true;
+    vkNumber  : result := GetNumber(a) = GetNumber(b);
     vkObject  : begin
-                  result := StringsEqual(GetString(a),GetString(b));
+                  assert(assigned(a.ObjValue),'A value is not assigned in value Equals');
+                  assert(assigned(b.ObjValue),'B value is not assigned in value Equals');
+                  case a.ObjValue.ObjectKind of
+                    okString : begin
+                       result := StringsEqual(ValueToString(a),ValueToString(b));
+                    end
+                    else
+                    begin
+                      result := false;
+                    end;
+                  end
     end
     else
       result := false;
@@ -617,25 +652,48 @@ begin
 end;
 
 
-function AllocateArray(var list: Pointer; var Capacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
+function AllocateArray(var List: Pointer;  var Capacity: Integer;  Count, ElemSize: Integer): Boolean;
+var
+  NewCapacity: Integer;
 begin
+
+  Assert(START_CAPACITY > 0);
+  Assert(GROWTH_FACTOR > 1);
+  Assert(Count >= 0, 'Count underflow');
+  Assert(ElemSize > 0, 'ElemSize invalid');
+  Assert(Capacity >= 0, 'Capacity underflow');
+  Assert(Count <= Capacity);
+
+
   if Capacity = 0 then
   begin
     Capacity := START_CAPACITY;
-    ReallocMem(list, Capacity * ElemSize);
+    ReallocMem(List, Capacity * ElemSize);
     Exit(True);
   end;
 
-  if Count < Capacity then Exit(False);
+  if Count < Capacity then
+    Exit(False);
 
-  Capacity := Capacity * GROWTH_FACTOR;
+  //  Use 'div' here to prevent integer overflow before multiplying:
+  // - MAX_SIZE div GROWTH_FACTOR ensures that Capacity * GROWTH_FACTOR will not exceed MAX_SIZE
+  // - MaxInt div ElemSize ensures that Capacity * ElemSize will fit in an Integer
+  // Without these checks, multiplying could overflow silently, leading to under-allocation
+  // and potential memory corruption.
+  Assert(
+    (Capacity <= MAX_SIZE div GROWTH_FACTOR) and
+    (Capacity <= MaxInt div ElemSize),
+    'Array size limit exceeded'
+  );
 
-  Assert(Capacity <= MAX_SIZE, 'Max size for array growth has been reached.');
 
-  ReallocMem(list, Capacity * ElemSize);
+  NewCapacity := Capacity * GROWTH_FACTOR;
+  ReallocMem(List, NewCapacity * ElemSize);
+  Capacity := NewCapacity;
 
-  Result := true;
+  Result := True;
 end;
+
 
 
 procedure initChunk(var chunk: pChunk);
@@ -661,7 +719,7 @@ begin
     FreeMem(chunk.Code, Chunk.Capacity * SizeOf(Byte));
     chunk.Code := nil;
 
-    FreeMem(Chunk.Lines,Chunk.Capacity * Sizeof(TLine));
+    FreeMem(Chunk.Lines,Chunk.Capacity * Sizeof(Integer));
   end;
 
   freeValueArray(chunk.Constants);
@@ -671,7 +729,7 @@ begin
   chunk := nil;
 end;
 
-procedure writeChunk(chunk: pChunk; value: byte; Line : Tline);
+procedure writeChunk(chunk: pChunk; value: byte; Line : Integer);
 var
   currentCap : integer;
 begin
@@ -682,7 +740,7 @@ begin
   if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode)) then
   begin
     //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
-    AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(TLine));
+    AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(Integer));
   end;
 
   chunk.Code[chunk.Count] := value;
@@ -714,7 +772,7 @@ begin
 end;
 
 
-procedure AddConstant(chunk : pChunk; const value : TValue; Line : TLine);
+procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer);
 var
   idx : integer;
 begin
@@ -731,7 +789,7 @@ end;
 
 procedure initValueArray(var ValueArray : pValueArray);
 begin
-  assert(ValueArray = nil,'values is not assigned');
+  assert(ValueArray = nil,'values is not nil');
 
   new(ValueArray);
 
@@ -741,7 +799,6 @@ begin
 
   ValueArray.Values := nil;
 end;
-
 
 procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
 begin
@@ -754,16 +811,20 @@ begin
   Inc(ValueArray.Count);
 end;
 
+
+procedure FreeValues(var Values : pValue; Capacity : integer);
+begin
+  if Capacity > 0 then
+  begin
+    FreeMem(Values, Capacity * SizeOf(TValue));  //note here that objects within TValue will have to be free'd externally.
+    Values := nil;
+  end;
+end;
+
 procedure freeValueArray(var ValueArray : pValueArray);
 begin
   assert(assigned(ValueArray),'ValueArray is not assigned');
-
-  if (ValueArray.Capacity) > 0 then
-  begin
-    FreeMem(ValueArray.Values, ValueArray.Capacity * SizeOf(TValue));  //note here that objects within TValue will have to be free'd externally.
-    ValueArray.Values := nil;
-  end;
-
+  FreeValues(ValueArray.Values,ValueArray.Capacity);
   Dispose(ValueArray);
   ValueArray := nil;
 
@@ -804,15 +865,7 @@ begin
 
 end;
 
-procedure InitVM;
-begin
-  new(VM);
-  VM.Chunk := nil;
-  VM.Stack := nil;
-  vm.Objects := nil;
-  InitStack(VM.Stack);
-  ResetStack(vm.Stack);
-end;
+
 
 
 procedure RunTimeError(const msg : string);
@@ -1147,9 +1200,58 @@ begin
    end;
 end;
 
+procedure FreeObject(obj : pObj);
+begin
+  assert(assigned(obj), 'Object is not assigned to free');
+  case obj.ObjectKind of
+    okString : begin
+      FreeString(pObjString(obj));
+    end;
+  end;
+end;
+
+procedure FreeObjects();
+var
+  obj : pObj;
+  next : pObj;
+begin
+  if not vm.ownObjects then exit;
+  
+  obj := vm.objects;
+  while (obj <> nil) do
+  begin
+    next := obj.Next;
+    freeObject(obj);
+    obj := next;
+  end;
+
+
+  (*
+  Obj* object = vm.objects;
+  while (object != NULL) {
+    Obj* next = object->next;
+    freeObject(object);
+    object = next;
+  }
+  } *)
+end;
+
+
+procedure InitVM;
+begin
+  new(VM);
+  VM.Chunk := nil;
+  VM.Stack := nil;
+  vm.Objects := nil;
+  vm.ownObjects := true;
+  InitStack(VM.Stack);
+  ResetStack(vm.Stack);
+end;
+
 procedure FreeVM;
 begin
   FreeStack(VM.Stack);
+  FreeObjects();
   dispose(VM);
 end;
 
