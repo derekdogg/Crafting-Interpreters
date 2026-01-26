@@ -47,7 +47,7 @@ var
   txt : ansiString;
   strObj : pObjString;
 begin
-
+  vm.ownObjects := true;
   txt := Memo1.Lines.Text;
   IR := interpretResult(PAnsiChar(txt));
 
