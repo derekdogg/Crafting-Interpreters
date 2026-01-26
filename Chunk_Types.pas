@@ -233,6 +233,10 @@ function AllocateArray(var list: Pointer; var Capacity: Integer; Count: Integer;
 procedure AddToCreatedObjects(p : pObj);
 function CreateString(const S: AnsiString): PObjString;
 
+//Log routines
+(*procedure InitLogs(var Logs : pLogs);
+procedure FreeLogs(var logs : pLogs);
+procedure WriteLog(const logs : pLogs; LogRecord : TLogRecord); *)
 
 //Log routines
 (*procedure InitLogs(var Logs : pLogs);
