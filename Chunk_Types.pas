@@ -185,13 +185,15 @@ type
     value : TValue;
   end;
 
+
   //Virtual Machine
   TVirtualMachine = record
-    Chunk   : pChunk;
-    ip      : pCode;
-    Stack   : pStackRecord;
-    objects : pObj;
-    ownObjects : boolean;
+    Chunk           : pChunk;
+    ip              : pCode;
+    Stack           : pStackRecord;
+    CreatedObjects  : pObj;
+    ownObjects      : boolean;
+    BytesAllocated  : integer;
   end;
 
   TScanner = record
@@ -226,8 +228,9 @@ type
   end;
 
 
-//Array allocation routine - returns mem alloc
-function AllocateArray(var list: Pointer; var Capacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
+//Memory creation routines
+procedure Allocate(var p : pointer; oldsize,newSize : integer);
+function AllocateArray(var list: Pointer; var CurrentCapacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
 
 //object creation routines
 procedure AddToCreatedObjects(p : pObj);
@@ -270,6 +273,7 @@ procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 procedure InitVM();
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
 procedure FreeObjects();
+procedure CollectGarbage();
 procedure FreeVM();
 
 //Stack
@@ -435,6 +439,361 @@ uses
   sysutils, Math,strUtils, typinfo;
 
 
+//memory creation routines
+
+function IsInCreatedObjects(obj: PObj): Boolean;
+var
+  current: PObj;
+begin
+  current := vm.CreatedObjects; // head of VM object list
+  while Assigned(current) do
+  begin
+    if current = obj then
+      Exit(True);
+    current := current^.Next;
+  end;
+  Result := False;
+end;
+
+
+procedure Allocate(var p: Pointer; OldSize, NewSize: Integer);
+begin
+  // --------------------------------------------------------------------------
+  // Basic sanity checks on sizes
+  // --------------------------------------------------------------------------
+  Assert(NewSize >= 0, 'New size underflow');   // New allocation cannot be negative
+  Assert(OldSize >= 0, 'Old size underflow');  // Old allocation cannot be negative
+  Assert(OldSize <> NewSize, 'Old size = new Size - invalid allocation');
+
+
+  // --------------------------------------------------------------------------
+  // Pointer consistency invariant
+  // --------------------------------------------------------------------------
+  // Enforce that OldSize = 0 means pointer must be nil
+  // and OldSize > 0 means pointer must be valid
+  if OldSize = 0 then Assert(p = nil, 'OldSize = 0 but pointer is not nil');
+  if OldSize > 0 then Assert(p <> nil, 'OldSize > 0 but pointer is nil');
+
+
+
+  // --------------------------------------------------------------------------
+  // Reallocate memory
+  // --------------------------------------------------------------------------
+  // ReallocMem preserves the first OldSize bytes (if >0) and may raise an exception
+  // if allocation fails. Memory beyond OldSize is uninitialized.
+  ReallocMem(p, NewSize);
+
+  // --------------------------------------------------------------------------
+  // Zero out any newly allocated memory
+  // --------------------------------------------------------------------------
+  // Ensures deterministic state for GC, pointers, or arrays
+  // Only affects the "new" portion; old memory remains unchanged
+  if NewSize > OldSize then
+    FillChar(PByte(p)[OldSize], NewSize - OldSize, #0);
+
+  // --------------------------------------------------------------------------
+  // Update VM memory accounting
+  // --------------------------------------------------------------------------
+  // Tracks total allocated bytes for GC / memory management
+
+
+  Inc(vm.BytesAllocated, NewSize - OldSize);
+
+  // Ensure bytes allocated never underflows (extra safety)
+  Assert(vm.BytesAllocated >= 0, 'VM bytes underflow');
+
+
+  // --------------------------------------------------------------------------
+  // Zero-size check
+  // --------------------------------------------------------------------------
+  // If allocation shrinks to zero, the pointer must now be nil
+  if NewSize = 0 then
+    Assert(p = nil, 'Pointer not nil after zero-size allocation');
+
+  // --------------------------------------------------------------------------
+  // Non-Zero-size check
+  // --------------------------------------------------------------------------
+  // If allocation shrinks to zero, the pointer must now be nil
+  if NewSize > 0 then
+    Assert(p <> nil, 'Pointer nil after new size > 0 allocation');
+
+end;
+
+
+function AllocateArray(
+  var List: Pointer;
+  var CurrentCapacity: Integer;
+  Count, ElemSize: Integer
+): Boolean;
+var
+  NewCapacity: Integer;
+  OldSize, NewSize: Integer;
+begin
+  // ---- Global invariants ---------------------------------------------------
+
+  Assert(START_CAPACITY > 0,
+    'START_CAPACITY must be greater than zero');
+  Assert(GROWTH_FACTOR > 1,
+    'GROWTH_FACTOR must be greater than 1');
+  Assert(ElemSize > 0,
+    'ElemSize must be greater than zero');
+  Assert(CurrentCapacity >= 0,
+    'CurrentCapacity underflow');
+  Assert(Count >= 0,
+    'Count underflow');
+  Assert(Count <= CurrentCapacity,
+    'Count exceeds CurrentCapacity');
+
+  // ---- Initial allocation --------------------------------------------------
+
+  if CurrentCapacity = 0 then
+  begin
+    Assert(List = nil,
+      'List must be nil when CurrentCapacity is zero');
+
+    // Ensure capacity * element size will not overflow
+    Assert(START_CAPACITY <= MaxInt div ElemSize,
+      'Initial allocation size exceeds addressable memory');
+
+    CurrentCapacity := START_CAPACITY;
+    NewSize := CurrentCapacity * ElemSize;
+
+    Allocate(List, 0, NewSize);
+    Exit(True);
+  end;
+
+  // ---- Growth path ---------------------------------------------------------
+
+  Assert(Assigned(List),
+    'List is nil with non-zero CurrentCapacity');
+
+  if Count < CurrentCapacity then
+    Exit(False);
+
+  // Ensure capacity growth itself cannot overflow Integer
+  Assert(CurrentCapacity <= MaxInt div GROWTH_FACTOR,
+    'Array capacity multiplication overflows Integer');
+
+  // Ensure logical size limit is not exceeded
+  Assert(CurrentCapacity <= MAX_SIZE div GROWTH_FACTOR,
+    'Array capacity growth would exceed MAX_SIZE');
+
+  NewCapacity := CurrentCapacity * GROWTH_FACTOR;
+
+  // Ensure byte-size multiplications are safe
+  Assert(CurrentCapacity <= MaxInt div ElemSize,
+    'Current array byte size exceeds Integer range');
+  Assert(NewCapacity <= MaxInt div ElemSize,
+    'Grown array byte size exceeds Integer range');
+
+  OldSize := CurrentCapacity * ElemSize;
+  NewSize := NewCapacity * ElemSize;
+
+  Allocate(List, OldSize, NewSize);
+  CurrentCapacity := NewCapacity;
+
+  Result := True;
+end;
+
+
+
+
+
+//note : we do not add a null terminator #0 since we track the length
+function CreateString(const S: AnsiString): PObjString;
+var
+  Len: Integer;
+  Size: NativeInt;
+begin
+  Result := nil;
+  Len := Length(S);
+  Size := SizeOf(TObjString) + Max(0, Len - 1);  // avoid negative size
+
+  Allocate(Pointer(Result),0, Size);
+
+  Result^.Obj.ObjectKind := okString;
+  Result^.Obj.Next := nil;
+  Result^.Length := Len;
+
+  if Len > 0 then
+  begin
+    Move(PAnsiChar(S)^, Result^.Chars[0], Len);
+  end;
+
+  //track creation in the vm list of obj.
+  AddToCreatedObjects(PObj(Result));
+
+end;
+
+procedure FreeString(var obj : pObjString);
+var
+ objSize : integer;
+begin
+  // ---- preconditions ----
+  assert(assigned(obj), 'string to free is nil');
+  assert(obj^.Length >= 0, 'string length is negative');
+  assert(obj^.Obj.ObjectKind = okString, 'Type mismatch, expected a string object but object kind is not a string');
+
+  // ---- resize now ----
+  objSize := Sizeof(TObjString) + Max(0, obj^.length - 1);  // mimc here size from CreateString (We don't have the string but we do have the length now)
+  Allocate(pointer(obj), objSize , 0);
+  obj := nil;
+
+  // ---- postconditions ----
+  assert(obj = nil, 'string pointer not cleared after free');
+  assert(vm.BytesAllocated >= 0, 'VM bytes allocated underflow after freeing string.');
+end;
+
+
+procedure initChunk(var chunk: pChunk);
+begin
+  assert(Chunk = nil,'Chunk initialization failuyre. Chunk is not nil');
+  Allocate(pointer(chunk),0, Sizeof(TChunk));
+
+  chunk.Count := 0;
+  chunk.Capacity := 0;
+  chunk.Code := nil;
+  chunk.Lines := nil;
+  chunk.Constants := nil;
+  InitValueArray(chunk.Constants);
+  chunk.Initialised := true;
+end;
+
+procedure freeChunk(var chunk: pChunk);
+begin
+  assert(assigned(Chunk),'Chunk is not assigned');
+  assert(chunk.Initialised = true, 'Chunk is not initialised');
+
+  if (chunk.Capacity) > 0 then
+  begin
+    Allocate(pointer(chunk.Code), Chunk.Capacity * sizeof(TCode), 0);
+
+    Assert(Chunk.Code = nil, 'Expected Chunk Code to be nil');
+
+    Allocate(pointer(Chunk.Lines), Chunk.Capacity * Sizeof(Integer),0);
+
+    Assert(Chunk.Lines = nil, 'Expected Chunk Lines to be nil');
+  end;
+
+
+  freeValueArray(chunk.Constants);
+
+  Assert(Chunk.Constants = nil, 'Expected chunk Constants to be nil');
+
+  Allocate(pointer(chunk),Sizeof(TChunk),0);
+
+  Assert(Chunk = nil, 'Expected chunk to be nil');
+
+end;
+
+procedure writeChunk(chunk: pChunk; value: byte; Line : Integer);
+var
+  currentCap : integer;
+begin
+  assert(assigned(chunk),'Chunk is not assigned');
+  assert(chunk.Initialised = true, 'Chunk is not initialised');
+
+  currentCap := Chunk.Capacity;
+  if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode)) then
+  begin
+    //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
+    AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(Integer));
+  end;
+
+  chunk.Code[chunk.Count] := value;
+  chunk.Lines[chunk.count] := Line;
+  Inc(chunk.Count);
+end;
+
+
+procedure initValueArray(var ValueArray : pValueArray);
+begin
+  assert(ValueArray = nil,'values is not nil');
+
+  allocate(pointer(ValueArray),0,Sizeof(TValueArray));
+
+  ValueArray.Count := 0;
+
+  ValueArray.Capacity := 0;
+
+  ValueArray.Values := nil;
+end;
+
+procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
+begin
+  assert(assigned(ValueArray),'ValueArray is not assigned');
+
+  AllocateArray(pointer(ValueArray.Values), ValueArray.Capacity, ValueArray.Count,sizeof(TValue));
+
+  ValueArray.Values[ValueArray.Count] := value;
+
+  Inc(ValueArray.Count);
+end;
+
+procedure FreeValues(var Values : pValue; Capacity : integer);
+begin
+  assert(assigned(Values),'Values is not assigned');
+  assert(Capacity > 0, 'Capacity is < 0');
+  Allocate(pointer(Values), Capacity * Sizeof(TValue),0);  //Note here that the references to objects will be free'd externally
+  Assert(Values = nil, 'values is not nil');
+end;
+
+procedure freeValueArray(var ValueArray : pValueArray);
+begin
+  assert(assigned(ValueArray),'ValueArray is not assigned');
+  if ValueArray.Values <> nil then
+    FreeValues(ValueArray.Values,ValueArray.Capacity);
+  Allocate(pointer(ValueArray),Sizeof(TValueArray),0);
+  ValueArray := nil;
+end;
+
+procedure InitStack(var Stack : pStackRecord);
+begin
+  Assert(Stack = nil, 'Stack initialization failure - stack record is not nil');
+  Allocate(pointer(Stack),0, Sizeof(TStackRecord));
+  Stack.Count := 0;
+  Stack.Capacity := 0;
+  Stack.Values := nil;
+  AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue));
+  Stack.StackTop := Stack.Values;
+end;
+
+procedure FreeStack(var Stack : pStackRecord);
+begin
+  assert(Assigned(Stack),'Stack is not assigned - free stack');
+  assert(Assigned(Stack.Values), 'Stack values is not assigned - free stack');
+  if (stack.Capacity > 0) then
+  begin
+    Allocate(pointer(Stack.Values), stack.Capacity * sizeof(TValue), 0);
+    Stack.Values := nil;
+  end;
+
+  Allocate(pointer(Stack),sizeof(TStackRecord),0);
+  Stack := nil;
+end;
+
+procedure pushStack(var stack : pStackRecord;const value : TValue);
+begin
+  Assert(Assigned(Stack), 'Stack is not assigned');
+  Assert(Assigned(Stack.values), 'Stack values is not assigned');
+  if AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue)) then
+  begin
+    ResetStack(stack);
+    Stack.StackTop := Stack.Values + Stack.Count;  //move stack top to next pointer available (at count)
+  end;
+  Stack.StackTop^ := Value;
+  Inc(Stack.StackTop);
+  inc(Stack.Count);
+end;
+
+
+//End memory creation routines
+
+
+
+
+
+
 function isObject(value : TValue) : boolean;
 begin
   result := value.valueKind = vkObject;
@@ -481,8 +840,8 @@ end;
 
 procedure AddToCreatedObjects(p : pObj);
 begin
-  p^.Next := vm.objects;
-  vm.objects := p;
+  p^.Next := vm.CreatedObjects;
+  vm.CreatedObjects := p;
 end;
 
 //Chars: array[0..0] of AnsiChar;
@@ -491,34 +850,12 @@ begin
   result := CreateString(a+b);
 end;
 
-function CreateString(const S: AnsiString): PObjString;
-var
-  Len: Integer;
-  Size: NativeInt;
+function ObjStringSize(const p : pObjString) : integer;
 begin
-  Len := Length(S);
-  Size := SizeOf(TObjString) + Max(0, Len - 1);  // avoid negative size
-
-  GetMem(Result, Size);
-
-  Result^.Obj.ObjectKind := okString;
-  Result^.Length := Len;
-
-
-  if Len > 0 then
-    Move(PAnsiChar(S)^, Result^.Chars[0], Len);
-
-
-  //track creation in the vm.
-  AddToCreatedObjects(PObj(Result));
-
+  result := Sizeof(TObjString) + Max(0, p^.length - 1);  // avoid negative size
 end;
 
-procedure FreeString(var obj : pObjString);
-begin
-  FreeMem(obj);
-  obj := nil;
-end;
+
 
 function ValueToString(const value : TValue) : pObjString;
 begin
@@ -652,101 +989,8 @@ begin
 end;
 
 
-function AllocateArray(var List: Pointer;  var Capacity: Integer;  Count, ElemSize: Integer): Boolean;
-var
-  NewCapacity: Integer;
-begin
-
-  Assert(START_CAPACITY > 0);
-  Assert(GROWTH_FACTOR > 1);
-  Assert(Count >= 0, 'Count underflow');
-  Assert(ElemSize > 0, 'ElemSize invalid');
-  Assert(Capacity >= 0, 'Capacity underflow');
-  Assert(Count <= Capacity);
 
 
-  if Capacity = 0 then
-  begin
-    Capacity := START_CAPACITY;
-    ReallocMem(List, Capacity * ElemSize);
-    Exit(True);
-  end;
-
-  if Count < Capacity then
-    Exit(False);
-
-  //  Use 'div' here to prevent integer overflow before multiplying:
-  // - MAX_SIZE div GROWTH_FACTOR ensures that Capacity * GROWTH_FACTOR will not exceed MAX_SIZE
-  // - MaxInt div ElemSize ensures that Capacity * ElemSize will fit in an Integer
-  // Without these checks, multiplying could overflow silently, leading to under-allocation
-  // and potential memory corruption.
-  Assert(
-    (Capacity <= MAX_SIZE div GROWTH_FACTOR) and
-    (Capacity <= MaxInt div ElemSize),
-    'Array size limit exceeded'
-  );
-
-
-  NewCapacity := Capacity * GROWTH_FACTOR;
-  ReallocMem(List, NewCapacity * ElemSize);
-  Capacity := NewCapacity;
-
-  Result := True;
-end;
-
-
-
-procedure initChunk(var chunk: pChunk);
-begin
-  assert(Chunk = nil,'Chunk is assigned');
-  new(chunk);
-  chunk.Count := 0;
-  chunk.Capacity := 0;
-  chunk.Code := nil;
-  chunk.Lines := nil;
-  chunk.Constants := nil;
-  InitValueArray(chunk.Constants);
-  chunk.Initialised := true;
-end;
-
-procedure freeChunk(var chunk: pChunk);
-begin
-  assert(assigned(Chunk),'Chunk is not assigned');
-  assert(chunk.Initialised = true, 'Chunk is not initialised');
-
-  if (chunk.Capacity) > 0 then
-  begin
-    FreeMem(chunk.Code, Chunk.Capacity * SizeOf(Byte));
-    chunk.Code := nil;
-
-    FreeMem(Chunk.Lines,Chunk.Capacity * Sizeof(Integer));
-  end;
-
-  freeValueArray(chunk.Constants);
-
-
-  Dispose(chunk);
-  chunk := nil;
-end;
-
-procedure writeChunk(chunk: pChunk; value: byte; Line : Integer);
-var
-  currentCap : integer;
-begin
-  assert(assigned(chunk),'Chunk is not assigned');
-  assert(chunk.Initialised = true, 'Chunk is not initialised');
-
-  currentCap := Chunk.Capacity;
-  if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode)) then
-  begin
-    //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
-    AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(Integer));
-  end;
-
-  chunk.Code[chunk.Count] := value;
-  chunk.Lines[chunk.count] := Line;
-  Inc(chunk.Count);
-end;
 
 function AddValueConstant(ValueArray: pValueArray; const value: TValue): Integer;
 begin
@@ -787,48 +1031,9 @@ begin
   WriteConstantIndex(Chunk,idx);
 end;
 
-procedure initValueArray(var ValueArray : pValueArray);
-begin
-  assert(ValueArray = nil,'values is not nil');
-
-  new(ValueArray);
-
-  ValueArray.Count := 0;
-
-  ValueArray.Capacity := 0;
-
-  ValueArray.Values := nil;
-end;
-
-procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
-begin
-  assert(assigned(ValueArray),'ValueArray is not assigned');
-
-  AllocateArray(pointer(ValueArray.Values), ValueArray.Capacity, ValueArray.Count,sizeof(TValue));
-
-  ValueArray.Values[ValueArray.Count] := value;
-
-  Inc(ValueArray.Count);
-end;
 
 
-procedure FreeValues(var Values : pValue; Capacity : integer);
-begin
-  if Capacity > 0 then
-  begin
-    FreeMem(Values, Capacity * SizeOf(TValue));  //note here that objects within TValue will have to be free'd externally.
-    Values := nil;
-  end;
-end;
 
-procedure freeValueArray(var ValueArray : pValueArray);
-begin
-  assert(assigned(ValueArray),'ValueArray is not assigned');
-  FreeValues(ValueArray.Values,ValueArray.Capacity);
-  Dispose(ValueArray);
-  ValueArray := nil;
-
-end;
 
 procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 const
@@ -993,28 +1198,7 @@ begin
 
 end;
 
-procedure InitStack(var Stack : pStackRecord);
-begin
-  new(Stack);
-  Stack.Count := 0;
-  Stack.Capacity := 0;
-  AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue));
-  Stack.StackTop := Stack.Values;
-end;
 
-procedure FreeStack(var Stack : pStackRecord);
-begin
-  assert(Assigned(Stack),'Stack is not assigned - free stack');
-  assert(Assigned(Stack.Values), 'Stack values is not assigned - free stack');
-  if (stack.Capacity > 0) then
-  begin
-    FreeMem(Stack.Values,Stack.Capacity * Sizeof(TValue));
-    Stack.Values := nil;
-  end;
-
-  Dispose(Stack);
-  Stack := nil;
-end;
 
 
 procedure ResetStack(var stack : pStackRecord);
@@ -1024,19 +1208,7 @@ begin
   Stack.StackTop := Stack.Values;
 end;
 
-procedure pushStack(var stack : pStackRecord;const value : TValue);
-begin
-  Assert(Assigned(Stack), 'Stack is not assigned');
-  Assert(Assigned(Stack.values), 'Stack values is not assigned');
-  if AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue)) then
-  begin
-    ResetStack(stack);
-    Stack.StackTop := Stack.Values + Stack.Count;  //move stack top to next pointer available (at count)
-  end;
-  Stack.StackTop^ := Value;
-  Inc(Stack.StackTop);
-  inc(Stack.Count);
-end;
+
 
 function peekStack(Stack: pStackRecord; DistanceFromTop: Integer): TValue;
 begin
@@ -1216,8 +1388,8 @@ var
   next : pObj;
 begin
   if not vm.ownObjects then exit;
-  
-  obj := vm.objects;
+
+  obj := vm.CreatedObjects;
   while (obj <> nil) do
   begin
     next := obj.Next;
@@ -1237,13 +1409,19 @@ begin
 end;
 
 
+procedure CollectGarbage();
+begin
+
+end;
+
 procedure InitVM;
 begin
-  new(VM);
+  new(VM); //we don't care about making this route through allocate
   VM.Chunk := nil;
   VM.Stack := nil;
-  vm.Objects := nil;
+  vm.CreatedObjects := nil;
   vm.ownObjects := true;
+  vm.BytesAllocated := 0;
   InitStack(VM.Stack);
   ResetStack(vm.Stack);
 end;
@@ -1252,7 +1430,7 @@ procedure FreeVM;
 begin
   FreeStack(VM.Stack);
   FreeObjects();
-  dispose(VM);
+  dispose(VM); //and therefore (see above comment in initVM) we just dispose here
 end;
 
 procedure InitScanner(source : pAnsiChar);
@@ -1887,5 +2065,6 @@ initialization
 
 finalization
   FreeVM;
+  Assert(VM.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
 
 end.
