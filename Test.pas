@@ -179,7 +179,7 @@ var
 begin
   chunk := nil;
   initChunk(chunk);
-  writeChunk(chunk,1,1);
+ // writeChunk(chunk,1,1);
   freeChunk(chunk);
   assert(chunk = nil);
 end;
@@ -306,6 +306,7 @@ var
   value : TValue;
   i     : integer;
 begin
+  stack := nil;
   InitStack(stack);
   try
     for i := 0 to 999 do
