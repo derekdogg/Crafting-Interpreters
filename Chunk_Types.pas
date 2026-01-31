@@ -118,6 +118,7 @@ type
   pStackRecord    = ^TStackRecord;
   pVirtualMachine = ^TVirtualMachine;
   pAnsiCharArray = ^TAnsiCharArray;
+  pMemTracker    = ^TMemTracker;
   pLogs     = ^TLogs; //Note : Don't think we need this (https://www.danieleteti.it/loggerpro/) maybe add later? We use a stupidly simple approach for now
 
 
@@ -185,15 +186,18 @@ type
     value : TValue;
   end;
 
+  TMemTracker = record
+    CreatedObjects  : pObj;
+    BytesAllocated  : integer;
+  end;
+
 
   //Virtual Machine
   TVirtualMachine = record
     Chunk           : pChunk;
     ip              : pCode;
     Stack           : pStackRecord;
-    CreatedObjects  : pObj;
-    ownObjects      : boolean;
-    BytesAllocated  : integer;
+    MemTracker      : PMemTracker;
   end;
 
   TScanner = record
@@ -229,26 +233,17 @@ type
 
 
 //Memory creation routines
-procedure Allocate(var p : pointer; oldsize,newSize : integer);
-function AllocateArray(var list: Pointer; var CurrentCapacity: Integer; Count: Integer; ElemSize: Integer) : boolean;
+procedure Allocate(var p : pointer; oldsize,newSize : integer; MemTracker : pMemTracker);
+function AllocateArray(var List: Pointer;  var CurrentCapacity: Integer;  Count, ElemSize: Integer; MemTracker : pMemTracker): Boolean;
 
 //object creation routines
-procedure AddToCreatedObjects(p : pObj);
-function CreateString(const S: AnsiString): PObjString;
-
-//Log routines
-(*procedure InitLogs(var Logs : pLogs);
-procedure FreeLogs(var logs : pLogs);
-procedure WriteLog(const logs : pLogs; LogRecord : TLogRecord); *)
-
-//Log routines
-(*procedure InitLogs(var Logs : pLogs);
-procedure FreeLogs(var logs : pLogs);
-procedure WriteLog(const logs : pLogs; LogRecord : TLogRecord); *)
+procedure AddToCreatedObjects(p : pObj; MemTracker : pMemTracker);
+function CreateString(const S: AnsiString; MemTracker : pMemTracker): PObjString;
+procedure FreeString(var obj : pObjString; MemTracker : pMemTracker);
 
 //string routines
 function GetChar(const str : pObjString; index : integer) : AnsiChar;
-procedure FreeString(var obj : pObjString);
+
 function StringsEqual(a, b: PObjString): Boolean;
 function ValuesEqual(a, b : TValue) : boolean;
 function TokenToString(const Token: TToken): AnsiString;
@@ -258,18 +253,22 @@ function StringToValue(const value : pObjString) : TValue;
 
 
 //Chunk routines
-procedure initChunk(var chunk: pChunk);
-procedure freeChunk(var chunk: pChunk);
-procedure writeChunk(chunk: pChunk; value: byte; Line : Integer);
-procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer);
-procedure initValueArray(var ValueArray : pValueArray);
-procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
-procedure FreeValues(var Values : pValue; Capacity : integer);
-procedure freeValueArray(var ValueArray : pValueArray);
+procedure initChunk(var chunk: pChunk;MemTracker : pMemTracker);
+procedure freeChunk(var chunk: pChunk;MemTracker : pMemTracker);
+procedure writeChunk(chunk: pChunk; value: byte; Line : Integer;MemTracker : pMemTracker);
+procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer; MemTracker : pMemTracker);
+procedure initValueArray(var ValueArray : pValueArray;MemTracker : pMemTracker);
+procedure writeValueArray(ValueArray : pValueArray; Value : TValue;MemTracker : pMemTracker);
+procedure FreeValues(var Values : pValue; Capacity : integer;MemTracker : pMemTracker);
+procedure freeValueArray(var ValueArray : pValueArray;MemTracker : pMemTracker);
 procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 
+//Memtracker
+procedure InitMemTracker(var MemTracker : pMemTracker);
+procedure FreeMemTracker(var MemTracker : pMemTracker);
 
 //Virtual Machine
+
 procedure InitVM();
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
 procedure FreeObjects();
@@ -277,10 +276,10 @@ procedure CollectGarbage();
 procedure FreeVM();
 
 //Stack
-procedure InitStack(var Stack : pStackRecord);
-procedure FreeStack(var Stack : pStackRecord);
+procedure InitStack(var Stack : pStackRecord;MemTracker : pMemTracker);
+procedure FreeStack(var Stack : pStackRecord;MemTracker : pMemTracker);
 procedure ResetStack(var stack : pStackRecord);
-procedure pushStack(var stack : pStackRecord;const value : TValue);
+procedure pushStack(var stack : pStackRecord;const value : TValue;MemTracker : pMemTracker);
 function peekStack(stack : pStackRecord) : TValue; overload;
 function peekStack(stack : pStackRecord; distanceFromTop : integer) : TValue;overload;
 function  popStack(var stack : pStackRecord) : TValue;
@@ -445,7 +444,7 @@ function IsInCreatedObjects(obj: PObj): Boolean;
 var
   current: PObj;
 begin
-  current := vm.CreatedObjects; // head of VM object list
+  current := vm.MemTracker.CreatedObjects; // head of VM object list
   while Assigned(current) do
   begin
     if current = obj then
@@ -456,14 +455,25 @@ begin
 end;
 
 
-procedure Allocate(var p: Pointer; OldSize, NewSize: Integer);
+procedure IncrementBytesAllocated(memTracker : pMemTracker; Amount : integer);
 begin
+  Inc(memtracker.BytesAllocated, Amount);
+
+  // Ensure bytes allocated never underflows (extra safety)
+  Assert(Memtracker.BytesAllocated >= 0, 'VM bytes underflow');
+end;
+
+procedure Allocate(var p: Pointer; OldSize, NewSize: Integer; MemTracker : pMemTracker);
+begin
+  Assert(MemTracker <> nil, 'Memory tracker is nil');
+
   // --------------------------------------------------------------------------
   // Basic sanity checks on sizes
   // --------------------------------------------------------------------------
   Assert(NewSize >= 0, 'New size underflow');   // New allocation cannot be negative
   Assert(OldSize >= 0, 'Old size underflow');  // Old allocation cannot be negative
   Assert(OldSize <> NewSize, 'Old size = new Size - invalid allocation');
+
 
 
   // --------------------------------------------------------------------------
@@ -489,18 +499,15 @@ begin
   // Ensures deterministic state for GC, pointers, or arrays
   // Only affects the "new" portion; old memory remains unchanged
   if NewSize > OldSize then
-    FillChar(PByte(p)[OldSize], NewSize - OldSize, #0);
+    FillChar(PByte(p)[OldSize], NewSize - OldSize, 0);
 
   // --------------------------------------------------------------------------
   // Update VM memory accounting
   // --------------------------------------------------------------------------
   // Tracks total allocated bytes for GC / memory management
 
+  IncrementBytesAllocated(Memtracker, NewSize - OldSize);
 
-  Inc(vm.BytesAllocated, NewSize - OldSize);
-
-  // Ensure bytes allocated never underflows (extra safety)
-  Assert(vm.BytesAllocated >= 0, 'VM bytes underflow');
 
 
   // --------------------------------------------------------------------------
@@ -520,11 +527,7 @@ begin
 end;
 
 
-function AllocateArray(
-  var List: Pointer;
-  var CurrentCapacity: Integer;
-  Count, ElemSize: Integer
-): Boolean;
+function AllocateArray(var List: Pointer;  var CurrentCapacity: Integer;  Count, ElemSize: Integer;MemTracker : pMemTracker): Boolean;
 var
   NewCapacity: Integer;
   OldSize, NewSize: Integer;
@@ -558,7 +561,7 @@ begin
     CurrentCapacity := START_CAPACITY;
     NewSize := CurrentCapacity * ElemSize;
 
-    Allocate(List, 0, NewSize);
+    Allocate(List, 0, NewSize, MemTracker);
     Exit(True);
   end;
 
@@ -589,27 +592,30 @@ begin
   OldSize := CurrentCapacity * ElemSize;
   NewSize := NewCapacity * ElemSize;
 
-  Allocate(List, OldSize, NewSize);
+  Allocate(List, OldSize, NewSize, MemTracker);
   CurrentCapacity := NewCapacity;
 
   Result := True;
 end;
 
 
-
-
+procedure AllocateString(var p: PObjString; OldSize, NewSize: NativeInt; MemTracker : pMemTracker);
+begin
+  // Calls the core allocator with the required cast
+  Allocate(Pointer(p), OldSize, NewSize,MemTracker);
+end;
 
 //note : we do not add a null terminator #0 since we track the length
-function CreateString(const S: AnsiString): PObjString;
+function CreateString(const S: AnsiString; MemTracker : pMemTracker): PObjString;
 var
   Len: Integer;
-  Size: NativeInt;
+  NewSize: NativeInt;
 begin
   Result := nil;
   Len := Length(S);
-  Size := SizeOf(TObjString) + Max(0, Len - 1);  // avoid negative size
+  NewSize := SizeOf(TObjString) + Max(0, Len - 1);  // avoid negative size
 
-  Allocate(Pointer(Result),0, Size);
+  AllocateString(Result,0, NewSize,MemTracker);
 
   Result^.Obj.ObjectKind := okString;
   Result^.Obj.Next := nil;
@@ -621,11 +627,11 @@ begin
   end;
 
   //track creation in the vm list of obj.
-  AddToCreatedObjects(PObj(Result));
+  AddToCreatedObjects(PObj(Result),MemTracker);
 
 end;
 
-procedure FreeString(var obj : pObjString);
+procedure FreeString(var obj : pObjString; MemTracker : pMemTracker);
 var
  objSize : integer;
 begin
@@ -636,57 +642,57 @@ begin
 
   // ---- resize now ----
   objSize := Sizeof(TObjString) + Max(0, obj^.length - 1);  // mimc here size from CreateString (We don't have the string but we do have the length now)
-  Allocate(pointer(obj), objSize , 0);
+  Allocate(pointer(obj), objSize , 0, MemTracker);
   obj := nil;
 
   // ---- postconditions ----
   assert(obj = nil, 'string pointer not cleared after free');
-  assert(vm.BytesAllocated >= 0, 'VM bytes allocated underflow after freeing string.');
+  assert(Memtracker.BytesAllocated >= 0, 'VM bytes allocated underflow after freeing string.');
 end;
 
 
-procedure initChunk(var chunk: pChunk);
+procedure initChunk(var chunk: pChunk; MemTracker : pMemTracker);
 begin
   assert(Chunk = nil,'Chunk initialization failuyre. Chunk is not nil');
-  Allocate(pointer(chunk),0, Sizeof(TChunk));
+  Allocate(pointer(chunk),0, Sizeof(TChunk),MemTracker);
 
   chunk.Count := 0;
   chunk.Capacity := 0;
   chunk.Code := nil;
   chunk.Lines := nil;
   chunk.Constants := nil;
-  InitValueArray(chunk.Constants);
+  InitValueArray(chunk.Constants,MemTracker);
   chunk.Initialised := true;
 end;
 
-procedure freeChunk(var chunk: pChunk);
+procedure freeChunk(var chunk: pChunk; MemTracker : pMemTracker);
 begin
   assert(assigned(Chunk),'Chunk is not assigned');
   assert(chunk.Initialised = true, 'Chunk is not initialised');
 
   if (chunk.Capacity) > 0 then
   begin
-    Allocate(pointer(chunk.Code), Chunk.Capacity * sizeof(TCode), 0);
+    Allocate(pointer(chunk.Code), Chunk.Capacity * sizeof(TCode), 0,MemTracker);
 
     Assert(Chunk.Code = nil, 'Expected Chunk Code to be nil');
 
-    Allocate(pointer(Chunk.Lines), Chunk.Capacity * Sizeof(Integer),0);
+    Allocate(pointer(Chunk.Lines), Chunk.Capacity * Sizeof(Integer),0,MemTracker);
 
     Assert(Chunk.Lines = nil, 'Expected Chunk Lines to be nil');
   end;
 
 
-  freeValueArray(chunk.Constants);
+  freeValueArray(chunk.Constants,MemTracker);
 
   Assert(Chunk.Constants = nil, 'Expected chunk Constants to be nil');
 
-  Allocate(pointer(chunk),Sizeof(TChunk),0);
+  Allocate(pointer(chunk),Sizeof(TChunk),0,MemTracker);
 
   Assert(Chunk = nil, 'Expected chunk to be nil');
 
 end;
 
-procedure writeChunk(chunk: pChunk; value: byte; Line : Integer);
+procedure writeChunk(chunk: pChunk; value: byte; Line : Integer; MemTracker : pMemTracker);
 var
   currentCap : integer;
 begin
@@ -694,10 +700,10 @@ begin
   assert(chunk.Initialised = true, 'Chunk is not initialised');
 
   currentCap := Chunk.Capacity;
-  if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode)) then
+  if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode) , MemTracker) then
   begin
     //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
-    AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(Integer));
+    AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(Integer),MemTracker);
   end;
 
   chunk.Code[chunk.Count] := value;
@@ -706,11 +712,11 @@ begin
 end;
 
 
-procedure initValueArray(var ValueArray : pValueArray);
+procedure initValueArray(var ValueArray : pValueArray; MemTracker : pMemTracker);
 begin
   assert(ValueArray = nil,'values is not nil');
 
-  allocate(pointer(ValueArray),0,Sizeof(TValueArray));
+  allocate(pointer(ValueArray),0,Sizeof(TValueArray),MemTracker);
 
   ValueArray.Count := 0;
 
@@ -719,64 +725,65 @@ begin
   ValueArray.Values := nil;
 end;
 
-procedure writeValueArray(ValueArray : pValueArray; Value : TValue);
+procedure writeValueArray(ValueArray : pValueArray; Value : TValue; MemTracker : pMemTracker);
 begin
   assert(assigned(ValueArray),'ValueArray is not assigned');
 
-  AllocateArray(pointer(ValueArray.Values), ValueArray.Capacity, ValueArray.Count,sizeof(TValue));
+
+  AllocateArray(pointer(ValueArray.Values), ValueArray.Capacity, ValueArray.Count,sizeof(TValue),MemTracker);
 
   ValueArray.Values[ValueArray.Count] := value;
 
   Inc(ValueArray.Count);
 end;
 
-procedure FreeValues(var Values : pValue; Capacity : integer);
+procedure FreeValues(var Values : pValue; Capacity : integer; MemTracker : pMemTracker);
 begin
   assert(assigned(Values),'Values is not assigned');
   assert(Capacity > 0, 'Capacity is < 0');
-  Allocate(pointer(Values), Capacity * Sizeof(TValue),0);  //Note here that the references to objects will be free'd externally
+  Allocate(pointer(Values), Capacity * Sizeof(TValue),0,MemTracker);  //Note here that the references to objects will be free'd externally
   Assert(Values = nil, 'values is not nil');
 end;
 
-procedure freeValueArray(var ValueArray : pValueArray);
+procedure freeValueArray(var ValueArray : pValueArray; MemTracker : pMemTracker);
 begin
   assert(assigned(ValueArray),'ValueArray is not assigned');
   if ValueArray.Values <> nil then
-    FreeValues(ValueArray.Values,ValueArray.Capacity);
-  Allocate(pointer(ValueArray),Sizeof(TValueArray),0);
+    FreeValues(ValueArray.Values,ValueArray.Capacity,MemTracker);
+  Allocate(pointer(ValueArray),Sizeof(TValueArray),0,MemTracker);
   ValueArray := nil;
 end;
 
-procedure InitStack(var Stack : pStackRecord);
+procedure InitStack(var Stack : pStackRecord;MemTracker : pMemTracker);
 begin
   Assert(Stack = nil, 'Stack initialization failure - stack record is not nil');
-  Allocate(pointer(Stack),0, Sizeof(TStackRecord));
+  Allocate(pointer(Stack),0, Sizeof(TStackRecord),Memtracker);
   Stack.Count := 0;
   Stack.Capacity := 0;
   Stack.Values := nil;
-  AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue));
+  AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue),Memtracker);
   Stack.StackTop := Stack.Values;
 end;
 
-procedure FreeStack(var Stack : pStackRecord);
+procedure FreeStack(var Stack : pStackRecord;MemTracker : pMemTracker);
 begin
   assert(Assigned(Stack),'Stack is not assigned - free stack');
   assert(Assigned(Stack.Values), 'Stack values is not assigned - free stack');
   if (stack.Capacity > 0) then
   begin
-    Allocate(pointer(Stack.Values), stack.Capacity * sizeof(TValue), 0);
+    Allocate(pointer(Stack.Values), stack.Capacity * sizeof(TValue), 0,Memtracker);
     Stack.Values := nil;
   end;
 
-  Allocate(pointer(Stack),sizeof(TStackRecord),0);
+  Allocate(pointer(Stack),sizeof(TStackRecord),0,Memtracker);
   Stack := nil;
 end;
 
-procedure pushStack(var stack : pStackRecord;const value : TValue);
+procedure pushStack(var stack : pStackRecord;const value : TValue;MemTracker : pMemTracker);
 begin
   Assert(Assigned(Stack), 'Stack is not assigned');
   Assert(Assigned(Stack.values), 'Stack values is not assigned');
-  if AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue)) then
+  if AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue),Memtracker) then
   begin
     ResetStack(stack);
     Stack.StackTop := Stack.Values + Stack.Count;  //move stack top to next pointer available (at count)
@@ -838,16 +845,19 @@ end;
 
 
 
-procedure AddToCreatedObjects(p : pObj);
+procedure AddToCreatedObjects(p : pObj; MemTracker : pMemTracker);
 begin
-  p^.Next := vm.CreatedObjects;
-  vm.CreatedObjects := p;
+  Assert(Memtracker <> nil, 'Mem tracker is nil add to created objects');
+
+  p^.Next := Memtracker.CreatedObjects;
+  Memtracker.CreatedObjects := p;
+
 end;
 
 //Chars: array[0..0] of AnsiChar;
-function AddString(const a, b : AnsiString) : PObjString;
+function AddString(const a, b : AnsiString; MemTracker : pMemTracker) : PObjString;
 begin
-  result := CreateString(a+b);
+  result := CreateString(a+b,Memtracker);
 end;
 
 function ObjStringSize(const p : pObjString) : integer;
@@ -871,7 +881,7 @@ begin
   result.ObjValue := pObj(value);
 end;
 
-procedure Concatenate();
+procedure Concatenate(MemTracker : pMemTracker);
 var
   top, below, resultStr: PObjString;
   strTop, strBelow: AnsiString;
@@ -885,9 +895,9 @@ begin
   strTop := ObjStringToAnsiString(top);
   strBelow := ObjStringToAnsiString(below);
 
-  resultStr := AddString(strBelow, strTop);   // "A" + "B"
+  resultStr := AddString(strBelow, strTop,Memtracker);   // "A" + "B"
 
-  PushStack(vm.stack, StringToValue(resultStr));
+  PushStack(vm.stack, StringToValue(resultStr),Memtracker);
 end;
 
 
@@ -992,12 +1002,12 @@ end;
 
 
 
-function AddValueConstant(ValueArray: pValueArray; const value: TValue): Integer;
+function AddValueConstant(ValueArray: pValueArray; const value: TValue;Memtracker : pMemTracker): Integer;
 begin
   Assert(Assigned(ValueArray), 'ValueArray is not assigned');
 
   // Add the value to the ValueArray
-  writeValueArray(ValueArray, value);
+  writeValueArray(ValueArray, value,Memtracker);
 
   // Return the index of the newly added value
   Result := ValueArray.Count - 1;
@@ -1016,7 +1026,7 @@ begin
 end;
 
 
-procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer);
+procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer; MemTracker : pMemTracker);
 var
   idx : integer;
 begin
@@ -1024,9 +1034,9 @@ begin
   Assert(Assigned(chunk.Constants), 'ValueArray is not assigned');
 
   //add constant, 1st into value's array of the value record
-  idx := AddValueConstant(chunk.Constants,value);
+  idx := AddValueConstant(chunk.Constants,value,MemTracker);
   //add constant op code into the chunk array
-  writeChunk(Chunk, OP_CONSTANT,Line);
+  writeChunk(Chunk, OP_CONSTANT,Line,MemTracker);
   //followed by the index of the value inserted into the value array
   WriteConstantIndex(Chunk,idx);
 end;
@@ -1112,7 +1122,7 @@ begin
 
         OP_CONSTANT : begin
           value := ReadConstant;
-          pushStack(vm.Stack,value);
+          pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
         OP_NEGATE : begin
@@ -1127,18 +1137,18 @@ begin
           value := popStack(vm.Stack);
           value.NumberValue := -Value.NumberValue;
 
-          PushStack(vm.Stack,value);
+          PushStack(vm.Stack,value,vm.MemTracker);
 
         end;
 
-        OP_NIL      : pushStack(vm.stack, CreateNilValue);
-        OP_TRUE     : pushStack(vm.Stack, CreateBoolean(true));
-        OP_FALSE    : pushStack(vm.stack, CreateBoolean(false));
+        OP_NIL      : pushStack(vm.stack, CreateNilValue,vm.MemTracker);
+        OP_TRUE     : pushStack(vm.Stack, CreateBoolean(true),vm.MemTracker);
+        OP_FALSE    : pushStack(vm.stack, CreateBoolean(false),vm.MemTracker);
 
         OP_EQUAL: begin
           Value := popStack(vm.Stack);
           ValueB := popStack(vm.Stack);
-          pushStack(vm.stack,CreateBoolean(valuesEqual(Value, ValueB)));
+          pushStack(vm.stack,CreateBoolean(valuesEqual(Value, ValueB)),vm.MemTracker);
         end;
 
         OP_GREATER  : binaryOp(boGreater);
@@ -1153,7 +1163,7 @@ begin
                         else
                         if isString(peekStack(vm.stack,0)) and isString(peekStack(vm.stack,1)) then
                         begin
-                          Concatenate();
+                          Concatenate(vm.MemTracker);
                         end
                         else
                         begin
@@ -1174,7 +1184,7 @@ begin
 
         OP_DIVIDE   : BinaryOp(boDivide);
 
-        OP_NOT      : pushStack(vm.Stack,CreateBoolean(isFalsey(popStack(vm.Stack))));
+        OP_NOT      : pushStack(vm.Stack,CreateBoolean(isFalsey(popStack(vm.Stack))),vm.MemTracker);
 
         OP_RETURN: begin
            if vm.Stack.count > 0 then
@@ -1259,7 +1269,7 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
-  PushStack(vm.stack,CreateNumber(A + B));
+  PushStack(vm.stack,CreateNumber(A + B),vm.MemTracker);
   Result := true;
 end;
 
@@ -1273,7 +1283,7 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
-  PushStack(vm.stack,CreateNumber(A - B));
+  PushStack(vm.stack,CreateNumber(A - B),vm.MemTracker);
   Result := true;
 end;
 
@@ -1287,7 +1297,7 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
-  PushStack(vm.stack,CreateNumber(A * B));
+  PushStack(vm.stack,CreateNumber(A * B),vm.MemTracker);
   Result := true;
 end;
 
@@ -1301,7 +1311,7 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
-  PushStack(vm.stack,CreateNumber(A / B));
+  PushStack(vm.stack,CreateNumber(A / B),vm.MemTracker);
   Result := true;
 end;
 
@@ -1315,7 +1325,7 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
-  PushStack(vm.stack,CreateBoolean(A > B));
+  PushStack(vm.stack,CreateBoolean(A > B),vm.MemTracker);
   Result := true;
 end;
 
@@ -1329,7 +1339,7 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
-  PushStack(vm.stack,CreateBoolean(A < B));
+  PushStack(vm.stack,CreateBoolean(A < B),vm.MemTracker);
   Result := true;
 end;
 
@@ -1358,7 +1368,7 @@ begin
    Assert(Assigned(VM),'VM is not assigned');
    chunk := nil;
    try
-     InitChunk(Chunk);
+     InitChunk(Chunk,vm.MemTracker);
      if not compile(source,chunk) then
      begin
        Result.code :=  INTERPRET_COMPILE_ERROR;
@@ -1368,7 +1378,7 @@ begin
      vm.ip := vm.chunk.Code;
      Result := Run;
    finally
-     freeChunk(chunk);
+     freeChunk(chunk,vm.MemTracker);
    end;
 end;
 
@@ -1377,7 +1387,7 @@ begin
   assert(assigned(obj), 'Object is not assigned to free');
   case obj.ObjectKind of
     okString : begin
-      FreeString(pObjString(obj));
+      FreeString(pObjString(obj),vm.MemTracker);
     end;
   end;
 end;
@@ -1387,9 +1397,9 @@ var
   obj : pObj;
   next : pObj;
 begin
-  if not vm.ownObjects then exit;
 
-  obj := vm.CreatedObjects;
+
+  obj := vm.Memtracker.CreatedObjects;
   while (obj <> nil) do
   begin
     next := obj.Next;
@@ -1414,22 +1424,36 @@ begin
 
 end;
 
+procedure InitMemTracker(var MemTracker : pMemTracker);
+begin
+  Assert(MemTracker = nil, 'Mem Tracker is not nil before initialization');
+  new(MemTracker); //Allocate(pointer(MemTracker),0, SizeOf(MemTracker),MemTracker);
+  MemTracker.BytesAllocated := 0;
+end;
+
+procedure FreeMemTracker(var MemTracker : pMemTracker);
+begin
+  dispose(MemTracker);
+  MemTracker := nil;
+end;
+
 procedure InitVM;
 begin
   new(VM); //we don't care about making this route through allocate
   VM.Chunk := nil;
   VM.Stack := nil;
-  vm.CreatedObjects := nil;
-  vm.ownObjects := true;
-  vm.BytesAllocated := 0;
-  InitStack(VM.Stack);
+  VM.MemTracker := nil;
+  InitMemTracker(VM.MemTracker);
+  InitStack(VM.Stack,Vm.MemTracker);
   ResetStack(vm.Stack);
 end;
 
 procedure FreeVM;
 begin
-  FreeStack(VM.Stack);
+  FreeStack(VM.Stack,Vm.MemTracker);
   FreeObjects();
+  Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
+  FreeMemTracker(VM.MemTracker);
   dispose(VM); //and therefore (see above comment in initVM) we just dispose here
 end;
 
@@ -1857,17 +1881,17 @@ end;
 
 procedure emitByte(value : byte);
 begin
-  writeChunk(CurrentChunk,value,parser.previous.line);
+  writeChunk(CurrentChunk,value,parser.previous.line,VM.MemTracker);
 end;
 
 procedure EmitReturn;
 begin
-  writeChunk(CurrentChunk,OP_RETURN,parser.previous.line);
+  writeChunk(CurrentChunk,OP_RETURN,parser.previous.line,VM.Memtracker);
 end;
 
 procedure emitConstant(value : TValue);
 begin
-  AddConstant(CurrentChunk,value,parser.previous.line);
+  AddConstant(CurrentChunk,value,parser.previous.line,VM.MemTracker);
 end;
 
 function  getRule(tokenType : TTokenType) : TParseRule;
@@ -1959,7 +1983,7 @@ begin
   // strip leading and trailing quotes
   if (Length(lexeme) >= 2) and (lexeme[1] = '"') and (lexeme[Length(lexeme)] = '"') then
     lexeme := Copy(lexeme, 2, Length(lexeme) - 2);
-  strObj := CreateString(lexeme);
+  strObj := CreateString(lexeme,VM.MemTracker);
   value := StringToValue(strObj);
   emitConstant(value);
 end;
@@ -2061,10 +2085,9 @@ end;
 
 
 initialization
-  InitVM;
+  VM := nil;
+  CompilingChunk := nil;
 
 finalization
-  FreeVM;
-  Assert(VM.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
 
 end.
