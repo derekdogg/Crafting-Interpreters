@@ -47,11 +47,13 @@ var
   txt : ansiString;
   strObj : pObjString;
 begin
-  vm.ownObjects := true;
-  txt := Memo1.Lines.Text;
-  IR := interpretResult(PAnsiChar(txt));
+  initVM;
+  try
 
-  case Ir.code of
+    txt := Memo1.Lines.Text;
+    IR := interpretResult(PAnsiChar(txt));
+
+    case Ir.code of
     INTERPRET_OK:
     begin
       case IR.value.ValueKind of
@@ -83,9 +85,11 @@ begin
       begin
         Memo2.Lines.add('We fucked up');
       end;
-  end
+  end;
+  finally;
+    FreeVM;
 
-
+  end;
 
 
 end;
