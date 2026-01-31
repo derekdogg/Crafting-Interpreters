@@ -30,7 +30,7 @@ begin
   valueA := nil;
   valueB := nil;
   MemTracker := nil;
-  New(MemTracker);
+  InitMemTracker(MemTracker);
 
   valueA := CreateString('fred',MemTracker);
   valueB := CreateString('fred',MemTracker);
@@ -50,7 +50,8 @@ begin
   finally
     freeString(ValueA,MemTracker);
     freeString(ValueB,MemTracker);
-    dispose(MemTracker);
+    Assert(MemTracker.BytesAllocated = 0, 'MemTracker Byttes is > 0');
+    FreeMemTracker(MemTracker);
   end;
 
 end;
@@ -196,31 +197,41 @@ end;
 
 procedure TestStringEqual;
 var
- valueA : pObjString;
- valueB : pObjString;
+  valueA : pObjString;
+  valueB : pObjString;
+  MemTracker : pMemTracker;
 begin
- (* valueA := CreateString('fred');
-  valueB := CreateString('fred');
+  ValueA := nil;
+  ValueB := nil;
+  MemTracker := nil;
+
+  InitMemTracker(MemTracker);
+
+  valueA := CreateString('fred',MemTracker);
+  valueB := CreateString('fred',MemTracker);
   try
     assert(StringsEqual(valueA,valueB), 'strings are not equal');
   finally
-    freeString(valueA);
-    freeString(valueB);
+    freeString(valueA,MemTracker);
+    freeString(valueB,MemTracker);
   end;
+  Assert(MemTracker.BytesAllocated = 0, 'memtracker bytes > 0');
+
   assert(ValueA = nil);
   assert(ValueB = nil);
 
-  valueA := CreateString('');
-  valueB := CreateString('');
+  valueA := CreateString('',MemTracker);
+  valueB := CreateString('',MemTracker);
   try
     assert(StringsEqual(valueA,valueB), 'strings are not equal');
   finally
-    freeString(valueA);
-    freeString(valueB);
+    freeString(valueA,MemTracker);
+    freeString(valueB,MemTracker);
   end;
   assert(ValueA = nil);
   assert(ValueB = nil);
-  *)
+  Assert(MemTracker.BytesAllocated = 0, 'memtracker bytes > 0');
+  FreeMemTracker(MemTracker);
 end;
 
 
@@ -247,6 +258,7 @@ var
   value : TValue;
   i     : integer;
 begin
+
   (*InitStack(stack);
 
   try

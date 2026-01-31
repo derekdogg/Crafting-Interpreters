@@ -865,8 +865,6 @@ begin
   result := Sizeof(TObjString) + Max(0, p^.length - 1);  // avoid negative size
 end;
 
-
-
 function ValueToString(const value : TValue) : pObjString;
 begin
   assert(isString(value), 'value is not a string value');
@@ -877,6 +875,7 @@ end;
 function StringToValue(const value : pObjString) : TValue;
 begin
   assert(Assigned(value), 'string to value is not assigned');
+  Assert(Value.Obj.ObjectKind = okString, 'String to value is not a string');
   result.ValueKind := vkObject;
   result.ObjValue := pObj(value);
 end;
