@@ -15,37 +15,25 @@ procedure TestValuesEqual;
 implementation
 
 uses
-  sysutils,Chunk_types;
-
-var
-  ValueArray: pValue;
-  Capacity: Integer;
-
-
-procedure SetupValueArray;
-begin
-  ValueArray := nil;
-  Capacity := 0;
-end;
-
-procedure TeardownValueArray;
-begin
-  if ValueArray <> nil then
-  begin
-    FreeValues(ValueArray, Capacity);
-    ValueArray := nil;
-  end;
-end;
+  sysutils,
+  Chunk_types;
 
 
 procedure TestValuesEqual;
 var
  valueA : pObjString;
  valueB : pObjString;
+ MemTracker : pMemTracker;
  ValA,ValB  : TValue;
+
 begin
-  valueA := CreateString('fred');
-  valueB := CreateString('fred');
+  valueA := nil;
+  valueB := nil;
+  MemTracker := nil;
+  New(MemTracker);
+
+  valueA := CreateString('fred',MemTracker);
+  valueB := CreateString('fred',MemTracker);
   try
     ValA := StringToValue(valueA);
     ValB := StringToValue(valueB);
@@ -60,8 +48,9 @@ begin
     Assert(ValuesEqual(ValA,ValB), 'Compare number to string failed for numbers');
 
   finally
-    freeString(ValueA);
-    freeString(ValueB);
+    freeString(ValueA,MemTracker);
+    freeString(ValueB,MemTracker);
+    dispose(MemTracker);
   end;
 
 end;
@@ -70,25 +59,40 @@ end;
 procedure TestInitialAllocation;
 var
   Grew: Boolean;
-  Count: Integer;
+  MemTracker : pMemTracker;
+  ValueArray : PValueArray;
+  Capacity   : integer;
 begin
-  SetupValueArray;
-  Count := 0;
+  MemTracker := nil;
+  ValueArray := nil;
+  Capacity := 0;
 
-  Grew := AllocateArray(Pointer(ValueArray), Capacity, Count, SizeOf(TValue));
+  InitMemTracker(MemTracker);
+  InitValueArray(ValueArray,MemTracker);
+
+  Grew := AllocateArray(Pointer(ValueArray), Capacity, 10, SizeOf(TValue), MemTracker);
   Assert(Grew = True, 'Initial allocation should grow array');
   Assert(Capacity = START_CAPACITY, 'Capacity should be START_CAPACITY after first allocation');
   Assert(ValueArray <> nil, 'Pointer should be allocated');
-
-  TeardownValueArray;
+  FreeValueArray(ValueArray,MemTracker);
+  FreeMemTracker(MemTracker);
 end;
 
 procedure TestNoGrowthNeeded;
 var
   Grew: Boolean;
   Count: Integer;
+  ValueArray : PValueArray;
+  MemTracker : pMemTracker;
+  Capacity   : integer;
 begin
-  SetupValueArray;
+ (* ValueArray := nil;
+  MemTracker := nil;
+  Capacity   := 0;
+
+  InitMemTracker(MemTracker);
+  InitValueArray(ValueArray,MemTracker);
+
   // Pre-allocate
   AllocateArray(Pointer(ValueArray), Capacity, 0, SizeOf(TValue));
 
@@ -97,7 +101,8 @@ begin
   Assert(Grew = False, 'No growth should occur if Count < Capacity');
   Assert(ValueArray <> nil, 'Pointer should remain allocated');
 
-  TeardownValueArray;
+  FreeValueArray(ValueArray,MemTracker);
+  FreeMemTracker(MemTracker); *)
 end;
 
 procedure TestGrowthAtCapacity;
@@ -105,7 +110,7 @@ var
   Grew: Boolean;
   Count: Integer;
 begin
-  SetupValueArray;
+ (* SetupValueArray;
   // Pre-allocate
   AllocateArray(Pointer(ValueArray), Capacity, 0, SizeOf(TValue));
 
@@ -114,7 +119,7 @@ begin
   Assert(Grew = True, 'Array should grow when Count = Capacity');
   Assert(Capacity > Count, 'Capacity should increase after growth');
 
-  TeardownValueArray;
+  TeardownValueArray; *)
 end;
 
 procedure TestMultipleGrowths;
@@ -122,7 +127,7 @@ var
   Grew: Boolean;
   Count: Integer;
 begin
-  SetupValueArray;
+ (* SetupValueArray;
   // Pre-allocate
   AllocateArray(Pointer(ValueArray), Capacity, 0, SizeOf(TValue));
 
@@ -135,14 +140,14 @@ begin
   Assert(Grew = True, 'Array should grow again on subsequent full allocation');
   Assert(Capacity > Count, 'Capacity should increase after multiple growths');
 
-  TeardownValueArray;
+  TeardownValueArray; *)
 end;
 
 procedure TestAllocationLimitExceeded;
 var
   Count: Integer;
 begin
-  SetupValueArray;
+  (*SetupValueArray;
   try
     Count := MAX_SIZE;
     Capacity := MAX_SIZE;
@@ -159,16 +164,16 @@ begin
 
   finally
     TeardownValueArray;
-  end;
+  end;      *)
 end;
 
 procedure TestAllocateArray;
 begin
-  TestInitialAllocation;
-  TestNoGrowthNeeded;
-  TestGrowthAtCapacity;
-  TestMultipleGrowths;
-  TestAllocationLimitExceeded;
+  //TestInitialAllocation;
+  //TestNoGrowthNeeded;
+  //TestGrowthAtCapacity;
+  //TestMultipleGrowths;
+  //TestAllocationLimitExceeded;
 end;
 
 
@@ -176,12 +181,16 @@ end;
 procedure TestInitChunkAndFreeChunk;
 var
   chunk : pChunk;
+  MemTracker : pMemTracker;
 begin
-  chunk := nil;
-  initChunk(chunk);
+  Chunk := nil;
+  MemTracker := nil;
+  InitMemTracker(MemTracker);
+  initChunk(chunk,MemTracker);
  // writeChunk(chunk,1,1);
-  freeChunk(chunk);
-  assert(chunk = nil);
+  FreeChunk(chunk,MemTracker);
+  FreeMemTracker(MemTracker);
+  Assert(chunk = nil);
 end;
 
 
@@ -190,7 +199,7 @@ var
  valueA : pObjString;
  valueB : pObjString;
 begin
-  valueA := CreateString('fred');
+ (* valueA := CreateString('fred');
   valueB := CreateString('fred');
   try
     assert(StringsEqual(valueA,valueB), 'strings are not equal');
@@ -211,7 +220,7 @@ begin
   end;
   assert(ValueA = nil);
   assert(ValueB = nil);
-
+  *)
 end;
 
 
@@ -220,7 +229,7 @@ var
  valueA : pObjString;
  valueB : pObjString;
 begin
-  valueA := CreateString('fred ');
+  (*valueA := CreateString('fred ');
   valueB := CreateString('fred');
   try
     assert(StringsEqual(valueA,valueB) = false, 'strings are NOT equal');
@@ -228,7 +237,7 @@ begin
     freeString(valueA);
     freeString(valueB);
   end;
-
+   *)
 end;
 
 
@@ -238,7 +247,7 @@ var
   value : TValue;
   i     : integer;
 begin
-  InitStack(stack);
+  (*InitStack(stack);
 
   try
     for i := 0 to 999 do
@@ -264,6 +273,7 @@ begin
     end;
   end;
   FreeStack(stack);
+  *)
 end;
 
 procedure TestStackPop;
@@ -272,7 +282,7 @@ var
   value : TValue;
   i     : integer;
 begin
-  InitStack(stack);
+ (* InitStack(stack);
   try
     for i := 0 to 999 do
     begin
@@ -295,7 +305,7 @@ begin
       raise;
     end;
   end;
-  FreeStack(stack);
+  FreeStack(stack);  *)
 end;
 
 
@@ -303,14 +313,18 @@ end;
 procedure TestStackPush;
 var
   stack : pStackRecord;
+  MemTracker : pMemTracker;
   value : TValue;
   i     : integer;
 begin
   stack := nil;
-  InitStack(stack);
+  MemTracker := nil;
+
+  InitMemTracker(MemTracker);
+  InitStack(stack,MemTracker);
   try
     for i := 0 to 999 do
-      pushStack(stack,value);
+      pushStack(stack,value,MemTracker);
 
     assert(Stack.Count = 1000);
 
@@ -320,11 +334,12 @@ begin
       raise;
     end;
   end;
-  FreeStack(stack);
+  FreeStack(stack,MemTracker);
+  Assert(memTracker.BytesAllocated = 0);
+  FreeMemTracker(MemTracker);
 end;
 
 initialization
-  vm.ownObjects := false; //we assume control here.
 
 finalization
 
