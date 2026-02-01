@@ -21,39 +21,45 @@ uses
   Chunk_types;
 
 
-procedure TestAddValueConstant;
+procedure TestAddValueConstant_UpToMax;
 var
-  valueArray : pValueArray;
-  memTracker : pMemTracker;
-  value      : TValue;
-  i          : integer;
-  idx        : integer;
+  ValueArray : pValueArray;
+  MemTracker : pMemTracker;
+  Value      : TValue;
+  i          : Integer;
+  idx        : Integer;
 begin
-  valueArray := nil;
-  memTracker := nil;
-  idx := -1;
+  ValueArray := nil;
+  MemTracker := nil;
 
   Value.ValueKind := vkNumber;
   Value.NumberValue := 10.10;
 
   InitMemTracker(MemTracker);
-  InitValueArray(ValueArray,MemTracker);
+  InitValueArray(ValueArray, MemTracker);
 
   try
-    for i := 0 to 255 do
+    for i := 0 to MAX_SIZE - 1 do
     begin
-
-      idx := AddValueConstant(valueArray,Value,MemTracker);
-
-      assert(idx = i, 'Index is mismatch');
+      idx := AddValueConstant(ValueArray, Value, MemTracker);
+      Assert(idx = i, 'Index mismatch');
     end;
 
+    Assert(ValueArray^.Count = MAX_SIZE, 'Count mismatch');
+    Assert(ValueArray^.Capacity = MAX_SIZE, 'Capacity mismatch');
+
   finally
-    FreeValueArray(ValueArray,MemTracker);
+    FreeValueArray(ValueArray, MemTracker);
     Assert(MemTracker.BytesAllocated = 0, 'Bytes > 0');
   end;
 
   FreeMemTracker(MemTracker);
+end;
+
+
+procedure TestAddValueConstant;
+begin
+  TestAddValueConstant_UpToMax;
 end;
 
 procedure TestValuesEqual;

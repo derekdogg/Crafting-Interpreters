@@ -9,7 +9,7 @@ uses
 const
 
   START_CAPACITY =  256;
-  MAX_SIZE       =  START_CAPACITY * 256;  // 65,536
+  MAX_SIZE       =  START_CAPACITY * 256;
   GROWTH_FACTOR  =  2;
 
   //scanner
