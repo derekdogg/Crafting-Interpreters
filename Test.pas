@@ -1,7 +1,9 @@
 ﻿unit Test;
+{$ASSERTIONS ON}
 
 interface
 
+procedure TestAddValueConstant;
 procedure TestAllocateArray;
 procedure TestInitChunkAndFreeChunk;
 procedure TestStackPush;
@@ -18,6 +20,41 @@ uses
   sysutils,
   Chunk_types;
 
+
+procedure TestAddValueConstant;
+var
+  valueArray : pValueArray;
+  memTracker : pMemTracker;
+  value      : TValue;
+  i          : integer;
+  idx        : integer;
+begin
+  valueArray := nil;
+  memTracker := nil;
+  idx := -1;
+
+  Value.ValueKind := vkNumber;
+  Value.NumberValue := 10.10;
+
+  InitMemTracker(MemTracker);
+  InitValueArray(ValueArray,MemTracker);
+
+  try
+    for i := 0 to 255 do
+    begin
+
+      idx := AddValueConstant(valueArray,Value,MemTracker);
+
+      assert(idx = i, 'Index is mismatch');
+    end;
+
+  finally
+    FreeValueArray(ValueArray,MemTracker);
+    Assert(MemTracker.BytesAllocated = 0, 'Bytes > 0');
+  end;
+
+  FreeMemTracker(MemTracker);
+end;
 
 procedure TestValuesEqual;
 var
@@ -59,51 +96,24 @@ end;
 
 procedure TestInitialAllocation;
 var
-  Grew: Boolean;
   MemTracker : pMemTracker;
   ValueArray : PValueArray;
-  Capacity   : integer;
+  Value      : TValue;
 begin
   MemTracker := nil;
   ValueArray := nil;
-  Capacity := 0;
-
   InitMemTracker(MemTracker);
   InitValueArray(ValueArray,MemTracker);
+  writeValueArray(ValueArray,Value,MemTracker);
+  Assert(ValueArray.Count = 1, 'Count is not 1');
 
-  Grew := AllocateArray(Pointer(ValueArray), Capacity, 10, SizeOf(TValue), MemTracker);
-  Assert(Grew = True, 'Initial allocation should grow array');
-  Assert(Capacity = START_CAPACITY, 'Capacity should be START_CAPACITY after first allocation');
-  Assert(ValueArray <> nil, 'Pointer should be allocated');
+
+
+
+
   FreeValueArray(ValueArray,MemTracker);
+  Assert(MemTracker.BytesAllocated = 0);
   FreeMemTracker(MemTracker);
-end;
-
-procedure TestNoGrowthNeeded;
-var
-  Grew: Boolean;
-  Count: Integer;
-  ValueArray : PValueArray;
-  MemTracker : pMemTracker;
-  Capacity   : integer;
-begin
- (* ValueArray := nil;
-  MemTracker := nil;
-  Capacity   := 0;
-
-  InitMemTracker(MemTracker);
-  InitValueArray(ValueArray,MemTracker);
-
-  // Pre-allocate
-  AllocateArray(Pointer(ValueArray), Capacity, 0, SizeOf(TValue));
-
-  Count := Capacity - 1;
-  Grew := AllocateArray(Pointer(ValueArray), Capacity, Count, SizeOf(TValue));
-  Assert(Grew = False, 'No growth should occur if Count < Capacity');
-  Assert(ValueArray <> nil, 'Pointer should remain allocated');
-
-  FreeValueArray(ValueArray,MemTracker);
-  FreeMemTracker(MemTracker); *)
 end;
 
 procedure TestGrowthAtCapacity;
@@ -188,8 +198,9 @@ begin
   MemTracker := nil;
   InitMemTracker(MemTracker);
   initChunk(chunk,MemTracker);
- // writeChunk(chunk,1,1);
+  writeChunk(chunk,1,1,MemTracker);
   FreeChunk(chunk,MemTracker);
+  Assert(MemTracker.BytesAllocated = 0);
   FreeMemTracker(MemTracker);
   Assert(chunk = nil);
 end;
@@ -215,8 +226,8 @@ begin
     freeString(valueA,MemTracker);
     freeString(valueB,MemTracker);
   end;
-  Assert(MemTracker.BytesAllocated = 0, 'memtracker bytes > 0');
 
+  Assert(MemTracker.BytesAllocated = 0, 'memtracker bytes > 0');
   assert(ValueA = nil);
   assert(ValueB = nil);
 
@@ -237,89 +248,95 @@ end;
 
 procedure TestStringUnequal;
 var
- valueA : pObjString;
- valueB : pObjString;
+  valueA : pObjString;
+  valueB : pObjString;
+  MemTracker : pMemTracker;
 begin
-  (*valueA := CreateString('fred ');
-  valueB := CreateString('fred');
+  ValueA := nil;
+  ValueB := nil;
+  MemTracker := nil;
+
+  InitMemTracker(MemTracker);
   try
+    valueA := CreateString('fred ',MemTracker);
+    valueB := CreateString('fred', MemTracker);
     assert(StringsEqual(valueA,valueB) = false, 'strings are NOT equal');
+    freeString(valueA,MemTracker);
+    freeString(valueB,MemTracker);
+    Assert(MemTracker.BytesAllocated = 0, 'memtracker bytes > 0');
   finally
-    freeString(valueA);
-    freeString(valueB);
+     FreeMemTracker(MemTracker);
   end;
-   *)
 end;
 
 
 procedure TestStackPeek;
 var
-  stack : pStackRecord;
-  value : TValue;
+  stack       : pStackRecord;
+  value       : TValue;
+  memTracker  : pMemTracker;
+
   i     : integer;
 begin
+  stack := nil;
+  MemTracker := nil;
 
-  (*InitStack(stack);
+  InitMemTracker(MemTracker);
+  InitStack(stack,MemTracker);
 
-  try
-    for i := 0 to 999 do
-    begin
-      value.NumberValue := i;
-      pushStack(stack,value);
-    end;
-
-    assert(Stack.Count = 1000);
-
-     // Peek from top down
-    for i := 0 to 999 do
-    begin
-      value := PeekStack(stack, i);
-      Assert(value.NumberValue = 999 - i);
-    end;
-
-
-  except
-    on E:EAssertionFailed do
-    begin
-      raise;
-    end;
+  for i := 0 to 999 do
+  begin
+    value.NumberValue := i;
+    pushStack(stack,value,MemTracker);
   end;
-  FreeStack(stack);
-  *)
+
+  assert(Stack.Count = 1000);
+
+   // Peek from top down
+  for i := 0 to 999 do
+  begin
+    value := PeekStack(stack, i);
+    Assert(value.NumberValue = 999 - i);
+  end;
+
+
+  FreeStack(stack,MemTracker);
+   Assert(memTracker.BytesAllocated = 0);
+  FreeMemTracker(MemTracker);
 end;
 
 procedure TestStackPop;
 var
-  stack : pStackRecord;
-  value : TValue;
+  stack       : pStackRecord;
+  value       : TValue;
+  memTracker  : pMemTracker;
+
   i     : integer;
 begin
- (* InitStack(stack);
-  try
-    for i := 0 to 999 do
-    begin
-      value.NumberValue := i;
-      pushStack(stack,value);
-    end;
+  stack := nil;
+  MemTracker := nil;
 
-    assert(Stack.Count = 1000);
+  InitMemTracker(MemTracker);
+  InitStack(stack,MemTracker);
 
-    for i := 999 downto 0 do
-    begin
-      value := popStack(Stack);
-      assert(Value.NumberValue = i);
-    end;
-
-
-  except
-    on E:EAssertionFailed do
-    begin
-      raise;
-    end;
+  for i := 0 to 999 do
+  begin
+    value.NumberValue := i;
+    pushStack(stack,value,MemTracker);
   end;
-  FreeStack(stack);  *)
-end;
 
+  assert(Stack.Count = 1000);
+
+  for i := 999 downto 0 do
+  begin
+    value := popStack(Stack);
+    assert(Value.NumberValue = i);
+  end;
+
+  FreeStack(stack,MemTracker);
+  Assert(memTracker.BytesAllocated = 0);
+  FreeMemTracker(MemTracker);
+end;
 
 
 procedure TestStackPush;

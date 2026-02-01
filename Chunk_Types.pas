@@ -1,16 +1,16 @@
 unit Chunk_Types;
 {$POINTERMATH ON}
+{$ASSERTIONS ON}
 interface
 
 uses
   Classes, dialogs;
 
-
 const
 
-  START_CAPACITY = 256;
-  MAX_SIZE       = 256 * 256;  // 65,536
-  GROWTH_FACTOR = 2;
+  START_CAPACITY =  256;
+  MAX_SIZE       =  START_CAPACITY * 256;  // 65,536
+  GROWTH_FACTOR  =  2;
 
   //scanner
   CHAR_SPACE    = ' ';
@@ -117,9 +117,9 @@ type
   pObjString      = ^TObjString;
   pStackRecord    = ^TStackRecord;
   pVirtualMachine = ^TVirtualMachine;
-  pAnsiCharArray = ^TAnsiCharArray;
-  pMemTracker    = ^TMemTracker;
-  pLogs     = ^TLogs; //Note : Don't think we need this (https://www.danieleteti.it/loggerpro/) maybe add later? We use a stupidly simple approach for now
+  pAnsiCharArray  = ^TAnsiCharArray;
+  pMemTracker     = ^TMemTracker;
+  pLogs           = ^TLogs; //Note : Don't think we need this (https://www.danieleteti.it/loggerpro/) maybe add later? We use a stupidly simple approach for now
 
 
 
@@ -164,7 +164,6 @@ type
     Code        : pCode;
     Constants   : pValueArray;
     Lines       : pInteger;
-    Initialised : boolean;
   end;
 
   TValueArray = record
@@ -258,6 +257,7 @@ procedure freeChunk(var chunk: pChunk;MemTracker : pMemTracker);
 procedure writeChunk(chunk: pChunk; value: byte; Line : Integer;MemTracker : pMemTracker);
 procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer; MemTracker : pMemTracker);
 procedure initValueArray(var ValueArray : pValueArray;MemTracker : pMemTracker);
+function AddValueConstant(ValueArray: pValueArray; const value: TValue;Memtracker : pMemTracker): Integer;
 procedure writeValueArray(ValueArray : pValueArray; Value : TValue;MemTracker : pMemTracker);
 procedure FreeValues(var Values : pValue; Capacity : integer;MemTracker : pMemTracker);
 procedure freeValueArray(var ValueArray : pValueArray;MemTracker : pMemTracker);
@@ -502,13 +502,9 @@ begin
     FillChar(PByte(p)[OldSize], NewSize - OldSize, 0);
 
   // --------------------------------------------------------------------------
-  // Update VM memory accounting
-  // --------------------------------------------------------------------------
   // Tracks total allocated bytes for GC / memory management
-
+  // --------------------------------------------------------------------------
   IncrementBytesAllocated(Memtracker, NewSize - OldSize);
-
-
 
   // --------------------------------------------------------------------------
   // Zero-size check
@@ -527,25 +523,19 @@ begin
 end;
 
 
-function AllocateArray(var List: Pointer;  var CurrentCapacity: Integer;  Count, ElemSize: Integer;MemTracker : pMemTracker): Boolean;
+function AllocateArray(var List: Pointer;  var CurrentCapacity: Integer;  Count, ElemSize: Integer; MemTracker : pMemTracker): Boolean;
 var
   NewCapacity: Integer;
   OldSize, NewSize: Integer;
 begin
   // ---- Global invariants ---------------------------------------------------
 
-  Assert(START_CAPACITY > 0,
-    'START_CAPACITY must be greater than zero');
-  Assert(GROWTH_FACTOR > 1,
-    'GROWTH_FACTOR must be greater than 1');
-  Assert(ElemSize > 0,
-    'ElemSize must be greater than zero');
-  Assert(CurrentCapacity >= 0,
-    'CurrentCapacity underflow');
-  Assert(Count >= 0,
-    'Count underflow');
-  Assert(Count <= CurrentCapacity,
-    'Count exceeds CurrentCapacity');
+  Assert(START_CAPACITY > 0, 'START_CAPACITY must be greater than zero');
+  Assert(GROWTH_FACTOR > 1, 'GROWTH_FACTOR must be greater than 1');
+  Assert(ElemSize > 0,'ElemSize must be greater than zero');
+  Assert(CurrentCapacity >= 0, 'CurrentCapacity underflow');
+  Assert(Count >= 0, 'Count underflow');
+  Assert(Count <= CurrentCapacity, 'Count exceeds CurrentCapacity');
 
   // ---- Initial allocation --------------------------------------------------
 
@@ -575,11 +565,11 @@ begin
 
   // Ensure capacity growth itself cannot overflow Integer
   Assert(CurrentCapacity <= MaxInt div GROWTH_FACTOR,
-    'Array capacity multiplication overflows Integer');
+    'Array capacity multiplication overflows Integer : ' + inttostr(CurrentCapacity));
 
   // Ensure logical size limit is not exceeded
   Assert(CurrentCapacity <= MAX_SIZE div GROWTH_FACTOR,
-    'Array capacity growth would exceed MAX_SIZE');
+    'Array capacity growth would exceed MAX_SIZE + : ' + inttostr(CurrentCapacity));
 
   NewCapacity := CurrentCapacity * GROWTH_FACTOR;
 
@@ -624,6 +614,7 @@ begin
   if Len > 0 then
   begin
     Move(PAnsiChar(S)^, Result^.Chars[0], Len);
+    //Move(Pointer(S)^, Result^.Chars[0], Len);
   end;
 
   //track creation in the vm list of obj.
@@ -662,13 +653,13 @@ begin
   chunk.Lines := nil;
   chunk.Constants := nil;
   InitValueArray(chunk.Constants,MemTracker);
-  chunk.Initialised := true;
+
 end;
 
 procedure freeChunk(var chunk: pChunk; MemTracker : pMemTracker);
 begin
   assert(assigned(Chunk),'Chunk is not assigned');
-  assert(chunk.Initialised = true, 'Chunk is not initialised');
+
 
   if (chunk.Capacity) > 0 then
   begin
@@ -697,7 +688,7 @@ var
   currentCap : integer;
 begin
   assert(assigned(chunk),'Chunk is not assigned');
-  assert(chunk.Initialised = true, 'Chunk is not initialised');
+  assert(Line >=0, 'Line is < 0');
 
   currentCap := Chunk.Capacity;
   if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode) , MemTracker) then
@@ -728,7 +719,6 @@ end;
 procedure writeValueArray(ValueArray : pValueArray; Value : TValue; MemTracker : pMemTracker);
 begin
   assert(assigned(ValueArray),'ValueArray is not assigned');
-
 
   AllocateArray(pointer(ValueArray.Values), ValueArray.Capacity, ValueArray.Count,sizeof(TValue),MemTracker);
 
@@ -894,7 +884,7 @@ begin
   strTop := ObjStringToAnsiString(top);
   strBelow := ObjStringToAnsiString(below);
 
-  resultStr := AddString(strBelow, strTop,Memtracker);   // "A" + "B"
+  resultStr := AddString(strBelow, strTop, Memtracker);   // "A" + "B"
 
   PushStack(vm.stack, StringToValue(resultStr),Memtracker);
 end;
@@ -999,13 +989,11 @@ end;
 
 
 
-
-
 function AddValueConstant(ValueArray: pValueArray; const value: TValue;Memtracker : pMemTracker): Integer;
 begin
   Assert(Assigned(ValueArray), 'ValueArray is not assigned');
 
-  // Add the value to the ValueArray
+  // Add the value to the ValueArray -- note here the value array can grow
   writeValueArray(ValueArray, value,Memtracker);
 
   // Return the index of the newly added value
@@ -1018,7 +1006,7 @@ begin
   Assert(Assigned(Chunk.Code), 'Chunk code is not assigned');
   Assert(Index >= 0, ' index is negative');
   Assert(Index <= Chunk.Constants.Capacity, 'index is > constants array');
-  Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity,' writing chunk index will exceed chunk capacity');
+  Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity, 'writing chunk index will exceed chunk capacity');
 
   PInteger(Chunk.Code + Chunk.Count)^ := index;
   Inc(Chunk.Count, SizeOf(Integer));

@@ -79,7 +79,7 @@ object Form4: TForm4
     Top = 216
     Width = 104
     Height = 25
-    Caption = 'Test Allocate Array'
+    Caption = 'Add Value Constant'
     TabOrder = 7
     OnClick = Button6Click
   end

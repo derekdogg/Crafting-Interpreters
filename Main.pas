@@ -127,7 +127,7 @@ end;
 
 procedure TForm4.Button6Click(Sender: TObject);
 begin
-  TestAllocateArray;
+  TestAddValueConstant;
 end;
 
 end.
