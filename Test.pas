@@ -57,9 +57,59 @@ begin
 end;
 
 
+procedure TestAddConstnat_upToMax;
+var
+  chunk : pChunk;
+  MemTracker : pMemTracker;
+  Value,constant : TValue;
+  i,j : integer;
+
+begin
+  chunk := nil;
+  MemTracker := nil;
+
+  InitMemTracker(MemTracker);
+  InitChunk(Chunk, MemTracker);
+  Value.ValueKind := vkNumber;
+
+  j := 0;
+  for i := 0 to 9999 do
+  begin
+    Value.NumberValue := i;
+
+    if i <= High(Byte) then
+    begin
+      inc(j,2); //OP_CONSTANT + Index into constant
+      AddConstant(Chunk,Value,0,MemTracker);
+      Assert(Chunk.Count = j, 'Chunk count <> i');
+      constant := ReadConstant(chunk.Code,chunk.Constants);
+      Assert(Constant.ValueKind = vkNumber, 'Constant returned is not a number');
+      Assert(Constant.NumberValue = i, 'Constant value returned is not i');
+    end
+    else
+    begin
+      inc(j,4); //OP_CONSTANT_Long + Index into constant (3 bytes for the int)
+      AddConstant(Chunk,Value,0,MemTracker);
+      Assert(Chunk.Count = j, 'Chunk count <> i');
+      Constant := ReadLongConstant(chunk.Code,chunk.Constants);
+      Assert(Constant.ValueKind = vkNumber, 'Constant returned is not a number');
+      Assert(Constant.NumberValue = i, 'Constant value returned is not i');
+
+    end;
+
+
+  end;
+
+  FreeChunk(Chunk,MemTracker);
+  Assert(MemTracker.BytesAllocated = 0, 'Bytes > 0');
+  FreeMemTracker(MemTracker)
+
+end;
+
 procedure TestAddValueConstant;
 begin
   TestAddValueConstant_UpToMax;
+  TestAddConstnat_upToMax;
 end;
 
 procedure TestValuesEqual;
@@ -112,11 +162,6 @@ begin
   InitValueArray(ValueArray,MemTracker);
   writeValueArray(ValueArray,Value,MemTracker);
   Assert(ValueArray.Count = 1, 'Count is not 1');
-
-
-
-
-
   FreeValueArray(ValueArray,MemTracker);
   Assert(MemTracker.BytesAllocated = 0);
   FreeMemTracker(MemTracker);

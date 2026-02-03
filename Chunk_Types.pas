@@ -37,8 +37,9 @@ const
   OP_EQUAL    = 11;
   OP_GREATER  = 12;
   OP_LESS     = 13;
+  OP_CONSTANT_LONG = 14;
 
-  OP_STRINGS : array[0..13] of string = (
+  OP_STRINGS : array[0..14] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -52,7 +53,8 @@ const
     'OP_NOT',
     'OP_EQUAL',
     'OP_GREATER',
-    'OP_LESS');
+    'OP_LESS',
+    'OP_CONSTANT_LONG');
 
 
 type
@@ -147,6 +149,12 @@ type
     Obj     : TObj;
     length  : integer;
     chars   : TAnsiCharArray;
+  end;
+
+  TIntToByteResult = record
+     byte0 : byte;
+     byte1 : byte;
+     byte2 : byte;
   end;
 
   TValue = record
@@ -262,7 +270,11 @@ procedure writeValueArray(ValueArray : pValueArray; Value : TValue;MemTracker : 
 procedure FreeValues(var Values : pValue; Capacity : integer;MemTracker : pMemTracker);
 procedure freeValueArray(var ValueArray : pValueArray;MemTracker : pMemTracker);
 procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
-
+function IntToBytes(const value : integer) : TIntToByteResult;
+function ByteToInt(const value : TIntToByteResult) : integer;
+function ReadByte(var code : pCode): Byte;
+function ReadConstant(var code : pCode; constants : pValueArray) : TValue;
+function ReadLongConstant(var code : pCode; constants : pValueArray) : TValue;
 //Memtracker
 procedure InitMemTracker(var MemTracker : pMemTracker);
 procedure FreeMemTracker(var MemTracker : pMemTracker);
@@ -436,6 +448,32 @@ implementation
 
 uses
   sysutils, Math,strUtils, typinfo;
+
+
+function IntToBytes(const value: Integer): TIntToByteResult;
+begin
+  Assert((value >= 0) and (value <= $FFFFFF),
+    'IntToBytes: value out of 24-bit range');
+  Result.byte0 := Byte(value and $FF);
+  Result.byte1 := Byte((value shr 8) and $FF);
+  Result.byte2 := Byte((value shr 16) and $FF);
+end;
+
+function ByteToInt(const value: TIntToByteResult): Integer;
+begin
+  // Structural sanity (documents intent)
+  Assert(SizeOf(TIntToByteResult) = 3,
+    'TIntToByteResult must be exactly 3 bytes');
+
+  // Logical sanity (24-bit unsigned result)
+  Result :=
+    Integer(value.byte0) or
+    (Integer(value.byte1) shl 8) or
+    (Integer(value.byte2) shl 16);
+
+  Assert((Result >= 0) and (Result <= $FFFFFF),
+    'ByteToInt: reconstructed value out of 24-bit range');
+end;
 
 
 //memory creation routines
@@ -1000,22 +1038,11 @@ begin
   Result := ValueArray.Count - 1;
 end;
 
-//we now write an integer into the byte array
-procedure WriteConstantIndex(chunk : pChunk; index : integer);
-begin
-  Assert(Assigned(Chunk.Code), 'Chunk code is not assigned');
-  Assert(Index >= 0, ' index is negative');
-  Assert(Index <= Chunk.Constants.Capacity, 'index is > constants array');
-  Assert(Chunk.Count + SizeOf(Integer) <= Chunk.Capacity, 'writing chunk index will exceed chunk capacity');
-
-  PInteger(Chunk.Code + Chunk.Count)^ := index;
-  Inc(Chunk.Count, SizeOf(Integer));
-end;
-
 
 procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer; MemTracker : pMemTracker);
 var
   idx : integer;
+  IntBytes : TIntToByteResult;
 begin
   Assert(Assigned(chunk), 'Chunk is not assigned');
   Assert(Assigned(chunk.Constants), 'ValueArray is not assigned');
@@ -1023,9 +1050,20 @@ begin
   //add constant, 1st into value's array of the value record
   idx := AddValueConstant(chunk.Constants,value,MemTracker);
   //add constant op code into the chunk array
-  writeChunk(Chunk, OP_CONSTANT,Line,MemTracker);
-  //followed by the index of the value inserted into the value array
-  WriteConstantIndex(Chunk,idx);
+
+  if idx <= high(Byte) then
+  begin
+    writeChunk(Chunk, OP_CONSTANT,Line,MemTracker);
+    WriteChunk(Chunk,idx,Line,memTracker);
+  end
+  else
+  begin
+    writeChunk(Chunk, OP_CONSTANT_LONG,Line,MemTracker);
+    IntBytes := IntToBytes(idx);     //we can't store an int in a byte array, so we split it now.
+    WriteChunk(Chunk, IntBytes.byte0 , Line, MemTracker);
+    WriteChunk(Chunk, IntBytes.byte1 , Line, MemTracker);
+    WriteChunk(Chunk, IntBytes.byte2 , Line, MemTracker);
+  end;
 end;
 
 
@@ -1075,40 +1113,54 @@ begin
   //TODO
 end;
 
+
+function ReadByte(var code : pCode): Byte; inline;
+begin
+   result := Code^;
+   inc(Code);
+end;
+
+function ReadConstant(var code : pCode; constants : pValueArray) : TValue; inline;
+var idx : Byte;
+begin
+  idx := ReadByte(code);
+  result := Constants.Values[idx];
+end;
+
+function ReadLongConstant(var code : pCode; constants : pValueArray) : TValue; inline;
+var
+  idx : integer;
+  Bytes: TIntToByteResult;
+begin
+  Bytes.byte0 := ReadByte(code);
+  Bytes.byte1 := ReadByte(code);
+  Bytes.byte2 := ReadByte(code);
+  idx := ByteToInt(Bytes);
+  result := vm.Chunk.Constants.Values[idx];
+end;
+
 function Run : TInterpretResult;
-
-  function ReadByte: Byte; inline;
-  begin
-     result := vm.ip^;
-     inc(vm.Ip);
-  end;
-
-  function ReadConstant : TValue; inline;
-  var idx : integer;
-  begin
-    idx := PInteger(vm.IP)^;
-    Inc(vm.IP, SizeOf(Integer));
-    result := vm.Chunk.Constants.Values[idx];
-  end;
-
-
 var
   instruction: Byte;
   value,ValueB : TValue;
 
 begin
-
     Assert(Assigned(VM),'VM is not assigned');
     Assert(Assigned(VM.Chunk),'VM Chunk is not assigned');
     Assert(Assigned(VM.Chunk.Code),'VM chunk code is not assigned');
 
     while True do
     begin
-      instruction := ReadByte();
+      instruction := ReadByte(vm.Ip);
       case instruction of
 
         OP_CONSTANT : begin
-          value := ReadConstant;
+          value := ReadConstant(vm.Ip,vm.Chunk.Constants);
+          pushStack(vm.Stack,value,vm.MemTracker);
+        end;
+
+        OP_CONSTANT_LONG : begin
+          value := ReadConstant(vm.Ip,vm.chunk.Constants);
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
@@ -2060,7 +2112,7 @@ begin
    assert(assigned(source), 'Source code is not assigned');
 
    initScanner(source);
-   compilingChunk := chunk;
+   compilingChunk := chunk; //the reason this is done is so it is not passed around.
    parser.hadError := false;
    parser.panicMode := false;
    advanceParser();

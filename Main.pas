@@ -125,8 +125,10 @@ begin
   TestInitChunkAndFreeChunk;
 end;
 
+
 procedure TForm4.Button6Click(Sender: TObject);
 begin
+
   TestAddValueConstant;
 end;
 
