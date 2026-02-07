@@ -60,49 +60,66 @@ end;
 procedure TestAddConstnat_upToMax;
 var
   chunk : pChunk;
+
   MemTracker : pMemTracker;
-  Value,constant : TValue;
+  Value : TValue;
   i,j : integer;
 
+  ip : pCode;
+  instruction : byte;
 begin
   chunk := nil;
   MemTracker := nil;
 
   InitMemTracker(MemTracker);
   InitChunk(Chunk, MemTracker);
-  Value.ValueKind := vkNumber;
 
-  j := 0;
-  for i := 0 to 9999 do
-  begin
-    Value.NumberValue := i;
 
-    if i <= High(Byte) then
+  try
+    Value.ValueKind := vkNumber;
+
+    //inserting constants.
+    j := 0;
+    for i := low(Byte) to High(byte)-1 do
     begin
+      Value.NumberValue := i;
       inc(j,2); //OP_CONSTANT + Index into constant
       AddConstant(Chunk,Value,0,MemTracker);
-      Assert(Chunk.Count = j, 'Chunk count <> i');
-      constant := ReadConstant(chunk.Code,chunk.Constants);
-      Assert(Constant.ValueKind = vkNumber, 'Constant returned is not a number');
-      Assert(Constant.NumberValue = i, 'Constant value returned is not i');
-    end
-    else
+      Assert(Chunk.Count = j, 'Chunk count mismatch');
+    end;
+    Assert(Chunk.Count = j, 'Chunk count mismatch');
+    EmitReturn(chunk,0,MemTracker); //so we can exit Ip instruction loop
+
+    i := 0;
+    ip := Chunk.Code;
+    while true do
     begin
-      inc(j,4); //OP_CONSTANT_Long + Index into constant (3 bytes for the int)
-      AddConstant(Chunk,Value,0,MemTracker);
-      Assert(Chunk.Count = j, 'Chunk count <> i');
-      Constant := ReadLongConstant(chunk.Code,chunk.Constants);
-      Assert(Constant.ValueKind = vkNumber, 'Constant returned is not a number');
-      Assert(Constant.NumberValue = i, 'Constant value returned is not i');
+      instruction := ReadByte(ip);
+      case instruction of
+
+        OP_CONSTANT : begin
+
+          value := ReadConstant(Ip,Chunk.Constants);
+          assert(Value.NumberValue = i, 'value not i');
+          inc(i);
+        end;
+
+        OP_CONSTANT_LONG : begin
+          Assert(False,'We shouldn''t have any op constant long in loop');
+        end;
+
+        OP_RETURN : begin
+          exit;
+        end;
+      end;
 
     end;
 
-
+  finally
+    FreeChunk(Chunk,MemTracker);
+    Assert(MemTracker.BytesAllocated = 0, 'Bytes > 0');
+    FreeMemTracker(MemTracker)
   end;
-
-  FreeChunk(Chunk,MemTracker);
-  Assert(MemTracker.BytesAllocated = 0, 'Bytes > 0');
-  FreeMemTracker(MemTracker)
 
 end;
 

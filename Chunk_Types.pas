@@ -262,6 +262,9 @@ function StringToValue(const value : pObjString) : TValue;
 //Chunk routines
 procedure initChunk(var chunk: pChunk;MemTracker : pMemTracker);
 procedure freeChunk(var chunk: pChunk;MemTracker : pMemTracker);
+procedure emitByte(value : byte; Chunk : pChunk; Line : integer; MemTracker : pMemTracker );
+procedure EmitReturn(Chunk : pChunk; Line : integer; MemTracker : pMemTracker);
+
 procedure writeChunk(chunk: pChunk; value: byte; Line : Integer;MemTracker : pMemTracker);
 procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer; MemTracker : pMemTracker);
 procedure initValueArray(var ValueArray : pValueArray;MemTracker : pMemTracker);
@@ -1918,14 +1921,14 @@ begin
 end;
 
 
-procedure emitByte(value : byte);
+procedure emitByte(value : byte; Chunk : pChunk; Line : integer; MemTracker : pMemTracker );
 begin
-  writeChunk(CurrentChunk,value,parser.previous.line,VM.MemTracker);
+  writeChunk(Chunk,value,line,MemTracker);
 end;
 
-procedure EmitReturn;
+procedure EmitReturn(Chunk : pChunk; Line : integer; MemTracker : pMemTracker);
 begin
-  writeChunk(CurrentChunk,OP_RETURN,parser.previous.line,VM.Memtracker);
+  writeChunk(Chunk,OP_RETURN,line,Memtracker);
 end;
 
 procedure emitConstant(value : TValue);
@@ -2006,8 +2009,8 @@ begin
   operatorType := parser.Previous.tokenType;
   expression;
   case operatortype of
-    TOKEN_MINUS: emitByte(OP_NEGATE);
-    TOKEN_BANG: emitByte(OP_NOT);   //TODO finish all the code for token_bang pg 569
+    TOKEN_MINUS: emitByte(OP_NEGATE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_BANG: emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
   end;
 end;
 
@@ -2039,46 +2042,46 @@ begin
   case tokenType of
 
       TOKEN_BANG_EQUAL: begin
-        emitByte(OP_EQUAL);
-        emitByte(OP_NOT);
+        emitByte(OP_EQUAL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_EQUAL_EQUAL: begin
-        emitByte(OP_EQUAL);
+        emitByte(OP_EQUAL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_GREATER:    begin
-         emitByte(OP_GREATER);
+        emitByte(OP_GREATER,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_GREATER_EQUAL: begin
-        emitByte(OP_LESS);
-        emitByte(OP_NOT);
+        emitByte(OP_LESS,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_LESS: begin
-        emitByte(OP_LESS);
+        emitByte(OP_LESS,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_LESS_EQUAL: begin
-          emitByte(OP_GREATER);
-          emitByte(OP_NOT);
+          emitByte(OP_GREATER,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+          emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_PLUS : begin
-        emitByte(OP_ADD);
+        emitByte(OP_ADD,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_MINUS : begin
-        emitByte(OP_SUBTRACT);
+        emitByte(OP_SUBTRACT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_STAR : begin
-        emitByte(OP_MULTIPLY);
+        emitByte(OP_MULTIPLY,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_SLASH : begin
-        emitByte(OP_DIVIDE);
+        emitByte(OP_DIVIDE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end
       else
       begin
@@ -2092,16 +2095,12 @@ end;
 procedure literal();
 begin
   case parser.previous.tokenType of
-      TOKEN_FALSE : EmitByte(OP_FALSE);
-      TOKEN_TRUE  : EmitByte(OP_TRUE);
-      TOKEN_NIL   : EmitByte(OP_NIL);
+      TOKEN_FALSE : emitByte(OP_FALSE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+      TOKEN_TRUE  : emitByte(OP_TRUE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+      TOKEN_NIL   : emitByte(OP_NIL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
   end;
 end;
 
-procedure endCompiler;
-begin
-  emitReturn;
-end;
 
 function compile(source : pAnsiChar; chunk : pChunk) : boolean;
 var
@@ -2118,7 +2117,7 @@ begin
    advanceParser();
    Expression();
    consume(TOKEN_EOF, 'Expect end of expression.');
-   endCompiler;
+   emitReturn(CurrentChunk,parser.previous.line,VM.Memtracker);
    result := parser.HadError = false;
 end;
 
