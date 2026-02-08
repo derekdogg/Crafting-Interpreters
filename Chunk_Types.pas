@@ -58,10 +58,6 @@ const
 
 
 type
-  //Alias
-  TCode = byte;
-
-
 
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
@@ -112,7 +108,7 @@ type
   //pointers
   pChunk          = ^TChunk;
   pValueArray     = ^TValueArray;
-  pCode           = ^TCode;
+  //pCode           = ^TCode;
   pValue          = ^TValue;
 
   pObj            = ^TObj;
@@ -169,7 +165,7 @@ type
   TChunk = record
     Count       : Integer;
     Capacity    : Integer;
-    Code        : pCode;
+    Code        : pByte;
     Constants   : pValueArray;
     Lines       : pInteger;
   end;
@@ -202,7 +198,7 @@ type
   //Virtual Machine
   TVirtualMachine = record
     Chunk           : pChunk;
-    ip              : pCode;
+    ip              : pByte;
     Stack           : pStackRecord;
     MemTracker      : PMemTracker;
   end;
@@ -275,9 +271,9 @@ procedure freeValueArray(var ValueArray : pValueArray;MemTracker : pMemTracker);
 procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 function IntToBytes(const value : integer) : TIntToByteResult;
 function ByteToInt(const value : TIntToByteResult) : integer;
-function ReadByte(var code : pCode): Byte;
-function ReadConstant(var code : pCode; constants : pValueArray) : TValue;
-function ReadConstantLong(var code : pCode; constants : pValueArray) : TValue;
+function ReadByte(var code : pByte): Byte;
+function ReadConstant(var code : pByte; constants : pValueArray) : TValue;
+function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue;
 //Memtracker
 procedure InitMemTracker(var MemTracker : pMemTracker);
 procedure FreeMemTracker(var MemTracker : pMemTracker);
@@ -704,7 +700,7 @@ begin
 
   if (chunk.Capacity) > 0 then
   begin
-    Allocate(pointer(chunk.Code), Chunk.Capacity * sizeof(TCode), 0,MemTracker);
+    Allocate(pointer(chunk.Code), Chunk.Capacity * sizeof(Byte), 0,MemTracker);
 
     Assert(Chunk.Code = nil, 'Expected Chunk Code to be nil');
 
@@ -732,7 +728,7 @@ begin
   assert(Line >=0, 'Line is < 0');
 
   currentCap := Chunk.Capacity;
-  if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(TCode) , MemTracker) then
+  if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(Byte) , MemTracker) then
   begin
     //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
     AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(Integer),MemTracker);
@@ -1117,20 +1113,21 @@ begin
 end;
 
 
-function ReadByte(var code : pCode): Byte; inline;
+function ReadByte(var code : pByte): Byte; inline;
 begin
+   Assert(Assigned(Code), 'Code is not assigned');
    result := Code^;
    inc(Code);
 end;
 
-function ReadConstant(var code : pCode; constants : pValueArray) : TValue; inline;
+function ReadConstant(var code : pByte; constants : pValueArray) : TValue; inline;
 var idx : Byte;
 begin
   idx := ReadByte(code);
   result := Constants.Values[idx];
 end;
 
-function ReadConstantLong(var code : pCode; constants : pValueArray) : TValue; inline;
+function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue; inline;
 var
   idx : integer;
   Bytes: TIntToByteResult;

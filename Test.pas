@@ -65,7 +65,7 @@ var
   Value : TValue;
   i,j : integer;
 
-  ip : pCode;
+  ip : pByte;
   instruction : byte;
 begin
   chunk := nil;
@@ -142,7 +142,7 @@ var
   Value : TValue;
   i,j : integer;
 
-  ip : pCode;
+  ip : pByte;
   instruction : byte;
 begin
   chunk := nil;
