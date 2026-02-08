@@ -1151,7 +1151,8 @@ begin
     Assert(Assigned(VM),'VM is not assigned');
     Assert(Assigned(VM.Chunk),'VM Chunk is not assigned');
     Assert(Assigned(VM.Chunk.Code),'VM chunk code is not assigned');
-
+    Assert(Vm.Chunk.Count > 0, 'No chunks to interpret');
+    Assert(vm.Chunk.Code[vm.Chunk.Count-1] = OP_RETURN, 'Expected return otherwise will loop infinietly');
     while True do
     begin
       instruction := ReadByte(vm.Ip);

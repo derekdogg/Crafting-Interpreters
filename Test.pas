@@ -87,7 +87,7 @@ begin
     end;
     Assert(Chunk.Count = j, 'Chunk count mismatch');
     Assert(Chunk.Constants.Count = High(Byte)+1, 'constant count <> high byte');
-
+    Assert(Chunk.Code[510] = OP_CONSTANT);
     //insert op constant longs
     for i := High(byte)+1 to 1000 do
     begin
@@ -96,7 +96,7 @@ begin
       AddConstant(Chunk,Value,0,MemTracker);
       Assert(Chunk.Count = j, 'Chunk count mismatch for addition of op constant longs');
     end;
-
+    Assert(Chunk.Code[512] = OP_CONSTANT_LONG);
     EmitReturn(chunk,0,MemTracker); //so we can exit Ip instruction loop
 
 
