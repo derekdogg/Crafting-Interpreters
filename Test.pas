@@ -57,7 +57,84 @@ begin
 end;
 
 
-procedure TestAddConstnat_upToMax;
+procedure TestAddConstantLong;
+var
+  chunk : pChunk;
+
+  MemTracker : pMemTracker;
+  Value : TValue;
+  i,j : integer;
+
+  ip : pCode;
+  instruction : byte;
+begin
+  chunk := nil;
+  MemTracker := nil;
+
+  InitMemTracker(MemTracker);
+  InitChunk(Chunk, MemTracker);
+ try
+    Value.ValueKind := vkNumber;
+
+    //inserting constants = 256 constants.
+    j := 0;
+    for i := low(Byte) to High(byte) do
+    begin
+      Value.NumberValue := i;
+      inc(j,2); //OP_CONSTANT + Index into constant
+      AddConstant(Chunk,Value,0,MemTracker);
+      Assert(Chunk.Count = j, 'Chunk count for addition of bytes mismatch');
+    end;
+    Assert(Chunk.Count = j, 'Chunk count mismatch');
+    Assert(Chunk.Constants.Count = High(Byte)+1, 'constant count <> high byte');
+
+    //insert op constant longs
+    for i := High(byte)+1 to 1000 do
+    begin
+      Value.NumberValue := i;
+      inc(j,4); //OP_CONSTANT + Index into constant
+      AddConstant(Chunk,Value,0,MemTracker);
+      Assert(Chunk.Count = j, 'Chunk count mismatch for addition of op constant longs');
+    end;
+
+    EmitReturn(chunk,0,MemTracker); //so we can exit Ip instruction loop
+
+
+    i := 0;
+    ip := Chunk.Code;
+    while true do
+    begin
+      instruction := ReadByte(ip);
+      case instruction of
+
+        OP_CONSTANT : begin
+
+          value := ReadConstant(Ip,Chunk.Constants);
+          assert(Value.NumberValue = i, 'value not i for constant');
+          inc(i);
+        end;
+
+        OP_CONSTANT_LONG : begin
+          value := ReadConstantLong(Ip,Chunk.Constants);
+          assert(Value.NumberValue = i, 'value not i for op constant long');
+          inc(i);
+        end;
+
+        OP_RETURN : begin
+          exit;
+        end;
+      end;
+
+    end;
+
+  finally
+    FreeChunk(Chunk,MemTracker);
+    Assert(MemTracker.BytesAllocated = 0, 'Bytes > 0');
+    FreeMemTracker(MemTracker)
+  end;
+end;
+
+procedure TestAddConstant_upToMax;
 var
   chunk : pChunk;
 
@@ -80,7 +157,7 @@ begin
 
     //inserting constants.
     j := 0;
-    for i := low(Byte) to High(byte)-1 do
+    for i := low(Byte) to High(byte) do
     begin
       Value.NumberValue := i;
       inc(j,2); //OP_CONSTANT + Index into constant
@@ -88,6 +165,7 @@ begin
       Assert(Chunk.Count = j, 'Chunk count mismatch');
     end;
     Assert(Chunk.Count = j, 'Chunk count mismatch');
+    Assert(Chunk.Constants.Count = High(Byte)+1, 'constant count <> high byte');
     EmitReturn(chunk,0,MemTracker); //so we can exit Ip instruction loop
 
     i := 0;
@@ -126,7 +204,8 @@ end;
 procedure TestAddValueConstant;
 begin
   TestAddValueConstant_UpToMax;
-  TestAddConstnat_upToMax;
+  TestAddConstant_upToMax;
+  TestAddConstantLong;
 end;
 
 procedure TestValuesEqual;

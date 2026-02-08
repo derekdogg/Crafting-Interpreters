@@ -277,7 +277,7 @@ function IntToBytes(const value : integer) : TIntToByteResult;
 function ByteToInt(const value : TIntToByteResult) : integer;
 function ReadByte(var code : pCode): Byte;
 function ReadConstant(var code : pCode; constants : pValueArray) : TValue;
-function ReadLongConstant(var code : pCode; constants : pValueArray) : TValue;
+function ReadConstantLong(var code : pCode; constants : pValueArray) : TValue;
 //Memtracker
 procedure InitMemTracker(var MemTracker : pMemTracker);
 procedure FreeMemTracker(var MemTracker : pMemTracker);
@@ -1053,7 +1053,7 @@ begin
   //add constant, 1st into value's array of the value record
   idx := AddValueConstant(chunk.Constants,value,MemTracker);
   //add constant op code into the chunk array
-
+  Assert(idx >= 0, 'Index underflow');
   if idx <= high(Byte) then
   begin
     writeChunk(Chunk, OP_CONSTANT,Line,MemTracker);
@@ -1130,7 +1130,7 @@ begin
   result := Constants.Values[idx];
 end;
 
-function ReadLongConstant(var code : pCode; constants : pValueArray) : TValue; inline;
+function ReadConstantLong(var code : pCode; constants : pValueArray) : TValue; inline;
 var
   idx : integer;
   Bytes: TIntToByteResult;
@@ -1139,7 +1139,7 @@ begin
   Bytes.byte1 := ReadByte(code);
   Bytes.byte2 := ReadByte(code);
   idx := ByteToInt(Bytes);
-  result := vm.Chunk.Constants.Values[idx];
+  result := Constants.Values[idx];
 end;
 
 function Run : TInterpretResult;
@@ -1163,7 +1163,7 @@ begin
         end;
 
         OP_CONSTANT_LONG : begin
-          value := ReadConstant(vm.Ip,vm.chunk.Constants);
+          value := ReadConstantLong(vm.Ip,vm.chunk.Constants);
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
