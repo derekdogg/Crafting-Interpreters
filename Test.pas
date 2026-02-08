@@ -167,7 +167,7 @@ begin
     Assert(Chunk.Count = j, 'Chunk count mismatch');
     Assert(Chunk.Constants.Count = High(Byte)+1, 'constant count <> high byte');
     EmitReturn(chunk,0,MemTracker); //so we can exit Ip instruction loop
-
+    Assert(Chunk.Code[Chunk.Count-1] = OP_RETURN, 'Expected return otherwise will loop infinietly');
     i := 0;
     ip := Chunk.Code;
     while true do
