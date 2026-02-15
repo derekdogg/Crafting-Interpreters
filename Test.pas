@@ -12,7 +12,7 @@ procedure TestStackPeek;
 procedure TestStringEqual;
 procedure TestStringUnequal;
 procedure TestValuesEqual;
-
+procedure TestGC;
 
 implementation
 
@@ -20,6 +20,12 @@ uses
   sysutils,
   Chunk_types;
 
+procedure TestGC;
+var
+  stack : pStack;
+begin
+
+end;
 
 procedure TestAddValueConstant_UpToMax;
 var
@@ -419,7 +425,7 @@ end;
 
 procedure TestStackPeek;
 var
-  stack       : pStackRecord;
+  stack       : pStack;
   value       : TValue;
   memTracker  : pMemTracker;
 
@@ -454,7 +460,7 @@ end;
 
 procedure TestStackPop;
 var
-  stack       : pStackRecord;
+  stack       : pStack;
   value       : TValue;
   memTracker  : pMemTracker;
 
@@ -488,7 +494,7 @@ end;
 
 procedure TestStackPush;
 var
-  stack : pStackRecord;
+  stack : pStack;
   MemTracker : pMemTracker;
   value : TValue;
   i     : integer;
