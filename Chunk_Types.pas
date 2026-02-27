@@ -199,11 +199,9 @@ type
     Roots           : TRoots;
   end;
 
-
   //Virtual Machine
   TVirtualMachine = record
     Chunk           : pChunk;
-    ip              : pByte;
     Stack           : pStack;
     MemTracker      : PMemTracker;
   end;
@@ -221,13 +219,13 @@ type
     line : integer;
   end;
 
-   TParser = record
-      Current   : TToken;
-      Previous  : TToken;
-      HadError  : boolean;
-      PanicMode : boolean;
-      ErrorStr  : String;
-   end;
+  TParser = record
+    Current   : TToken;
+    Previous  : TToken;
+    HadError  : boolean;
+    PanicMode : boolean;
+    ErrorStr  : String;
+ end;
 
 
   //Prat parsing structs
@@ -516,7 +514,6 @@ begin
   Assert(FromIndex >= 0, 'index underflow');
   Assert(Count >= 0, 'Count is zero');
   Assert(FromIndex <= High(Integer) - Count, 'mem buffer overflow');
-
   FillChar(p[FromIndex], Count, 0);
 end;
 
@@ -1213,6 +1210,7 @@ end;
 
 function Run : TInterpretResult;
 var
+  InstructionPtr : pByte;
   instruction: Byte;
   value,ValueB : TValue;
 
@@ -1222,18 +1220,19 @@ begin
     Assert(Assigned(VM.Chunk.Code),'VM chunk code is not assigned');
     Assert(Vm.Chunk.Count > 0, 'No chunks to interpret');
     Assert(vm.Chunk.Code[vm.Chunk.Count-1] = OP_RETURN, 'Expected return otherwise will loop infinietly');
+    InstructionPtr := Vm.Chunk.Code;
     while True do
     begin
-      instruction := ReadByte(vm.Ip);
+      instruction := ReadByte(InstructionPtr);
       case instruction of
 
         OP_CONSTANT : begin
-          value := ReadConstant(vm.Ip,vm.Chunk.Constants);
+          value := ReadConstant(InstructionPtr,vm.Chunk.Constants);
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
         OP_CONSTANT_LONG : begin
-          value := ReadConstantLong(vm.Ip,vm.chunk.Constants);
+          value := ReadConstantLong(InstructionPtr,vm.chunk.Constants);
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
@@ -1336,6 +1335,7 @@ function peekStack(Stack: pStack; DistanceFromTop: Integer): TValue;
 begin
   Assert(Assigned(Stack), 'Stack is not assigned');
   Assert(Assigned(Stack.Values), 'Stack values is not assigned');
+  Assert(Stack.Count > 0, 'Stack underflow error on stack peek zero count');
   Assert(DistanceFromTop >= 0, 'Distance from top is negative');
   Assert(DistanceFromTop < Stack.Count, 'Distance from top is >= Stack.Count');
 
@@ -1350,6 +1350,7 @@ end;
 function popStack(var stack : pStack) : TValue;
 begin
    Assert(Assigned(Stack), 'Stack is not assigned');
+   Assert(Stack.StackTop <> nil, 'Stack Top is nil');
    Assert(Assigned(Stack.values), 'Stack values is not assigned');
    Assert(Stack.Count > 0, 'Stack underflow error on stack pop zero count');
    Dec(Stack.StackTop);
@@ -1473,24 +1474,17 @@ end;
 
 //entry point into vm
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
-var
-  Chunk : pChunk;
 begin
-  // Assert(Assigned(output),'strings is not assigned');
-   Assert(Assigned(VM),'VM is not assigned');
-   chunk := nil;
+   initVM;
    try
-     InitChunk(Chunk,vm.MemTracker);
-     if not compile(source,chunk) then
+     if not compile(source,Vm.chunk) then
      begin
        Result.code :=  INTERPRET_COMPILE_ERROR;
        Exit;
      end;
-     vm.chunk := chunk;
-     vm.ip := vm.chunk.Code;
      Result := Run;
    finally
-     freeChunk(chunk,vm.MemTracker);
+     FreeVM;
    end;
 end;
 
@@ -1581,6 +1575,7 @@ begin
   VM.Stack := nil;
   VM.MemTracker := nil;
   InitMemTracker(VM.MemTracker);
+  InitChunk(Vm.Chunk,vm.MemTracker);
   InitStack(VM.Stack,Vm.MemTracker);
   ResetStack(vm.Stack);
   //GC set up
@@ -1594,8 +1589,11 @@ begin
   begin
     FreeObjects(Vm.MemTracker.CreatedObjects);
   end;
+  freeChunk(vm.chunk,vm.MemTracker);
   Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
+
   FreeMemTracker(VM.MemTracker);
+
   dispose(VM); //and therefore (see above comment in initVM) we just dispose here
 end;
 
@@ -2207,9 +2205,9 @@ end;
 procedure literal();
 begin
   case parser.previous.tokenType of
-      TOKEN_FALSE : emitByte(OP_FALSE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-      TOKEN_TRUE  : emitByte(OP_TRUE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-      TOKEN_NIL   : emitByte(OP_NIL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_FALSE : emitByte(OP_FALSE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_TRUE  : emitByte(OP_TRUE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_NIL   : emitByte(OP_NIL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
   end;
 end;
 
