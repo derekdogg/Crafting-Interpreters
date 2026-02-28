@@ -238,6 +238,14 @@ type
   end;
 
 
+//Asertions
+procedure AssertMemTrackerIsNotNil(MemTracker : pMemTracker);
+procedure AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker : pMemTracker);
+procedure AssertNewStringIsNillBeforeAllocation(ObjString : pObjString);
+
+
+
+
 //Memory creation routines
 procedure ClearMem(p: PByte; FromIndex, Count: Integer);
 procedure Allocate(var p : pointer; oldsize,newSize : integer; MemTracker : pMemTracker);
@@ -456,6 +464,23 @@ uses
   sysutils, Math,strUtils, typinfo;
 
 
+procedure AssertMemTrackerIsNotNil(MemTracker : pMemTracker);
+begin
+  Assert(MemTracker <> nil, 'Memory tracker is nil');
+end;
+
+procedure AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker : pMemTracker);
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(Memtracker.BytesAllocated >= 0, 'VM bytes underflow');
+end;
+
+procedure AssertNewStringIsNillBeforeAllocation(ObjString : pObjString);
+begin
+  Assert(ObjString = nil, 'new obj string is not nil before alloc');
+end;
+
+
 function IntToBytes(const value: Integer): TIntToByteResult;
 begin
   Assert((value >= 0) and (value <= $FFFFFF),
@@ -501,11 +526,10 @@ end;
 
 procedure IncrementBytesAllocated(memTracker : pMemTracker; Amount : integer);
 begin
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
+  AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
   Inc(memtracker.BytesAllocated, Amount);
-
-  // Ensure bytes allocated never underflows (extra safety)
-  Assert(Memtracker.BytesAllocated >= 0, 'VM bytes underflow');
+  AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
 end;
 
 procedure ClearMem(p: PByte; FromIndex, Count: Integer);
@@ -520,8 +544,8 @@ end;
 
 procedure Allocate(var p: Pointer; OldSize, NewSize: Integer; MemTracker : pMemTracker);
 begin
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
-
+  AssertMemTrackerIsNotNil(MemTracker);
+  AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
   // --------------------------------------------------------------------------
   // Basic sanity checks on sizes
   // --------------------------------------------------------------------------
@@ -592,8 +616,8 @@ var
   OldSize, NewSize: Integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
-
+  AssertMemTrackerIsNotNil(MemTracker);
+  AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
   // ---- Global invariants ---------------------------------------------------
 
   Assert(START_CAPACITY > 0, 'START_CAPACITY must be greater than zero');
@@ -657,10 +681,8 @@ end;
 
 procedure AllocateString(var p: PObjString; OldSize, NewSize: NativeInt; MemTracker : pMemTracker);
 begin
-  // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
-  // Calls the core allocator with the required cast
-  Allocate(Pointer(p), OldSize, NewSize,MemTracker);
+  AssertNewStringIsNillBeforeAllocation(p);
+  Allocate(Pointer(p), OldSize, NewSize, MemTracker);
 end;
 
 //note : we do not add a null terminator #0 since we track the length
@@ -669,8 +691,8 @@ var
   Len: Integer;
   NewSize: NativeInt;
 begin
-  // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+
+  AssertMemTrackerIsNotNil(MemTracker);
   Result := nil;
   Len := Length(S);
   NewSize := SizeOf(TObjString) + Max(0, Len - 1);  // avoid negative size
@@ -696,7 +718,7 @@ var
  objSize : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
 
   // ---- preconditions ----
   assert(assigned(obj), 'string to free is nil');
@@ -717,7 +739,7 @@ end;
 procedure initChunk(var chunk: pChunk; MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
 
   assert(Chunk = nil,'Chunk initialization failuyre. Chunk is not nil');
   Allocate(pointer(chunk),0, Sizeof(TChunk),MemTracker);
@@ -734,7 +756,7 @@ end;
 procedure freeChunk(var chunk: pChunk; MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   assert(assigned(Chunk),'Chunk is not assigned');
 
 
@@ -765,7 +787,7 @@ var
   currentCap : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   assert(assigned(chunk),'Chunk is not assigned');
   assert(Line >=0, 'Line is < 0');
 
@@ -785,7 +807,7 @@ end;
 procedure initValueArray(var ValueArray : pValueArray; MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
 
   assert(ValueArray = nil,'values is not nil');
 
@@ -801,7 +823,7 @@ end;
 procedure writeValueArray(ValueArray : pValueArray; Value : TValue; MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
 
   assert(assigned(ValueArray),'ValueArray is not assigned');
 
@@ -815,7 +837,7 @@ end;
 procedure FreeValues(var Values : pValue; Capacity : integer; MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   assert(assigned(Values),'Values is not assigned');
   assert(Capacity > 0, 'Capacity is < 0');
   Allocate(pointer(Values), Capacity * Sizeof(TValue),0,MemTracker);  //Note here that the references to objects will be free'd externally
@@ -825,7 +847,7 @@ end;
 procedure freeValueArray(var ValueArray : pValueArray; MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   assert(assigned(ValueArray),'ValueArray is not assigned');
   if ValueArray.Values <> nil then
     FreeValues(ValueArray.Values,ValueArray.Capacity,MemTracker);
@@ -836,7 +858,7 @@ end;
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   Assert(Stack = nil, 'Stack initialization failure - stack record is not nil');
   Allocate(pointer(Stack),0, Sizeof(TStack),Memtracker);
   Stack.Count := 0;
@@ -849,7 +871,7 @@ end;
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   assert(Assigned(Stack),'Stack is not assigned - free stack');
   assert(Assigned(Stack.Values), 'Stack values is not assigned - free stack');
   if (stack.Capacity > 0) then
@@ -865,7 +887,7 @@ end;
 procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   Assert(Assigned(Stack), 'Stack is not assigned');
   Assert(Assigned(Stack.values), 'Stack values is not assigned');
   if AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue),Memtracker) then
@@ -944,7 +966,7 @@ end;
 function AddString(const a, b : AnsiString; MemTracker : pMemTracker) : PObjString;
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   result := CreateString(a+b,Memtracker);
 end;
 
@@ -975,7 +997,7 @@ var
   strTop, strBelow: AnsiString;
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   Assert(Stack <> nil, 'Stack is nil');
   Assert(IsString(peekStack(stack)),'Value at top of stack to concatenate is not a string');
   Assert(IsString(peekStack(stack,1)),'Value at position -1 of stack to concatenate is not a string');
@@ -1094,7 +1116,7 @@ end;
 function AddValueConstant(ValueArray: pValueArray; const value: TValue;Memtracker : pMemTracker): Integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   Assert(Assigned(ValueArray), 'ValueArray is not assigned');
 
   // Add the value to the ValueArray -- note here the value array can grow
@@ -1111,7 +1133,7 @@ var
   IntBytes : TIntToByteResult;
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   Assert(Assigned(chunk), 'Chunk is not assigned');
   Assert(Assigned(chunk.Constants), 'ValueArray is not assigned');
 
@@ -1563,7 +1585,7 @@ end;
 procedure FreeMemTracker(var MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   dispose(MemTracker);
   MemTracker := nil;  // Note here we don't dispose of the roots.stack reference.
 end;
@@ -1591,9 +1613,7 @@ begin
   end;
   freeChunk(vm.chunk,vm.MemTracker);
   Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
-
   FreeMemTracker(VM.MemTracker);
-
   dispose(VM); //and therefore (see above comment in initVM) we just dispose here
 end;
 
@@ -2020,14 +2040,14 @@ end;
 procedure emitByte(value : byte; Chunk : pChunk; Line : integer; MemTracker : pMemTracker );
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   writeChunk(Chunk,value,line,MemTracker);
 end;
 
 procedure EmitReturn(Chunk : pChunk; Line : integer; MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
-  Assert(MemTracker <> nil, 'Memory tracker is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
   writeChunk(Chunk,OP_RETURN,line,Memtracker);
 end;
 
@@ -2213,25 +2233,19 @@ end;
 
 
 function compile(source : pAnsiChar; chunk : pChunk) : boolean;
-var
-  line : integer;
-  token : TToken;
 begin
-   assert(assigned(chunk), 'Chunk is not assigned');
-   assert(assigned(source), 'Source code is not assigned');
-
-   initScanner(source);
-   compilingChunk := chunk; //the reason this is done is so it is not passed around.
-   parser.hadError := false;
-   parser.panicMode := false;
-   advanceParser();
-   Expression();
-   consume(TOKEN_EOF, 'Expect end of expression.');
-   emitReturn(CurrentChunk,parser.previous.line,VM.Memtracker);
-   result := parser.HadError = false;
+  assert(assigned(chunk), 'Chunk is not assigned');
+  assert(assigned(source), 'Source code is not assigned');
+  initScanner(source);
+  compilingChunk := chunk; //the reason this is done is so it is not passed around.
+  parser.hadError := false;
+  parser.panicMode := false;
+  advanceParser();
+  Expression();
+  consume(TOKEN_EOF, 'Expect end of expression.');
+  emitReturn(CurrentChunk,parser.previous.line,VM.Memtracker);
+  result := parser.HadError = false;
 end;
-
-
 
 
 
