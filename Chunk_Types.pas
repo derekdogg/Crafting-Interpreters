@@ -962,6 +962,11 @@ begin
 
   //track creation in the vm list of obj.
   AddToCreatedObjects(PObj(Result),MemTracker);
+  
+  // ---- Exit assertions ----
+  AssertObjStringIsAssigned(Result);
+  Assert(Result^.Length = Len, 'CreateString exit: length mismatch');
+  Assert(Result^.Obj.ObjectKind = okString, 'CreateString exit: not a string object');
 end;
 
 procedure FreeString(var obj : pObjString; MemTracker : pMemTracker);
@@ -1002,6 +1007,13 @@ begin
   chunk.Constants := nil;
   InitValueArray(chunk.Constants,MemTracker);
 
+  // ---- Exit assertions ----
+  AssertChunkIsAssigned(chunk);
+  Assert(chunk.Count = 0, 'initChunk exit: count should be 0');
+  Assert(chunk.Capacity = 0, 'initChunk exit: capacity should be 0');
+  Assert(chunk.Code = nil, 'initChunk exit: code should be nil');
+  Assert(chunk.Lines = nil, 'initChunk exit: lines should be nil');
+  AssertChunkConstantsIsAssigned(chunk);
 end;
 
 procedure freeChunk(var chunk: pChunk; MemTracker : pMemTracker);
@@ -1052,6 +1064,12 @@ begin
   chunk.Code[chunk.Count] := value;
   chunk.Lines[chunk.count] := Line;
   Inc(chunk.Count);
+  
+  // ---- Exit assertions ----
+  AssertChunkIsAssigned(chunk);
+  AssertChunkCodeIsAssigned(chunk);
+  Assert(chunk.Count > 0, 'writeChunk exit: chunk count should be > 0');
+  Assert(chunk.Code[chunk.Count - 1] = value, 'writeChunk exit: value not written correctly');
 end;
 
 
@@ -1069,6 +1087,12 @@ begin
   ValueArray.Capacity := 0;
 
   ValueArray.Values := nil;
+  
+  // ---- Exit assertions ----
+  AssertValueArrayIsAssigned(ValueArray);
+  Assert(ValueArray.Count = 0, 'initValueArray exit: count should be 0');
+  Assert(ValueArray.Capacity = 0, 'initValueArray exit: capacity should be 0');
+  Assert(ValueArray.Values = nil, 'initValueArray exit: values should be nil');
 end;
 
 procedure writeValueArray(ValueArray : pValueArray; Value : TValue; MemTracker : pMemTracker);
@@ -1083,6 +1107,11 @@ begin
   ValueArray.Values[ValueArray.Count] := value;
 
   Inc(ValueArray.Count);
+  
+  // ---- Exit assertions ----
+  AssertValueArrayIsAssigned(ValueArray);
+  AssertValuesIsAssigned(ValueArray.Values);
+  Assert(ValueArray.Count > 0, 'writeValueArray exit: count should be > 0');
 end;
 
 procedure FreeValues(var Values : pValue; Capacity : integer; MemTracker : pMemTracker);
@@ -1104,6 +1133,9 @@ begin
     FreeValues(ValueArray.Values,ValueArray.Capacity,MemTracker);
   Allocate(pointer(ValueArray),Sizeof(TValueArray),0,MemTracker);
   ValueArray := nil;
+  
+  // ---- Exit assertions ----
+  AssertPointerIsNil(ValueArray, 'freeValueArray exit: ValueArray should be nil');
 end;
 
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker);
@@ -1117,6 +1149,13 @@ begin
   Stack.Values := nil;
   AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue),Memtracker);
   Stack.StackTop := Stack.Values;
+  
+  // ---- Exit assertions ----
+  AssertStackIsAssigned(Stack);
+  Assert(Stack.Count = 0, 'InitStack exit: count should be 0');
+  Assert(Stack.Capacity > 0, 'InitStack exit: capacity should be > 0');
+  AssertStackValuesIsAssigned(Stack);
+  Assert(Stack.StackTop = Stack.Values, 'InitStack exit: StackTop should equal Values');
 end;
 
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);
@@ -1133,6 +1172,9 @@ begin
 
   Allocate(pointer(Stack),sizeof(TStack),0,Memtracker);
   Stack := nil;
+  
+  // ---- Exit assertions ----
+  AssertPointerIsNil(Stack, 'FreeStack exit: Stack should be nil');
 end;
 
 procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
@@ -1149,6 +1191,11 @@ begin
   Stack.StackTop^ := Value;
   Inc(Stack.StackTop);
   inc(Stack.Count);
+  
+  // ---- Exit assertions ----
+  AssertStackIsAssigned(Stack);
+  Assert(Stack.Count > 0, 'pushStack exit: count should be > 0');
+  AssertStackTopIsNotNil(Stack);
 end;
 
 
@@ -1211,6 +1258,9 @@ begin
 
   p^.Next := Memtracker.CreatedObjects;
   Memtracker.CreatedObjects := p;
+  
+  // ---- Exit assertions ----
+  Assert(MemTracker.CreatedObjects = p, 'AddToCreatedObjects exit: object should be at head of list');
 end;
 
 //Chars: array[0..0] of AnsiChar;
@@ -1246,6 +1296,7 @@ procedure Concatenate(Stack : pStack; MemTracker : pMemTracker);
 var
   top, below, resultStr: PObjString;
   strTop, strBelow: AnsiString;
+  oldCount : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
@@ -1253,6 +1304,8 @@ begin
   Assert(IsString(peekStack(stack)),'Value at top of stack to concatenate is not a string');
   Assert(IsString(peekStack(stack,1)),'Value at position -1 of stack to concatenate is not a string');
 
+  oldCount := Stack.Count;
+  
   top := ValueToString(popStack(stack));       // top of stack ("B")
   below := ValueToString(popStack(stack));     // below top ("A")
 
@@ -1262,6 +1315,10 @@ begin
   resultStr := AddString(strBelow, strTop, Memtracker);   // "A" + "B"
 
   PushStack(stack, StringToValue(resultStr),Memtracker);
+  
+  // ---- Exit assertions ----
+  Assert(Stack.Count = oldCount - 1, 'Concatenate exit: should pop 2, push 1 (net -1)');
+  Assert(isString(peekStack(stack)), 'Concatenate exit: top of stack should be a string');
 end;
 
 
@@ -1391,16 +1448,24 @@ end;
 
 
 function AddValueConstant(ValueArray: pValueArray; const value: TValue;Memtracker : pMemTracker): Integer;
+var
+  oldCount : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
   AssertValueArrayIsAssigned(ValueArray);
 
+  oldCount := ValueArray.Count;
+  
   // Add the value to the ValueArray -- note here the value array can grow
   writeValueArray(ValueArray, value,Memtracker);
 
   // Return the index of the newly added value
   Result := ValueArray.Count - 1;
+  
+  // ---- Exit assertions ----
+  Assert(ValueArray.Count = oldCount + 1, 'AddValueConstant exit: count should increase by 1');
+  Assert(Result >= 0, 'AddValueConstant exit: result index should be >= 0');
 end;
 
 
@@ -1408,12 +1473,15 @@ procedure AddConstant(chunk : pChunk; const value : TValue; Line : Integer; MemT
 var
   idx : integer;
   IntBytes : TIntToByteResult;
+  oldChunkCount : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
   AssertChunkIsAssigned(chunk);
   AssertChunkConstantsIsAssigned(chunk);
 
+  oldChunkCount := chunk.Count;
+  
   //add constant, 1st into value's array of the value record
   idx := AddValueConstant(chunk.Constants,value,MemTracker);
   //add constant op code into the chunk array
@@ -1431,6 +1499,9 @@ begin
     WriteChunk(Chunk, IntBytes.byte1 , Line, MemTracker);
     WriteChunk(Chunk, IntBytes.byte2 , Line, MemTracker);
   end;
+  
+  // ---- Exit assertions ----
+  Assert(chunk.Count > oldChunkCount, 'AddConstant exit: chunk count should have increased');
 end;
 
 
@@ -1626,6 +1697,9 @@ begin
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
   Stack.StackTop := Stack.Values;
+  
+  // ---- Exit assertions ----
+  Assert(Stack.StackTop = Stack.Values, 'ResetStack exit: StackTop should equal Values');
 end;
 
 
@@ -1647,14 +1721,23 @@ begin
 end;
 
 function popStack(var stack : pStack) : TValue;
+var
+  oldCount : integer;
 begin
    AssertStackIsAssigned(Stack);
    AssertStackTopIsNotNil(Stack);
    AssertStackValuesIsAssigned(Stack);
    AssertStackIsNotEmpty(Stack);
+   
+   oldCount := Stack.Count;
+   
    Dec(Stack.StackTop);
    result := Stack.StackTop^;
    Dec(Stack.Count);
+   
+   // ---- Exit assertions ----
+   Assert(Stack.Count = oldCount - 1, 'popStack exit: count should decrease by 1');
+   Assert(Stack.Count >= 0, 'popStack exit: count should not be negative');
 end;
 
 function CheckBinaryNumbers: Boolean;
@@ -1674,84 +1757,132 @@ end;
 function BinaryOpNumber_Add: boolean;
 var
   A, B: Double;
+  oldCount : integer;
 begin
   if not CheckBinaryNumbers then
     Exit(false);
 
+  oldCount := vm.stack.Count;
+  
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
   PushStack(vm.stack,CreateNumber(A + B),vm.MemTracker);
+  
+  // ---- Exit assertions ----
+  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Add exit: should pop 2, push 1 (net -1)');
+  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Add exit: result should be a number');
+  
   Result := true;
 end;
 
 function BinaryOpNumber_Subtract: boolean;
 var
   A, B: Double;
+  oldCount : integer;
 begin
   if not CheckBinaryNumbers then
     Exit(false);
 
+  oldCount := vm.stack.Count;
+  
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
   PushStack(vm.stack,CreateNumber(A - B),vm.MemTracker);
+  
+  // ---- Exit assertions ----
+  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Subtract exit: should pop 2, push 1 (net -1)');
+  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Subtract exit: result should be a number');
+  
   Result := true;
 end;
 
 function BinaryOpNumber_Multiply: boolean;
 var
   A, B: Double;
+  oldCount : integer;
 begin
   if not CheckBinaryNumbers then
     Exit(false);
 
+  oldCount := vm.stack.Count;
+  
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
   PushStack(vm.stack,CreateNumber(A * B),vm.MemTracker);
+  
+  // ---- Exit assertions ----
+  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Multiply exit: should pop 2, push 1 (net -1)');
+  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Multiply exit: result should be a number');
+  
   Result := true;
 end;
 
 function BinaryOpNumber_Divide: boolean;
 var
   A, B: Double;
+  oldCount : integer;
 begin
   if not CheckBinaryNumbers then
     Exit(false);
 
+  oldCount := vm.stack.Count;
+  
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
   PushStack(vm.stack,CreateNumber(A / B),vm.MemTracker);
+  
+  // ---- Exit assertions ----
+  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Divide exit: should pop 2, push 1 (net -1)');
+  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Divide exit: result should be a number');
+  
   Result := true;
 end;
 
 function BinaryOpNumber_Greater: boolean;
 var
   A, B: Double;
+  oldCount : integer;
 begin
   if not CheckBinaryNumbers then
     Exit(false);
 
+  oldCount := vm.stack.Count;
+  
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
   PushStack(vm.stack,CreateBoolean(A > B),vm.MemTracker);
+  
+  // ---- Exit assertions ----
+  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Greater exit: should pop 2, push 1 (net -1)');
+  Assert(isBoolean(peekStack(vm.stack)), 'BinaryOpNumber_Greater exit: result should be a boolean');
+  
   Result := true;
 end;
 
 function BinaryOpNumber_Less: boolean;
 var
   A, B: Double;
+  oldCount : integer;
 begin
   if not CheckBinaryNumbers then
     Exit(false);
 
+  oldCount := vm.stack.Count;
+  
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
   PushStack(vm.stack,CreateBoolean(A < B),vm.MemTracker);
+  
+  // ---- Exit assertions ----
+  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Less exit: should pop 2, push 1 (net -1)');
+  Assert(isBoolean(peekStack(vm.stack)), 'BinaryOpNumber_Less exit: result should be a boolean');
+  
   Result := true;
 end;
 
@@ -1857,6 +1988,11 @@ begin
   new(MemTracker); //Allocate(pointer(MemTracker),0, SizeOf(MemTracker),MemTracker);
   MemTracker.Roots.Stack := nil;
   MemTracker.BytesAllocated := 0;
+  
+  // ---- Exit assertions ----
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(MemTracker.Roots.Stack = nil, 'InitMemTracker exit: Roots.Stack should be nil');
+  Assert(MemTracker.BytesAllocated = 0, 'InitMemTracker exit: BytesAllocated should be 0');
 end;
 
 procedure FreeMemTracker(var MemTracker : pMemTracker);
@@ -1865,6 +2001,9 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   dispose(MemTracker);
   MemTracker := nil;  // Note here we don't dispose of the roots.stack reference.
+  
+  // ---- Exit assertions ----
+  AssertPointerIsNil(MemTracker, 'FreeMemTracker exit: MemTracker should be nil');
 end;
 
 procedure InitVM;
@@ -1879,6 +2018,13 @@ begin
   ResetStack(vm.Stack);
   //GC set up
   VM.MemTracker.Roots.Stack := Vm.Stack;
+  
+  // ---- Exit assertions ----
+  AssertVMIsAssigned;
+  AssertVMChunkIsAssigned;
+  Assert(VM.Stack <> nil, 'InitVM exit: Stack should not be nil');
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+  Assert(VM.MemTracker.Roots.Stack = VM.Stack, 'InitVM exit: GC roots should point to stack');
 end;
 
 procedure FreeVM;
@@ -1899,6 +2045,11 @@ begin
   scanner.start := source;
   scanner.current := source;
   scanner.line := 1;
+  
+  // ---- Exit assertions ----
+  Assert(scanner.start = source, 'InitScanner exit: start should equal source');
+  Assert(scanner.current = source, 'InitScanner exit: current should equal source');
+  Assert(scanner.line = 1, 'InitScanner exit: line should be 1');
 end;
 
 
@@ -2315,17 +2466,30 @@ end;
 
 
 procedure emitByte(value : byte; Chunk : pChunk; Line : integer; MemTracker : pMemTracker );
+var
+  oldCount : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
+  oldCount := Chunk.Count;
   writeChunk(Chunk,value,line,MemTracker);
+  
+  // ---- Exit assertions ----
+  Assert(Chunk.Count = oldCount + 1, 'emitByte exit: chunk count should increase by 1');
 end;
 
 procedure EmitReturn(Chunk : pChunk; Line : integer; MemTracker : pMemTracker);
+var
+  oldCount : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
+  oldCount := Chunk.Count;
   writeChunk(Chunk,OP_RETURN,line,Memtracker);
+  
+  // ---- Exit assertions ----
+  Assert(Chunk.Count = oldCount + 1, 'EmitReturn exit: chunk count should increase by 1');
+  AssertChunkEndsWithReturn(Chunk);
 end;
 
 procedure emitConstant(value : TValue);
@@ -2522,6 +2686,13 @@ begin
   consume(TOKEN_EOF, 'Expect end of expression.');
   emitReturn(CurrentChunk,parser.previous.line,VM.Memtracker);
   result := parser.HadError = false;
+  
+  // ---- Exit assertions ----
+  if result then
+  begin
+    AssertChunkHasInstructions(chunk);
+    AssertChunkEndsWithReturn(chunk);
+  end;
 end;
 
 
