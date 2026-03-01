@@ -16,6 +16,7 @@ type
     Button4: TButton;
     Button5: TButton;
     Button6: TButton;
+    Button7: TButton;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -47,8 +48,6 @@ var
   txt : ansiString;
   strObj : pObjString;
 begin
-  initVM;
-  try
 
     txt := Memo1.Lines.Text;
     IR := interpretResult(PAnsiChar(txt));
@@ -86,10 +85,6 @@ begin
         Memo2.Lines.add('We fucked up');
       end;
   end;
-  finally;
-    FreeVM;
-
-  end;
 
 
 end;
@@ -125,9 +120,11 @@ begin
   TestInitChunkAndFreeChunk;
 end;
 
+
 procedure TForm4.Button6Click(Sender: TObject);
 begin
-  TestAllocateArray;
+
+  TestAddValueConstant;
 end;
 
 end.
