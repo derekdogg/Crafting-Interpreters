@@ -23,6 +23,7 @@ type
     procedure Button4Click(Sender: TObject);
     procedure Button5Click(Sender: TObject);
     procedure Button6Click(Sender: TObject);
+    procedure Button7Click(Sender: TObject);
 
   private
     { Private declarations }
@@ -125,6 +126,20 @@ procedure TForm4.Button6Click(Sender: TObject);
 begin
 
   TestAddValueConstant;
+end;
+
+procedure TForm4.Button7Click(Sender: TObject);
+var
+  memTracker : pMemTracker;
+  table      : pTable;
+
+begin
+  table := nil;
+  memTracker := nil;
+  InitMemTracker(MemTracker);
+  InitTable(Table,MemTracker);
+  FreeTable(Table,MemTracker);
+  FreeMemTracker(MemTracker);
 end;
 
 end.

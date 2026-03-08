@@ -115,9 +115,9 @@ type
   pVirtualMachine = ^TVirtualMachine;
   pMemTracker     = ^TMemTracker;
   pLogs           = ^TLogs; //Note : Don't think we need this (https://www.danieleteti.it/loggerpro/) maybe add later? We use a stupidly simple approach for now
+  pEntry          = ^TEntry;
+  pTable          = ^TTable;
   //pRoots          = ^TRoots;
-
-
 
   //Arrays
   TAnsiCharArray = Array[0..0] of AnsiChar;
@@ -235,6 +235,18 @@ type
     prefix : TParseFn;
     infix  : TParseFn;
     precedence : TPrecedence;
+  end;
+
+
+  TEntry = record
+    key     : pObjString;
+    value   : TValue;
+  end;
+
+  TTable = record
+    Count    : integer;
+    Capacity : integer;
+    Entries  : pEntry;
   end;
 
 
@@ -390,6 +402,12 @@ procedure unary();
 procedure binary();
 procedure literal();
 procedure ParseString();
+
+
+
+//Table
+procedure InitTable(var Table : pTable; memTracker : pMemTracker);
+procedure FreeTable(var Table : pTable; memTracker : pMemTracker);
 
 //prat parsing rule table used in compilation
 const
@@ -881,7 +899,6 @@ begin
   AssertCountDoesNotExceedCapacity(Count, CurrentCapacity);
 
   // ---- Initial allocation --------------------------------------------------
-
   if CurrentCapacity = 0 then
   begin
     AssertPointerIsNil(List, 'List must be nil when CurrentCapacity is zero');
@@ -898,9 +915,7 @@ begin
   end;
 
   // ---- Growth path ---------------------------------------------------------
-
   AssertPointerIsNotNil(List, 'List is nil with non-zero CurrentCapacity');
-
   if Count < CurrentCapacity then
     Exit(False);
 
@@ -1026,23 +1041,15 @@ begin
   if (chunk.Capacity) > 0 then
   begin
     Allocate(pointer(chunk.Code), Chunk.Capacity * sizeof(Byte), 0,MemTracker);
-
     AssertPointerIsNil(Chunk.Code, 'Expected Chunk Code to be nil');
-
     Allocate(pointer(Chunk.Lines), Chunk.Capacity * Sizeof(Integer),0,MemTracker);
-
     AssertPointerIsNil(Chunk.Lines, 'Expected Chunk Lines to be nil');
   end;
 
-
   freeValueArray(chunk.Constants,MemTracker);
-
   AssertPointerIsNil(Chunk.Constants, 'Expected chunk Constants to be nil');
-
   Allocate(pointer(chunk),Sizeof(TChunk),0,MemTracker);
-
   AssertPointerIsNil(Chunk, 'Expected chunk to be nil');
-
 end;
 
 procedure writeChunk(chunk: pChunk; value: byte; Line : Integer; MemTracker : pMemTracker);
@@ -1133,7 +1140,7 @@ begin
     FreeValues(ValueArray.Values,ValueArray.Capacity,MemTracker);
   Allocate(pointer(ValueArray),Sizeof(TValueArray),0,MemTracker);
   ValueArray := nil;
-  
+
   // ---- Exit assertions ----
   AssertPointerIsNil(ValueArray, 'freeValueArray exit: ValueArray should be nil');
 end;
@@ -2696,6 +2703,40 @@ begin
 end;
 
 
+procedure InitTable(var Table : pTable; memTracker : pMemTracker);
+begin
+   AssertMemTrackerIsNotNil(memTracker);
+   AssertPointerIsNil(Table, ' Table is not nil');
+   Allocate(pointer(Table),0,Sizeof(TTable),MemTracker);
+   Table.Count := 0;
+   Table.Capacity := 0;
+   Table.Entries  := nil;
+end;
+
+procedure FreeEntries(var Entries : pEntry; Capacity : integer; MemTracker : pMemTracker);
+begin
+  // ---- Test MemTracker ---------------------------------------------------
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(Assigned(Entries), 'Entries is not assigned');
+  AssertCapacityIsPositive(Capacity);
+  Allocate(pointer(Entries), Capacity * Sizeof(TEntry),0,MemTracker);  //Note here that the references to objects will be free'd externally
+  AssertPointerIsNil(Entries, 'FreeValues - Entries not nil after free');
+end;
+
+procedure FreeTable(var Table : pTable; memTracker : pMemTracker);
+begin
+   // ---- Test MemTracker ---------------------------------------------------
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(assigned(Table), 'Table is not assigned');
+  if Table.Entries <> nil then
+    FreeEntries(Table.Entries,Table.Capacity,MemTracker);
+  Allocate(pointer(Table),Sizeof(TTable),0,MemTracker);
+  Table := nil;
+
+  // ---- Exit assertions ----
+  AssertPointerIsNil(Table, 'freeValueArray exit: ValueArray should be nil');
+
+end;
 
 
 initialization
