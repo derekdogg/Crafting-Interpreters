@@ -14,6 +14,7 @@ procedure TestStringUnequal;
 procedure TestValuesEqual;
 procedure TestGC;
 procedure TestTable;
+procedure TestInterpreter;
 
 implementation
 
@@ -26,22 +27,53 @@ procedure TestTable;
 var
   memTracker : pMemTracker;
   table      : pTable;
-  s          : string;
-  hash       : uint32;
+  key1, key2, key3 : pObjString;
+  val        : TValue;
+  found      : boolean;
 begin
   table := nil;
   memTracker := nil;
   InitMemTracker(MemTracker);
   InitTable(Table,MemTracker);
-  FreeTable(Table,MemTracker);
+
+  // Create keys
+  key1 := CreateString('hello', MemTracker);
+  key2 := CreateString('world', MemTracker);
+  key3 := CreateString('foo', MemTracker);
+
+  // Set values
+  Assert(TableSet(Table, key1, CreateNumber(1), MemTracker) = true, 'key1 should be new');
+  Assert(TableSet(Table, key2, CreateNumber(2), MemTracker) = true, 'key2 should be new');
+  Assert(TableSet(Table, key3, CreateNumber(3), MemTracker) = true, 'key3 should be new');
+  Assert(Table.Count = 3, 'Table should have 3 entries');
+
+  // Get values back
+  found := TableGet(Table, key1, val);
+  Assert(found, 'key1 should be found');
+  Assert(val.NumberValue = 1, 'key1 value should be 1');
+
+  found := TableGet(Table, key2, val);
+  Assert(found, 'key2 should be found');
+  Assert(val.NumberValue = 2, 'key2 value should be 2');
+
+  found := TableGet(Table, key3, val);
+  Assert(found, 'key3 should be found');
+  Assert(val.NumberValue = 3, 'key3 value should be 3');
+
+  // Overwrite existing key
+  Assert(TableSet(Table, key1, CreateNumber(99), MemTracker) = false, 'key1 should already exist');
+  Assert(Table.Count = 3, 'Count should not change on overwrite');
+  found := TableGet(Table, key1, val);
+  Assert(found, 'key1 should still be found');
+  Assert(val.NumberValue = 99, 'key1 value should now be 99');
+
+  // Clean up
+  FreeTable(Table, MemTracker);
+  FreeString(key1, MemTracker);
+  FreeString(key2, MemTracker);
+  FreeString(key3, MemTracker);
+  Assert(MemTracker.BytesAllocated = 0, 'Table test: bytes not zero');
   FreeMemTracker(MemTracker);
-
-
-
-  s := 'Fred';
-  hash := hashString(pAnsiChar(s),length(s));
-
-
 end;
 
 procedure TestGC;
@@ -543,6 +575,116 @@ begin
   FreeStack(stack,MemTracker);
   Assert(memTracker.BytesAllocated = 0);
   FreeMemTracker(MemTracker);
+end;
+
+procedure AssertNumber(const expr: AnsiString; expected: Double);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(expr));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  Assert(IR.value.ValueKind = vkNumber, 'Expected number for: ' + string(expr));
+  Assert(Abs(IR.value.NumberValue - expected) < 1e-9, 'Wrong value for: ' + string(expr));
+end;
+
+procedure AssertBoolean(const expr: AnsiString; expected: Boolean);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(expr));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  Assert(IR.value.ValueKind = vkBoolean, 'Expected boolean for: ' + string(expr));
+  Assert(IR.value.BooleanValue = expected, 'Wrong value for: ' + string(expr));
+end;
+
+procedure AssertNil(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(expr));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  Assert(IR.value.ValueKind = vkNull, 'Expected nil for: ' + string(expr));
+end;
+
+procedure AssertStringOK(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(expr));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  // Note: cannot inspect string content here because FreeVM frees all objects
+end;
+
+procedure AssertRuntimeError(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(expr));
+  Assert(IR.code = INTERPRET_RUNTIME_ERROR, 'Expected runtime error for: ' + string(expr));
+  Assert(IR.ErrorStr <> '', 'Expected error message for: ' + string(expr));
+end;
+
+procedure AssertCompileError(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(expr));
+  Assert(IR.code = INTERPRET_COMPILE_ERROR, 'Expected compile error for: ' + string(expr));
+  Assert(IR.ErrorStr <> '', 'Expected error message for: ' + string(expr));
+end;
+
+procedure TestInterpreter;
+begin
+  // Arithmetic
+  AssertNumber('1 + 2', 3);
+  AssertNumber('10 - 3', 7);
+  AssertNumber('2 * 3', 6);
+  AssertNumber('10 / 4', 2.5);
+  AssertNumber('(1 + 2) * (10 / 5)', 6);
+  AssertNumber('3.14 * 2', 6.28);
+
+  // Unary / precedence
+  AssertNumber('-1 + 2', 1);
+  AssertNumber('-(1 + 2)', -3);
+  AssertNumber('--1', 1);
+
+  // Booleans
+  AssertBoolean('!true', False);
+  AssertBoolean('!false', True);
+  AssertBoolean('!!true', True);
+  AssertBoolean('!nil', True);
+
+  // Comparisons
+  AssertBoolean('1 > 2', False);
+  AssertBoolean('2 > 1', True);
+  AssertBoolean('1 < 2', True);
+  AssertBoolean('2 < 1', False);
+  AssertBoolean('2 >= 2', True);
+  AssertBoolean('3 <= 2', False);
+  AssertBoolean('1 != 2', True);
+  AssertBoolean('1 == 1', True);
+  AssertBoolean('1 == 2', False);
+
+  // Nil
+  AssertNil('nil');
+  AssertBoolean('nil == nil', True);
+  AssertBoolean('true == false', False);
+
+  // Strings
+  AssertStringOK('"hello" + " world"');
+  AssertBoolean('"abc" == "abc"', True);
+  AssertBoolean('"abc" == "def"', False);
+
+  // Runtime errors
+  AssertRuntimeError('1 / 0');
+  AssertRuntimeError('true + 1');
+  AssertRuntimeError('true * false');
+  AssertRuntimeError('-"hello"');
+  AssertRuntimeError('"hello" + 1');
+
+  // Compile errors
+  AssertCompileError(')');
+  AssertCompileError('* 1');
 end;
 
 initialization

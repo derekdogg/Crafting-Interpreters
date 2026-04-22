@@ -195,6 +195,7 @@ type
   TInterpretResult = record
     code  : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
     value : TValue;
+    ErrorStr : String;
   end;
 
   TMemTracker = record
@@ -208,6 +209,7 @@ type
     Chunk           : pChunk;
     Stack           : pStack;
     MemTracker      : PMemTracker;
+    RuntimeErrorStr : String;
   end;
 
   TScanner = record
@@ -399,7 +401,7 @@ function  advance : ansichar;
 function  isAtEnd : boolean;
 
 //compilation
-procedure BinaryOp(Op: TBinaryOperation);
+function BinaryOp(Op: TBinaryOperation): boolean;
 function compile(source : pAnsiChar; chunk : pChunk) : boolean;
 procedure Number();
 procedure grouping();
@@ -411,9 +413,15 @@ procedure ParseString();
 //Hash
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
 
+//Value constructors
+function CreateNumber(Value: Double): TValue;
+function CreateBoolean(Value: Boolean): TValue;
+function CreateNilValue: TValue;
+
 //Table
 procedure InitTable(var Table : pTable; memTracker : pMemTracker);
 function TableSet(var Table : pTable; key : pObjString; value : TValue;MemTracker : pMemTracker): boolean;
+function TableGet(Table : pTable; key : pObjString; var value : TValue): boolean;
 procedure FreeTable(var Table : pTable; memTracker : pMemTracker);
 
 //prat parsing rule table used in compilation
@@ -1351,7 +1359,7 @@ begin
 end;
 
 
-function CreateBoolean(Value: Boolean): TValue; inline;
+function CreateBoolean(Value: Boolean): TValue;
 begin
   Result.ValueKind := vkBoolean;
   Result.BooleanValue := Value;
@@ -1373,7 +1381,7 @@ begin
   Result := Value.ValueKind = vkNumber;
 end;
 
-function CreateNumber(Value: Double): TValue; inline;
+function CreateNumber(Value: Double): TValue;
 begin
   Result.ValueKind := vkNumber;
   Result.NumberValue := Value;
@@ -1385,7 +1393,7 @@ begin
   result := value.NumberValue;
 end;
 
-function CreateNilValue : TValue; inline;
+function CreateNilValue : TValue;
 begin
   Result.ValueKind := vkNull;
   Result.NullValue := 0;
@@ -1577,7 +1585,7 @@ end;
 
 procedure RunTimeError(const msg : string);
 begin
-  //TODO
+  VM.RuntimeErrorStr := msg;
 end;
 
 
@@ -1661,14 +1669,30 @@ begin
           pushStack(vm.stack,CreateBoolean(valuesEqual(Value, ValueB)),vm.MemTracker);
         end;
 
-        OP_GREATER  : binaryOp(boGreater);
+        OP_GREATER  : begin
+                        if not binaryOp(boGreater) then
+                        begin
+                          result.code := INTERPRET_RUNTIME_ERROR;
+                          exit;
+                        end;
+                      end;
 
-        OP_LESS     : binaryOp(boLess);
+        OP_LESS     : begin
+                        if not binaryOp(boLess) then
+                        begin
+                          result.code := INTERPRET_RUNTIME_ERROR;
+                          exit;
+                        end;
+                      end;
 
         OP_ADD      : begin
                         if isNumber(peekStack(vm.stack,0)) and isNumber(peekStack(vm.stack,1)) then
                         begin
-                          BinaryOp(boAdd);
+                          if not BinaryOp(boAdd) then
+                          begin
+                            result.code := INTERPRET_RUNTIME_ERROR;
+                            exit;
+                          end;
                         end
                         else
                         if isString(peekStack(vm.stack,0)) and isString(peekStack(vm.stack,1)) then
@@ -1679,20 +1703,33 @@ begin
                         begin
                           runtimeError('Operands must be two numbers or two strings.');
                           result.code := INTERPRET_RUNTIME_ERROR;
-                          runtimeError('Operand must be a number.');
                           exit;
                         end;
+                      end;
 
+        OP_SUBTRACT : begin
+                        if not BinaryOp(boSubtract) then
+                        begin
+                          result.code := INTERPRET_RUNTIME_ERROR;
+                          exit;
+                        end;
+                      end;
 
+        OP_MULTIPLY : begin
+                        if not BinaryOp(boMultiply) then
+                        begin
+                          result.code := INTERPRET_RUNTIME_ERROR;
+                          exit;
+                        end;
+                      end;
 
-
-        end;
-
-        OP_SUBTRACT : BinaryOp(boSubtract);
-
-        OP_MULTIPLY : BinaryOP(boMultiply);
-
-        OP_DIVIDE   : BinaryOp(boDivide);
+        OP_DIVIDE   : begin
+                        if not BinaryOp(boDivide) then
+                        begin
+                          result.code := INTERPRET_RUNTIME_ERROR;
+                          exit;
+                        end;
+                      end;
 
         OP_NOT      : pushStack(vm.Stack,CreateBoolean(isFalsey(popStack(vm.Stack))),vm.MemTracker);
 
@@ -1862,6 +1899,12 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
+  if B = 0 then
+  begin
+    RuntimeError('Division by zero.');
+    Exit(false);
+  end;
+
   PushStack(vm.stack,CreateNumber(A / B),vm.MemTracker);
   
   // ---- Exit assertions ----
@@ -1916,15 +1959,15 @@ begin
 end;
 
 
-procedure BinaryOp(Op: TBinaryOperation);
+function BinaryOp(Op: TBinaryOperation): boolean;
 begin
   case Op of
-    boAdd       : BinaryOpNumber_Add;
-    boSubtract  : BinaryOpNumber_subtract;
-    boMultiply  : BinaryOpNumber_Multiply;
-    boDivide    : BinaryOpNumber_Divide;
-    boGreater   : BinaryOpNumber_Greater;
-    boLess      : BinaryOpNumber_Less;
+    boAdd       : Result := BinaryOpNumber_Add;
+    boSubtract  : Result := BinaryOpNumber_subtract;
+    boMultiply  : Result := BinaryOpNumber_Multiply;
+    boDivide    : Result := BinaryOpNumber_Divide;
+    boGreater   : Result := BinaryOpNumber_Greater;
+    boLess      : Result := BinaryOpNumber_Less;
   else
     raise Exception.Create('Unknown operator');
   end;
@@ -1939,9 +1982,12 @@ begin
      if not compile(source,Vm.chunk) then
      begin
        Result.code :=  INTERPRET_COMPILE_ERROR;
+       Result.ErrorStr := Parser.ErrorStr;
        Exit;
      end;
      Result := Run;
+     if Result.code = INTERPRET_RUNTIME_ERROR then
+       Result.ErrorStr := VM.RuntimeErrorStr;
    finally
      FreeVM;
    end;
@@ -2015,6 +2061,7 @@ procedure InitMemTracker(var MemTracker : pMemTracker);
 begin
   AssertPointerIsNil(MemTracker, 'InitMemTracker - MemTracker not nil before initialization');
   new(MemTracker); //Allocate(pointer(MemTracker),0, SizeOf(MemTracker),MemTracker);
+  MemTracker.CreatedObjects := nil;
   MemTracker.Roots.Stack := nil;
   MemTracker.BytesAllocated := 0;
   
@@ -2041,6 +2088,7 @@ begin
   VM.Chunk := nil;
   VM.Stack := nil;
   VM.MemTracker := nil;
+  VM.RuntimeErrorStr := '';
   InitMemTracker(VM.MemTracker);
   InitChunk(Vm.Chunk,vm.MemTracker);
   InitStack(VM.Stack,Vm.MemTracker);
@@ -2427,10 +2475,12 @@ end;
 
 procedure ErrorAt(const Token: TToken; const Msg: PAnsiChar);
 var
-  s, tokenText, msgText: string;
+  s, tokenText: string;
 begin
   if Parser.PanicMode then
     Exit;
+
+  Parser.PanicMode := True;
 
   s := Format('[line %d] Error', [Token.Line]);
 
@@ -2446,6 +2496,8 @@ begin
     s := s + ' at ''' + tokenText + '''';
   end;
 
+  s := s + ': ' + string(AnsiString(Msg));
+
   Parser.ErrorStr := s;
   Parser.HadError := True;
 end;
@@ -2454,7 +2506,6 @@ end;
 
 procedure Error(const Msg: pAnsiChar);
 begin
-  parser.panicMode := true;
   ErrorAt(Parser.Previous, Msg);
 end;
 
@@ -2477,7 +2528,7 @@ begin
   end;
 end;
 
-procedure Consume(TokenKind: TTokenType; const Msg);
+procedure Consume(TokenKind: TTokenType; const Msg: PAnsiChar);
 begin
   if Parser.Current.TokenType = TokenKind then
   begin
@@ -2485,7 +2536,7 @@ begin
     Exit;
   end;
 
-  ErrorAtCurrent(pAnsiChar(Msg));
+  ErrorAtCurrent(Msg);
 end;
 
 function currentChunk : pChunk;
@@ -2533,8 +2584,7 @@ end;
 
 procedure FatalError;
 begin
-
-
+  Abort;
 end;
 
 
@@ -2549,33 +2599,26 @@ begin
 
   //do prefix
   prefixRule := getRule(parser.previous.tokenType).prefix;
-  AssertParseFnIsAssigned(prefixRule, 'prefix rule');
-
-  try
-    prefixRule();
-  Except
-    on E:Exception do
-    begin
-      showmessage('prefix rule failure' + e.Message);
-      FatalError;
-    end;
+  if not Assigned(prefixRule) then
+  begin
+    Error('Expect expression.');
+    Exit;
   end;
+
+  prefixRule();
 
   //now do infix
   while (precedence <= (getRule(parser.current.tokenType).precedence)) do
   begin
     advanceParser;
     infixRule := getRule(parser.previous.tokentype).infix;
-    AssertParseFnIsAssigned(infixRule, 'infix rule');
-    try
-      infixRule();
-    Except
-      on E:Exception do
-      begin
-        showmessage('prefix rule failure' + e.Message);
-        FatalError;
-      end;
+    if not Assigned(infixRule) then
+    begin
+      Error('Expect expression.');
+      Exit;
     end;
+
+    infixRule();
   end;
 end;
 
@@ -2583,10 +2626,13 @@ end;
 procedure Number();
 var
   Value  : TValue;
-  lexeme : string;
+  lexeme : AnsiString;
+  fs : TFormatSettings;
 begin
   lexeme := TokenToString(parser.previous);
-  Value := CreateNumber(StrToFloat(lexeme));
+  fs := TFormatSettings.Create;
+  fs.DecimalSeparator := '.';
+  Value := CreateNumber(StrToFloat(string(lexeme), fs));
   EmitConstant(Value);
 end;
 
@@ -2607,7 +2653,7 @@ var
 begin
   //TODO what asserts go here?
   operatorType := parser.Previous.tokenType;
-  expression;
+  parsePrecedence(PREC_UNARY);
   case operatortype of
     TOKEN_MINUS: emitByte(OP_NEGATE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
     TOKEN_BANG: emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
@@ -2745,81 +2791,112 @@ begin
   AssertPointerIsNil(Entries, 'FreeValues - Entries not nil after free');
 end;
 
-(*
-
-static Entry* findEntry(Entry* entries, int capacity,
-                        ObjString* key) {
-  uint32_t index = key->hash % capacity;
-  for (;;) {
-    Entry* entry = &entries[index];
-    if (entry->key == key || entry->key == NULL) {
-      return entry;
-    }
-
-    index = (index + 1) % capacity;
-  }
-}
-*)
-
-function FindEntry(Table : pTable; Key : pObjString) : pEntry;
+function FindEntry(Entries: pEntry; Capacity: integer; Key: pObjString): pEntry;
 var
-  index : uint32;
-  Entry : pEntry;
+  index: uint32;
 begin
-  AssertTable(Table);
-  AssertTableEntries(Table);
+  Assert(Assigned(Entries), 'FindEntry: entries not assigned');
+  Assert(Capacity > 0, 'FindEntry: capacity must be > 0');
   AssertObjStringIsAssigned(key);
-  Result := nil;
-  Entry := Table.Entries;
-  index := Key.hash mod Table.CurrentCapacity;
-  AssertIndexIsNotNegative(Index);
-  AssertIndexInRange(Index,Table.CurrentCapacity);
+
+  index := Key.hash mod uint32(Capacity);
   while true do
   begin
-    inc(Entry,Index);
-    if (Entry.Key = nil) or (Entry.key = key) then
-    begin
-      result := Entry;
-      exit;
-    end;
-
-    inc(index);
-    index := index mod Table.CurrentCapacity;
-    AssertIndexIsNotNegative(Index);
-    AssertIndexInRange(Index,Table.CurrentCapacity);
+    Result := @Entries[index];
+    if (Result.key = nil) or (Result.key = key) then
+      Exit;
+    index := (index + 1) mod uint32(Capacity);
   end;
 end;
 
 
-function TableSet(var Table : pTable; key : pObjString; value : TValue; MemTracker : pMemTracker) : boolean;
+procedure AdjustCapacity(Table: pTable; NewCapacity: integer; MemTracker: pMemTracker);
 var
-  Entry : pEntry;
+  NewEntries, OldEntries: pEntry;
+  OldCapacity, i: integer;
+  dest: pEntry;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  AssertTable(Table);
+  Assert(NewCapacity > 0, 'AdjustCapacity: new capacity must be > 0');
+
+  // Allocate fresh array
+  NewEntries := nil;
+  Allocate(pointer(NewEntries), 0, NewCapacity * SizeOf(TEntry), MemTracker);
+
+  // Initialize all slots to empty
+  for i := 0 to NewCapacity - 1 do
+  begin
+    NewEntries[i].key := nil;
+    NewEntries[i].value := CreateNilValue;
+  end;
+
+  // Rehash existing entries into new array
+  OldEntries := Table.Entries;
+  OldCapacity := Table.CurrentCapacity;
+  Table.Count := 0;
+
+  if OldEntries <> nil then
+  begin
+    for i := 0 to OldCapacity - 1 do
+    begin
+      if OldEntries[i].key = nil then Continue;
+      dest := FindEntry(NewEntries, NewCapacity, OldEntries[i].key);
+      dest.key := OldEntries[i].key;
+      dest.value := OldEntries[i].value;
+      Inc(Table.Count);
+    end;
+
+    // Free old array
+    Allocate(pointer(OldEntries), OldCapacity * SizeOf(TEntry), 0, MemTracker);
+  end;
+
+  Table.Entries := NewEntries;
+  Table.CurrentCapacity := NewCapacity;
+end;
+
+
+function TableSet(var Table: pTable; key: pObjString; value: TValue; MemTracker: pMemTracker): boolean;
+var
+  Entry: pEntry;
+  NewCapacity: integer;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
   AssertTable(Table);
   AssertObjStringIsAssigned(key);
 
-  if (table.count + 1 > table.CurrentCapacity * TABLE_MAX_LOAD) then
+  if (Table.Count + 1 > Table.CurrentCapacity * TABLE_MAX_LOAD) then
   begin
-    AllocateArray(pointer(table.Entries),table.CurrentCapacity, Table.Count, Sizeof(TEntry),MemTracker);
+    if Table.CurrentCapacity < 8 then
+      NewCapacity := 8
+    else
+      NewCapacity := Table.CurrentCapacity * GROWTH_FACTOR;
+    AdjustCapacity(Table, NewCapacity, MemTracker);
   end;
 
-  Entry := FindEntry(Table,Key);
-  if (Entry.Key = nil) then
+  Entry := FindEntry(Table.Entries, Table.CurrentCapacity, key);
+  Result := Entry.key = nil;
+  if Result then
+    Inc(Table.Count);
+
+  Entry.key := key;
+  Entry.value := value;
+end;
 
 
-  (*
-  Entry* entry = findEntry(table->entries, table->capacity, key);
-  bool isNewKey = entry->key == NULL;
-  if (isNewKey) table->count++;
+function TableGet(Table: pTable; key: pObjString; var value: TValue): boolean;
+var
+  Entry: pEntry;
+begin
+  if Table.Count = 0 then
+    Exit(false);
 
-  entry->key = key;
-  entry->value = value;
-  return isNewKey;*)
+  Entry := FindEntry(Table.Entries, Table.CurrentCapacity, key);
+  if Entry.key = nil then
+    Exit(false);
 
-
-
-
+  value := Entry.value;
+  Result := true;
 end;
 
 procedure FreeTable(var Table : pTable; memTracker : pMemTracker);

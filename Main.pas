@@ -24,6 +24,7 @@ type
     procedure Button5Click(Sender: TObject);
     procedure Button6Click(Sender: TObject);
     procedure Button7Click(Sender: TObject);
+    procedure Button8Click(Sender: TObject);
 
   private
     { Private declarations }
@@ -74,12 +75,11 @@ begin
     end;
 
     INTERPRET_COMPILE_ERROR: begin
-       Memo2.Lines.add(Parser.ErrorStr);
+       Memo2.Lines.add(IR.ErrorStr);
     end;
 
     INTERPRET_RUNTIME_ERROR: begin
-      Memo2.Lines.add('run time error');
-
+      Memo2.Lines.add(IR.ErrorStr);
     end;
     else
       begin
@@ -131,6 +131,12 @@ end;
 procedure TForm4.Button7Click(Sender: TObject);
 begin
   testTable;
+end;
+
+procedure TForm4.Button8Click(Sender: TObject);
+begin
+  TestInterpreter;
+  Memo2.Lines.Add('All interpreter tests passed.');
 end;
 
 end.
