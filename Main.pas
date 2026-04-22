@@ -55,10 +55,12 @@ begin
     case Ir.code of
     INTERPRET_OK:
     begin
+      if IR.OutputStr <> '' then
+        Memo2.Lines.Add(IR.OutputStr);
       case IR.value.ValueKind of
         vkNumber: Memo2.lines.add(IR.value.NumberValue.ToString);
         vkBoolean:Memo2.Lines.add(BoolToStr(IR.value.BooleanValue,true));
-        vkNull: Memo2.Lines.add('Null');
+        vkNull: ; // suppress null for statement-based programs
         vkObject :
         begin
           Memo2.lines.add(IR.ResultStr);
@@ -131,6 +133,7 @@ end;
 procedure TForm4.Button8Click(Sender: TObject);
 begin
   TestInterpreter;
+  TestGlobals;
   Memo2.Lines.Add('All interpreter tests passed.');
 end;
 

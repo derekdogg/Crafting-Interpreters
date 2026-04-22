@@ -41,8 +41,13 @@ const
   OP_GREATER  = 12;
   OP_LESS     = 13;
   OP_CONSTANT_LONG = 14;
+  OP_PRINT    = 15;
+  OP_POP      = 16;
+  OP_DEFINE_GLOBAL = 17;
+  OP_GET_GLOBAL = 18;
+  OP_SET_GLOBAL = 19;
 
-  OP_STRINGS : array[0..14] of string = (
+  OP_STRINGS : array[0..19] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -57,7 +62,12 @@ const
     'OP_EQUAL',
     'OP_GREATER',
     'OP_LESS',
-    'OP_CONSTANT_LONG');
+    'OP_CONSTANT_LONG',
+    'OP_PRINT',
+    'OP_POP',
+    'OP_DEFINE_GLOBAL',
+    'OP_GET_GLOBAL',
+    'OP_SET_GLOBAL');
 
 
 type
@@ -197,6 +207,7 @@ type
     value : TValue;
     ErrorStr : String;
     ResultStr : String;
+    OutputStr : String;
   end;
 
   TMemTracker = record
@@ -211,7 +222,9 @@ type
     Stack           : pStack;
     MemTracker      : PMemTracker;
     Strings         : pTable;
+    Globals         : pTable;
     RuntimeErrorStr : String;
+    PrintOutput     : String;
   end;
 
   TScanner = record
@@ -350,6 +363,7 @@ function ValuesEqual(a, b : TValue) : boolean;
 function TokenToString(const Token: TToken): AnsiString;
 function ObjStringToAnsiString(S: PObjString): AnsiString;
 function ValueToString(const value : TValue) : pObjString;
+function ValueToStr(const value : TValue) : String;
 function StringToValue(const value : pObjString) : TValue;
 procedure Concatenate(stack : pStack; MemTracker : pMemTracker);
 
@@ -405,12 +419,18 @@ function  isAtEnd : boolean;
 //compilation
 function BinaryOp(Op: TBinaryOperation): boolean;
 function compile(source : pAnsiChar; chunk : pChunk) : boolean;
+procedure declaration();
+procedure varDeclaration();
+procedure statement();
+procedure printStatement();
+procedure expressionStatement();
 procedure Number();
 procedure grouping();
 procedure unary();
 procedure binary();
 procedure literal();
 procedure ParseString();
+procedure variable();
 
 //Hash
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
@@ -489,7 +509,7 @@ const
     (Prefix: nil;      Infix: binary;     Precedence: PREC_COMPARISON),
 
     { TOKEN_IDENTIFIER }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: variable; Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_STRING }
     (Prefix: ParseString; Infix: nil;     Precedence: PREC_NONE),
@@ -1356,6 +1376,23 @@ begin
   result.ObjValue := pObj(value);
 end;
 
+function ValueToStr(const value : TValue) : String;
+begin
+  case value.ValueKind of
+    vkNumber:  Result := FloatToStr(value.NumberValue);
+    vkBoolean: if value.BooleanValue then Result := 'true' else Result := 'false';
+    vkNull:    Result := 'nil';
+    vkObject:
+      case value.ObjValue.ObjectKind of
+        okString: Result := String(ObjStringToAnsiString(pObjString(value.ObjValue)));
+      else
+        Result := '<object>';
+      end;
+  else
+    Result := '<unknown>';
+  end;
+end;
+
 procedure Concatenate(Stack : pStack; MemTracker : pMemTracker);
 var
   top, below, resultStr: PObjString;
@@ -1779,6 +1816,48 @@ begin
 
         OP_NOT      : pushStack(vm.Stack,CreateBoolean(isFalsey(popStack(vm.Stack))),vm.MemTracker);
 
+        OP_PRINT: begin
+          value := popStack(vm.Stack);
+          if VM.PrintOutput <> '' then
+            VM.PrintOutput := VM.PrintOutput + sLineBreak;
+          VM.PrintOutput := VM.PrintOutput + ValueToStr(value);
+        end;
+
+        OP_POP: begin
+          popStack(vm.Stack);
+        end;
+
+        OP_GET_GLOBAL: begin
+          value := ReadConstant(InstructionPtr, vm.Chunk.Constants);
+          AssertValueIsString(value);
+          if not TableGet(vm.Globals, ValueToString(value), ValueB) then
+          begin
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          pushStack(vm.Stack, ValueB, vm.MemTracker);
+        end;
+
+        OP_SET_GLOBAL: begin
+          value := ReadConstant(InstructionPtr, vm.Chunk.Constants);
+          AssertValueIsString(value);
+          if TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker) then
+          begin
+            TableDelete(vm.Globals, ValueToString(value));
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+        end;
+
+        OP_DEFINE_GLOBAL: begin
+          value := ReadConstant(InstructionPtr, vm.Chunk.Constants);
+          AssertValueIsString(value);
+          TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker);
+          popStack(vm.Stack);
+        end;
+
         OP_RETURN: begin
            if vm.Stack.count > 0 then
            begin
@@ -2037,6 +2116,7 @@ begin
        Result.ErrorStr := VM.RuntimeErrorStr
      else if (Result.code = INTERPRET_OK) and isString(Result.value) then
        Result.ResultStr := ObjStringToAnsiString(ValueToString(Result.value));
+     Result.OutputStr := VM.PrintOutput;
    finally
      FreeVM;
    end;
@@ -2138,9 +2218,12 @@ begin
   VM.Stack := nil;
   VM.MemTracker := nil;
   VM.Strings := nil;
+  VM.Globals := nil;
   VM.RuntimeErrorStr := '';
+  VM.PrintOutput := '';
   InitMemTracker(VM.MemTracker);
   InitTable(VM.Strings, VM.MemTracker);
+  InitTable(VM.Globals, VM.MemTracker);
   InitChunk(Vm.Chunk,vm.MemTracker);
   InitStack(VM.Stack,Vm.MemTracker);
   ResetStack(vm.Stack);
@@ -2153,6 +2236,7 @@ begin
   Assert(VM.Stack <> nil, 'InitVM exit: Stack should not be nil');
   AssertMemTrackerIsNotNil(VM.MemTracker);
   Assert(VM.Strings <> nil, 'InitVM exit: Strings table should not be nil');
+  Assert(VM.Globals <> nil, 'InitVM exit: Globals table should not be nil');
   Assert(VM.MemTracker.Roots.Stack = VM.Stack, 'InitVM exit: GC roots should point to stack');
 end;
 
@@ -2161,6 +2245,7 @@ begin
   AssertVMIsAssigned;
   AssertMemTrackerIsNotNil(VM.MemTracker);
   FreeStack(VM.Stack,Vm.MemTracker);
+  FreeTable(VM.Globals, VM.MemTracker);
   FreeTable(VM.Strings, VM.MemTracker);
   if (Vm.MemTracker.CreatedObjects <> nil) then
   begin
@@ -2650,11 +2735,25 @@ begin
   Abort;
 end;
 
+function check(tokenType : TTokenType) : boolean;
+begin
+  Result := parser.current.tokenType = tokenType;
+end;
+
+function matchToken(tokenType : TTokenType) : boolean;
+begin
+  if not check(tokenType) then
+    Exit(false);
+  advanceParser();
+  Result := true;
+end;
+
 
 procedure parsePrecedence(precedence : TPrecedence);
 var
   prefixRule : procedure;
   infixRule  : procedure;
+  canAssign  : boolean;
 begin
   prefixRule := nil;
   infixRule  := nil;
@@ -2668,6 +2767,7 @@ begin
     Exit;
   end;
 
+  canAssign := precedence <= PREC_ASSIGNMENT;
   prefixRule();
 
   //now do infix
@@ -2682,6 +2782,11 @@ begin
     end;
 
     infixRule();
+  end;
+
+  if canAssign and matchToken(TOKEN_EQUAL) then
+  begin
+    Error('Invalid assignment target.');
   end;
 end;
 
@@ -2820,6 +2925,97 @@ begin
 end;
 
 
+procedure printStatement();
+begin
+  Expression();
+  consume(TOKEN_SEMICOLON, 'Expect '';'' after value.');
+  emitByte(OP_PRINT, CurrentChunk, parser.previous.line, vm.MemTracker);
+end;
+
+function identifierConstant(const name : TToken) : byte;
+var
+  strObj : pObjString;
+  idx : integer;
+begin
+  strObj := CreateString(TokenToString(name), VM.MemTracker);
+  idx := AddValueConstant(CurrentChunk.Constants, StringToValue(strObj), VM.MemTracker);
+  Assert(idx <= High(Byte), 'Too many constants in one chunk');
+  Result := Byte(idx);
+end;
+
+function parseVariable(const errorMsg : PAnsiChar) : byte;
+begin
+  consume(TOKEN_IDENTIFIER, errorMsg);
+  Result := identifierConstant(parser.previous);
+end;
+
+procedure defineVariable(global : byte);
+begin
+  emitByte(OP_DEFINE_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte(global, CurrentChunk, parser.previous.line, vm.MemTracker);
+end;
+
+procedure varDeclaration();
+var
+  global : byte;
+begin
+  global := parseVariable('Expect variable name.');
+
+  if matchToken(TOKEN_EQUAL) then
+    Expression()
+  else
+    emitByte(OP_NIL, CurrentChunk, parser.previous.line, vm.MemTracker);
+
+  consume(TOKEN_SEMICOLON, 'Expect '';'' after variable declaration.');
+  defineVariable(global);
+end;
+
+procedure namedVariable(name : TToken);
+var
+  arg : byte;
+begin
+  arg := identifierConstant(name);
+  if matchToken(TOKEN_EQUAL) then
+  begin
+    Expression();
+    emitByte(OP_SET_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(arg, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    emitByte(OP_GET_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(arg, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+end;
+
+procedure variable();
+begin
+  namedVariable(parser.previous);
+end;
+
+procedure expressionStatement();
+begin
+  Expression();
+  consume(TOKEN_SEMICOLON, 'Expect '';'' after expression.');
+  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+end;
+
+procedure statement();
+begin
+  if matchToken(TOKEN_PRINT) then
+    printStatement()
+  else
+    expressionStatement();
+end;
+
+procedure declaration();
+begin
+  if matchToken(TOKEN_VAR) then
+    varDeclaration()
+  else
+    statement();
+end;
+
 function compile(source : pAnsiChar; chunk : pChunk) : boolean;
 begin
   AssertChunkIsAssigned(chunk);
@@ -2831,8 +3027,11 @@ begin
   parser.hadError := false;
   parser.panicMode := false;
   advanceParser();
-  Expression();
-  consume(TOKEN_EOF, 'Expect end of expression.');
+  while not check(TOKEN_EOF) do
+  begin
+    declaration();
+  end;
+  consume(TOKEN_EOF, 'Expect end of input.');
   emitReturn(CurrentChunk,parser.previous.line,VM.Memtracker);
   result := parser.HadError = false;
 
