@@ -134,6 +134,7 @@ procedure TForm4.Button8Click(Sender: TObject);
 begin
   TestInterpreter;
   TestGlobals;
+  TestLocals;
   Memo2.Lines.Add('All interpreter tests passed.');
 end;
 
