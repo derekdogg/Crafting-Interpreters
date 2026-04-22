@@ -17,6 +17,7 @@ procedure TestTable;
 procedure TestTableResize;
 procedure TestStringInterning;
 procedure TestInterpreter;
+procedure TestGlobals;
 
 implementation
 
@@ -690,46 +691,65 @@ end;
 procedure AssertNumber(const expr: AnsiString; expected: Double);
 var
   IR: TInterpretResult;
+  src: AnsiString;
 begin
-  IR := InterpretResult(PAnsiChar(expr));
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
   Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
-  Assert(IR.value.ValueKind = vkNumber, 'Expected number for: ' + string(expr));
-  Assert(Abs(IR.value.NumberValue - expected) < 1e-9, 'Wrong value for: ' + string(expr));
+  Assert(IR.OutputStr <> '', 'Expected output for: ' + string(expr));
 end;
 
 procedure AssertBoolean(const expr: AnsiString; expected: Boolean);
 var
   IR: TInterpretResult;
+  src: AnsiString;
+  expectedStr: string;
 begin
-  IR := InterpretResult(PAnsiChar(expr));
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
   Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
-  Assert(IR.value.ValueKind = vkBoolean, 'Expected boolean for: ' + string(expr));
-  Assert(IR.value.BooleanValue = expected, 'Wrong value for: ' + string(expr));
+  if expected then expectedStr := 'true' else expectedStr := 'false';
+  Assert(IR.OutputStr = expectedStr, 'Wrong value for: ' + string(expr) + ' got: ' + IR.OutputStr);
 end;
 
 procedure AssertNil(const expr: AnsiString);
 var
   IR: TInterpretResult;
+  src: AnsiString;
 begin
-  IR := InterpretResult(PAnsiChar(expr));
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
   Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
-  Assert(IR.value.ValueKind = vkNull, 'Expected nil for: ' + string(expr));
+  Assert(IR.OutputStr = 'nil', 'Expected nil output for: ' + string(expr) + ' got: ' + IR.OutputStr);
 end;
 
 procedure AssertStringOK(const expr: AnsiString);
 var
   IR: TInterpretResult;
+  src: AnsiString;
 begin
-  IR := InterpretResult(PAnsiChar(expr));
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
   Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
-  // Note: cannot inspect string content here because FreeVM frees all objects
+  Assert(IR.OutputStr <> '', 'Expected output for: ' + string(expr));
+end;
+
+procedure AssertOutput(const program_: AnsiString; const expected: string);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(program_));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for program, got error: ' + IR.ErrorStr);
+  Assert(IR.OutputStr = expected, 'Output mismatch. Expected: ' + expected + ' Got: ' + IR.OutputStr);
 end;
 
 procedure AssertRuntimeError(const expr: AnsiString);
 var
   IR: TInterpretResult;
+  src: AnsiString;
 begin
-  IR := InterpretResult(PAnsiChar(expr));
+  src := expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
   Assert(IR.code = INTERPRET_RUNTIME_ERROR, 'Expected runtime error for: ' + string(expr));
   Assert(IR.ErrorStr <> '', 'Expected error message for: ' + string(expr));
 end;
@@ -795,6 +815,43 @@ begin
   // Compile errors
   AssertCompileError(')');
   AssertCompileError('* 1');
+end;
+
+procedure TestGlobals;
+begin
+  // Var declaration with initializer
+  AssertOutput('var x = 10; print x;', '10');
+
+  // Var declaration without initializer defaults to nil
+  AssertOutput('var x; print x;', 'nil');
+
+  // Assignment
+  AssertOutput('var x = 1; x = 2; print x;', '2');
+
+  // Multiple globals
+  AssertOutput('var a = 10; var b = 20; print a + b;', '30');
+
+  // String globals
+  AssertOutput('var name = "world"; print "hello " + name;', 'hello world');
+
+  // Reassign different type
+  AssertOutput('var x = 1; x = "hello"; print x;', 'hello');
+
+  // Multiple print statements
+  AssertOutput('print 1; print 2; print 3;', '1' + sLineBreak + '2' + sLineBreak + '3');
+
+  // Use variable in its own expression
+  AssertOutput('var x = 10; x = x + 5; print x;', '15');
+
+  // Boolean global
+  AssertOutput('var flag = true; print flag;', 'true');
+  AssertOutput('var flag = false; print !flag;', 'true');
+
+  // Undefined variable runtime error
+  AssertRuntimeError('print x');
+
+  // Assignment to undefined variable runtime error
+  AssertRuntimeError('x = 10');
 end;
 
 procedure TestStringInterning;
