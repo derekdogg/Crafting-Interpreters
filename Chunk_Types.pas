@@ -51,8 +51,9 @@ const
   OP_JUMP = 22;
   OP_JUMP_IF_FALSE = 23;
   OP_LOOP = 24;
+  OP_CALL = 25;
 
-  OP_STRINGS : array[0..24] of string = (
+  OP_STRINGS : array[0..25] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -77,17 +78,21 @@ const
     'OP_SET_LOCAL',
     'OP_JUMP',
     'OP_JUMP_IF_FALSE',
-    'OP_LOOP');
+    'OP_LOOP',
+    'OP_CALL');
 
   UINT8_COUNT = 256;
+  FRAMES_MAX = 64;
+  STACK_MAX = FRAMES_MAX * UINT8_COUNT;
 
 
 type
 
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
-  TObjectKind = (okString);
+  TObjectKind = (okString, okFunction, okNative);
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boGreater, boLess);
+  TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
     // Single-character tokens
     TOKEN_LEFT_PAREN, TOKEN_RIGHT_PAREN,
@@ -136,6 +141,9 @@ type
   pValue          = ^TValue;
   pObj            = ^TObj;
   pObjString      = ^TObjString;
+  pObjFunction    = ^TObjFunction;
+  pObjNative      = ^TObjNative;
+  pCompiler       = ^TCompiler;
   pStack          = ^TStack;
   pVirtualMachine = ^TVirtualMachine;
   pMemTracker     = ^TMemTracker;
@@ -177,6 +185,13 @@ type
     chars   : TAnsiCharArray;
   end;
 
+  TObjFunction = record
+    Obj    : TObj;
+    arity  : integer;
+    chunk  : pChunk;
+    name   : pObjString;
+  end;
+
   TIntToByteResult = record
      byte0 : byte;
      byte1 : byte;
@@ -190,6 +205,13 @@ type
       vkBoolean: (BooleanValue: Boolean);
       vkNull:    (NullValue: Byte);
       vkObject:  (ObjValue : pObj);  //note here that this pointer is to TObjectKind.However, since all objects are derived from it, we can cast the pointer to the actual object (and back).
+  end;
+
+  TNativeFn = function(argCount: integer; args: pValue): TValue;
+
+  TObjNative = record
+    Obj      : TObj;
+    func     : TNativeFn;
   end;
 
   TChunk = record
@@ -228,9 +250,16 @@ type
     Roots           : TRoots;
   end;
 
+  TCallFrame = record
+    func    : pObjFunction;
+    ip      : pByte;
+    slots   : pValue; // points into VM stack
+  end;
+
   //Virtual Machine
   TVirtualMachine = record
-    Chunk           : pChunk;
+    Frames          : array[0..FRAMES_MAX - 1] of TCallFrame;
+    FrameCount      : integer;
     Stack           : pStack;
     MemTracker      : PMemTracker;
     Strings         : pTable;
@@ -266,9 +295,12 @@ type
   end;
 
   TCompiler = record
-    locals     : array[0..UINT8_COUNT - 1] of TLocal;
-    localCount : integer;
-    scopeDepth : integer;
+    enclosing    : pCompiler;
+    func         : pObjFunction;
+    funcType     : TFunctionType;
+    locals       : array[0..UINT8_COUNT - 1] of TLocal;
+    localCount   : integer;
+    scopeDepth   : integer;
   end;
 
 
@@ -441,9 +473,11 @@ function  isAtEnd : boolean;
 
 //compilation
 function BinaryOp(Op: TBinaryOperation): boolean;
-function compile(source : pAnsiChar; chunk : pChunk) : boolean;
+function compile(source : pAnsiChar) : pObjFunction;
 procedure declaration();
 procedure varDeclaration();
+procedure funDeclaration();
+procedure returnStatement();
 procedure statement();
 procedure block();
 procedure printStatement();
@@ -458,10 +492,14 @@ procedure binary();
 procedure literal();
 procedure ParseString();
 procedure variable();
+procedure call();
 procedure and_();
 procedure or_();
 procedure beginScope();
 procedure endScope();
+function newFunction(MemTracker : pMemTracker) : pObjFunction;
+function newNative(func : TNativeFn; MemTracker : pMemTracker) : pObjNative;
+procedure defineNative(const name : AnsiString; func : TNativeFn);
 
 //Hash
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
@@ -483,7 +521,7 @@ procedure FreeTable(var Table : pTable; memTracker : pMemTracker);
 const
   Rules: array[TTokenType] of TParseRule = (
     { TOKEN_LEFT_PAREN }
-    (Prefix: grouping; Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: grouping; Infix: call;    Precedence: PREC_CALL),
 
     { TOKEN_RIGHT_PAREN }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -609,14 +647,13 @@ var
   VM : pVirtualMachine;
   Scanner : TScanner;
   Parser  : TParser;
-  CompilingChunk : pChunk; //related to the pratt parser table because we have to have a global chunk in there.
-  Current : TCompiler;
+  Current : pCompiler;
   //Output : TStrings;
 
 implementation
 
 uses
-  sysutils, Math,strUtils, typinfo;
+  sysutils, Math, strUtils, typinfo, Windows;
 
 procedure AssertTable(Table : pTable);
 begin
@@ -768,12 +805,12 @@ end;
 
 procedure AssertVMChunkIsAssigned;
 begin
-  Assert(Assigned(VM.Chunk), 'VM Chunk is not assigned');
+  // No longer applicable: VM uses call frames instead of a single chunk
 end;
 
 procedure AssertVMChunkCodeIsAssigned;
 begin
-  Assert(Assigned(VM.Chunk.Code), 'VM chunk code is not assigned');
+  // No longer applicable: VM uses call frames instead of a single chunk
 end;
 
 //Pointer assertions
@@ -1340,6 +1377,43 @@ begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okString);
 end;
 
+function isFunction(value : TValue) : boolean;
+begin
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okFunction);
+end;
+
+function isNative(value : TValue) : boolean;
+begin
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okNative);
+end;
+
+function newFunction(MemTracker : pMemTracker) : pObjFunction;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjFunction), MemTracker);
+  Result^.Obj.ObjectKind := okFunction;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.arity := 0;
+  Result^.name := nil;
+  Result^.chunk := nil;
+  InitChunk(Result^.chunk, MemTracker);
+  AddToCreatedObjects(pObj(Result), MemTracker);
+end;
+
+function newNative(func : TNativeFn; MemTracker : pMemTracker) : pObjNative;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjNative), MemTracker);
+  Result^.Obj.ObjectKind := okNative;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.func := func;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+end;
+
 function ObjStringToAnsiString(S: PObjString): AnsiString;
 begin
   AssertObjStringIsAssigned(S);
@@ -1417,6 +1491,13 @@ begin
     vkObject:
       case value.ObjValue.ObjectKind of
         okString: Result := String(ObjStringToAnsiString(pObjString(value.ObjValue)));
+        okFunction: begin
+          if pObjFunction(value.ObjValue)^.name = nil then
+            Result := '<script>'
+          else
+            Result := '<fn ' + String(ObjStringToAnsiString(pObjFunction(value.ObjValue)^.name)) + '>';
+        end;
+        okNative: Result := '<native fn>';
       else
         Result := '<object>';
       end;
@@ -1730,33 +1811,93 @@ end;
 
 function Run : TInterpretResult;
 var
-  InstructionPtr : pByte;
+  frame : ^TCallFrame;
   instruction: Byte;
   slot : Byte;
   offset : Word;
   value,ValueB : TValue;
+  argCount : byte;
+  func : pObjFunction;
+  native : TNativeFn;
+  nativeResult : TValue;
+  i : integer;
+
+  function ReadByteFr: Byte;
+  begin
+    Result := frame^.ip^;
+    Inc(frame^.ip);
+  end;
+
+  function ReadConstantFr: TValue;
+  begin
+    Result := frame^.func^.chunk^.Constants^.Values[ReadByteFr];
+  end;
+
+  function CallValue(callee : TValue; argCnt : byte) : boolean;
+  begin
+    if isFunction(callee) then
+    begin
+      if argCnt <> pObjFunction(callee.ObjValue)^.arity then
+      begin
+        runtimeError('Expected ' + IntToStr(pObjFunction(callee.ObjValue)^.arity) +
+          ' arguments but got ' + IntToStr(argCnt) + '.');
+        Exit(false);
+      end;
+      if VM.FrameCount = FRAMES_MAX then
+      begin
+        runtimeError('Stack overflow.');
+        Exit(false);
+      end;
+      frame := @VM.Frames[VM.FrameCount];
+      frame^.func := pObjFunction(callee.ObjValue);
+      frame^.ip := pObjFunction(callee.ObjValue)^.chunk^.Code;
+      // slots points to the function value on the stack (argCnt args above it)
+      frame^.slots := VM.Stack.StackTop;
+      Dec(frame^.slots, argCnt + 1);
+      Inc(VM.FrameCount);
+      Result := true;
+    end
+    else if isNative(callee) then
+    begin
+      native := pObjNative(callee.ObjValue)^.func;
+      nativeResult := native(argCnt, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt) * SizeOf(TValue)));
+      // pop args + callee
+      VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
+      VM.Stack.Count := VM.Stack.Count - (argCnt + 1);
+      pushStack(VM.Stack, nativeResult, VM.MemTracker);
+      Result := true;
+    end
+    else
+    begin
+      runtimeError('Can only call functions and classes.');
+      Result := false;
+    end;
+  end;
 
 begin
     AssertVMIsAssigned;
-    AssertVMChunkIsAssigned;
-    AssertVMChunkCodeIsAssigned;
-    AssertChunkHasInstructions(vm.Chunk);
-    AssertChunkEndsWithReturn(vm.Chunk);
     AssertStackIsAssigned(vm.Stack);
     AssertMemTrackerIsNotNil(vm.MemTracker);
-    InstructionPtr := Vm.Chunk.Code;
+    Assert(VM.FrameCount > 0, 'Run: no call frames');
+
+    frame := @VM.Frames[VM.FrameCount - 1];
+
     while True do
     begin
-      instruction := ReadByte(InstructionPtr);
+      instruction := ReadByteFr;
       case instruction of
 
         OP_CONSTANT : begin
-          value := ReadConstant(InstructionPtr,vm.Chunk.Constants);
+          value := ReadConstantFr;
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
         OP_CONSTANT_LONG : begin
-          value := ReadConstantLong(InstructionPtr,vm.chunk.Constants);
+          // 3-byte constant index (little-endian: byte0 | byte1<<8 | byte2<<16)
+          i := ReadByteFr;
+          i := i or (ReadByteFr shl 8);
+          i := i or (ReadByteFr shl 16);
+          value := frame^.func^.chunk^.Constants^.Values[i];
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
@@ -1862,7 +2003,7 @@ begin
         end;
 
         OP_GET_GLOBAL: begin
-          value := ReadConstant(InstructionPtr, vm.Chunk.Constants);
+          value := ReadConstantFr;
           AssertValueIsString(value);
           if not TableGet(vm.Globals, ValueToString(value), ValueB) then
           begin
@@ -1874,7 +2015,7 @@ begin
         end;
 
         OP_SET_GLOBAL: begin
-          value := ReadConstant(InstructionPtr, vm.Chunk.Constants);
+          value := ReadConstantFr;
           AssertValueIsString(value);
           if TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker) then
           begin
@@ -1886,57 +2027,69 @@ begin
         end;
 
         OP_GET_LOCAL: begin
-          slot := ReadByte(InstructionPtr);
-          pushStack(vm.Stack, vm.Stack.Values[slot], vm.MemTracker);
+          slot := ReadByteFr;
+          pushStack(vm.Stack, frame^.slots[slot], vm.MemTracker);
         end;
 
         OP_SET_LOCAL: begin
-          slot := ReadByte(InstructionPtr);
-          vm.Stack.Values[slot] := peekStack(vm.Stack);
+          slot := ReadByteFr;
+          frame^.slots[slot] := peekStack(vm.Stack);
         end;
 
         OP_JUMP: begin
-          offset := ReadByte(InstructionPtr) shl 8;
-          offset := offset or ReadByte(InstructionPtr);
-          Inc(InstructionPtr, offset);
+          offset := ReadByteFr shl 8;
+          offset := offset or ReadByteFr;
+          Inc(frame^.ip, offset);
         end;
 
         OP_JUMP_IF_FALSE: begin
-          offset := ReadByte(InstructionPtr) shl 8;
-          offset := offset or ReadByte(InstructionPtr);
+          offset := ReadByteFr shl 8;
+          offset := offset or ReadByteFr;
           if isFalsey(peekStack(vm.Stack)) then
-            Inc(InstructionPtr, offset);
+            Inc(frame^.ip, offset);
         end;
 
         OP_LOOP: begin
-          offset := ReadByte(InstructionPtr) shl 8;
-          offset := offset or ReadByte(InstructionPtr);
-          Dec(InstructionPtr, offset);
+          offset := ReadByteFr shl 8;
+          offset := offset or ReadByteFr;
+          Dec(frame^.ip, offset);
         end;
 
         OP_DEFINE_GLOBAL: begin
-          value := ReadConstant(InstructionPtr, vm.Chunk.Constants);
+          value := ReadConstantFr;
           AssertValueIsString(value);
           TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker);
           popStack(vm.Stack);
         end;
 
+        OP_CALL: begin
+          argCount := ReadByteFr;
+          if not CallValue(peekStack(vm.Stack, argCount), argCount) then
+          begin
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          frame := @VM.Frames[VM.FrameCount - 1];
+        end;
+
         OP_RETURN: begin
-           if vm.Stack.count > 0 then
-           begin
-             value := popStack(vm.Stack); //pop the last thing on stack and exit -- this unsafely assumes something is on the stack at this point..
-           end
-           else
-           begin
-             value.ValueKind := vknull;
-           end;
+          value := popStack(vm.Stack);
 
+          Dec(VM.FrameCount);
+          if VM.FrameCount = 0 then
+          begin
+            popStack(vm.Stack); // pop the script function
+            Result.Code := INTERPRET_OK;
+            Result.value := value;
+            Exit(Result);
+          end;
 
-          //TODO output.Add(floattostr(value.));
+          // Discard the returning function's stack window
+          VM.Stack.StackTop := frame^.slots;
+          VM.Stack.Count := (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue);
+          pushStack(vm.Stack, value, vm.MemTracker);
 
-           Result.Code := INTERPRET_OK;
-           Result.value := value;
-           Exit(Result);
+          frame := @VM.Frames[VM.FrameCount - 1];
         end;
       end;
     end;
@@ -2164,16 +2317,29 @@ end;
 
 //entry point into vm
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
+var
+  func : pObjFunction;
 begin
    AssertSourceCodeIsAssigned(source);
    initVM;
    try
-     if not compile(source,Vm.chunk) then
+     func := compile(source);
+     if func = nil then
      begin
        Result.code :=  INTERPRET_COMPILE_ERROR;
        Result.ErrorStr := Parser.ErrorStr;
        Exit;
      end;
+
+     // Push the script function onto the stack
+     pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
+
+     // Set up the first call frame
+     VM.Frames[0].func := func;
+     VM.Frames[0].ip := func^.chunk^.Code;
+     VM.Frames[0].slots := VM.Stack.Values;
+     VM.FrameCount := 1;
+
      Result := Run;
      if Result.code = INTERPRET_RUNTIME_ERROR then
        Result.ErrorStr := VM.RuntimeErrorStr
@@ -2191,6 +2357,13 @@ begin
   case obj.ObjectKind of
     okString : begin
       FreeString(pObjString(obj),vm.MemTracker);
+    end;
+    okFunction : begin
+      freeChunk(pObjFunction(obj)^.chunk, vm.MemTracker);
+      Allocate(Pointer(obj), SizeOf(TObjFunction), 0, vm.MemTracker);
+    end;
+    okNative : begin
+      Allocate(Pointer(obj), SizeOf(TObjNative), 0, vm.MemTracker);
     end;
   end;
 end;
@@ -2274,10 +2447,25 @@ begin
   AssertPointerIsNil(MemTracker, 'FreeMemTracker exit: MemTracker should be nil');
 end;
 
+procedure defineNative(const name : AnsiString; func : TNativeFn);
+var
+  native : pObjNative;
+  nameStr : pObjString;
+begin
+  nameStr := CreateString(name, VM.MemTracker);
+  native := newNative(func, VM.MemTracker);
+  TableSet(VM.Globals, nameStr, CreateObject(pObj(native)), VM.MemTracker);
+end;
+
+function clockNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(GetTickCount / 1000.0);
+end;
+
 procedure InitVM;
 begin
   new(VM); //we don't care about making this route through allocate
-  VM.Chunk := nil;
+  VM.FrameCount := 0;
   VM.Stack := nil;
   VM.MemTracker := nil;
   VM.Strings := nil;
@@ -2287,15 +2475,16 @@ begin
   InitMemTracker(VM.MemTracker);
   InitTable(VM.Strings, VM.MemTracker);
   InitTable(VM.Globals, VM.MemTracker);
-  InitChunk(Vm.Chunk,vm.MemTracker);
   InitStack(VM.Stack,Vm.MemTracker);
   ResetStack(vm.Stack);
   //GC set up
   VM.MemTracker.Roots.Stack := Vm.Stack;
-  
+
+  // Define native functions
+  defineNative('clock', clockNative);
+
   // ---- Exit assertions ----
   AssertVMIsAssigned;
-  AssertVMChunkIsAssigned;
   Assert(VM.Stack <> nil, 'InitVM exit: Stack should not be nil');
   AssertMemTrackerIsNotNil(VM.MemTracker);
   Assert(VM.Strings <> nil, 'InitVM exit: Strings table should not be nil');
@@ -2314,7 +2503,6 @@ begin
   begin
     FreeObjects(Vm.MemTracker.CreatedObjects);
   end;
-  freeChunk(vm.chunk,vm.MemTracker);
   Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
   FreeMemTracker(VM.MemTracker);
   dispose(VM);
@@ -2749,8 +2937,10 @@ end;
 
 function currentChunk : pChunk;
 begin
-  Assert(Assigned(CompilingChunk), 'CompilingChunk is nil');
-  result := CompilingChunk;
+  Assert(Current <> nil, 'Current compiler is nil');
+  Assert(Current^.func <> nil, 'Current compiler function is nil');
+  Assert(Current^.func^.chunk <> nil, 'Current compiler function chunk is nil');
+  result := Current^.func^.chunk;
 end;
 
 
@@ -2774,10 +2964,11 @@ begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
   oldCount := Chunk.Count;
-  writeChunk(Chunk,OP_RETURN,line,Memtracker);
-  
+  writeChunk(Chunk, OP_NIL, line, Memtracker);
+  writeChunk(Chunk, OP_RETURN, line, Memtracker);
+
   // ---- Exit assertions ----
-  Assert(Chunk.Count = oldCount + 1, 'EmitReturn exit: chunk count should increase by 1');
+  Assert(Chunk.Count = oldCount + 2, 'EmitReturn exit: chunk count should increase by 2');
   AssertChunkEndsWithReturn(Chunk);
 end;
 
@@ -3140,38 +3331,60 @@ begin
   patchJump(endJump);
 end;
 
-procedure initCompiler();
+procedure initCompiler(var compiler : pCompiler; funcType : TFunctionType);
+var
+  local : ^TLocal;
 begin
-  Current.localCount := 0;
-  Current.scopeDepth := 0;
+  New(compiler);
+  compiler^.enclosing := Current;
+  compiler^.func := nil;
+  compiler^.funcType := funcType;
+  compiler^.localCount := 0;
+  compiler^.scopeDepth := 0;
+  compiler^.func := newFunction(VM.MemTracker);
+  Current := compiler;
+
+  if funcType <> TYPE_SCRIPT then
+  begin
+    Current^.func^.name := CreateString(
+      Copy(AnsiString(parser.previous.start), 1, parser.previous.length),
+      VM.MemTracker);
+  end;
+
+  // The first slot is claimed for the VM's internal use (the function itself)
+  local := @Current^.locals[Current^.localCount];
+  Inc(Current^.localCount);
+  local^.depth := 0;
+  local^.name.start := nil;
+  local^.name.length := 0;
 end;
 
 procedure beginScope();
 begin
-  Inc(Current.scopeDepth);
+  Inc(Current^.scopeDepth);
 end;
 
 procedure endScope();
 begin
-  Dec(Current.scopeDepth);
-  while (Current.localCount > 0) and
-        (Current.locals[Current.localCount - 1].depth > Current.scopeDepth) do
+  Dec(Current^.scopeDepth);
+  while (Current^.localCount > 0) and
+        (Current^.locals[Current^.localCount - 1].depth > Current^.scopeDepth) do
   begin
     emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
-    Dec(Current.localCount);
+    Dec(Current^.localCount);
   end;
 end;
 
 procedure addLocal(name : TToken);
 begin
-  if Current.localCount = UINT8_COUNT then
+  if Current^.localCount = UINT8_COUNT then
   begin
     Error('Too many local variables in function.');
     Exit;
   end;
-  Current.locals[Current.localCount].name := name;
-  Current.locals[Current.localCount].depth := -1; // sentinel: not yet initialized
-  Inc(Current.localCount);
+  Current^.locals[Current^.localCount].name := name;
+  Current^.locals[Current^.localCount].depth := -1; // sentinel: not yet initialized
+  Inc(Current^.localCount);
 end;
 
 function identifiersEqual(const a, b : TToken) : boolean;
@@ -3185,14 +3398,14 @@ procedure declareVariable();
 var
   i : integer;
 begin
-  if Current.scopeDepth = 0 then Exit; // globals handled differently
+  if Current^.scopeDepth = 0 then Exit; // globals handled differently
 
-  for i := Current.localCount - 1 downto 0 do
+  for i := Current^.localCount - 1 downto 0 do
   begin
-    if Current.locals[i].depth <> -1 then
-      if Current.locals[i].depth < Current.scopeDepth then
+    if Current^.locals[i].depth <> -1 then
+      if Current^.locals[i].depth < Current^.scopeDepth then
         Break;
-    if identifiersEqual(parser.previous, Current.locals[i].name) then
+    if identifiersEqual(parser.previous, Current^.locals[i].name) then
     begin
       Error('Already a variable with this name in this scope.');
       Exit;
@@ -3204,18 +3417,19 @@ end;
 
 procedure markInitialized();
 begin
-  Current.locals[Current.localCount - 1].depth := Current.scopeDepth;
+  if Current^.scopeDepth = 0 then Exit;
+  Current^.locals[Current^.localCount - 1].depth := Current^.scopeDepth;
 end;
 
 function resolveLocal(const name : TToken) : integer;
 var
   i : integer;
 begin
-  for i := Current.localCount - 1 downto 0 do
+  for i := Current^.localCount - 1 downto 0 do
   begin
-    if identifiersEqual(name, Current.locals[i].name) then
+    if identifiersEqual(name, Current^.locals[i].name) then
     begin
-      if Current.locals[i].depth = -1 then
+      if Current^.locals[i].depth = -1 then
         Error('Can''t read local variable in its own initializer.');
       Exit(i);
     end;
@@ -3239,7 +3453,7 @@ begin
   consume(TOKEN_IDENTIFIER, errorMsg);
 
   declareVariable();
-  if Current.scopeDepth > 0 then
+  if Current^.scopeDepth > 0 then
     Exit(0); // locals don't get stored in constant table
 
   Result := identifierConstant(parser.previous);
@@ -3247,7 +3461,7 @@ end;
 
 procedure defineVariable(global : byte);
 begin
-  if Current.scopeDepth > 0 then
+  if Current^.scopeDepth > 0 then
   begin
     markInitialized();
     Exit; // local is already on the stack
@@ -3314,6 +3528,98 @@ begin
   emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
 
+function argumentList() : byte;
+var
+  argCount : byte;
+begin
+  argCount := 0;
+  if not check(TOKEN_RIGHT_PAREN) then
+  begin
+    repeat
+      Expression();
+      if argCount = 255 then
+        Error('Can''t have more than 255 arguments.');
+      Inc(argCount);
+    until not matchToken(TOKEN_COMMA);
+  end;
+  consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after arguments.');
+  Result := argCount;
+end;
+
+procedure call();
+var
+  argCount : byte;
+begin
+  argCount := argumentList();
+  emitByte(OP_CALL, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte(argCount, CurrentChunk, parser.previous.line, vm.MemTracker);
+end;
+
+procedure functionBody(funcType : TFunctionType);
+var
+  compiler : pCompiler;
+  func : pObjFunction;
+  i : byte;
+begin
+  compiler := nil;
+  initCompiler(compiler, funcType);
+  beginScope();
+
+  consume(TOKEN_LEFT_PAREN, 'Expect ''('' after function name.');
+  if not check(TOKEN_RIGHT_PAREN) then
+  begin
+    repeat
+      Inc(Current^.func^.arity);
+      if Current^.func^.arity > 255 then
+        errorAtCurrent('Can''t have more than 255 parameters.');
+      i := parseVariable('Expect parameter name.');
+      defineVariable(i);
+    until not matchToken(TOKEN_COMMA);
+  end;
+  consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after parameters.');
+  consume(TOKEN_LEFT_BRACE, 'Expect ''{'' before function body.');
+  block();
+
+  // End compiler
+  emitReturn(CurrentChunk, parser.previous.line, VM.MemTracker);
+  func := Current^.func;
+  Current := Current^.enclosing;
+  Dispose(compiler);
+
+  emitByte(OP_CONSTANT, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte(AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker),
+    CurrentChunk, parser.previous.line, vm.MemTracker);
+end;
+
+procedure funDeclaration();
+var
+  global : byte;
+begin
+  global := parseVariable('Expect function name.');
+  markInitialized();
+  functionBody(TYPE_FUNCTION);
+  defineVariable(global);
+end;
+
+procedure returnStatement();
+begin
+  if Current^.funcType = TYPE_SCRIPT then
+  begin
+    Error('Can''t return from top-level code.');
+  end;
+
+  if matchToken(TOKEN_SEMICOLON) then
+  begin
+    emitReturn(CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    Expression();
+    consume(TOKEN_SEMICOLON, 'Expect '';'' after return value.');
+    emitByte(OP_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+end;
+
 procedure block();
 begin
   while (not check(TOKEN_RIGHT_BRACE)) and (not check(TOKEN_EOF)) do
@@ -3331,6 +3637,8 @@ begin
     whileStatement()
   else if matchToken(TOKEN_FOR) then
     forStatement()
+  else if matchToken(TOKEN_RETURN) then
+    returnStatement()
   else if matchToken(TOKEN_LEFT_BRACE) then
   begin
     beginScope();
@@ -3343,21 +3651,26 @@ end;
 
 procedure declaration();
 begin
-  if matchToken(TOKEN_VAR) then
+  if matchToken(TOKEN_FUN) then
+    funDeclaration()
+  else if matchToken(TOKEN_VAR) then
     varDeclaration()
   else
     statement();
 end;
 
-function compile(source : pAnsiChar; chunk : pChunk) : boolean;
+function compile(source : pAnsiChar) : pObjFunction;
+var
+  compiler : pCompiler;
+  func : pObjFunction;
 begin
-  AssertChunkIsAssigned(chunk);
   AssertSourceCodeIsAssigned(source);
   AssertVMIsAssigned;
   AssertMemTrackerIsNotNil(VM.MemTracker);
   initScanner(source);
-  compilingChunk := chunk; //the reason this is done is so it is not passed around.
-  initCompiler();
+  compiler := nil;
+  Current := nil;
+  initCompiler(compiler, TYPE_SCRIPT);
   parser.hadError := false;
   parser.panicMode := false;
   advanceParser();
@@ -3366,15 +3679,17 @@ begin
     declaration();
   end;
   consume(TOKEN_EOF, 'Expect end of input.');
-  emitReturn(CurrentChunk,parser.previous.line,VM.Memtracker);
-  result := parser.HadError = false;
+  emitReturn(CurrentChunk, parser.previous.line, VM.Memtracker);
+  func := Current^.func;
 
-  // ---- Exit assertions ----
-  if result then
-  begin
-    AssertChunkHasInstructions(chunk);
-    AssertChunkEndsWithReturn(chunk);
-  end;
+  // Restore enclosing compiler
+  Current := Current^.enclosing;
+  Dispose(compiler);
+
+  if parser.HadError then
+    Result := nil
+  else
+    Result := func;
 end;
 
 
@@ -3645,7 +3960,7 @@ end;
 
 initialization
   VM := nil;
-  CompilingChunk := nil;
+  Current := nil;
 
 finalization
 
