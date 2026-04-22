@@ -13,12 +13,179 @@ procedure TestStringEqual;
 procedure TestStringUnequal;
 procedure TestValuesEqual;
 procedure TestGC;
+procedure TestTable;
+procedure TestTableResize;
+procedure TestStringInterning;
+procedure TestInterpreter;
+procedure TestGlobals;
 
 implementation
 
 uses
   sysutils,
   Chunk_types;
+
+
+procedure TestTable;
+var
+  memTracker : pMemTracker;
+  table      : pTable;
+  key1, key2, key3, keyNope : pObjString;
+  val        : TValue;
+  found      : boolean;
+begin
+  table := nil;
+  memTracker := nil;
+  InitMemTracker(MemTracker);
+  InitTable(Table,MemTracker);
+
+  // Create keys
+  key1 := CreateString('hello', MemTracker);
+  key2 := CreateString('world', MemTracker);
+  key3 := CreateString('foo', MemTracker);
+
+  // Set values
+  Assert(TableSet(Table, key1, CreateNumber(1), MemTracker) = true, 'key1 should be new');
+  Assert(TableSet(Table, key2, CreateNumber(2), MemTracker) = true, 'key2 should be new');
+  Assert(TableSet(Table, key3, CreateNumber(3), MemTracker) = true, 'key3 should be new');
+  Assert(Table.Count = 3, 'Table should have 3 entries');
+
+  // Get values back
+  found := TableGet(Table, key1, val);
+  Assert(found, 'key1 should be found');
+  Assert(val.NumberValue = 1, 'key1 value should be 1');
+
+  found := TableGet(Table, key2, val);
+  Assert(found, 'key2 should be found');
+  Assert(val.NumberValue = 2, 'key2 value should be 2');
+
+  found := TableGet(Table, key3, val);
+  Assert(found, 'key3 should be found');
+  Assert(val.NumberValue = 3, 'key3 value should be 3');
+
+  // Overwrite existing key
+  Assert(TableSet(Table, key1, CreateNumber(99), MemTracker) = false, 'key1 should already exist');
+  Assert(Table.Count = 3, 'Count should not change on overwrite');
+  found := TableGet(Table, key1, val);
+  Assert(found, 'key1 should still be found');
+  Assert(val.NumberValue = 99, 'key1 value should now be 99');
+
+  // ---- Delete tests (tombstones) ----
+
+  // Delete key2
+  Assert(TableDelete(Table, key2) = true, 'delete key2 should succeed');
+  found := TableGet(Table, key2, val);
+  Assert(not found, 'key2 should not be found after delete');
+
+  // Other keys still accessible
+  found := TableGet(Table, key1, val);
+  Assert(found, 'key1 should survive key2 delete');
+  Assert(val.NumberValue = 99, 'key1 value intact after key2 delete');
+
+  found := TableGet(Table, key3, val);
+  Assert(found, 'key3 should survive key2 delete');
+  Assert(val.NumberValue = 3, 'key3 value intact after key2 delete');
+
+  // Delete same key again returns false
+  Assert(TableDelete(Table, key2) = false, 'double delete should return false');
+
+  // Re-insert deleted key reuses tombstone
+  Assert(TableSet(Table, key2, CreateNumber(222), MemTracker) = true, 'reinsert key2 should be new');
+  found := TableGet(Table, key2, val);
+  Assert(found, 'key2 should be found after reinsert');
+  Assert(val.NumberValue = 222, 'key2 value should be 222');
+
+  // Delete key that does not exist
+  keyNope := CreateString('nope', MemTracker);
+  Assert(TableDelete(Table, keyNope) = false, 'delete nonexistent should fail');
+
+  // ---- TableFindString tests ----
+  Assert(TableFindString(Table, 'hello', 5, key1.hash) = key1, 'FindString should locate key1');
+  Assert(TableFindString(Table, 'foo', 3, key3.hash) = key3, 'FindString should locate key3');
+  Assert(TableFindString(Table, 'missing', 7, HashString('missing', 7)) = nil, 'FindString missing should return nil');
+
+  // Clean up
+  FreeTable(Table, MemTracker);
+  FreeString(keyNope, MemTracker);
+  FreeString(key1, MemTracker);
+  FreeString(key2, MemTracker);
+  FreeString(key3, MemTracker);
+  Assert(MemTracker.BytesAllocated = 0, 'Table test: bytes not zero');
+  FreeMemTracker(MemTracker);
+end;
+
+procedure TestTableResize;
+const
+  N = 50; // initial capacity is 8, load factor 0.75 -> forces several resizes
+var
+  memTracker : pMemTracker;
+  table      : pTable;
+  keys       : array[0..N-1] of pObjString;
+  val        : TValue;
+  found      : boolean;
+  i          : integer;
+  name       : AnsiString;
+  oldCap     : integer;
+  resizeCount: integer;
+begin
+  table := nil;
+  memTracker := nil;
+  InitMemTracker(MemTracker);
+  InitTable(Table, MemTracker);
+
+  resizeCount := 0;
+
+  // Insert N keys, tracking resizes
+  for i := 0 to N - 1 do
+  begin
+    name := AnsiString('key_' + IntToStr(i));
+    keys[i] := CreateString(name, MemTracker);
+    oldCap := Table.CurrentCapacity;
+    TableSet(Table, keys[i], CreateNumber(i * 10), MemTracker);
+    if Table.CurrentCapacity > oldCap then
+      Inc(resizeCount);
+  end;
+
+  // Must have resized at least once (8 -> 16 -> 32 -> 64)
+  Assert(resizeCount >= 3, 'TestTableResize: expected at least 3 resizes, got ' + IntToStr(resizeCount));
+  Assert(Table.Count = N, 'TestTableResize: count should be ' + IntToStr(N));
+
+  // Verify all keys survived rehash
+  for i := 0 to N - 1 do
+  begin
+    found := TableGet(Table, keys[i], val);
+    Assert(found, 'TestTableResize: key_' + IntToStr(i) + ' not found after resize');
+    Assert(val.NumberValue = i * 10, 'TestTableResize: key_' + IntToStr(i) + ' value mismatch');
+  end;
+
+  // Verify TableFindString works after resize
+  for i := 0 to N - 1 do
+  begin
+    name := AnsiString('key_' + IntToStr(i));
+    Assert(TableFindString(Table, PAnsiChar(name), Length(name), keys[i].hash) = keys[i],
+      'TestTableResize: FindString failed for key_' + IntToStr(i));
+  end;
+
+  // Delete half the keys, then verify the other half still works
+  for i := 0 to (N div 2) - 1 do
+  begin
+    Assert(TableDelete(Table, keys[i]) = true, 'TestTableResize: delete key_' + IntToStr(i) + ' should succeed');
+  end;
+
+  for i := (N div 2) to N - 1 do
+  begin
+    found := TableGet(Table, keys[i], val);
+    Assert(found, 'TestTableResize: key_' + IntToStr(i) + ' should survive partial delete');
+    Assert(val.NumberValue = i * 10, 'TestTableResize: key_' + IntToStr(i) + ' value wrong after partial delete');
+  end;
+
+  // Clean up
+  FreeTable(Table, MemTracker);
+  for i := 0 to N - 1 do
+    FreeString(keys[i], MemTracker);
+  Assert(MemTracker.BytesAllocated = 0, 'TestTableResize: bytes not zero');
+  FreeMemTracker(MemTracker);
+end;
 
 procedure TestGC;
 var
@@ -52,7 +219,7 @@ begin
     end;
 
     Assert(ValueArray^.Count = MAX_SIZE, 'Count mismatch');
-    Assert(ValueArray^.Capacity = MAX_SIZE, 'Capacity mismatch');
+    Assert(ValueArray^.CurrentCapacity = MAX_SIZE, 'Capacity mismatch');
 
   finally
     FreeValueArray(ValueArray, MemTracker);
@@ -519,6 +686,199 @@ begin
   FreeStack(stack,MemTracker);
   Assert(memTracker.BytesAllocated = 0);
   FreeMemTracker(MemTracker);
+end;
+
+procedure AssertNumber(const expr: AnsiString; expected: Double);
+var
+  IR: TInterpretResult;
+  src: AnsiString;
+begin
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  Assert(IR.OutputStr <> '', 'Expected output for: ' + string(expr));
+end;
+
+procedure AssertBoolean(const expr: AnsiString; expected: Boolean);
+var
+  IR: TInterpretResult;
+  src: AnsiString;
+  expectedStr: string;
+begin
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  if expected then expectedStr := 'true' else expectedStr := 'false';
+  Assert(IR.OutputStr = expectedStr, 'Wrong value for: ' + string(expr) + ' got: ' + IR.OutputStr);
+end;
+
+procedure AssertNil(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+  src: AnsiString;
+begin
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  Assert(IR.OutputStr = 'nil', 'Expected nil output for: ' + string(expr) + ' got: ' + IR.OutputStr);
+end;
+
+procedure AssertStringOK(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+  src: AnsiString;
+begin
+  src := 'print ' + expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for: ' + string(expr) + ' got error: ' + IR.ErrorStr);
+  Assert(IR.OutputStr <> '', 'Expected output for: ' + string(expr));
+end;
+
+procedure AssertOutput(const program_: AnsiString; const expected: string);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(program_));
+  Assert(IR.code = INTERPRET_OK, 'Expected OK for program, got error: ' + IR.ErrorStr);
+  Assert(IR.OutputStr = expected, 'Output mismatch. Expected: ' + expected + ' Got: ' + IR.OutputStr);
+end;
+
+procedure AssertRuntimeError(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+  src: AnsiString;
+begin
+  src := expr + ';';
+  IR := InterpretResult(PAnsiChar(src));
+  Assert(IR.code = INTERPRET_RUNTIME_ERROR, 'Expected runtime error for: ' + string(expr));
+  Assert(IR.ErrorStr <> '', 'Expected error message for: ' + string(expr));
+end;
+
+procedure AssertCompileError(const expr: AnsiString);
+var
+  IR: TInterpretResult;
+begin
+  IR := InterpretResult(PAnsiChar(expr));
+  Assert(IR.code = INTERPRET_COMPILE_ERROR, 'Expected compile error for: ' + string(expr));
+  Assert(IR.ErrorStr <> '', 'Expected error message for: ' + string(expr));
+end;
+
+procedure TestInterpreter;
+begin
+  // Arithmetic
+  AssertNumber('1 + 2', 3);
+  AssertNumber('10 - 3', 7);
+  AssertNumber('2 * 3', 6);
+  AssertNumber('10 / 4', 2.5);
+  AssertNumber('(1 + 2) * (10 / 5)', 6);
+  AssertNumber('3.14 * 2', 6.28);
+
+  // Unary / precedence
+  AssertNumber('-1 + 2', 1);
+  AssertNumber('-(1 + 2)', -3);
+  AssertNumber('--1', 1);
+
+  // Booleans
+  AssertBoolean('!true', False);
+  AssertBoolean('!false', True);
+  AssertBoolean('!!true', True);
+  AssertBoolean('!nil', True);
+
+  // Comparisons
+  AssertBoolean('1 > 2', False);
+  AssertBoolean('2 > 1', True);
+  AssertBoolean('1 < 2', True);
+  AssertBoolean('2 < 1', False);
+  AssertBoolean('2 >= 2', True);
+  AssertBoolean('3 <= 2', False);
+  AssertBoolean('1 != 2', True);
+  AssertBoolean('1 == 1', True);
+  AssertBoolean('1 == 2', False);
+
+  // Nil
+  AssertNil('nil');
+  AssertBoolean('nil == nil', True);
+  AssertBoolean('true == false', False);
+
+  // Strings
+  AssertStringOK('"hello" + " world"');
+  AssertBoolean('"abc" == "abc"', True);
+  AssertBoolean('"abc" == "def"', False);
+
+  // Runtime errors
+  AssertRuntimeError('1 / 0');
+  AssertRuntimeError('true + 1');
+  AssertRuntimeError('true * false');
+  AssertRuntimeError('-"hello"');
+  AssertRuntimeError('"hello" + 1');
+
+  // Compile errors
+  AssertCompileError(')');
+  AssertCompileError('* 1');
+end;
+
+procedure TestGlobals;
+begin
+  // Var declaration with initializer
+  AssertOutput('var x = 10; print x;', '10');
+
+  // Var declaration without initializer defaults to nil
+  AssertOutput('var x; print x;', 'nil');
+
+  // Assignment
+  AssertOutput('var x = 1; x = 2; print x;', '2');
+
+  // Multiple globals
+  AssertOutput('var a = 10; var b = 20; print a + b;', '30');
+
+  // String globals
+  AssertOutput('var name = "world"; print "hello " + name;', 'hello world');
+
+  // Reassign different type
+  AssertOutput('var x = 1; x = "hello"; print x;', 'hello');
+
+  // Multiple print statements
+  AssertOutput('print 1; print 2; print 3;', '1' + sLineBreak + '2' + sLineBreak + '3');
+
+  // Use variable in its own expression
+  AssertOutput('var x = 10; x = x + 5; print x;', '15');
+
+  // Boolean global
+  AssertOutput('var flag = true; print flag;', 'true');
+  AssertOutput('var flag = false; print !flag;', 'true');
+
+  // Undefined variable runtime error
+  AssertRuntimeError('print x');
+
+  // Assignment to undefined variable runtime error
+  AssertRuntimeError('x = 10');
+end;
+
+procedure TestStringInterning;
+var
+  a, b, c, d: PObjString;
+begin
+  // Test interning within VM context: same content => same pointer
+  InitVM;
+  try
+    a := CreateString('hello', VM.MemTracker);
+    b := CreateString('hello', VM.MemTracker);
+    Assert(a = b, 'Interning: same content should return same pointer');
+
+    c := CreateString('world', VM.MemTracker);
+    Assert(a <> c, 'Interning: different content should return different pointers');
+
+    // Concatenation result should also be interned
+    d := CreateString('helloworld', VM.MemTracker);
+    Assert(d = CreateString('helloworld', VM.MemTracker),
+      'Interning: repeated CreateString for concat result should return same pointer');
+
+    // Empty string interning
+    Assert(CreateString('', VM.MemTracker) = CreateString('', VM.MemTracker),
+      'Interning: empty strings should be interned');
+  finally
+    FreeVM;
+  end;
 end;
 
 initialization

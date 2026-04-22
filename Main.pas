@@ -23,6 +23,8 @@ type
     procedure Button4Click(Sender: TObject);
     procedure Button5Click(Sender: TObject);
     procedure Button6Click(Sender: TObject);
+    procedure Button7Click(Sender: TObject);
+    procedure Button8Click(Sender: TObject);
 
   private
     { Private declarations }
@@ -44,9 +46,7 @@ uses
 procedure TForm4.Button1Click(Sender: TObject);
 var
   IR : TInterpretResult;
-  text : string;
   txt : ansiString;
-  strObj : pObjString;
 begin
 
     txt := Memo1.Lines.Text;
@@ -55,30 +55,25 @@ begin
     case Ir.code of
     INTERPRET_OK:
     begin
+      if IR.OutputStr <> '' then
+        Memo2.Lines.Add(IR.OutputStr);
       case IR.value.ValueKind of
         vkNumber: Memo2.lines.add(IR.value.NumberValue.ToString);
         vkBoolean:Memo2.Lines.add(BoolToStr(IR.value.BooleanValue,true));
-        vkNull: Memo2.Lines.add('Null');
+        vkNull: ; // suppress null for statement-based programs
         vkObject :
         begin
-          case IR.value.ObjValue.ObjectKind of
-            okString : begin
-              strObj := pObjString(IR.value.ObjValue);
-              txt := ObjStringToAnsiString(strObj);
-              Memo2.lines.add(txt);
-            end;
-          end;
+          Memo2.lines.add(IR.ResultStr);
         end;
       end;
     end;
 
     INTERPRET_COMPILE_ERROR: begin
-       Memo2.Lines.add(Parser.ErrorStr);
+       Memo2.Lines.add(IR.ErrorStr);
     end;
 
     INTERPRET_RUNTIME_ERROR: begin
-      Memo2.Lines.add('run time error');
-
+      Memo2.Lines.add(IR.ErrorStr);
     end;
     else
       begin
@@ -125,6 +120,21 @@ procedure TForm4.Button6Click(Sender: TObject);
 begin
 
   TestAddValueConstant;
+end;
+
+procedure TForm4.Button7Click(Sender: TObject);
+begin
+  testTable;
+  TestTableResize;
+  TestStringInterning;
+  Memo2.Lines.Add('All table tests passed.');
+end;
+
+procedure TForm4.Button8Click(Sender: TObject);
+begin
+  TestInterpreter;
+  TestGlobals;
+  Memo2.Lines.Add('All interpreter tests passed.');
 end;
 
 end.
