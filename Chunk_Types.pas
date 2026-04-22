@@ -52,8 +52,12 @@ const
   OP_JUMP_IF_FALSE = 23;
   OP_LOOP = 24;
   OP_CALL = 25;
+  OP_CLOSURE = 26;
+  OP_GET_UPVALUE = 27;
+  OP_SET_UPVALUE = 28;
+  OP_CLOSE_UPVALUE = 29;
 
-  OP_STRINGS : array[0..25] of string = (
+  OP_STRINGS : array[0..29] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -79,7 +83,11 @@ const
     'OP_JUMP',
     'OP_JUMP_IF_FALSE',
     'OP_LOOP',
-    'OP_CALL');
+    'OP_CALL',
+    'OP_CLOSURE',
+    'OP_GET_UPVALUE',
+    'OP_SET_UPVALUE',
+    'OP_CLOSE_UPVALUE');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 64;
@@ -90,7 +98,7 @@ type
 
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
-  TObjectKind = (okString, okFunction, okNative);
+  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue);
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boGreater, boLess);
   TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
@@ -143,6 +151,9 @@ type
   pObjString      = ^TObjString;
   pObjFunction    = ^TObjFunction;
   pObjNative      = ^TObjNative;
+  pObjClosure     = ^TObjClosure;
+  pObjUpvalue     = ^TObjUpvalue;
+  pUpvalueArray   = ^TUpvalueArray;
   pCompiler       = ^TCompiler;
   pStack          = ^TStack;
   pVirtualMachine = ^TVirtualMachine;
@@ -154,6 +165,7 @@ type
 
   //Arrays
   TAnsiCharArray = Array[0..0] of AnsiChar;
+  TUpvalueArray  = Array[0..UINT8_COUNT - 1] of pObjUpvalue;
 
 
   //container for all root level memory
@@ -186,10 +198,11 @@ type
   end;
 
   TObjFunction = record
-    Obj    : TObj;
-    arity  : integer;
-    chunk  : pChunk;
-    name   : pObjString;
+    Obj          : TObj;
+    arity        : integer;
+    upvalueCount : integer;
+    chunk        : pChunk;
+    name         : pObjString;
   end;
 
   TIntToByteResult = record
@@ -212,6 +225,20 @@ type
   TObjNative = record
     Obj      : TObj;
     func     : TNativeFn;
+  end;
+
+  TObjUpvalue = record
+    Obj      : TObj;
+    location : pValue;  // points to stack slot when open
+    closed   : TValue;  // holds value after closing
+    next     : pObjUpvalue; // intrusive list for open upvalues
+  end;
+
+  TObjClosure = record
+    Obj         : TObj;
+    func        : pObjFunction;
+    upvalues    : pUpvalueArray;
+    upvalueCount: integer;
   end;
 
   TChunk = record
@@ -251,7 +278,7 @@ type
   end;
 
   TCallFrame = record
-    func    : pObjFunction;
+    closure : pObjClosure;
     ip      : pByte;
     slots   : pValue; // points into VM stack
   end;
@@ -264,6 +291,7 @@ type
     MemTracker      : PMemTracker;
     Strings         : pTable;
     Globals         : pTable;
+    OpenUpvalues    : pObjUpvalue;
     RuntimeErrorStr : String;
     PrintOutput     : String;
   end;
@@ -290,8 +318,14 @@ type
  end;
 
   TLocal = record
-    name  : TToken;
-    depth : integer;
+    name       : TToken;
+    depth      : integer;
+    isCaptured : boolean;
+  end;
+
+  TUpvalue = record
+    index   : byte;
+    isLocal : boolean;
   end;
 
   TCompiler = record
@@ -300,6 +334,7 @@ type
     funcType     : TFunctionType;
     locals       : array[0..UINT8_COUNT - 1] of TLocal;
     localCount   : integer;
+    upvalues     : array[0..UINT8_COUNT - 1] of TUpvalue;
     scopeDepth   : integer;
   end;
 
@@ -473,7 +508,7 @@ function  isAtEnd : boolean;
 
 //compilation
 function BinaryOp(Op: TBinaryOperation): boolean;
-function compile(source : pAnsiChar) : pObjFunction;
+function compile(source : pAnsiChar) : pObjClosure;
 procedure declaration();
 procedure varDeclaration();
 procedure funDeclaration();
@@ -499,6 +534,8 @@ procedure beginScope();
 procedure endScope();
 function newFunction(MemTracker : pMemTracker) : pObjFunction;
 function newNative(func : TNativeFn; MemTracker : pMemTracker) : pObjNative;
+function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure;
+function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
 procedure defineNative(const name : AnsiString; func : TNativeFn);
 
 //Hash
@@ -1387,6 +1424,11 @@ begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okNative);
 end;
 
+function isClosure(value : TValue) : boolean;
+begin
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okClosure);
+end;
+
 function newFunction(MemTracker : pMemTracker) : pObjFunction;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
@@ -1396,6 +1438,7 @@ begin
   Result^.Obj.IsMarked := false;
   Result^.Obj.Next := nil;
   Result^.arity := 0;
+  Result^.upvalueCount := 0;
   Result^.name := nil;
   Result^.chunk := nil;
   InitChunk(Result^.chunk, MemTracker);
@@ -1411,6 +1454,46 @@ begin
   Result^.Obj.IsMarked := false;
   Result^.Obj.Next := nil;
   Result^.func := func;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+end;
+
+function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure;
+var
+  upvals : pUpvalueArray;
+  i : integer;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  // Allocate the upvalue pointer array
+  upvals := nil;
+  if func^.upvalueCount > 0 then
+  begin
+    Allocate(Pointer(upvals), 0, func^.upvalueCount * SizeOf(pObjUpvalue), MemTracker);
+    for i := 0 to func^.upvalueCount - 1 do
+      upvals^[i] := nil;
+  end;
+
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjClosure), MemTracker);
+  Result^.Obj.ObjectKind := okClosure;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.func := func;
+  Result^.upvalues := upvals;
+  Result^.upvalueCount := func^.upvalueCount;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+end;
+
+function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjUpvalue), MemTracker);
+  Result^.Obj.ObjectKind := okUpvalue;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.location := slot;
+  Result^.closed := CreateNilValue;
+  Result^.next := nil;
   AddToCreatedObjects(pObj(Result), MemTracker);
 end;
 
@@ -1498,6 +1581,13 @@ begin
             Result := '<fn ' + String(ObjStringToAnsiString(pObjFunction(value.ObjValue)^.name)) + '>';
         end;
         okNative: Result := '<native fn>';
+        okClosure: begin
+          if pObjClosure(value.ObjValue)^.func^.name = nil then
+            Result := '<script>'
+          else
+            Result := '<fn ' + String(ObjStringToAnsiString(pObjClosure(value.ObjValue)^.func^.name)) + '>';
+        end;
+        okUpvalue: Result := 'upvalue';
       else
         Result := '<object>';
       end;
@@ -1809,6 +1899,48 @@ begin
   result := Constants.Values[idx];
 end;
 
+function captureUpvalue(local : pValue) : pObjUpvalue;
+var
+  prevUpvalue : pObjUpvalue;
+  upvalue : pObjUpvalue;
+  createdUpvalue : pObjUpvalue;
+begin
+  prevUpvalue := nil;
+  upvalue := VM.OpenUpvalues;
+  while (upvalue <> nil) and (NativeUInt(upvalue^.location) > NativeUInt(local)) do
+  begin
+    prevUpvalue := upvalue;
+    upvalue := upvalue^.next;
+  end;
+
+  if (upvalue <> nil) and (upvalue^.location = local) then
+    Exit(upvalue);
+
+  createdUpvalue := newUpvalue(local, VM.MemTracker);
+  createdUpvalue^.next := upvalue;
+
+  if prevUpvalue = nil then
+    VM.OpenUpvalues := createdUpvalue
+  else
+    prevUpvalue^.next := createdUpvalue;
+
+  Result := createdUpvalue;
+end;
+
+procedure closeUpvalues(last : pValue);
+var
+  upvalue : pObjUpvalue;
+begin
+  while (VM.OpenUpvalues <> nil) and
+        (NativeUInt(VM.OpenUpvalues^.location) >= NativeUInt(last)) do
+  begin
+    upvalue := VM.OpenUpvalues;
+    upvalue^.closed := upvalue^.location^;
+    upvalue^.location := @upvalue^.closed;
+    VM.OpenUpvalues := upvalue^.next;
+  end;
+end;
+
 function Run : TInterpretResult;
 var
   frame : ^TCallFrame;
@@ -1818,8 +1950,11 @@ var
   value,ValueB : TValue;
   argCount : byte;
   func : pObjFunction;
+  closure : pObjClosure;
   native : TNativeFn;
   nativeResult : TValue;
+  isLocal : byte;
+  index : byte;
   i : integer;
 
   function ReadByteFr: Byte;
@@ -1830,16 +1965,16 @@ var
 
   function ReadConstantFr: TValue;
   begin
-    Result := frame^.func^.chunk^.Constants^.Values[ReadByteFr];
+    Result := frame^.closure^.func^.chunk^.Constants^.Values[ReadByteFr];
   end;
 
   function CallValue(callee : TValue; argCnt : byte) : boolean;
   begin
-    if isFunction(callee) then
+    if isClosure(callee) then
     begin
-      if argCnt <> pObjFunction(callee.ObjValue)^.arity then
+      if argCnt <> pObjClosure(callee.ObjValue)^.func^.arity then
       begin
-        runtimeError('Expected ' + IntToStr(pObjFunction(callee.ObjValue)^.arity) +
+        runtimeError('Expected ' + IntToStr(pObjClosure(callee.ObjValue)^.func^.arity) +
           ' arguments but got ' + IntToStr(argCnt) + '.');
         Exit(false);
       end;
@@ -1849,8 +1984,8 @@ var
         Exit(false);
       end;
       frame := @VM.Frames[VM.FrameCount];
-      frame^.func := pObjFunction(callee.ObjValue);
-      frame^.ip := pObjFunction(callee.ObjValue)^.chunk^.Code;
+      frame^.closure := pObjClosure(callee.ObjValue);
+      frame^.ip := pObjClosure(callee.ObjValue)^.func^.chunk^.Code;
       // slots points to the function value on the stack (argCnt args above it)
       frame^.slots := VM.Stack.StackTop;
       Dec(frame^.slots, argCnt + 1);
@@ -1897,7 +2032,7 @@ begin
           i := ReadByteFr;
           i := i or (ReadByteFr shl 8);
           i := i or (ReadByteFr shl 16);
-          value := frame^.func^.chunk^.Constants^.Values[i];
+          value := frame^.closure^.func^.chunk^.Constants^.Values[i];
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
 
@@ -2072,8 +2207,40 @@ begin
           frame := @VM.Frames[VM.FrameCount - 1];
         end;
 
+        OP_CLOSURE: begin
+          func := pObjFunction(ReadConstantFr.ObjValue);
+          closure := newClosure(func, VM.MemTracker);
+          pushStack(vm.Stack, CreateObject(pObj(closure)), vm.MemTracker);
+          for i := 0 to closure^.upvalueCount - 1 do
+          begin
+            isLocal := ReadByteFr;
+            index := ReadByteFr;
+            if isLocal = 1 then
+              closure^.upvalues^[i] := captureUpvalue(
+                pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
+            else
+              closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
+          end;
+        end;
+
+        OP_GET_UPVALUE: begin
+          slot := ReadByteFr;
+          pushStack(vm.Stack, frame^.closure^.upvalues^[slot]^.location^, vm.MemTracker);
+        end;
+
+        OP_SET_UPVALUE: begin
+          slot := ReadByteFr;
+          frame^.closure^.upvalues^[slot]^.location^ := peekStack(vm.Stack);
+        end;
+
+        OP_CLOSE_UPVALUE: begin
+          closeUpvalues(pValue(NativeUInt(VM.Stack.StackTop) - SizeOf(TValue)));
+          popStack(vm.Stack);
+        end;
+
         OP_RETURN: begin
           value := popStack(vm.Stack);
+          closeUpvalues(frame^.slots);
 
           Dec(VM.FrameCount);
           if VM.FrameCount = 0 then
@@ -2318,25 +2485,25 @@ end;
 //entry point into vm
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
 var
-  func : pObjFunction;
+  closure : pObjClosure;
 begin
    AssertSourceCodeIsAssigned(source);
    initVM;
    try
-     func := compile(source);
-     if func = nil then
+     closure := compile(source);
+     if closure = nil then
      begin
        Result.code :=  INTERPRET_COMPILE_ERROR;
        Result.ErrorStr := Parser.ErrorStr;
        Exit;
      end;
 
-     // Push the script function onto the stack
-     pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
+     // Push the script closure onto the stack
+     pushStack(VM.Stack, CreateObject(pObj(closure)), VM.MemTracker);
 
      // Set up the first call frame
-     VM.Frames[0].func := func;
-     VM.Frames[0].ip := func^.chunk^.Code;
+     VM.Frames[0].closure := closure;
+     VM.Frames[0].ip := closure^.func^.chunk^.Code;
      VM.Frames[0].slots := VM.Stack.Values;
      VM.FrameCount := 1;
 
@@ -2364,6 +2531,15 @@ begin
     end;
     okNative : begin
       Allocate(Pointer(obj), SizeOf(TObjNative), 0, vm.MemTracker);
+    end;
+    okClosure : begin
+      if pObjClosure(obj)^.upvalues <> nil then
+        Allocate(Pointer(pObjClosure(obj)^.upvalues),
+                 pObjClosure(obj)^.upvalueCount * SizeOf(pObjUpvalue), 0, vm.MemTracker);
+      Allocate(Pointer(obj), SizeOf(TObjClosure), 0, vm.MemTracker);
+    end;
+    okUpvalue : begin
+      Allocate(Pointer(obj), SizeOf(TObjUpvalue), 0, vm.MemTracker);
     end;
   end;
 end;
@@ -2470,6 +2646,7 @@ begin
   VM.MemTracker := nil;
   VM.Strings := nil;
   VM.Globals := nil;
+  VM.OpenUpvalues := nil;
   VM.RuntimeErrorStr := '';
   VM.PrintOutput := '';
   InitMemTracker(VM.MemTracker);
@@ -3370,7 +3547,10 @@ begin
   while (Current^.localCount > 0) and
         (Current^.locals[Current^.localCount - 1].depth > Current^.scopeDepth) do
   begin
-    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    if Current^.locals[Current^.localCount - 1].isCaptured then
+      emitByte(OP_CLOSE_UPVALUE, CurrentChunk, parser.previous.line, vm.MemTracker)
+    else
+      emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
     Dec(Current^.localCount);
   end;
 end;
@@ -3384,6 +3564,7 @@ begin
   end;
   Current^.locals[Current^.localCount].name := name;
   Current^.locals[Current^.localCount].depth := -1; // sentinel: not yet initialized
+  Current^.locals[Current^.localCount].isCaptured := false;
   Inc(Current^.localCount);
 end;
 
@@ -3421,20 +3602,67 @@ begin
   Current^.locals[Current^.localCount - 1].depth := Current^.scopeDepth;
 end;
 
-function resolveLocal(const name : TToken) : integer;
+function resolveLocal(compiler : pCompiler; const name : TToken) : integer;
 var
   i : integer;
 begin
-  for i := Current^.localCount - 1 downto 0 do
+  for i := compiler^.localCount - 1 downto 0 do
   begin
-    if identifiersEqual(name, Current^.locals[i].name) then
+    if identifiersEqual(name, compiler^.locals[i].name) then
     begin
-      if Current^.locals[i].depth = -1 then
+      if compiler^.locals[i].depth = -1 then
         Error('Can''t read local variable in its own initializer.');
       Exit(i);
     end;
   end;
   Result := -1; // not found = global
+end;
+
+function addUpvalue(compiler : pCompiler; index : byte; isLocal : boolean) : integer;
+var
+  upvalueCount : integer;
+  i : integer;
+begin
+  upvalueCount := compiler^.func^.upvalueCount;
+
+  for i := 0 to upvalueCount - 1 do
+  begin
+    if (compiler^.upvalues[i].index = index) and (compiler^.upvalues[i].isLocal = isLocal) then
+      Exit(i);
+  end;
+
+  if upvalueCount = UINT8_COUNT then
+  begin
+    Error('Too many closure variables in function.');
+    Exit(0);
+  end;
+
+  compiler^.upvalues[upvalueCount].isLocal := isLocal;
+  compiler^.upvalues[upvalueCount].index := index;
+  Inc(compiler^.func^.upvalueCount);
+  Result := upvalueCount;
+end;
+
+function resolveUpvalue(compiler : pCompiler; const name : TToken) : integer;
+var
+  local : integer;
+  upvalue : integer;
+begin
+  if compiler^.enclosing = nil then
+    Exit(-1);
+
+  local := resolveLocal(compiler^.enclosing, name);
+  if local <> -1 then
+  begin
+    compiler^.enclosing^.locals[local].isCaptured := true;
+    Exit(addUpvalue(compiler, byte(local), true));
+  end;
+
+  upvalue := resolveUpvalue(compiler^.enclosing, name);
+  if upvalue <> -1 then
+    Exit(addUpvalue(compiler, byte(upvalue), false));
+
+  Result := -1;
 end;
 
 function identifierConstant(const name : TToken) : byte;
@@ -3490,7 +3718,7 @@ var
   arg : integer;
   getOp, setOp : byte;
 begin
-  arg := resolveLocal(name);
+  arg := resolveLocal(Current, name);
   if arg <> -1 then
   begin
     getOp := OP_GET_LOCAL;
@@ -3498,9 +3726,18 @@ begin
   end
   else
   begin
-    arg := identifierConstant(name);
-    getOp := OP_GET_GLOBAL;
-    setOp := OP_SET_GLOBAL;
+    arg := resolveUpvalue(Current, name);
+    if arg <> -1 then
+    begin
+      getOp := OP_GET_UPVALUE;
+      setOp := OP_SET_UPVALUE;
+    end
+    else
+    begin
+      arg := identifierConstant(name);
+      getOp := OP_GET_GLOBAL;
+      setOp := OP_SET_GLOBAL;
+    end;
   end;
 
   if matchToken(TOKEN_EQUAL) then
@@ -3560,6 +3797,7 @@ var
   compiler : pCompiler;
   func : pObjFunction;
   i : byte;
+  j : integer;
 begin
   compiler := nil;
   initCompiler(compiler, funcType);
@@ -3584,11 +3822,21 @@ begin
   emitReturn(CurrentChunk, parser.previous.line, VM.MemTracker);
   func := Current^.func;
   Current := Current^.enclosing;
-  Dispose(compiler);
 
-  emitByte(OP_CONSTANT, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte(AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker),
     CurrentChunk, parser.previous.line, vm.MemTracker);
+
+  for j := 0 to func^.upvalueCount - 1 do
+  begin
+    if compiler^.upvalues[j].isLocal then
+      emitByte(1, CurrentChunk, parser.previous.line, vm.MemTracker)
+    else
+      emitByte(0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(compiler^.upvalues[j].index, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+
+  Dispose(compiler);
 end;
 
 procedure funDeclaration();
@@ -3659,7 +3907,7 @@ begin
     statement();
 end;
 
-function compile(source : pAnsiChar) : pObjFunction;
+function compile(source : pAnsiChar) : pObjClosure;
 var
   compiler : pCompiler;
   func : pObjFunction;
@@ -3689,7 +3937,7 @@ begin
   if parser.HadError then
     Result := nil
   else
-    Result := func;
+    Result := newClosure(func, VM.MemTracker);
 end;
 
 
