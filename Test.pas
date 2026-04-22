@@ -19,6 +19,7 @@ procedure TestStringInterning;
 procedure TestInterpreter;
 procedure TestGlobals;
 procedure TestLocals;
+procedure TestControlFlow;
 
 implementation
 
@@ -901,6 +902,81 @@ begin
 
   // Local used in expression before end of block
   AssertOutput('{ var a = 5; var b = a + 3; print b; }', '8');
+end;
+
+procedure TestControlFlow;
+begin
+  // --- if statements ---
+  AssertOutput('if (true) print "yes";', 'yes');
+  AssertOutput('if (false) print "yes";', '');
+  AssertOutput('if (true) print "yes"; else print "no";', 'yes');  // note: replaced smart quote
+  AssertOutput('if (false) print "yes"; else print "no";', 'no');
+
+  // if with block
+  AssertOutput('if (true) { print "a"; print "b"; }', 'a' + sLineBreak + 'b');
+  AssertOutput('if (false) { print "a"; } else { print "c"; }', 'c');
+
+  // if with expression condition
+  AssertOutput('var x = 10; if (x > 5) print "big";', 'big');
+  AssertOutput('var x = 3; if (x > 5) print "big"; else print "small";', 'small');
+
+  // nested if
+  AssertOutput('if (true) if (true) print "deep";', 'deep');
+  AssertOutput('if (true) if (false) print "no"; else print "yes";', 'yes');
+
+  // --- logical operators ---
+  // and short-circuits
+  AssertOutput('print true and true;', 'true');
+  AssertOutput('print true and false;', 'false');
+  AssertOutput('print false and true;', 'false');
+  AssertOutput('print false and false;', 'false');
+
+  // or short-circuits
+  AssertOutput('print true or true;', 'true');
+  AssertOutput('print true or false;', 'true');
+  AssertOutput('print false or true;', 'true');
+  AssertOutput('print false or false;', 'false');
+
+  // and/or return values (not just booleans)
+  AssertOutput('print "hi" and "there";', 'there');
+  AssertOutput('print nil and "there";', 'nil');
+  AssertOutput('print "hi" or "there";', 'hi');
+  AssertOutput('print nil or "there";', 'there');
+
+  // --- while loops ---
+  AssertOutput('var i = 0; while (i < 3) { print i; i = i + 1; }',
+    '0' + sLineBreak + '1' + sLineBreak + '2');
+
+  // while that never executes
+  AssertOutput('while (false) print "no"; print "done";', 'done');
+
+  // while with counter
+  AssertOutput('var sum = 0; var i = 1; while (i <= 5) { sum = sum + i; i = i + 1; } print sum;', '15');
+
+  // --- for loops ---
+  // classic for loop
+  AssertOutput('for (var i = 0; i < 3; i = i + 1) print i;',
+    '0' + sLineBreak + '1' + sLineBreak + '2');
+
+  // for loop with no initializer
+  AssertOutput('var i = 0; for (; i < 3; i = i + 1) print i;',
+    '0' + sLineBreak + '1' + sLineBreak + '2');
+
+  // for loop with no increment
+  AssertOutput('for (var i = 0; i < 3;) { print i; i = i + 1; }',
+    '0' + sLineBreak + '1' + sLineBreak + '2');
+
+  // for loop accumulator
+  AssertOutput('var sum = 0; for (var i = 1; i <= 10; i = i + 1) sum = sum + i; print sum;', '55');
+
+  // for loop variable is local to the loop
+  AssertOutput('var i = "before"; for (var i = 0; i < 1; i = i + 1) { print i; } print i;',
+    '0' + sLineBreak + 'before');
+
+  // nested for loops
+  AssertOutput(
+    'var result = 0; for (var i = 0; i < 3; i = i + 1) for (var j = 0; j < 3; j = j + 1) result = result + 1; print result;',
+    '9');
 end;
 
 procedure TestStringInterning;
