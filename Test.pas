@@ -27,7 +27,7 @@ procedure TestTable;
 var
   memTracker : pMemTracker;
   table      : pTable;
-  key1, key2, key3 : pObjString;
+  key1, key2, key3, keyNope : pObjString;
   val        : TValue;
   found      : boolean;
 begin
@@ -67,8 +67,43 @@ begin
   Assert(found, 'key1 should still be found');
   Assert(val.NumberValue = 99, 'key1 value should now be 99');
 
+  // ---- Delete tests (tombstones) ----
+
+  // Delete key2
+  Assert(TableDelete(Table, key2) = true, 'delete key2 should succeed');
+  found := TableGet(Table, key2, val);
+  Assert(not found, 'key2 should not be found after delete');
+
+  // Other keys still accessible
+  found := TableGet(Table, key1, val);
+  Assert(found, 'key1 should survive key2 delete');
+  Assert(val.NumberValue = 99, 'key1 value intact after key2 delete');
+
+  found := TableGet(Table, key3, val);
+  Assert(found, 'key3 should survive key2 delete');
+  Assert(val.NumberValue = 3, 'key3 value intact after key2 delete');
+
+  // Delete same key again returns false
+  Assert(TableDelete(Table, key2) = false, 'double delete should return false');
+
+  // Re-insert deleted key reuses tombstone
+  Assert(TableSet(Table, key2, CreateNumber(222), MemTracker) = true, 'reinsert key2 should be new');
+  found := TableGet(Table, key2, val);
+  Assert(found, 'key2 should be found after reinsert');
+  Assert(val.NumberValue = 222, 'key2 value should be 222');
+
+  // Delete key that does not exist
+  keyNope := CreateString('nope', MemTracker);
+  Assert(TableDelete(Table, keyNope) = false, 'delete nonexistent should fail');
+
+  // ---- TableFindString tests ----
+  Assert(TableFindString(Table, 'hello', 5, key1.hash) = key1, 'FindString should locate key1');
+  Assert(TableFindString(Table, 'foo', 3, key3.hash) = key3, 'FindString should locate key3');
+  Assert(TableFindString(Table, 'missing', 7, HashString('missing', 7)) = nil, 'FindString missing should return nil');
+
   // Clean up
   FreeTable(Table, MemTracker);
+  FreeString(keyNope, MemTracker);
   FreeString(key1, MemTracker);
   FreeString(key2, MemTracker);
   FreeString(key3, MemTracker);

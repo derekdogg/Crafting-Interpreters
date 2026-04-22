@@ -131,6 +131,7 @@ end;
 procedure TForm4.Button7Click(Sender: TObject);
 begin
   testTable;
+  Memo2.Lines.Add('All table tests passed.');
 end;
 
 procedure TForm4.Button8Click(Sender: TObject);

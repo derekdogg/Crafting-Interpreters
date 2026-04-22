@@ -422,6 +422,8 @@ function CreateNilValue: TValue;
 procedure InitTable(var Table : pTable; memTracker : pMemTracker);
 function TableSet(var Table : pTable; key : pObjString; value : TValue;MemTracker : pMemTracker): boolean;
 function TableGet(Table : pTable; key : pObjString; var value : TValue): boolean;
+function TableDelete(Table : pTable; key : pObjString): boolean;
+function TableFindString(Table : pTable; const chars : PAnsiChar; length : integer; hash : uint32): pObjString;
 procedure FreeTable(var Table : pTable; memTracker : pMemTracker);
 
 //prat parsing rule table used in compilation
@@ -2794,17 +2796,42 @@ end;
 function FindEntry(Entries: pEntry; Capacity: integer; Key: pObjString): pEntry;
 var
   index: uint32;
+  tombstone: pEntry;
+  entry: pEntry;
 begin
   Assert(Assigned(Entries), 'FindEntry: entries not assigned');
   Assert(Capacity > 0, 'FindEntry: capacity must be > 0');
   AssertObjStringIsAssigned(key);
 
   index := Key.hash mod uint32(Capacity);
+  tombstone := nil;
   while true do
   begin
-    Result := @Entries[index];
-    if (Result.key = nil) or (Result.key = key) then
+    entry := @Entries[index];
+    if entry.key = nil then
+    begin
+      if isNill(entry.value) then
+      begin
+        // Empty slot: return tombstone if we passed one, else this empty slot
+        if tombstone <> nil then
+          Result := tombstone
+        else
+          Result := entry;
+        Exit;
+      end
+      else
+      begin
+        // Tombstone: remember first one
+        if tombstone = nil then
+          tombstone := entry;
+      end;
+    end
+    else if entry.key = key then
+    begin
+      // Found the key
+      Result := entry;
       Exit;
+    end;
     index := (index + 1) mod uint32(Capacity);
   end;
 end;
@@ -2876,11 +2903,58 @@ begin
 
   Entry := FindEntry(Table.Entries, Table.CurrentCapacity, key);
   Result := Entry.key = nil;
-  if Result then
+  if Result and isNill(Entry.value) then
     Inc(Table.Count);
 
   Entry.key := key;
   Entry.value := value;
+end;
+
+
+function TableDelete(Table: pTable; key: pObjString): boolean;
+var
+  Entry: pEntry;
+begin
+  if Table.Count = 0 then
+    Exit(false);
+
+  Entry := FindEntry(Table.Entries, Table.CurrentCapacity, key);
+  if Entry.key = nil then
+    Exit(false);
+
+  // Place a tombstone
+  Entry.key := nil;
+  Entry.value := CreateBoolean(true);
+  Result := true;
+end;
+
+
+function TableFindString(Table: pTable; const chars: PAnsiChar; length: integer; hash: uint32): pObjString;
+var
+  index: uint32;
+  entry: pEntry;
+begin
+  Result := nil;
+  if Table.Count = 0 then Exit;
+
+  index := hash mod uint32(Table.CurrentCapacity);
+  while true do
+  begin
+    entry := @Table.Entries[index];
+    if entry.key = nil then
+    begin
+      // Stop if we find an empty non-tombstone entry
+      if isNill(entry.value) then Exit;
+    end
+    else if (entry.key.length = length) and
+            (entry.key.hash = hash) and
+            CompareMem(@entry.key.chars[0], chars, length) then
+    begin
+      Result := entry.key;
+      Exit;
+    end;
+    index := (index + 1) mod uint32(Table.CurrentCapacity);
+  end;
 end;
 
 
