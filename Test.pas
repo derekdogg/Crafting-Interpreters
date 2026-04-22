@@ -21,6 +21,7 @@ procedure TestGlobals;
 procedure TestLocals;
 procedure TestControlFlow;
 procedure TestFunctions;
+procedure TestClosures;
 
 implementation
 
@@ -1061,6 +1062,84 @@ begin
   finally
     FreeVM;
   end;
+end;
+
+procedure TestClosures;
+begin
+  // Basic closure - capture variable from enclosing scope
+  AssertOutput(
+    'fun outer() { var x = "outside"; fun inner() { print x; } inner(); } outer();',
+    'outside');
+
+  // Closure over a variable, not a value
+  AssertOutput(
+    'var globalSet; var globalGet; fun main() { var a = "initial"; fun set() { a = "updated"; } fun get() { print a; } globalSet = set; globalGet = get; } main(); globalGet(); globalSet(); globalGet();',
+    'initial' + sLineBreak + 'updated');
+
+  // Counter pattern - closed-over variable persists
+  AssertOutput(
+    'fun makeCounter() { var i = 0; fun count() { i = i + 1; print i; } return count; } var counter = makeCounter(); counter(); counter(); counter();',
+    '1' + sLineBreak + '2' + sLineBreak + '3');
+
+  // Closing over loop variable
+  AssertOutput(
+    'var f; for (var i = 0; i < 1; i = i + 1) { fun g() { print i; } f = g; } f();',
+    '1');
+
+  // Nested closures
+  AssertOutput(
+    'fun outer() { var x = "value"; fun middle() { fun inner() { print x; } inner(); } middle(); } outer();',
+    'value');
+
+  // Closure captures variable not value
+  AssertOutput(
+    'var f; var g; { var a = "a"; fun fa() { print a; } fun ga() { a = "updated"; } f = fa; g = ga; } g(); f();',
+    'updated');
+
+  // Close over function parameter
+  AssertOutput(
+    'fun adder(x) { fun add(y) { return x + y; } return add; } var add5 = adder(5); print add5(3);',
+    '8');
+
+  // Multiple upvalues in one closure
+  AssertOutput(
+    'fun f() { var a = 1; var b = 2; var c = 3; fun g() { print a + b + c; } g(); } f();',
+    '6');
+
+  // Two closures sharing same upvalue
+  AssertOutput(
+    'fun f() { var x = 0; fun inc() { x = x + 1; } fun get() { return x; } inc(); inc(); inc(); print get(); } f();',
+    '3');
+
+  // Closure survives after enclosing function returns
+  AssertOutput(
+    'fun outer() { var x = "alive"; fun inner() { return x; } return inner; } var fn = outer(); print fn();',
+    'alive');
+
+  // Deeply nested upvalue (3 levels)
+  AssertOutput(
+    'fun a() { var x = 1; fun b() { fun c() { print x; } c(); } b(); } a();',
+    '1');
+
+  // Closure doesn't capture anything (still works)
+  AssertOutput(
+    'fun make() { fun inner() { print "ok"; } return inner; } var f = make(); f();',
+    'ok');
+
+  // Closing over variable modified after closure creation
+  AssertOutput(
+    'fun f() { var a = "before"; fun g() { print a; } a = "after"; g(); } f();',
+    'after');
+
+  // Independent closures from separate calls get separate variables
+  AssertOutput(
+    'fun make() { var i = 0; fun inc() { i = i + 1; print i; } return inc; } var a = make(); var b = make(); a(); b(); a(); b();',
+    '1' + sLineBreak + '1' + sLineBreak + '2' + sLineBreak + '2');
+
+  // Closed-over variable in block scope
+  AssertOutput(
+    'var f; { var x = "block"; fun g() { print x; } f = g; } f();',
+    'block');
 end;
 
 initialization
