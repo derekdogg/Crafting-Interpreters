@@ -135,6 +135,7 @@ begin
   TestInterpreter;
   TestGlobals;
   TestLocals;
+  TestControlFlow;
   Memo2.Lines.Add('All interpreter tests passed.');
 end;
 

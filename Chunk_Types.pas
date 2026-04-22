@@ -48,8 +48,11 @@ const
   OP_SET_GLOBAL = 19;
   OP_GET_LOCAL = 20;
   OP_SET_LOCAL = 21;
+  OP_JUMP = 22;
+  OP_JUMP_IF_FALSE = 23;
+  OP_LOOP = 24;
 
-  OP_STRINGS : array[0..21] of string = (
+  OP_STRINGS : array[0..24] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -71,7 +74,10 @@ const
     'OP_GET_GLOBAL',
     'OP_SET_GLOBAL',
     'OP_GET_LOCAL',
-    'OP_SET_LOCAL');
+    'OP_SET_LOCAL',
+    'OP_JUMP',
+    'OP_JUMP_IF_FALSE',
+    'OP_LOOP');
 
   UINT8_COUNT = 256;
 
@@ -441,6 +447,9 @@ procedure varDeclaration();
 procedure statement();
 procedure block();
 procedure printStatement();
+procedure ifStatement();
+procedure whileStatement();
+procedure forStatement();
 procedure expressionStatement();
 procedure Number();
 procedure grouping();
@@ -449,6 +458,10 @@ procedure binary();
 procedure literal();
 procedure ParseString();
 procedure variable();
+procedure and_();
+procedure or_();
+procedure beginScope();
+procedure endScope();
 
 //Hash
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
@@ -536,7 +549,7 @@ const
     (Prefix: number;   Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_AND }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: and_;    Precedence: PREC_AND),
 
     { TOKEN_CLASS }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -560,7 +573,7 @@ const
     (Prefix: literal;  Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_OR }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: or_;     Precedence: PREC_OR),
 
     { TOKEN_PRINT }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -1720,6 +1733,7 @@ var
   InstructionPtr : pByte;
   instruction: Byte;
   slot : Byte;
+  offset : Word;
   value,ValueB : TValue;
 
 begin
@@ -1879,6 +1893,25 @@ begin
         OP_SET_LOCAL: begin
           slot := ReadByte(InstructionPtr);
           vm.Stack.Values[slot] := peekStack(vm.Stack);
+        end;
+
+        OP_JUMP: begin
+          offset := ReadByte(InstructionPtr) shl 8;
+          offset := offset or ReadByte(InstructionPtr);
+          Inc(InstructionPtr, offset);
+        end;
+
+        OP_JUMP_IF_FALSE: begin
+          offset := ReadByte(InstructionPtr) shl 8;
+          offset := offset or ReadByte(InstructionPtr);
+          if isFalsey(peekStack(vm.Stack)) then
+            Inc(InstructionPtr, offset);
+        end;
+
+        OP_LOOP: begin
+          offset := ReadByte(InstructionPtr) shl 8;
+          offset := offset or ReadByte(InstructionPtr);
+          Dec(InstructionPtr, offset);
         end;
 
         OP_DEFINE_GLOBAL: begin
@@ -2962,6 +2995,151 @@ begin
   emitByte(OP_PRINT, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
 
+function emitJump(instruction : byte) : integer;
+begin
+  emitByte(instruction, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
+  Result := CurrentChunk.count - 2;
+end;
+
+procedure patchJump(offset : integer);
+var
+  jump : integer;
+begin
+  // -2 to adjust for the two-byte jump operand itself
+  jump := CurrentChunk.count - offset - 2;
+  if jump > $FFFF then
+    Error('Too much code to jump over.');
+  CurrentChunk.code[offset]     := (jump shr 8) and $FF;
+  CurrentChunk.code[offset + 1] := jump and $FF;
+end;
+
+procedure emitLoop(loopStart : integer);
+var
+  offset : integer;
+begin
+  emitByte(OP_LOOP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  offset := CurrentChunk.count - loopStart + 2;
+  if offset > $FFFF then
+    Error('Loop body too large.');
+  emitByte((offset shr 8) and $FF, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte(offset and $FF, CurrentChunk, parser.previous.line, vm.MemTracker);
+end;
+
+procedure ifStatement();
+var
+  thenJump, elseJump : integer;
+begin
+  consume(TOKEN_LEFT_PAREN, 'Expect ''('' after ''if''.');
+  Expression();
+  consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after condition.');
+
+  thenJump := emitJump(OP_JUMP_IF_FALSE);
+  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  statement();
+
+  elseJump := emitJump(OP_JUMP);
+  patchJump(thenJump);
+  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+
+  if matchToken(TOKEN_ELSE) then
+    statement();
+  patchJump(elseJump);
+end;
+
+procedure whileStatement();
+var
+  loopStart, exitJump : integer;
+begin
+  loopStart := CurrentChunk.count;
+  consume(TOKEN_LEFT_PAREN, 'Expect ''('' after ''while''.');
+  Expression();
+  consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after condition.');
+
+  exitJump := emitJump(OP_JUMP_IF_FALSE);
+  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  statement();
+  emitLoop(loopStart);
+
+  patchJump(exitJump);
+  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+end;
+
+procedure forStatement();
+var
+  loopStart, exitJump, bodyJump, incrementStart : integer;
+begin
+  beginScope();
+  consume(TOKEN_LEFT_PAREN, 'Expect ''('' after ''for''.');
+
+  // Initializer
+  if matchToken(TOKEN_SEMICOLON) then
+    // No initializer
+  else if matchToken(TOKEN_VAR) then
+    varDeclaration()
+  else
+    expressionStatement();
+
+  loopStart := CurrentChunk.count;
+
+  // Condition
+  exitJump := -1;
+  if not matchToken(TOKEN_SEMICOLON) then
+  begin
+    Expression();
+    consume(TOKEN_SEMICOLON, 'Expect '';'' after loop condition.');
+    exitJump := emitJump(OP_JUMP_IF_FALSE);
+    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+
+  // Increment
+  if not matchToken(TOKEN_RIGHT_PAREN) then
+  begin
+    bodyJump := emitJump(OP_JUMP);
+    incrementStart := CurrentChunk.count;
+    Expression();
+    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after for clauses.');
+    emitLoop(loopStart);
+    loopStart := incrementStart;
+    patchJump(bodyJump);
+  end;
+
+  statement();
+  emitLoop(loopStart);
+
+  if exitJump <> -1 then
+  begin
+    patchJump(exitJump);
+    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+
+  endScope();
+end;
+
+procedure and_();
+var
+  endJump : integer;
+begin
+  endJump := emitJump(OP_JUMP_IF_FALSE);
+  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  parsePrecedence(PREC_AND);
+  patchJump(endJump);
+end;
+
+procedure or_();
+var
+  elseJump, endJump : integer;
+begin
+  elseJump := emitJump(OP_JUMP_IF_FALSE);
+  endJump := emitJump(OP_JUMP);
+  patchJump(elseJump);
+  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  parsePrecedence(PREC_OR);
+  patchJump(endJump);
+end;
+
 procedure initCompiler();
 begin
   Current.localCount := 0;
@@ -3147,6 +3325,12 @@ procedure statement();
 begin
   if matchToken(TOKEN_PRINT) then
     printStatement()
+  else if matchToken(TOKEN_IF) then
+    ifStatement()
+  else if matchToken(TOKEN_WHILE) then
+    whileStatement()
+  else if matchToken(TOKEN_FOR) then
+    forStatement()
   else if matchToken(TOKEN_LEFT_BRACE) then
   begin
     beginScope();
