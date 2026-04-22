@@ -196,6 +196,7 @@ type
     code  : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
     value : TValue;
     ErrorStr : String;
+    ResultStr : String;
   end;
 
   TMemTracker = record
@@ -209,6 +210,7 @@ type
     Chunk           : pChunk;
     Stack           : pStack;
     MemTracker      : PMemTracker;
+    Strings         : pTable;
     RuntimeErrorStr : String;
   end;
 
@@ -988,11 +990,22 @@ function CreateString(const S: AnsiString; MemTracker : pMemTracker): PObjString
 var
   Len: Integer;
   NewSize: NativeInt;
+  hash: UInt32;
 begin
 
   AssertMemTrackerIsNotNil(MemTracker);
-  Result := nil;
   Len := Length(S);
+  hash := HashString(PAnsiChar(S), Len);
+
+  // String interning: if VM is active, check intern table first
+  if (VM <> nil) and (VM.Strings <> nil) then
+  begin
+    Result := TableFindString(VM.Strings, PAnsiChar(S), Len, hash);
+    if Result <> nil then
+      Exit;
+  end;
+
+  Result := nil;
   NewSize := SizeOf(TObjString) + Max(0, Len - 1);  // avoid negative size
 
   AllocateString(Result,0, NewSize,MemTracker);
@@ -1000,15 +1013,18 @@ begin
   Result^.Obj.ObjectKind := okString;
   Result^.Obj.Next := nil;
   Result^.Length := Len;
-  Result^.hash := HashString(pAnsiChar(s),len);
+  Result^.hash := hash;
   if Len > 0 then
   begin
     Move(PAnsiChar(S)^, Result^.Chars[0], Len);
-    //Move(Pointer(S)^, Result^.Chars[0], Len);
   end;
 
   //track creation in the vm list of obj.
   AddToCreatedObjects(PObj(Result),MemTracker);
+
+  // String interning: add to intern table if VM is active
+  if (VM <> nil) and (VM.Strings <> nil) then
+    TableSet(VM.Strings, Result, CreateNilValue, MemTracker);
   
   // ---- Exit assertions ----
   AssertObjStringIsAssigned(Result);
@@ -1989,7 +2005,9 @@ begin
      end;
      Result := Run;
      if Result.code = INTERPRET_RUNTIME_ERROR then
-       Result.ErrorStr := VM.RuntimeErrorStr;
+       Result.ErrorStr := VM.RuntimeErrorStr
+     else if (Result.code = INTERPRET_OK) and isString(Result.value) then
+       Result.ResultStr := ObjStringToAnsiString(ValueToString(Result.value));
    finally
      FreeVM;
    end;
@@ -2090,8 +2108,10 @@ begin
   VM.Chunk := nil;
   VM.Stack := nil;
   VM.MemTracker := nil;
+  VM.Strings := nil;
   VM.RuntimeErrorStr := '';
   InitMemTracker(VM.MemTracker);
+  InitTable(VM.Strings, VM.MemTracker);
   InitChunk(Vm.Chunk,vm.MemTracker);
   InitStack(VM.Stack,Vm.MemTracker);
   ResetStack(vm.Stack);
@@ -2103,12 +2123,14 @@ begin
   AssertVMChunkIsAssigned;
   Assert(VM.Stack <> nil, 'InitVM exit: Stack should not be nil');
   AssertMemTrackerIsNotNil(VM.MemTracker);
+  Assert(VM.Strings <> nil, 'InitVM exit: Strings table should not be nil');
   Assert(VM.MemTracker.Roots.Stack = VM.Stack, 'InitVM exit: GC roots should point to stack');
 end;
 
 procedure FreeVM;
 begin
   FreeStack(VM.Stack,Vm.MemTracker);
+  FreeTable(VM.Strings, VM.MemTracker);
   if (Vm.MemTracker.CreatedObjects <> nil) then
   begin
     FreeObjects(Vm.MemTracker.CreatedObjects);

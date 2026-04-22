@@ -14,6 +14,7 @@ procedure TestStringUnequal;
 procedure TestValuesEqual;
 procedure TestGC;
 procedure TestTable;
+procedure TestStringInterning;
 procedure TestInterpreter;
 
 implementation
@@ -720,6 +721,33 @@ begin
   // Compile errors
   AssertCompileError(')');
   AssertCompileError('* 1');
+end;
+
+procedure TestStringInterning;
+var
+  a, b, c, d: PObjString;
+begin
+  // Test interning within VM context: same content => same pointer
+  InitVM;
+  try
+    a := CreateString('hello', VM.MemTracker);
+    b := CreateString('hello', VM.MemTracker);
+    Assert(a = b, 'Interning: same content should return same pointer');
+
+    c := CreateString('world', VM.MemTracker);
+    Assert(a <> c, 'Interning: different content should return different pointers');
+
+    // Concatenation result should also be interned
+    d := CreateString('helloworld', VM.MemTracker);
+    Assert(d = CreateString('helloworld', VM.MemTracker),
+      'Interning: repeated CreateString for concat result should return same pointer');
+
+    // Empty string interning
+    Assert(CreateString('', VM.MemTracker) = CreateString('', VM.MemTracker),
+      'Interning: empty strings should be interned');
+  finally
+    FreeVM;
+  end;
 end;
 
 initialization

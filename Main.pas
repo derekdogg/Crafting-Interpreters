@@ -46,9 +46,7 @@ uses
 procedure TForm4.Button1Click(Sender: TObject);
 var
   IR : TInterpretResult;
-  text : string;
   txt : ansiString;
-  strObj : pObjString;
 begin
 
     txt := Memo1.Lines.Text;
@@ -63,13 +61,7 @@ begin
         vkNull: Memo2.Lines.add('Null');
         vkObject :
         begin
-          case IR.value.ObjValue.ObjectKind of
-            okString : begin
-              strObj := pObjString(IR.value.ObjValue);
-              txt := ObjStringToAnsiString(strObj);
-              Memo2.lines.add(txt);
-            end;
-          end;
+          Memo2.lines.add(IR.ResultStr);
         end;
       end;
     end;
@@ -131,6 +123,7 @@ end;
 procedure TForm4.Button7Click(Sender: TObject);
 begin
   testTable;
+  TestStringInterning;
   Memo2.Lines.Add('All table tests passed.');
 end;
 
