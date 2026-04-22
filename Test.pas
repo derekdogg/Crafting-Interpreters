@@ -20,6 +20,7 @@ procedure TestInterpreter;
 procedure TestGlobals;
 procedure TestLocals;
 procedure TestControlFlow;
+procedure TestFunctions;
 
 implementation
 
@@ -977,6 +978,62 @@ begin
   AssertOutput(
     'var result = 0; for (var i = 0; i < 3; i = i + 1) for (var j = 0; j < 3; j = j + 1) result = result + 1; print result;',
     '9');
+end;
+
+procedure TestFunctions;
+begin
+  // Simple function declaration and call
+  AssertOutput('fun greet() { print "hello"; } greet();', 'hello');
+
+  // Function with return value
+  AssertOutput('fun add(a, b) { return a + b; } print add(1, 2);', '3');
+
+  // Function with no explicit return returns nil
+  AssertOutput('fun nothing() { } print nothing();', 'nil');
+
+  // Implicit nil return
+  AssertOutput('fun f() { 1 + 2; } print f();', 'nil');
+
+  // Return from middle of function
+  AssertOutput('fun early() { print "before"; return; print "after"; } early();', 'before');
+
+  // Return with value from middle
+  AssertOutput('fun pick() { return "yes"; return "no"; } print pick();', 'yes');
+
+  // Multiple parameters
+  AssertOutput('fun sum(a, b, c) { return a + b + c; } print sum(1, 2, 3);', '6');
+
+  // Functions as first-class values
+  AssertOutput('fun hi() { print "hi"; } var f = hi; f();', 'hi');
+
+  // Recursion
+  AssertOutput(
+    'fun fib(n) { if (n <= 1) return n; return fib(n - 1) + fib(n - 2); } print fib(10);',
+    '55');
+
+  // Nested function calls
+  AssertOutput('fun a() { return 1; } fun b() { return 2; } print a() + b();', '3');
+
+  // Function accessing global
+  AssertOutput('var x = 10; fun getX() { return x; } print getX();', '10');
+
+  // Function modifying global
+  AssertOutput('var x = 1; fun inc() { x = x + 1; } inc(); inc(); print x;', '3');
+
+  // Wrong arity - too few args
+  AssertRuntimeError('fun f(a, b) { } f(1)');
+
+  // Wrong arity - too many args
+  AssertRuntimeError('fun f(a) { } f(1, 2)');
+
+  // Calling non-function
+  AssertRuntimeError('var x = 1; x()');
+
+  // Can''t return from top-level
+  AssertCompileError('return 1;');
+
+  // Native function clock returns a number
+  AssertOutput('print clock() >= 0;', 'true');
 end;
 
 procedure TestStringInterning;
