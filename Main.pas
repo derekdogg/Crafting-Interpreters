@@ -138,6 +138,7 @@ begin
   TestControlFlow;
   TestFunctions;
   TestClosures;
+  TestGarbageCollection;
   Memo2.Lines.Add('All interpreter tests passed.');
 end;
 
