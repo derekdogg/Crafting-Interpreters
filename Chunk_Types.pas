@@ -11,6 +11,7 @@ const
   START_CAPACITY =  256;
   MAX_SIZE       =  START_CAPACITY * 256;
   GROWTH_FACTOR  =  2;
+  GC_HEAP_GROW_FACTOR = 2;
 
   //Table
   TABLE_MAX_LOAD = 0.75;
@@ -274,6 +275,10 @@ type
   TMemTracker = record
     CreatedObjects  : pObj;
     BytesAllocated  : integer;
+    NextGC          : integer;
+    GrayCount       : integer;
+    GrayCapacity    : integer;
+    GrayStack       : ^pObj;
     Roots           : TRoots;
   end;
 
@@ -455,6 +460,7 @@ function ObjStringToAnsiString(S: PObjString): AnsiString;
 function ValueToString(const value : TValue) : pObjString;
 function ValueToStr(const value : TValue) : String;
 function StringToValue(const value : pObjString) : TValue;
+function isString(value : TValue) : boolean;
 procedure Concatenate(stack : pStack; MemTracker : pMemTracker);
 
 
@@ -481,14 +487,22 @@ function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue;
 procedure InitMemTracker(var MemTracker : pMemTracker);
 procedure FreeMemTracker(var MemTracker : pMemTracker);
 procedure MarkObject(obj : pObj);
-procedure MarkValue(value : pValue);
-procedure MarkRoots(Stack : pStack);
-procedure CollectGarbage(MemTracker : pMemTracker);
+procedure MarkValue(value : TValue);
+procedure MarkRoots;
+procedure MarkTable(Table : pTable);
+procedure MarkArray(ValueArray : pValueArray);
+procedure MarkCompilerRoots;
+procedure BlackenObject(obj : pObj);
+procedure TraceReferences;
+procedure TableRemoveWhite(Table : pTable);
+procedure Sweep;
+procedure CollectGarbage;
 
 
 //Virtual Machine
 procedure InitVM();
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
+function Run : TInterpretResult;
 procedure FreeObjects(objects: pObj);
 procedure FreeVM();
 
@@ -545,6 +559,7 @@ function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
 function CreateNumber(Value: Double): TValue;
 function CreateBoolean(Value: Boolean): TValue;
 function CreateNilValue: TValue;
+function CreateObject(value : pObj) : TValue;
 
 //Table
 procedure InitTable(var Table : pTable; memTracker : pMemTracker);
@@ -998,7 +1013,11 @@ begin
   // --------------------------------------------------------------------------
   if (NewSize > OldSize) then
   begin
-    CollectGarbage(MemTracker);
+    {$IFDEF DEBUG_STRESS_GC}
+    CollectGarbage;
+    {$ENDIF}
+    if MemTracker.BytesAllocated > MemTracker.NextGC then
+      CollectGarbage;
   end;
 
   // --------------------------------------------------------------------------
@@ -1117,6 +1136,7 @@ var
   Len: Integer;
   NewSize: NativeInt;
   hash: UInt32;
+  savedNextGC : integer;
 begin
 
   AssertMemTrackerIsNotNil(MemTracker);
@@ -1137,6 +1157,7 @@ begin
   AllocateString(Result,0, NewSize,MemTracker);
 
   Result^.Obj.ObjectKind := okString;
+  Result^.Obj.IsMarked := false;
   Result^.Obj.Next := nil;
   Result^.Length := Len;
   Result^.hash := hash;
@@ -1149,8 +1170,17 @@ begin
   AddToCreatedObjects(PObj(Result),MemTracker);
 
   // String interning: add to intern table if VM is active
+  // Suppress GC during push+TableSet — string is in CreatedObjects but not
+  // reachable from any root yet, so GC would incorrectly sweep it.
   if (VM <> nil) and (VM.Strings <> nil) then
+  begin
+    savedNextGC := MemTracker.NextGC;
+    MemTracker.NextGC := MaxInt;
+    pushStack(VM.Stack, StringToValue(Result), VM.MemTracker);
     TableSet(VM.Strings, Result, CreateNilValue, MemTracker);
+    popStack(VM.Stack);
+    MemTracker.NextGC := savedNextGC;
+  end;
   
   // ---- Exit assertions ----
   AssertObjStringIsAssigned(Result);
@@ -1609,15 +1639,19 @@ begin
   Assert(IsString(peekStack(stack,1)),'Value at position -1 of stack to concatenate is not a string');
 
   oldCount := Stack.Count;
-  
-  top := ValueToString(popStack(stack));       // top of stack ("B")
-  below := ValueToString(popStack(stack));     // below top ("A")
+
+  // Peek instead of pop — keep on stack to protect from GC during allocation
+  top := ValueToString(peekStack(stack, 0));
+  below := ValueToString(peekStack(stack, 1));
 
   strTop := ObjStringToAnsiString(top);
   strBelow := ObjStringToAnsiString(below);
 
   resultStr := AddString(strBelow, strTop, Memtracker);   // "A" + "B"
 
+  // Now safe to pop — result is allocated
+  popStack(stack);
+  popStack(stack);
   PushStack(stack, StringToValue(resultStr),Memtracker);
   
   // ---- Exit assertions ----
@@ -2561,41 +2595,193 @@ end;
 
 
 procedure MarkObject(obj : pObj);
+var
+  newCapacity : integer;
 begin
-   AssertPointerIsNotNil(obj, 'MarkObject - object');
-   Obj.IsMarked := true;
+  if obj = nil then Exit;
+  if obj^.IsMarked then Exit;
+
+  obj^.IsMarked := true;
+
+  // Add to gray stack
+  if VM.MemTracker.GrayCount + 1 > VM.MemTracker.GrayCapacity then
+  begin
+    if VM.MemTracker.GrayCapacity < 8 then
+      newCapacity := 8
+    else
+      newCapacity := VM.MemTracker.GrayCapacity * 2;
+    VM.MemTracker.GrayCapacity := newCapacity;
+    // Use raw ReallocMem to avoid recursive GC trigger
+    ReallocMem(VM.MemTracker.GrayStack, SizeOf(pObj) * VM.MemTracker.GrayCapacity);
+  end;
+  VM.MemTracker.GrayStack[VM.MemTracker.GrayCount] := obj;
+  Inc(VM.MemTracker.GrayCount);
 end;
 
-procedure MarkValue(value : pValue);
+procedure MarkValue(value : TValue);
 begin
-  AssertPointerIsNotNil(Value, 'MarkValue - value');
-  if (isObject(value^)) then
+  if isObject(value) then
+    MarkObject(GetObject(value));
+end;
+
+procedure MarkArray(ValueArray : pValueArray);
+var
+  i : integer;
+begin
+  if ValueArray = nil then Exit;
+  for i := 0 to ValueArray^.Count - 1 do
+    MarkValue(ValueArray^.Values[i]);
+end;
+
+procedure MarkTable(Table : pTable);
+var
+  i : integer;
+begin
+  if Table = nil then Exit;
+  if Table^.Entries = nil then Exit;
+  for i := 0 to Table^.CurrentCapacity - 1 do
   begin
-    markObject(GetObject(value^));
+    if Table^.Entries[i].key <> nil then
+    begin
+      MarkObject(pObj(Table^.Entries[i].key));
+      MarkValue(Table^.Entries[i].value);
+    end;
   end;
 end;
 
-procedure MarkRoots(Stack : pStack);
+procedure MarkCompilerRoots;
+var
+  compiler : pCompiler;
+begin
+  compiler := Current;
+  while compiler <> nil do
+  begin
+    MarkObject(pObj(compiler^.func));
+    compiler := compiler^.enclosing;
+  end;
+end;
+
+procedure MarkRoots;
 var
   slot : pValue;
+  i : integer;
+  upvalue : pObjUpvalue;
 begin
-  AssertPointerIsNotNil(Stack, 'MarkRoots - stack');
-  if Stack.Count = 0 then exit;
-  AssertStackValuesIsAssigned(Stack);
-  slot := stack.Values;   //first elemement in stack array
-  while slot < Stack.StackTop do
+  // Mark the value stack
+  if (VM.Stack <> nil) and (VM.Stack.Count > 0) then
   begin
-    markValue(slot);
-    Inc(slot);
+    slot := VM.Stack.Values;
+    while NativeUInt(slot) < NativeUInt(VM.Stack.StackTop) do
+    begin
+      MarkValue(slot^);
+      Inc(slot);
+    end;
+  end;
+
+  // Mark call frame closures
+  for i := 0 to VM.FrameCount - 1 do
+    MarkObject(pObj(VM.Frames[i].closure));
+
+  // Mark open upvalues
+  upvalue := VM.OpenUpvalues;
+  while upvalue <> nil do
+  begin
+    MarkObject(pObj(upvalue));
+    upvalue := upvalue^.next;
+  end;
+
+  // Mark globals table
+  MarkTable(VM.Globals);
+
+  // Mark compiler roots
+  MarkCompilerRoots;
+end;
+
+procedure BlackenObject(obj : pObj);
+var
+  i : integer;
+begin
+  case obj^.ObjectKind of
+    okUpvalue:
+      MarkValue(pObjUpvalue(obj)^.closed);
+    okFunction: begin
+      MarkObject(pObj(pObjFunction(obj)^.name));
+      MarkArray(pObjFunction(obj)^.chunk^.Constants);
+    end;
+    okClosure: begin
+      MarkObject(pObj(pObjClosure(obj)^.func));
+      for i := 0 to pObjClosure(obj)^.upvalueCount - 1 do
+        MarkObject(pObj(pObjClosure(obj)^.upvalues^[i]));
+    end;
+    okNative: ;
+    okString: ;
   end;
 end;
 
-procedure CollectGarbage(MemTracker : pMemTracker);
+procedure TraceReferences;
+var
+  obj : pObj;
 begin
-  AssertMemTrackerIsNotNil(MemTracker);
-  //Assert(Assigned(MemTracker.Roots.Stack), 'Mem tracker roots is nil');
-  if MemTracker.Roots.Stack <> nil then
-    MarkRoots(MemTracker.Roots.Stack);
+  while VM.MemTracker.GrayCount > 0 do
+  begin
+    Dec(VM.MemTracker.GrayCount);
+    obj := VM.MemTracker.GrayStack[VM.MemTracker.GrayCount];
+    BlackenObject(obj);
+  end;
+end;
+
+procedure TableRemoveWhite(Table : pTable);
+var
+  i : integer;
+begin
+  if Table = nil then Exit;
+  if Table^.Entries = nil then Exit;
+  for i := 0 to Table^.CurrentCapacity - 1 do
+  begin
+    if (Table^.Entries[i].key <> nil) and
+       (not Table^.Entries[i].key^.Obj.IsMarked) then
+      TableDelete(Table, Table^.Entries[i].key);
+  end;
+end;
+
+procedure Sweep;
+var
+  previous, obj, unreached : pObj;
+begin
+  previous := nil;
+  obj := VM.MemTracker.CreatedObjects;
+  while obj <> nil do
+  begin
+    if obj^.IsMarked then
+    begin
+      obj^.IsMarked := false;
+      previous := obj;
+      obj := obj^.Next;
+    end
+    else
+    begin
+      unreached := obj;
+      obj := obj^.Next;
+      if previous <> nil then
+        previous^.Next := obj
+      else
+        VM.MemTracker.CreatedObjects := obj;
+      FreeObject(unreached);
+    end;
+  end;
+end;
+
+procedure CollectGarbage;
+begin
+  if VM = nil then Exit;
+  if VM.MemTracker = nil then Exit;
+
+  MarkRoots;
+  TraceReferences;
+  TableRemoveWhite(VM.Strings);
+  Sweep;
+
+  VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR;
 end;
 
 procedure InitMemTracker(var MemTracker : pMemTracker);
@@ -2605,6 +2791,10 @@ begin
   MemTracker.CreatedObjects := nil;
   MemTracker.Roots.Stack := nil;
   MemTracker.BytesAllocated := 0;
+  MemTracker.NextGC := 1024 * 1024;
+  MemTracker.GrayCount := 0;
+  MemTracker.GrayCapacity := 0;
+  MemTracker.GrayStack := nil;
   
   // ---- Exit assertions ----
   AssertMemTrackerIsNotNil(MemTracker);
@@ -2627,10 +2817,16 @@ procedure defineNative(const name : AnsiString; func : TNativeFn);
 var
   native : pObjNative;
   nameStr : pObjString;
+  savedNextGC : integer;
 begin
+  // Suppress GC: nameStr is only in intern table (weak ref) during
+  // newNative, and native is unrooted during TableSet.
+  savedNextGC := VM.MemTracker.NextGC;
+  VM.MemTracker.NextGC := MaxInt;
   nameStr := CreateString(name, VM.MemTracker);
   native := newNative(func, VM.MemTracker);
   TableSet(VM.Globals, nameStr, CreateObject(pObj(native)), VM.MemTracker);
+  VM.MemTracker.NextGC := savedNextGC;
 end;
 
 function clockNative(argCount: integer; args: pValue): TValue;
@@ -2680,6 +2876,10 @@ begin
   begin
     FreeObjects(Vm.MemTracker.CreatedObjects);
   end;
+  // Free gray stack (raw memory, not via Allocate)
+  if VM.MemTracker.GrayStack <> nil then
+    FreeMem(VM.MemTracker.GrayStack);
+  VM.MemTracker.GrayStack := nil;
   Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
   FreeMemTracker(VM.MemTracker);
   dispose(VM);
@@ -3267,6 +3467,7 @@ var
   lexeme  : ansiString;
   strObj : pObjString;
   value  : TValue;
+  savedNextGC : integer;
 begin
   Assert(parser.previous.tokenType = TOKEN_STRING, 'ParseString: expected TOKEN_STRING');
   AssertVMIsAssigned;
@@ -3275,9 +3476,14 @@ begin
   // strip leading and trailing quotes
   if (Length(lexeme) >= 2) and (lexeme[1] = '"') and (lexeme[Length(lexeme)] = '"') then
     lexeme := Copy(lexeme, 2, Length(lexeme) - 2);
+  // Suppress GC: string is only in intern table (weak ref) until
+  // emitConstant stores it in the constants array.
+  savedNextGC := VM.MemTracker.NextGC;
+  VM.MemTracker.NextGC := MaxInt;
   strObj := CreateString(lexeme,VM.MemTracker);
   value := StringToValue(strObj);
   emitConstant(value);
+  VM.MemTracker.NextGC := savedNextGC;
 end;
 
 procedure binary();
@@ -3669,9 +3875,16 @@ function identifierConstant(const name : TToken) : byte;
 var
   strObj : pObjString;
   idx : integer;
+  savedNextGC : integer;
 begin
+  // Suppress GC: string is only in intern table (weak ref) until stored
+  // in the constants array. Any allocation in AddValueConstant could
+  // trigger GC that sweeps the unrooted string.
+  savedNextGC := VM.MemTracker.NextGC;
+  VM.MemTracker.NextGC := MaxInt;
   strObj := CreateString(TokenToString(name), VM.MemTracker);
   idx := AddValueConstant(CurrentChunk.Constants, StringToValue(strObj), VM.MemTracker);
+  VM.MemTracker.NextGC := savedNextGC;
   Assert(idx <= High(Byte), 'Too many constants in one chunk');
   Result := Byte(idx);
 end;
@@ -3798,6 +4011,7 @@ var
   func : pObjFunction;
   i : byte;
   j : integer;
+  savedNextGC : integer;
 begin
   compiler := nil;
   initCompiler(compiler, funcType);
@@ -3823,6 +4037,12 @@ begin
   func := Current^.func;
   Current := Current^.enclosing;
 
+  // Suppress GC: func is no longer reachable via compiler roots (Current
+  // chain) but not yet stored in the enclosing function's constants array.
+  // Any allocation that triggers GC here would sweep func.
+  savedNextGC := VM.MemTracker.NextGC;
+  VM.MemTracker.NextGC := MaxInt;
+
   emitByte(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte(AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker),
     CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -3835,6 +4055,8 @@ begin
       emitByte(0, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(compiler^.upvalues[j].index, CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
+
+  VM.MemTracker.NextGC := savedNextGC;
 
   Dispose(compiler);
 end;
@@ -3911,6 +4133,7 @@ function compile(source : pAnsiChar) : pObjClosure;
 var
   compiler : pCompiler;
   func : pObjFunction;
+  savedNextGC : integer;
 begin
   AssertSourceCodeIsAssigned(source);
   AssertVMIsAssigned;
@@ -3937,7 +4160,17 @@ begin
   if parser.HadError then
     Result := nil
   else
+  begin
+    // Protect func from GC during newClosure allocation.
+    // Suppress GC so pushStack growth can't trigger collection
+    // while func is unreachable (Current is nil, func not on stack yet).
+    savedNextGC := VM.MemTracker.NextGC;
+    VM.MemTracker.NextGC := MaxInt;
+    pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
     Result := newClosure(func, VM.MemTracker);
+    popStack(VM.Stack);
+    VM.MemTracker.NextGC := savedNextGC;
+  end;
 end;
 
 
