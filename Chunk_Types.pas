@@ -46,8 +46,10 @@ const
   OP_DEFINE_GLOBAL = 17;
   OP_GET_GLOBAL = 18;
   OP_SET_GLOBAL = 19;
+  OP_GET_LOCAL = 20;
+  OP_SET_LOCAL = 21;
 
-  OP_STRINGS : array[0..19] of string = (
+  OP_STRINGS : array[0..21] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -67,7 +69,11 @@ const
     'OP_POP',
     'OP_DEFINE_GLOBAL',
     'OP_GET_GLOBAL',
-    'OP_SET_GLOBAL');
+    'OP_SET_GLOBAL',
+    'OP_GET_LOCAL',
+    'OP_SET_LOCAL');
+
+  UINT8_COUNT = 256;
 
 
 type
@@ -248,6 +254,17 @@ type
     ErrorStr  : String;
  end;
 
+  TLocal = record
+    name  : TToken;
+    depth : integer;
+  end;
+
+  TCompiler = record
+    locals     : array[0..UINT8_COUNT - 1] of TLocal;
+    localCount : integer;
+    scopeDepth : integer;
+  end;
+
 
   //Prat parsing structs
   TParseFn = procedure;
@@ -422,6 +439,7 @@ function compile(source : pAnsiChar; chunk : pChunk) : boolean;
 procedure declaration();
 procedure varDeclaration();
 procedure statement();
+procedure block();
 procedure printStatement();
 procedure expressionStatement();
 procedure Number();
@@ -579,6 +597,7 @@ var
   Scanner : TScanner;
   Parser  : TParser;
   CompilingChunk : pChunk; //related to the pratt parser table because we have to have a global chunk in there.
+  Current : TCompiler;
   //Output : TStrings;
 
 implementation
@@ -1700,6 +1719,7 @@ function Run : TInterpretResult;
 var
   InstructionPtr : pByte;
   instruction: Byte;
+  slot : Byte;
   value,ValueB : TValue;
 
 begin
@@ -1849,6 +1869,16 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
+        end;
+
+        OP_GET_LOCAL: begin
+          slot := ReadByte(InstructionPtr);
+          pushStack(vm.Stack, vm.Stack.Values[slot], vm.MemTracker);
+        end;
+
+        OP_SET_LOCAL: begin
+          slot := ReadByte(InstructionPtr);
+          vm.Stack.Values[slot] := peekStack(vm.Stack);
         end;
 
         OP_DEFINE_GLOBAL: begin
@@ -2932,6 +2962,89 @@ begin
   emitByte(OP_PRINT, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
 
+procedure initCompiler();
+begin
+  Current.localCount := 0;
+  Current.scopeDepth := 0;
+end;
+
+procedure beginScope();
+begin
+  Inc(Current.scopeDepth);
+end;
+
+procedure endScope();
+begin
+  Dec(Current.scopeDepth);
+  while (Current.localCount > 0) and
+        (Current.locals[Current.localCount - 1].depth > Current.scopeDepth) do
+  begin
+    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    Dec(Current.localCount);
+  end;
+end;
+
+procedure addLocal(name : TToken);
+begin
+  if Current.localCount = UINT8_COUNT then
+  begin
+    Error('Too many local variables in function.');
+    Exit;
+  end;
+  Current.locals[Current.localCount].name := name;
+  Current.locals[Current.localCount].depth := -1; // sentinel: not yet initialized
+  Inc(Current.localCount);
+end;
+
+function identifiersEqual(const a, b : TToken) : boolean;
+begin
+  if a.length <> b.length then
+    Exit(false);
+  Result := CompareMem(a.start, b.start, a.length);
+end;
+
+procedure declareVariable();
+var
+  i : integer;
+begin
+  if Current.scopeDepth = 0 then Exit; // globals handled differently
+
+  for i := Current.localCount - 1 downto 0 do
+  begin
+    if Current.locals[i].depth <> -1 then
+      if Current.locals[i].depth < Current.scopeDepth then
+        Break;
+    if identifiersEqual(parser.previous, Current.locals[i].name) then
+    begin
+      Error('Already a variable with this name in this scope.');
+      Exit;
+    end;
+  end;
+
+  addLocal(parser.previous);
+end;
+
+procedure markInitialized();
+begin
+  Current.locals[Current.localCount - 1].depth := Current.scopeDepth;
+end;
+
+function resolveLocal(const name : TToken) : integer;
+var
+  i : integer;
+begin
+  for i := Current.localCount - 1 downto 0 do
+  begin
+    if identifiersEqual(name, Current.locals[i].name) then
+    begin
+      if Current.locals[i].depth = -1 then
+        Error('Can''t read local variable in its own initializer.');
+      Exit(i);
+    end;
+  end;
+  Result := -1; // not found = global
+end;
+
 function identifierConstant(const name : TToken) : byte;
 var
   strObj : pObjString;
@@ -2946,11 +3059,21 @@ end;
 function parseVariable(const errorMsg : PAnsiChar) : byte;
 begin
   consume(TOKEN_IDENTIFIER, errorMsg);
+
+  declareVariable();
+  if Current.scopeDepth > 0 then
+    Exit(0); // locals don't get stored in constant table
+
   Result := identifierConstant(parser.previous);
 end;
 
 procedure defineVariable(global : byte);
 begin
+  if Current.scopeDepth > 0 then
+  begin
+    markInitialized();
+    Exit; // local is already on the stack
+  end;
   emitByte(OP_DEFINE_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte(global, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
@@ -2972,19 +3095,32 @@ end;
 
 procedure namedVariable(name : TToken);
 var
-  arg : byte;
+  arg : integer;
+  getOp, setOp : byte;
 begin
-  arg := identifierConstant(name);
-  if matchToken(TOKEN_EQUAL) then
+  arg := resolveLocal(name);
+  if arg <> -1 then
   begin
-    Expression();
-    emitByte(OP_SET_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(arg, CurrentChunk, parser.previous.line, vm.MemTracker);
+    getOp := OP_GET_LOCAL;
+    setOp := OP_SET_LOCAL;
   end
   else
   begin
-    emitByte(OP_GET_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(arg, CurrentChunk, parser.previous.line, vm.MemTracker);
+    arg := identifierConstant(name);
+    getOp := OP_GET_GLOBAL;
+    setOp := OP_SET_GLOBAL;
+  end;
+
+  if matchToken(TOKEN_EQUAL) then
+  begin
+    Expression();
+    emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    emitByte(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
 end;
 
@@ -3000,10 +3136,23 @@ begin
   emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
 
+procedure block();
+begin
+  while (not check(TOKEN_RIGHT_BRACE)) and (not check(TOKEN_EOF)) do
+    declaration();
+  consume(TOKEN_RIGHT_BRACE, 'Expect ''}'' after block.');
+end;
+
 procedure statement();
 begin
   if matchToken(TOKEN_PRINT) then
     printStatement()
+  else if matchToken(TOKEN_LEFT_BRACE) then
+  begin
+    beginScope();
+    block();
+    endScope();
+  end
   else
     expressionStatement();
 end;
@@ -3024,6 +3173,7 @@ begin
   AssertMemTrackerIsNotNil(VM.MemTracker);
   initScanner(source);
   compilingChunk := chunk; //the reason this is done is so it is not passed around.
+  initCompiler();
   parser.hadError := false;
   parser.panicMode := false;
   advanceParser();
