@@ -18,6 +18,7 @@ procedure TestTableResize;
 procedure TestStringInterning;
 procedure TestInterpreter;
 procedure TestGlobals;
+procedure TestLocals;
 
 implementation
 
@@ -852,6 +853,54 @@ begin
 
   // Assignment to undefined variable runtime error
   AssertRuntimeError('x = 10');
+end;
+
+procedure TestLocals;
+begin
+  // Basic block with local variable
+  AssertOutput('{ var x = 10; print x; }', '10');
+
+  // Local variable is popped after block
+  AssertOutput('var a = 1; { var b = 2; print a + b; } print a;',
+    '3' + sLineBreak + '1');
+
+  // Nested blocks
+  AssertOutput('{ var a = 1; { var b = 2; { var c = 3; print a + b + c; } } }', '6');
+
+  // Shadowing: inner variable shadows outer
+  AssertOutput('var a = "outer"; { var a = "inner"; print a; } print a;',
+    'inner' + sLineBreak + 'outer');
+
+  // Local assignment
+  AssertOutput('{ var x = 1; x = 2; print x; }', '2');
+
+  // Multiple locals in same scope
+  AssertOutput('{ var a = 10; var b = 20; var c = 30; print a + b + c; }', '60');
+
+  // Block does not leak locals (accessing after block ends is an error on a different local)
+  // We can test that a global is still accessible after a block
+  AssertOutput('var g = 99; { var x = 1; } print g;', '99');
+
+  // Local and global with same name
+  AssertOutput('var x = "global"; { var x = "local"; print x; } print x;',
+    'local' + sLineBreak + 'global');
+
+  // Nested scopes with shadowing at each level
+  AssertOutput(
+    'var a = "g"; { var a = "1"; { var a = "2"; print a; } print a; } print a;',
+    '2' + sLineBreak + '1' + sLineBreak + 'g');
+
+  // Can''t read local in its own initializer
+  AssertCompileError('{ var a = a; }');
+
+  // Duplicate local in same scope
+  AssertCompileError('{ var a = 1; var a = 2; }');
+
+  // Empty block is fine
+  AssertOutput('var x = 42; { } print x;', '42');
+
+  // Local used in expression before end of block
+  AssertOutput('{ var a = 5; var b = a + 3; print b; }', '8');
 end;
 
 procedure TestStringInterning;
