@@ -1277,16 +1277,21 @@ begin
   AssertPointerIsNotNil(value, 'CreateObject - object value');
   result.ValueKind := vkObject;
   result.ObjValue := value;
+
+  // ---- Exit assertions ----
+  Assert(Result.ValueKind = vkObject, 'CreateObject exit: ValueKind should be vkObject');
 end;
 
 
 function isString(value : TValue) : boolean;
 begin
-  result := isObject(Value) and (value.ObjValue.ObjectKind = okString);
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okString);
 end;
 
 function ObjStringToAnsiString(S: PObjString): AnsiString;
 begin
+  AssertObjStringIsAssigned(S);
+  AssertStringLengthIsNotNegative(S);
   SetString(Result, PAnsiChar(@S^.chars[0]), S^.length);
 end;
 
@@ -1324,6 +1329,10 @@ begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
   result := CreateString(a+b,Memtracker);
+
+  // ---- Exit assertions ----
+  AssertObjStringIsAssigned(Result);
+  Assert(Result^.Obj.ObjectKind = okString, 'AddString exit: result is not a string object');
 end;
 
 function ObjStringSize(const p : pObjString) : integer;
@@ -1381,6 +1390,9 @@ function CreateBoolean(Value: Boolean): TValue;
 begin
   Result.ValueKind := vkBoolean;
   Result.BooleanValue := Value;
+
+  // ---- Exit assertions ----
+  Assert(Result.ValueKind = vkBoolean, 'CreateBoolean exit: ValueKind should be vkBoolean');
 end;
 
 function isBoolean(const Value: TValue): Boolean; inline;
@@ -1403,6 +1415,9 @@ function CreateNumber(Value: Double): TValue;
 begin
   Result.ValueKind := vkNumber;
   Result.NumberValue := Value;
+
+  // ---- Exit assertions ----
+  Assert(Result.ValueKind = vkNumber, 'CreateNumber exit: ValueKind should be vkNumber');
 end;
 
 function GetNumber(Value : TValue) : double;
@@ -1415,6 +1430,9 @@ function CreateNilValue : TValue;
 begin
   Result.ValueKind := vkNull;
   Result.NullValue := 0;
+
+  // ---- Exit assertions ----
+  Assert(Result.ValueKind = vkNull, 'CreateNilValue exit: ValueKind should be vkNull');
 end;
 
 function isNill(const Value: TValue): Boolean; inline;
@@ -1603,6 +1621,7 @@ end;
 
 procedure RunTimeError(const msg : string);
 begin
+  AssertVMIsAssigned;
   VM.RuntimeErrorStr := msg;
 end;
 
@@ -1617,7 +1636,10 @@ end;
 function ReadConstant(var code : pByte; constants : pValueArray) : TValue; inline;
 var idx : Byte;
 begin
+  AssertValueArrayIsAssigned(constants);
+  AssertValuesIsAssigned(constants.Values);
   idx := ReadByte(code);
+  AssertIndexInRange(idx, constants.Count);
   result := Constants.Values[idx];
 end;
 
@@ -1626,10 +1648,14 @@ var
   idx : integer;
   Bytes: TIntToByteResult;
 begin
+  AssertValueArrayIsAssigned(constants);
+  AssertValuesIsAssigned(constants.Values);
   Bytes.byte0 := ReadByte(code);
   Bytes.byte1 := ReadByte(code);
   Bytes.byte2 := ReadByte(code);
   idx := ByteToInt(Bytes);
+  AssertIndexIsNotNegative(idx);
+  AssertIndexInRange(idx, constants.Count);
   result := Constants.Values[idx];
 end;
 
@@ -1645,6 +1671,8 @@ begin
     AssertVMChunkCodeIsAssigned;
     AssertChunkHasInstructions(vm.Chunk);
     AssertChunkEndsWithReturn(vm.Chunk);
+    AssertStackIsAssigned(vm.Stack);
+    AssertMemTrackerIsNotNil(vm.MemTracker);
     InstructionPtr := Vm.Chunk.Code;
     while True do
     begin
@@ -1995,6 +2023,7 @@ end;
 //entry point into vm
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
 begin
+   AssertSourceCodeIsAssigned(source);
    initVM;
    try
      if not compile(source,Vm.chunk) then
@@ -2129,6 +2158,8 @@ end;
 
 procedure FreeVM;
 begin
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
   FreeStack(VM.Stack,Vm.MemTracker);
   FreeTable(VM.Strings, VM.MemTracker);
   if (Vm.MemTracker.CreatedObjects <> nil) then
@@ -2138,11 +2169,13 @@ begin
   freeChunk(vm.chunk,vm.MemTracker);
   Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
   FreeMemTracker(VM.MemTracker);
-  dispose(VM); //and therefore (see above comment in initVM) we just dispose here
+  dispose(VM);
+  VM := nil;
 end;
 
 procedure InitScanner(source : pAnsiChar);
 begin
+  AssertSourceCodeIsAssigned(source);
   scanner.start := source;
   scanner.current := source;
   scanner.line := 1;
@@ -2454,6 +2487,8 @@ end;
 
 function TokenToString(const Token: TToken): AnsiString;
 begin
+  Assert(Assigned(Token.Start), 'TokenToString: Token.Start is nil');
+  Assert(Token.Length >= 0, 'TokenToString: Token.Length is negative');
   SetString(Result, PAnsiChar(Token.Start), Token.Length);
 end;
 
@@ -2501,6 +2536,7 @@ procedure ErrorAt(const Token: TToken; const Msg: PAnsiChar);
 var
   s, tokenText: string;
 begin
+  Assert(Assigned(Msg), 'ErrorAt: Msg is nil');
   if Parser.PanicMode then
     Exit;
 
@@ -2565,6 +2601,7 @@ end;
 
 function currentChunk : pChunk;
 begin
+  Assert(Assigned(CompilingChunk), 'CompilingChunk is nil');
   result := CompilingChunk;
 end;
 
@@ -2598,6 +2635,8 @@ end;
 
 procedure emitConstant(value : TValue);
 begin
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
   AddConstant(CurrentChunk,value,parser.previous.line,VM.MemTracker);
 end;
 
@@ -2653,6 +2692,7 @@ var
   lexeme : AnsiString;
   fs : TFormatSettings;
 begin
+  Assert(parser.previous.tokenType = TOKEN_NUMBER, 'Number: expected TOKEN_NUMBER');
   lexeme := TokenToString(parser.previous);
   fs := TFormatSettings.Create;
   fs.DecimalSeparator := '.';
@@ -2675,7 +2715,8 @@ procedure unary();
 var
   operatorType : TTokenType;
 begin
-  //TODO what asserts go here?
+  Assert((parser.Previous.tokenType = TOKEN_MINUS) or (parser.Previous.tokenType = TOKEN_BANG),
+    'unary: expected TOKEN_MINUS or TOKEN_BANG');
   operatorType := parser.Previous.tokenType;
   parsePrecedence(PREC_UNARY);
   case operatortype of
@@ -2691,6 +2732,9 @@ var
   strObj : pObjString;
   value  : TValue;
 begin
+  Assert(parser.previous.tokenType = TOKEN_STRING, 'ParseString: expected TOKEN_STRING');
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
   lexeme := TokenToString(parser.Previous);
   // strip leading and trailing quotes
   if (Length(lexeme) >= 2) and (lexeme[1] = '"') and (lexeme[Length(lexeme)] = '"') then
@@ -2764,6 +2808,10 @@ end;
 
 procedure literal();
 begin
+  Assert((parser.previous.tokenType = TOKEN_FALSE) or
+         (parser.previous.tokenType = TOKEN_TRUE) or
+         (parser.previous.tokenType = TOKEN_NIL),
+    'literal: expected TOKEN_FALSE, TOKEN_TRUE, or TOKEN_NIL');
   case parser.previous.tokenType of
     TOKEN_FALSE : emitByte(OP_FALSE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
     TOKEN_TRUE  : emitByte(OP_TRUE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
@@ -2776,6 +2824,8 @@ function compile(source : pAnsiChar; chunk : pChunk) : boolean;
 begin
   AssertChunkIsAssigned(chunk);
   AssertSourceCodeIsAssigned(source);
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
   initScanner(source);
   compilingChunk := chunk; //the reason this is done is so it is not passed around.
   parser.hadError := false;
@@ -2803,6 +2853,12 @@ begin
    Table.Count := 0;
    Table.CurrentCapacity := 0;
    Table.Entries  := nil;
+
+   // ---- Exit assertions ----
+   AssertTable(Table);
+   Assert(Table.Count = 0, 'InitTable exit: count should be 0');
+   Assert(Table.CurrentCapacity = 0, 'InitTable exit: capacity should be 0');
+   Assert(Table.Entries = nil, 'InitTable exit: entries should be nil');
 end;
 
 procedure FreeEntries(var Entries : pEntry; Capacity : integer; MemTracker : pMemTracker);
@@ -2856,6 +2912,9 @@ begin
     end;
     index := (index + 1) mod uint32(Capacity);
   end;
+
+  // ---- Exit assertions ----
+  Assert(Result <> nil, 'FindEntry exit: result should not be nil');
 end;
 
 
@@ -2902,6 +2961,10 @@ begin
 
   Table.Entries := NewEntries;
   Table.CurrentCapacity := NewCapacity;
+
+  // ---- Exit assertions ----
+  Assert(Table.Entries <> nil, 'AdjustCapacity exit: entries should not be nil');
+  Assert(Table.CurrentCapacity = NewCapacity, 'AdjustCapacity exit: capacity mismatch');
 end;
 
 
@@ -2930,6 +2993,9 @@ begin
 
   Entry.key := key;
   Entry.value := value;
+
+  // ---- Exit assertions ----
+  Assert(Entry.key = key, 'TableSet exit: key not written');
 end;
 
 
@@ -2937,6 +3003,9 @@ function TableDelete(Table: pTable; key: pObjString): boolean;
 var
   Entry: pEntry;
 begin
+  AssertTable(Table);
+  AssertObjStringIsAssigned(key);
+
   if Table.Count = 0 then
     Exit(false);
 
@@ -2956,8 +3025,13 @@ var
   index: uint32;
   entry: pEntry;
 begin
+  AssertTable(Table);
+  Assert(length >= 0, 'TableFindString: length must be >= 0');
+
   Result := nil;
   if Table.Count = 0 then Exit;
+
+  AssertTableEntries(Table);
 
   index := hash mod uint32(Table.CurrentCapacity);
   while true do
@@ -2984,6 +3058,9 @@ function TableGet(Table: pTable; key: pObjString; var value: TValue): boolean;
 var
   Entry: pEntry;
 begin
+  AssertTable(Table);
+  AssertObjStringIsAssigned(key);
+
   if Table.Count = 0 then
     Exit(false);
 
@@ -3006,7 +3083,7 @@ begin
   Table := nil;
 
   // ---- Exit assertions ----
-  AssertPointerIsNil(Table, 'freeValueArray exit: ValueArray should be nil');
+  AssertPointerIsNil(Table, 'FreeTable exit: Table should be nil');
 
 end;
 
@@ -3018,6 +3095,8 @@ const
 var
   i: Integer;
 begin
+  Assert(Assigned(Key), 'HashString: Key is nil');
+  Assert(Length >= 0, 'HashString: Length must be >= 0');
   {$Q-} // disable overflow checking for this function
   Result := FNVOffset;
   for i := 0 to Length - 1 do

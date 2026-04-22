@@ -14,6 +14,7 @@ procedure TestStringUnequal;
 procedure TestValuesEqual;
 procedure TestGC;
 procedure TestTable;
+procedure TestTableResize;
 procedure TestStringInterning;
 procedure TestInterpreter;
 
@@ -109,6 +110,79 @@ begin
   FreeString(key2, MemTracker);
   FreeString(key3, MemTracker);
   Assert(MemTracker.BytesAllocated = 0, 'Table test: bytes not zero');
+  FreeMemTracker(MemTracker);
+end;
+
+procedure TestTableResize;
+const
+  N = 50; // initial capacity is 8, load factor 0.75 -> forces several resizes
+var
+  memTracker : pMemTracker;
+  table      : pTable;
+  keys       : array[0..N-1] of pObjString;
+  val        : TValue;
+  found      : boolean;
+  i          : integer;
+  name       : AnsiString;
+  oldCap     : integer;
+  resizeCount: integer;
+begin
+  table := nil;
+  memTracker := nil;
+  InitMemTracker(MemTracker);
+  InitTable(Table, MemTracker);
+
+  resizeCount := 0;
+
+  // Insert N keys, tracking resizes
+  for i := 0 to N - 1 do
+  begin
+    name := AnsiString('key_' + IntToStr(i));
+    keys[i] := CreateString(name, MemTracker);
+    oldCap := Table.CurrentCapacity;
+    TableSet(Table, keys[i], CreateNumber(i * 10), MemTracker);
+    if Table.CurrentCapacity > oldCap then
+      Inc(resizeCount);
+  end;
+
+  // Must have resized at least once (8 -> 16 -> 32 -> 64)
+  Assert(resizeCount >= 3, 'TestTableResize: expected at least 3 resizes, got ' + IntToStr(resizeCount));
+  Assert(Table.Count = N, 'TestTableResize: count should be ' + IntToStr(N));
+
+  // Verify all keys survived rehash
+  for i := 0 to N - 1 do
+  begin
+    found := TableGet(Table, keys[i], val);
+    Assert(found, 'TestTableResize: key_' + IntToStr(i) + ' not found after resize');
+    Assert(val.NumberValue = i * 10, 'TestTableResize: key_' + IntToStr(i) + ' value mismatch');
+  end;
+
+  // Verify TableFindString works after resize
+  for i := 0 to N - 1 do
+  begin
+    name := AnsiString('key_' + IntToStr(i));
+    Assert(TableFindString(Table, PAnsiChar(name), Length(name), keys[i].hash) = keys[i],
+      'TestTableResize: FindString failed for key_' + IntToStr(i));
+  end;
+
+  // Delete half the keys, then verify the other half still works
+  for i := 0 to (N div 2) - 1 do
+  begin
+    Assert(TableDelete(Table, keys[i]) = true, 'TestTableResize: delete key_' + IntToStr(i) + ' should succeed');
+  end;
+
+  for i := (N div 2) to N - 1 do
+  begin
+    found := TableGet(Table, keys[i], val);
+    Assert(found, 'TestTableResize: key_' + IntToStr(i) + ' should survive partial delete');
+    Assert(val.NumberValue = i * 10, 'TestTableResize: key_' + IntToStr(i) + ' value wrong after partial delete');
+  end;
+
+  // Clean up
+  FreeTable(Table, MemTracker);
+  for i := 0 to N - 1 do
+    FreeString(keys[i], MemTracker);
+  Assert(MemTracker.BytesAllocated = 0, 'TestTableResize: bytes not zero');
   FreeMemTracker(MemTracker);
 end;
 

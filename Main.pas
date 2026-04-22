@@ -123,6 +123,7 @@ end;
 procedure TForm4.Button7Click(Sender: TObject);
 begin
   testTable;
+  TestTableResize;
   TestStringInterning;
   Memo2.Lines.Add('All table tests passed.');
 end;
