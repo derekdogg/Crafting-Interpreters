@@ -12,6 +12,9 @@ const
   MAX_SIZE       =  START_CAPACITY * 256;
   GROWTH_FACTOR  =  2;
 
+  //Table
+  TABLE_MAX_LOAD = 0.75;
+
   //scanner
   CHAR_SPACE    = ' ';
   CHAR_TAB      = #9;   // '\t'
@@ -148,6 +151,7 @@ type
   TObjString = record
     Obj     : TObj; //note here is has the same header as TObj, to allow cast back and forth
     length  : integer;
+    hash    : uint32;
     chars   : TAnsiCharArray;
   end;
 
@@ -167,24 +171,24 @@ type
   end;
 
   TChunk = record
-    Count       : Integer;
-    Capacity    : Integer;
-    Code        : pByte;
-    Constants   : pValueArray;
-    Lines       : pInteger;
+    Count              : Integer;
+    CurrentCapacity    : Integer;
+    Code               : pByte;
+    Constants          : pValueArray;
+    Lines              : pInteger;
   end;
 
   TValueArray = record
-    Count     : Integer;
-    Capacity  : Integer;
-    Values    : pValue;
+    Count             : Integer;
+    CurrentCapacity   : Integer;
+    Values            : pValue;
   end;
 
   TStack  = record
-    Count     : Integer;
-    Capacity  : Integer;
-    Values    : pValue;
-    StackTop  : pValue;
+    Count             : Integer;
+    CurrentCapacity   : Integer;
+    Values            : pValue;
+    StackTop          : pValue;
   end;
 
   //Virtual Machine result
@@ -244,9 +248,9 @@ type
   end;
 
   TTable = record
-    Count    : integer;
-    Capacity : integer;
-    Entries  : pEntry;
+    Count           : integer;
+    CurrentCapacity : integer;
+    Entries         : pEntry;
   end;
 
 
@@ -273,6 +277,7 @@ procedure AssertChunkConstantsIsAssigned(Chunk : pChunk);
 procedure AssertValueArrayIsAssigned(ValueArray : pValueArray);
 procedure AssertValueArrayIsNilBeforeInit(ValueArray : pValueArray);
 procedure AssertValuesIsAssigned(Values : pValue);
+procedure AssertValueArrayCount(ValueArray : pValueArray);
 
 //Object assertions
 procedure AssertObjectIsAssigned(Obj : pObj);
@@ -403,10 +408,12 @@ procedure binary();
 procedure literal();
 procedure ParseString();
 
-
+//Hash
+function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
 
 //Table
 procedure InitTable(var Table : pTable; memTracker : pMemTracker);
+function TableSet(var Table : pTable; key : pObjString; value : TValue;MemTracker : pMemTracker): boolean;
 procedure FreeTable(var Table : pTable; memTracker : pMemTracker);
 
 //prat parsing rule table used in compilation
@@ -539,7 +546,7 @@ var
   VM : pVirtualMachine;
   Scanner : TScanner;
   Parser  : TParser;
-  CompilingChunk : pChunk;
+  CompilingChunk : pChunk; //related to the pratt parser table because we have to have a global chunk in there.
   //Output : TStrings;
 
 implementation
@@ -547,6 +554,16 @@ implementation
 uses
   sysutils, Math,strUtils, typinfo;
 
+procedure AssertTable(Table : pTable);
+begin
+  Assert(assigned(Table), 'Table is not assigned');
+end;
+
+procedure AssertTableEntries(Table : pTable);
+begin
+  AssertTable(Table);
+  Assert(assigned(Table.Entries), 'Table Entries is not assigned');
+end;
 
 procedure AssertMemTrackerIsNotNil(MemTracker : pMemTracker);
 begin
@@ -630,6 +647,11 @@ end;
 procedure AssertValuesIsAssigned(Values : pValue);
 begin
   Assert(Assigned(Values), 'Values is not assigned');
+end;
+
+procedure AssertValueArrayCount(ValueArray : pValueArray);
+begin
+  Assert(ValueArray.Count >= 0, 'Value array count is less than zero');
 end;
 
 //Object assertions
@@ -968,7 +990,7 @@ begin
   Result^.Obj.ObjectKind := okString;
   Result^.Obj.Next := nil;
   Result^.Length := Len;
-
+  Result^.hash := HashString(pAnsiChar(s),len);
   if Len > 0 then
   begin
     Move(PAnsiChar(S)^, Result^.Chars[0], Len);
@@ -1016,7 +1038,7 @@ begin
   Allocate(pointer(chunk),0, Sizeof(TChunk),MemTracker);
 
   chunk.Count := 0;
-  chunk.Capacity := 0;
+  chunk.CurrentCapacity := 0;
   chunk.Code := nil;
   chunk.Lines := nil;
   chunk.Constants := nil;
@@ -1025,7 +1047,7 @@ begin
   // ---- Exit assertions ----
   AssertChunkIsAssigned(chunk);
   Assert(chunk.Count = 0, 'initChunk exit: count should be 0');
-  Assert(chunk.Capacity = 0, 'initChunk exit: capacity should be 0');
+  Assert(chunk.CurrentCapacity = 0, 'initChunk exit: capacity should be 0');
   Assert(chunk.Code = nil, 'initChunk exit: code should be nil');
   Assert(chunk.Lines = nil, 'initChunk exit: lines should be nil');
   AssertChunkConstantsIsAssigned(chunk);
@@ -1038,11 +1060,11 @@ begin
   AssertChunkIsAssigned(Chunk);
 
 
-  if (chunk.Capacity) > 0 then
+  if (chunk.CurrentCapacity) > 0 then
   begin
-    Allocate(pointer(chunk.Code), Chunk.Capacity * sizeof(Byte), 0,MemTracker);
+    Allocate(pointer(chunk.Code), Chunk.CurrentCapacity * sizeof(Byte), 0,MemTracker);
     AssertPointerIsNil(Chunk.Code, 'Expected Chunk Code to be nil');
-    Allocate(pointer(Chunk.Lines), Chunk.Capacity * Sizeof(Integer),0,MemTracker);
+    Allocate(pointer(Chunk.Lines), Chunk.CurrentCapacity * Sizeof(Integer),0,MemTracker);
     AssertPointerIsNil(Chunk.Lines, 'Expected Chunk Lines to be nil');
   end;
 
@@ -1061,10 +1083,11 @@ begin
   AssertChunkIsAssigned(chunk);
   AssertLineIsNotNegative(Line);
 
-  currentCap := Chunk.Capacity;
-  if AllocateArray(Pointer(chunk.Code),  Chunk.Capacity, Chunk.Count, sizeof(Byte) , MemTracker) then
+  currentCap := Chunk.CurrentCapacity;
+  if AllocateArray(Pointer(chunk.Code),  Chunk.CurrentCapacity, Chunk.Count, sizeof(Byte) , MemTracker) then
   begin
     //we have to do it like this because we can't pass Chunk.Capacity to grow the line array (since it will be altered)
+    //and we keep the capacity of chunk and lines always equal.
     AllocateArray(Pointer(chunk.Lines), currentCap, Chunk.Count, sizeof(Integer),MemTracker);
   end;
 
@@ -1084,21 +1107,20 @@ procedure initValueArray(var ValueArray : pValueArray; MemTracker : pMemTracker)
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
-
   AssertValueArrayIsNilBeforeInit(ValueArray);
 
   allocate(pointer(ValueArray),0,Sizeof(TValueArray),MemTracker);
 
   ValueArray.Count := 0;
 
-  ValueArray.Capacity := 0;
+  ValueArray.CurrentCapacity := 0;
 
   ValueArray.Values := nil;
-  
+
   // ---- Exit assertions ----
   AssertValueArrayIsAssigned(ValueArray);
   Assert(ValueArray.Count = 0, 'initValueArray exit: count should be 0');
-  Assert(ValueArray.Capacity = 0, 'initValueArray exit: capacity should be 0');
+  Assert(ValueArray.CurrentCapacity = 0, 'initValueArray exit: capacity should be 0');
   Assert(ValueArray.Values = nil, 'initValueArray exit: values should be nil');
 end;
 
@@ -1106,15 +1128,15 @@ procedure writeValueArray(ValueArray : pValueArray; Value : TValue; MemTracker :
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
-
   AssertValueArrayIsAssigned(ValueArray);
+  AssertValueArrayCount(ValueArray);
 
-  AllocateArray(pointer(ValueArray.Values), ValueArray.Capacity, ValueArray.Count,sizeof(TValue),MemTracker);
+  AllocateArray(pointer(ValueArray.Values), ValueArray.CurrentCapacity, ValueArray.Count,sizeof(TValue),MemTracker);
 
   ValueArray.Values[ValueArray.Count] := value;
 
   Inc(ValueArray.Count);
-  
+
   // ---- Exit assertions ----
   AssertValueArrayIsAssigned(ValueArray);
   AssertValuesIsAssigned(ValueArray.Values);
@@ -1137,7 +1159,7 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   AssertValueArrayIsAssigned(ValueArray);
   if ValueArray.Values <> nil then
-    FreeValues(ValueArray.Values,ValueArray.Capacity,MemTracker);
+    FreeValues(ValueArray.Values,ValueArray.CurrentCapacity,MemTracker);
   Allocate(pointer(ValueArray),Sizeof(TValueArray),0,MemTracker);
   ValueArray := nil;
 
@@ -1152,15 +1174,15 @@ begin
   AssertStackIsNilBeforeInit(Stack);
   Allocate(pointer(Stack),0, Sizeof(TStack),Memtracker);
   Stack.Count := 0;
-  Stack.Capacity := 0;
+  Stack.CurrentCapacity := 0;
   Stack.Values := nil;
-  AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue),Memtracker);
+  AllocateArray(pointer(Stack.Values),Stack.CurrentCapacity,Stack.Count,Sizeof(TValue),Memtracker);
   Stack.StackTop := Stack.Values;
   
   // ---- Exit assertions ----
   AssertStackIsAssigned(Stack);
   Assert(Stack.Count = 0, 'InitStack exit: count should be 0');
-  Assert(Stack.Capacity > 0, 'InitStack exit: capacity should be > 0');
+  Assert(Stack.CurrentCapacity > 0, 'InitStack exit: capacity should be > 0');
   AssertStackValuesIsAssigned(Stack);
   Assert(Stack.StackTop = Stack.Values, 'InitStack exit: StackTop should equal Values');
 end;
@@ -1171,9 +1193,9 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
-  if (stack.Capacity > 0) then
+  if (stack.CurrentCapacity > 0) then
   begin
-    Allocate(pointer(Stack.Values), stack.Capacity * sizeof(TValue), 0,Memtracker);
+    Allocate(pointer(Stack.Values), stack.CurrentCapacity * sizeof(TValue), 0,Memtracker);
     Stack.Values := nil;
   end;
 
@@ -1190,7 +1212,7 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
-  if AllocateArray(pointer(Stack.Values),Stack.Capacity,Stack.Count,Sizeof(TValue),Memtracker) then
+  if AllocateArray(pointer(Stack.Values),Stack.CurrentCapacity,Stack.Count,Sizeof(TValue),Memtracker) then
   begin
     ResetStack(stack);
     Stack.StackTop := Stack.Values + Stack.Count;  //move stack top to next pointer available (at count)
@@ -2693,7 +2715,7 @@ begin
   consume(TOKEN_EOF, 'Expect end of expression.');
   emitReturn(CurrentChunk,parser.previous.line,VM.Memtracker);
   result := parser.HadError = false;
-  
+
   // ---- Exit assertions ----
   if result then
   begin
@@ -2709,7 +2731,7 @@ begin
    AssertPointerIsNil(Table, ' Table is not nil');
    Allocate(pointer(Table),0,Sizeof(TTable),MemTracker);
    Table.Count := 0;
-   Table.Capacity := 0;
+   Table.CurrentCapacity := 0;
    Table.Entries  := nil;
 end;
 
@@ -2723,13 +2745,90 @@ begin
   AssertPointerIsNil(Entries, 'FreeValues - Entries not nil after free');
 end;
 
+(*
+
+static Entry* findEntry(Entry* entries, int capacity,
+                        ObjString* key) {
+  uint32_t index = key->hash % capacity;
+  for (;;) {
+    Entry* entry = &entries[index];
+    if (entry->key == key || entry->key == NULL) {
+      return entry;
+    }
+
+    index = (index + 1) % capacity;
+  }
+}
+*)
+
+function FindEntry(Table : pTable; Key : pObjString) : pEntry;
+var
+  index : uint32;
+  Entry : pEntry;
+begin
+  AssertTable(Table);
+  AssertTableEntries(Table);
+  AssertObjStringIsAssigned(key);
+  Result := nil;
+  Entry := Table.Entries;
+  index := Key.hash mod Table.CurrentCapacity;
+  AssertIndexIsNotNegative(Index);
+  AssertIndexInRange(Index,Table.CurrentCapacity);
+  while true do
+  begin
+    inc(Entry,Index);
+    if (Entry.Key = nil) or (Entry.key = key) then
+    begin
+      result := Entry;
+      exit;
+    end;
+
+    inc(index);
+    index := index mod Table.CurrentCapacity;
+    AssertIndexIsNotNegative(Index);
+    AssertIndexInRange(Index,Table.CurrentCapacity);
+  end;
+end;
+
+
+function TableSet(var Table : pTable; key : pObjString; value : TValue; MemTracker : pMemTracker) : boolean;
+var
+  Entry : pEntry;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  AssertTable(Table);
+  AssertObjStringIsAssigned(key);
+
+  if (table.count + 1 > table.CurrentCapacity * TABLE_MAX_LOAD) then
+  begin
+    AllocateArray(pointer(table.Entries),table.CurrentCapacity, Table.Count, Sizeof(TEntry),MemTracker);
+  end;
+
+  Entry := FindEntry(Table,Key);
+  if (Entry.Key = nil) then
+
+
+  (*
+  Entry* entry = findEntry(table->entries, table->capacity, key);
+  bool isNewKey = entry->key == NULL;
+  if (isNewKey) table->count++;
+
+  entry->key = key;
+  entry->value = value;
+  return isNewKey;*)
+
+
+
+
+end;
+
 procedure FreeTable(var Table : pTable; memTracker : pMemTracker);
 begin
    // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
-  Assert(assigned(Table), 'Table is not assigned');
+  AssertTable(Table);
   if Table.Entries <> nil then
-    FreeEntries(Table.Entries,Table.Capacity,MemTracker);
+    FreeEntries(Table.Entries,Table.CurrentCapacity,MemTracker);
   Allocate(pointer(Table),Sizeof(TTable),0,MemTracker);
   Table := nil;
 
@@ -2737,6 +2836,26 @@ begin
   AssertPointerIsNil(Table, 'freeValueArray exit: ValueArray should be nil');
 
 end;
+
+
+function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
+const
+  FNVOffset = 2166136261;
+  FNVPrime = 16777619;
+var
+  i: Integer;
+begin
+  {$Q-} // disable overflow checking for this function
+  Result := FNVOffset;
+  for i := 0 to Length - 1 do
+  begin
+    Result := Result xor UInt8(Key[i]);
+    Result := Result * FNVPrime;
+  end;
+  {$Q+} // disable overflow checking for this function
+end;
+
+
 
 
 initialization

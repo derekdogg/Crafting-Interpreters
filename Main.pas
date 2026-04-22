@@ -129,17 +129,8 @@ begin
 end;
 
 procedure TForm4.Button7Click(Sender: TObject);
-var
-  memTracker : pMemTracker;
-  table      : pTable;
-
 begin
-  table := nil;
-  memTracker := nil;
-  InitMemTracker(MemTracker);
-  InitTable(Table,MemTracker);
-  FreeTable(Table,MemTracker);
-  FreeMemTracker(MemTracker);
+  testTable;
 end;
 
 end.

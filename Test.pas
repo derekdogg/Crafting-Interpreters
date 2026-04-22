@@ -13,12 +13,36 @@ procedure TestStringEqual;
 procedure TestStringUnequal;
 procedure TestValuesEqual;
 procedure TestGC;
+procedure TestTable;
 
 implementation
 
 uses
   sysutils,
   Chunk_types;
+
+
+procedure TestTable;
+var
+  memTracker : pMemTracker;
+  table      : pTable;
+  s          : string;
+  hash       : uint32;
+begin
+  table := nil;
+  memTracker := nil;
+  InitMemTracker(MemTracker);
+  InitTable(Table,MemTracker);
+  FreeTable(Table,MemTracker);
+  FreeMemTracker(MemTracker);
+
+
+
+  s := 'Fred';
+  hash := hashString(pAnsiChar(s),length(s));
+
+
+end;
 
 procedure TestGC;
 var
@@ -52,7 +76,7 @@ begin
     end;
 
     Assert(ValueArray^.Count = MAX_SIZE, 'Count mismatch');
-    Assert(ValueArray^.Capacity = MAX_SIZE, 'Capacity mismatch');
+    Assert(ValueArray^.CurrentCapacity = MAX_SIZE, 'Capacity mismatch');
 
   finally
     FreeValueArray(ValueArray, MemTracker);
