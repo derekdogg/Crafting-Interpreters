@@ -2956,15 +2956,18 @@ end;
 
 function assertNative(argCount: integer; args: pValue): TValue;
 begin
-  if argCount <> 1 then
+  if (argCount < 1) or (argCount > 2) then
   begin
-    RuntimeError('assert() takes exactly 1 argument.');
+    RuntimeError('assert() takes 1 or 2 arguments.');
     Result := CreateNilValue;
     Exit;
   end;
   if IsFalsey(args[0]) then
   begin
-    RuntimeError('Assertion failed.');
+    if (argCount = 2) and IsString(args[1]) then
+      RuntimeError('Assertion failed: ' + String(ObjStringToAnsiString(pObjString(args[1].ObjValue))))
+    else
+      RuntimeError('Assertion failed.');
     Result := CreateNilValue;
     Exit;
   end;
@@ -2974,6 +2977,21 @@ end;
 function bytesAllocatedNative(argCount: integer; args: pValue): TValue;
 begin
   Result := CreateNumber(VM.MemTracker.BytesAllocated);
+end;
+
+function objectsAllocatedNative(argCount: integer; args: pValue): TValue;
+var
+  obj: pObj;
+  count: integer;
+begin
+  count := 0;
+  obj := VM.MemTracker.CreatedObjects;
+  while obj <> nil do
+  begin
+    count := count + 1;
+    obj := obj.Next;
+  end;
+  Result := CreateNumber(count);
 end;
 
 procedure InitVM;
@@ -3000,6 +3018,7 @@ begin
   defineNative('collectGarbage', collectGarbageNative);
   defineNative('assert', assertNative);
   defineNative('bytesAllocated', bytesAllocatedNative);
+  defineNative('objectsAllocated', objectsAllocatedNative);
 
   // ---- Exit assertions ----
   AssertVMIsAssigned;

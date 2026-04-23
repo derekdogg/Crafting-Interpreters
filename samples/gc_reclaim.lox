@@ -1,0 +1,74 @@
+// GC Reclaim
+// Level 3: Verify dead objects are actually freed (objectsAllocated checks).
+
+// --- Test 1: Dead closures are freed ---
+
+for (var i = 0; i < 50; i = i + 1) {
+  fun throwaway() {
+    var x = "ephemeral" + "data";
+    return x;
+  }
+  throwaway();
+}
+var before = objectsAllocated();
+collectGarbage();
+var after = objectsAllocated();
+assert(after < before, "dead closures not freed");
+
+// --- Test 2: Dead function call results are freed ---
+
+fun makeWaste() {
+  return "waste" + "output";
+}
+
+for (var i = 0; i < 50; i = i + 1) {
+  makeWaste();
+}
+before = objectsAllocated();
+collectGarbage();
+after = objectsAllocated();
+assert(after < before, "dead call results not freed");
+
+// --- Test 3: Dead locals in a loop are freed ---
+
+for (var i = 0; i < 100; i = i + 1) {
+  var a = "dead" + "local";
+  var b = "also" + "dead";
+}
+before = objectsAllocated();
+collectGarbage();
+after = objectsAllocated();
+assert(after < before, "dead locals not freed");
+
+// --- Test 4: Live and dead mixed ---
+
+var keeper = "keep" + "me";
+for (var i = 0; i < 50; i = i + 1) {
+  fun dead() { return "trash"; }
+  dead();
+}
+before = objectsAllocated();
+collectGarbage();
+after = objectsAllocated();
+assert(after < before, "dead mixed objects not freed");
+assert(keeper == "keepme", "live object was collected");
+
+// --- Test 5: Unreachable closures are freed ---
+
+fun closureFactory() {
+  var data = "captured" + "value";
+  fun inner() {
+    return data;
+  }
+  return inner;
+}
+
+for (var i = 0; i < 30; i = i + 1) {
+  closureFactory();
+}
+before = objectsAllocated();
+collectGarbage();
+after = objectsAllocated();
+assert(after < before, "unreachable closures not freed");
+
+print "All gc_reclaim tests passed.";

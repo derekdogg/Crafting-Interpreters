@@ -1,0 +1,58 @@
+// Arithmetic and Operators
+// Demonstrates all supported operators.
+
+// Basic arithmetic
+assert(1 + 2 == 3);
+assert(10 - 4 == 6);
+assert(3 * 5 == 15);
+assert(20 / 4 == 5);
+
+// Unary negation
+assert(-7 == 0 - 7);
+assert(-(3 + 4) == 0 - 7);
+
+// Operator precedence
+assert(2 + 3 * 4 == 14);       // multiplication first
+assert((2 + 3) * 4 == 20);     // parentheses override
+assert(10 - 2 * 3 + 1 == 5);
+
+// Comparison operators
+assert(3 < 5);
+assert(5 > 3);
+assert(3 <= 3);
+assert(3 >= 3);
+assert(!(3 < 3));
+assert(!(3 > 3));
+
+// Equality
+assert(1 == 1);
+assert(1 != 2);
+assert("abc" == "abc");
+assert("abc" != "xyz");
+assert(true == true);
+assert(nil == nil);
+assert(!(1 == "1"));      // different types
+assert(!(nil == false));   // nil is only equal to nil
+
+// Logical not
+assert(!true == false);
+assert(!false == true);
+assert(!nil == true);      // nil is falsey
+assert(!0 == false);       // numbers are truthy
+assert(!"" == false);      // strings are truthy
+
+// Logical and / or (short-circuit)
+assert((true and true) == true);
+assert((true and false) == false);
+assert((false and true) == false);   // short-circuits
+assert((true or false) == true);     // short-circuits on first truthy
+assert((false or true) == true);
+assert((false or false) == false);
+
+// Logical operators return the operand, not just true/false
+assert(("hi" and "there") == "there");
+assert((nil and "nope") == nil);
+assert((nil or "fallback") == "fallback");
+assert(("found" or "alt") == "found");
+
+print "All arithmetic tests passed.";

@@ -1,0 +1,97 @@
+// Counter Pattern
+// Using closures to create stateful objects without classes.
+
+// --- Simple counter ---
+
+fun makeCounter() {
+  var count = 0;
+
+  fun increment() {
+    count = count + 1;
+    return count;
+  }
+
+  return increment;
+}
+
+var ticks = makeCounter();
+assert(ticks() == 1);
+assert(ticks() == 2);
+assert(ticks() == 3);
+
+// --- Counter with multiple operations ---
+
+// Since we don't have classes yet, we simulate one with
+// closures that share the same variable and dispatch by name.
+
+fun Counter(start) {
+  var value = start;
+
+  fun dispatch(method) {
+    if (method == "get") return value;
+
+    if (method == "inc") {
+      value = value + 1;
+      return value;
+    }
+
+    if (method == "dec") {
+      value = value - 1;
+      return value;
+    }
+
+    if (method == "reset") {
+      value = start;
+      return value;
+    }
+
+    return nil;
+  }
+
+  return dispatch;
+}
+
+var c = Counter(10);
+assert(c("get") == 10);
+assert(c("inc") == 11);
+assert(c("inc") == 12);
+assert(c("dec") == 11);
+assert(c("reset") == 10);
+
+// --- Accumulator ---
+
+fun makeAccumulator() {
+  var total = 0;
+
+  fun add(n) {
+    total = total + n;
+    return total;
+  }
+
+  return add;
+}
+
+var acc = makeAccumulator();
+assert(acc(5) == 5);
+assert(acc(10) == 15);
+assert(acc(3) == 18);
+
+// --- Toggle ---
+
+fun makeToggle() {
+  var state = false;
+
+  fun toggle() {
+    state = !state;
+    return state;
+  }
+
+  return toggle;
+}
+
+var light = makeToggle();
+assert(light() == true);   // on
+assert(light() == false);  // off
+assert(light() == true);   // on
+
+print "All counter tests passed.";

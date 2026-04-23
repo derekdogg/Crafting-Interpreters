@@ -1,0 +1,28 @@
+// Strings
+// String operations and concatenation.
+
+// String literals
+assert("Hello, world!" == "Hello, world!");
+
+// String concatenation with +
+var first = "Hello";
+var second = "World";
+assert(first + ", " + second + "!" == "Hello, World!");
+
+// Building strings in a loop
+var result = "";
+for (var i = 0; i < 5; i = i + 1) {
+  result = result + "*";
+}
+assert(result == "*****");
+
+// Strings are interned — equal strings share the same memory
+var a = "hello";
+var b = "hello";
+assert(a == b);  // pointer equality due to interning
+
+// Concatenation creates new interned strings
+var c = "hel" + "lo";
+assert(a == c);  // result is also interned
+
+print "All string tests passed.";
