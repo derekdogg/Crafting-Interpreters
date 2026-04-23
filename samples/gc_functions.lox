@@ -1,0 +1,81 @@
+// GC Functions
+// Level 2: Functions and closures survive garbage collection.
+
+// --- Named function survives ---
+
+fun add(a, b) {
+  return a + b;
+}
+
+collectGarbage();
+assert(add(3, 4) == 7, "named function lost");
+
+// --- Function stored in variable survives ---
+
+fun double(n) {
+  return n * 2;
+}
+
+var op = double;
+collectGarbage();
+assert(op(21) == 42, "function in variable lost");
+
+// --- Closure with captured variable survives ---
+
+fun makeClosure() {
+  var captured = "still here";
+  fun inner() {
+    return captured;
+  }
+  return inner;
+}
+
+var closure = makeClosure();
+collectGarbage();
+assert(closure() == "still here", "closure lost");
+
+// --- Counter closure: mutable upvalue survives across GC ---
+
+fun makeCounter() {
+  var n = 0;
+  fun inc() {
+    n = n + 1;
+    return n;
+  }
+  return inc;
+}
+
+var ctr = makeCounter();
+assert(ctr() == 1, "counter step 1");
+collectGarbage();
+assert(ctr() == 2, "counter step 2 after GC");
+collectGarbage();
+assert(ctr() == 3, "counter step 3 after GC");
+
+// --- Multiple closures sharing a variable ---
+
+fun sharedState() {
+  var value = 0;
+
+  fun get() { return value; }
+  fun set(v) { value = v; }
+
+  assert(get() == 0, "shared state initial");
+  set(99);
+  collectGarbage();
+  assert(get() == 99, "shared state after GC");
+}
+
+sharedState();
+
+// --- Recursive function survives ---
+
+fun factorial(n) {
+  if (n <= 1) return 1;
+  return n * factorial(n - 1);
+}
+
+collectGarbage();
+assert(factorial(6) == 720, "recursive function lost");
+
+print "All gc_functions tests passed.";

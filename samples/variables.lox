@@ -1,0 +1,38 @@
+// Variables and Types
+// Lox supports four value types: numbers, strings, booleans, and nil.
+
+// Numbers (all double-precision floating point)
+var x = 42;
+var pi = 3.14159;
+assert(x == 42);
+assert(pi == 3.14159);
+
+// Strings
+var greeting = "Hello";
+var name = "Lox";
+assert(greeting == "Hello");
+assert(name == "Lox");
+
+// Booleans
+var yes = true;
+var no = false;
+assert(yes == true);
+assert(no == false);
+
+// Nil
+var nothing = nil;
+assert(nothing == nil);
+
+// Variables can be reassigned
+var count = 1;
+assert(count == 1);
+count = 2;
+assert(count == 2);
+count = "now a string";
+assert(count == "now a string");
+
+// Uninitialized variables default to nil
+var unset;
+assert(unset == nil);
+
+print "All variable tests passed.";

@@ -1,0 +1,115 @@
+// Closures
+// Functions that capture variables from their enclosing scope.
+
+// --- Basic closure ---
+
+fun makeGreeter(greeting) {
+  fun greet(name) {
+    return greeting + ", " + name + "!";
+  }
+  return greet;
+}
+
+var hello = makeGreeter("Hello");
+var howdy = makeGreeter("Howdy");
+
+assert(hello("Alice") == "Hello, Alice!");
+assert(howdy("Bob") == "Howdy, Bob!");
+
+// --- Closure over mutable variable ---
+
+fun makeCounter() {
+  var count = 0;
+  fun increment() {
+    count = count + 1;
+    return count;
+  }
+  return increment;
+}
+
+var counter = makeCounter();
+assert(counter() == 1);
+assert(counter() == 2);
+assert(counter() == 3);
+
+// Each counter is independent
+var counterB = makeCounter();
+assert(counterB() == 1);
+assert(counter() == 4);  // original keeps going
+
+// --- Multiple closures sharing the same variable ---
+
+fun pair() {
+  var x = 0;
+
+  fun getX() {
+    return x;
+  }
+
+  fun setX(value) {
+    x = value;
+  }
+
+  assert(getX() == 0);
+  setX(42);
+  assert(getX() == 42);
+  setX(100);
+  assert(getX() == 100);
+}
+
+pair();
+
+// --- Closure in a loop ---
+
+fun runClosureLoop() {
+  var sum = 0;
+  for (var i = 0; i < 3; i = i + 1) {
+    fun addI() {
+      return i;
+    }
+    sum = sum + addI();
+  }
+  return sum;
+}
+
+assert(runClosureLoop() == 3);  // 0+1+2
+
+// --- Nested closures ---
+
+fun outer() {
+  var x = "outer";
+
+  fun middle() {
+    var y = "middle";
+
+    fun inner() {
+      return x + " " + y;
+    }
+
+    return inner;
+  }
+
+  return middle;
+}
+
+var mid = outer();
+var inn = mid();
+assert(inn() == "outer middle");
+
+// --- Closure as a callback pattern ---
+
+fun sumApply(times, action) {
+  var total = 0;
+  for (var i = 0; i < times; i = i + 1) {
+    total = total + action(i);
+  }
+  return total;
+}
+
+fun square(n) {
+  return n * n;
+}
+
+assert(sumApply(5, square) == 30);  // 0+1+4+9+16
+
+print "All closure tests passed.";

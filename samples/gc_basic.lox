@@ -1,0 +1,51 @@
+// GC Basic
+// Level 1: Live data survives collection, simple dead data is freed.
+
+// --- Live globals survive ---
+
+var keepStr = "I must survive";
+var keepNum = 42;
+var keepBool = true;
+var keepNil = nil;
+
+collectGarbage();
+
+assert(keepStr == "I must survive", "string global lost");
+assert(keepNum == 42, "number global lost");
+assert(keepBool == true, "boolean global lost");
+assert(keepNil == nil, "nil global lost");
+
+// --- Multiple references to the same string survive ---
+
+var a = "shared";
+var b = a;
+collectGarbage();
+assert(a == "shared", "shared ref a lost");
+assert(b == "shared", "shared ref b lost");
+assert(a == b, "shared refs diverged");
+
+// --- Reassignment doesn't confuse GC ---
+
+var x = "first";
+x = "second";
+collectGarbage();
+assert(x == "second", "reassigned var lost");
+
+// --- Dead temporaries are reclaimed ---
+
+for (var i = 0; i < 100; i = i + 1) {
+  var waste = "garbage" + "string" + "number";
+}
+var before = objectsAllocated();
+collectGarbage();
+var after = objectsAllocated();
+assert(after <= before, "dead temporaries not reclaimed");
+
+// --- Repeated collections are safe ---
+
+for (var i = 0; i < 10; i = i + 1) {
+  collectGarbage();
+}
+assert(true);  // didn't crash
+
+print "All gc_basic tests passed.";

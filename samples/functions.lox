@@ -1,0 +1,94 @@
+// Functions
+// Function declarations, calls, parameters, return values, and recursion.
+
+// --- Basic function ---
+
+fun greet(name) {
+  return "Hello, " + name + "!";
+}
+
+assert(greet("Alice") == "Hello, Alice!");
+assert(greet("Bob") == "Hello, Bob!");
+
+// --- Return values ---
+
+fun square(n) {
+  return n * n;
+}
+
+assert(square(5) == 25);
+assert(square(12) == 144);
+
+fun add(a, b) {
+  return a + b;
+}
+
+assert(add(3, 4) == 7);
+
+// --- Functions without explicit return give nil ---
+
+fun doNothing() {
+  var x = 42;
+}
+
+assert(doNothing() == nil);
+
+// --- Recursion ---
+
+fun factorial(n) {
+  if (n <= 1) return 1;
+  return n * factorial(n - 1);
+}
+
+assert(factorial(1) == 1);
+assert(factorial(5) == 120);
+assert(factorial(10) == 3628800);
+
+// --- Functions as first-class values ---
+
+fun double(x) {
+  return x * 2;
+}
+
+var operation = double;
+assert(operation(21) == 42);
+
+// --- Mutual recursion ---
+
+fun isEven(n) {
+  if (n == 0) return true;
+  return isOdd(n - 1);
+}
+
+fun isOdd(n) {
+  if (n == 0) return false;
+  return isEven(n - 1);
+}
+
+assert(isEven(4) == true);
+assert(isEven(7) == false);
+assert(isOdd(3) == true);
+
+// --- Local functions ---
+
+fun outer() {
+  fun inner() {
+    return "inside";
+  }
+  return inner();
+}
+
+assert(outer() == "inside");
+
+// --- Early return ---
+
+fun abs(n) {
+  if (n < 0) return -n;
+  return n;
+}
+
+assert(abs(-5) == 5);
+assert(abs(5) == 5);
+assert(abs(0) == 0);
+
+print "All function tests passed.";
