@@ -1372,22 +1372,237 @@ begin
     FreeVM;
   end;
 
-  // Verify GC actually collects unreferenced objects
+  // Verify GC actually collects unreferenced objects via intern table weak refs
   InitVM;
   try
-    VM.MemTracker.NextGC := 0;
-    // Create strings that are interned but not otherwise referenced
-    CreateString('will_be_collected_1', VM.MemTracker);
-    CreateString('will_be_collected_2', VM.MemTracker);
-    // Force a GC cycle — strings are in intern table (weak refs) but not on stack
-    // They should survive because intern table marks them... but after
-    // TableRemoveWhite they'd be removed IF not marked. Since they're in the
-    // intern table and MarkTable marks Globals (not Strings), they should
-    // be swept. Let's verify the mechanism works.
-    Assert(VM.MemTracker.CreatedObjects <> nil, 'GC direct: should have created objects');
+    VM.MemTracker.NextGC := MaxInt; // suppress auto-GC so we control timing
+    // Create strings — only reachable via intern table (weak ref)
+    CreateString('ephemeral_1', VM.MemTracker);
+    CreateString('ephemeral_2', VM.MemTracker);
+    Assert(VM.MemTracker.CreatedObjects <> nil, 'GC intern: should have created objects');
+    Assert(TableFindString(VM.Strings, 'ephemeral_1', 11, HashString('ephemeral_1', 11)) <> nil,
+      'GC intern: string should be in intern table before GC');
+    // Now force GC — strings are NOT on stack, NOT in globals, only in intern table.
+    // MarkRoots won't mark them. TableRemoveWhite should remove them. Sweep should free them.
+    CollectGarbage;
+    Assert(TableFindString(VM.Strings, 'ephemeral_1', 11, HashString('ephemeral_1', 11)) = nil,
+      'GC intern: string should be removed from intern table after GC');
+    Assert(TableFindString(VM.Strings, 'ephemeral_2', 11, HashString('ephemeral_2', 11)) = nil,
+      'GC intern: string 2 should be removed from intern table after GC');
   finally
     FreeVM;
   end;
+
+  // =========================================================================
+  // PART 4: Script-level GC tests using collectGarbage() and assert()
+  // These test GC safety from the script's perspective.
+  // =========================================================================
+
+  // --- assert() basics ---
+  AssertOutput('assert(true); print "ok";', 'ok');
+  AssertOutput('assert(1); print "ok";', 'ok');
+  AssertOutput('assert("truthy"); print "ok";', 'ok');
+  AssertRuntimeError('assert(false)');
+  AssertRuntimeError('assert(nil)');
+
+  // --- Simple values survive GC ---
+  AssertOutput(
+    'var a = 42; collectGarbage(); assert(a == 42); print a;',
+    '42');
+  AssertOutput(
+    'var a = true; collectGarbage(); assert(a == true); print a;',
+    'true');
+  AssertOutput(
+    'var a = nil; collectGarbage(); assert(a == nil); print "ok";',
+    'ok');
+
+  // --- Strings survive GC ---
+  AssertOutput(
+    'var a = "hello"; collectGarbage(); assert(a == "hello"); print a;',
+    'hello');
+  AssertOutput(
+    'var a = "hello"; var b = "world"; collectGarbage(); ' +
+    'assert(a == "hello"); assert(b == "world"); print a + " " + b;',
+    'hello world');
+
+  // --- String interning survives GC ---
+  AssertOutput(
+    'var a = "same"; var b = "same"; collectGarbage(); assert(a == b); print "ok";',
+    'ok');
+
+  // --- Concatenation result survives GC ---
+  AssertOutput(
+    'var a = "foo" + "bar"; collectGarbage(); assert(a == "foobar"); print a;',
+    'foobar');
+
+  // --- GC between concatenations ---
+  AssertOutput(
+    'var s = "a"; s = s + "b"; collectGarbage(); s = s + "c"; ' +
+    'collectGarbage(); assert(s == "abc"); print s;',
+    'abc');
+
+  // --- Globals survive GC ---
+  AssertOutput(
+    'var x = "global"; collectGarbage(); collectGarbage(); ' +
+    'assert(x == "global"); print x;',
+    'global');
+
+  // --- Locals survive GC within scope ---
+  AssertOutput(
+    '{ var a = "local"; collectGarbage(); assert(a == "local"); print a; }',
+    'local');
+
+  // --- GC in a loop ---
+  AssertOutput(
+    'var s = ""; for (var i = 0; i < 5; i = i + 1) { ' +
+    '  s = s + "x"; collectGarbage(); ' +
+    '} assert(s == "xxxxx"); print s;',
+    'xxxxx');
+
+  // --- Function survives GC ---
+  AssertOutput(
+    'fun greet() { return "hi"; } collectGarbage(); ' +
+    'assert(greet() == "hi"); print greet();',
+    'hi');
+
+  // --- GC inside function body ---
+  AssertOutput(
+    'fun f() { var x = "inside"; collectGarbage(); assert(x == "inside"); return x; } print f();',
+    'inside');
+
+  // --- Closure captures survive GC ---
+  AssertOutput(
+    'fun outer() { var x = "captured"; fun inner() { return x; } ' +
+    'collectGarbage(); return inner; } var f = outer(); ' +
+    'collectGarbage(); assert(f() == "captured"); print f();',
+    'captured');
+
+  // --- Counter closure with GC between calls ---
+  AssertOutput(
+    'fun makeCounter() { var i = 0; fun count() { i = i + 1; return i; } return count; } ' +
+    'var c = makeCounter(); assert(c() == 1); collectGarbage(); ' +
+    'assert(c() == 2); collectGarbage(); assert(c() == 3); print c();',
+    '4');
+
+  // --- Two closures sharing upvalue survive GC ---
+  AssertOutput(
+    'fun f() { var x = 0; ' +
+    '  fun inc() { x = x + 1; } ' +
+    '  fun get() { return x; } ' +
+    '  inc(); collectGarbage(); inc(); collectGarbage(); inc(); ' +
+    '  assert(get() == 3); print get(); } f();',
+    '3');
+
+  // --- Deeply nested closure survives GC ---
+  AssertOutput(
+    'fun a() { var x = "deep"; ' +
+    '  fun b() { fun c() { return x; } collectGarbage(); return c; } ' +
+    '  return b; } ' +
+    'var f = a()(); collectGarbage(); assert(f() == "deep"); print f();',
+    'deep');
+
+  // --- Multiple independent closures survive GC ---
+  AssertOutput(
+    'fun make(n) { fun get() { return n; } return get; } ' +
+    'var a = make(10); var b = make(20); collectGarbage(); ' +
+    'assert(a() == 10); assert(b() == 20); print a() + b();',
+    '30');
+
+  // --- Recursive function with GC ---
+  AssertOutput(
+    'fun count(n) { collectGarbage(); if (n <= 0) return "done"; ' +
+    'return count(n - 1); } assert(count(10) == "done"); print count(10);',
+    'done');
+
+  // --- Recursive with string allocation + GC ---
+  AssertOutput(
+    'fun build(n) { if (n <= 0) return ""; collectGarbage(); ' +
+    'return "x" + build(n - 1); } var s = build(5); ' +
+    'assert(s == "xxxxx"); print s;',
+    'xxxxx');
+
+  // --- GC after function returns (dead frames collected) ---
+  AssertOutput(
+    'fun waste() { var a = "trash"; var b = "junk"; return nil; } ' +
+    'waste(); waste(); waste(); collectGarbage(); print "ok";',
+    'ok');
+
+  // --- Native clock survives GC ---
+  AssertOutput(
+    'var t = clock(); collectGarbage(); assert(t >= 0); print "ok";',
+    'ok');
+
+  // --- Multiple GC cycles in sequence ---
+  AssertOutput(
+    'var a = "alive"; collectGarbage(); collectGarbage(); collectGarbage(); ' +
+    'assert(a == "alive"); print a;',
+    'alive');
+
+  // =========================================================================
+  // PART 5: Verify garbage is actually freed (not just that live objects survive)
+  // Uses bytesAllocated() to observe memory going down after GC.
+  // =========================================================================
+
+  // --- GC reclaims memory from dead locals ---
+  // Note: string literals are in the constants array (always reachable).
+  // Only concatenation results create strings not in constants.
+  AssertOutput(
+    '{ var a = "w" + "1"; var b = "w" + "2"; var c = "w" + "3"; } ' +
+    'var before = bytesAllocated(); ' +
+    'collectGarbage(); ' +
+    'var after = bytesAllocated(); ' +
+    'assert(after < before); print "freed";',
+    'freed');
+
+  // --- GC reclaims memory from dead function calls ---
+  AssertOutput(
+    'fun waste() { var x = "temp" + "str"; return nil; } ' +
+    'waste(); waste(); waste(); ' +
+    'var before = bytesAllocated(); ' +
+    'collectGarbage(); ' +
+    'var after = bytesAllocated(); ' +
+    'assert(after < before); print "ok";',
+    'ok');
+
+  // --- GC in a loop keeps memory bounded ---
+  AssertOutput(
+    'for (var i = 0; i < 50; i = i + 1) { ' +
+    '  var s = "garb" + "data"; ' +
+    '} ' +
+    'var before = bytesAllocated(); ' +
+    'collectGarbage(); ' +
+    'var after = bytesAllocated(); ' +
+    'assert(after < before); print "bounded";',
+    'bounded');
+
+  // --- Live objects survive while dead ones are collected ---
+  AssertOutput(
+    'var keep = "important"; ' +
+    '{ var trash1 = "a" + "1"; var trash2 = "b" + "2"; var trash3 = "c" + "3"; } ' +
+    'var before = bytesAllocated(); ' +
+    'collectGarbage(); ' +
+    'var after = bytesAllocated(); ' +
+    'assert(after < before); ' +
+    'assert(keep == "important"); print "ok";',
+    'ok');
+
+  // --- Table resize stress: many globals force table growth ---
+  AssertStressOutput(
+    'var a0 = 0; var a1 = 1; var a2 = 2; var a3 = 3; var a4 = 4; ' +
+    'var a5 = 5; var a6 = 6; var a7 = 7; var a8 = 8; var a9 = 9; ' +
+    'var b0 = 10; var b1 = 11; var b2 = 12; var b3 = 13; var b4 = 14; ' +
+    'var b5 = 15; var b6 = 16; var b7 = 17; var b8 = 18; var b9 = 19; ' +
+    'print a0 + a9 + b0 + b9;',
+    '38');
+
+  // --- Table resize with strings under stress GC ---
+  AssertStressOutput(
+    'var s0 = "aa"; var s1 = "bb"; var s2 = "cc"; var s3 = "dd"; ' +
+    'var s4 = "ee"; var s5 = "ff"; var s6 = "gg"; var s7 = "hh"; ' +
+    'var s8 = "ii"; var s9 = "jj"; var s10 = "kk"; var s11 = "ll"; ' +
+    'var s12 = "mm"; var s13 = "nn"; var s14 = "oo"; var s15 = "pp"; ' +
+    'print s0 + s15;',
+    'aapp');
 end;
 
 initialization
