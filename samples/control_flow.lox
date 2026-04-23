@@ -1,0 +1,100 @@
+// Control Flow
+// If/else, while loops, and for loops.
+
+// --- If / Else ---
+
+var temp = 72;
+var result = "";
+
+if (temp > 80) {
+  result = "hot";
+} else if (temp > 60) {
+  result = "nice";
+} else {
+  result = "cold";
+}
+assert(result == "nice");
+
+// Truthiness: false and nil are falsey, everything else is truthy
+var visited = false;
+if (nil) {
+  visited = true;
+}
+assert(visited == false);  // nil is falsey
+
+if (0) {
+  visited = true;
+}
+assert(visited == true);   // zero is truthy
+
+visited = false;
+if ("") {
+  visited = true;
+}
+assert(visited == true);   // empty string is truthy
+
+// --- While loops ---
+
+var countdown = 5;
+var sum = 0;
+while (countdown > 0) {
+  sum = sum + countdown;
+  countdown = countdown - 1;
+}
+assert(sum == 15);  // 5+4+3+2+1
+assert(countdown == 0);
+
+// --- For loops ---
+
+// Classic counting loop
+var total = 0;
+for (var i = 1; i <= 5; i = i + 1) {
+  total = total + i;
+}
+assert(total == 15);
+
+// Accumulator
+sum = 0;
+for (var i = 1; i <= 10; i = i + 1) {
+  sum = sum + i;
+}
+assert(sum == 55);
+
+// For loop with no initializer (using existing variable)
+var j = 10;
+var count = 0;
+for (; j > 0; j = j - 2) {
+  count = count + 1;
+}
+assert(count == 5);   // 10,8,6,4,2
+assert(j == 0);
+
+// Nested loops
+var cells = 0;
+for (var row = 1; row <= 3; row = row + 1) {
+  for (var col = 1; col <= row; col = col + 1) {
+    cells = cells + 1;
+  }
+}
+assert(cells == 6);  // 1+2+3
+
+// --- Blocks and Scoping ---
+
+var outer = "outer";
+{
+  var inner = "inner";
+  assert(outer == "outer");  // visible from enclosing scope
+  assert(inner == "inner");
+}
+assert(outer == "outer");    // still visible
+// inner is out of scope here
+
+// Variable shadowing
+var x = "global";
+{
+  var x = "shadow";
+  assert(x == "shadow");
+}
+assert(x == "global");  // original is unchanged
+
+print "All control flow tests passed.";

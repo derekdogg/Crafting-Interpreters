@@ -1,0 +1,123 @@
+// GC Stress
+// Level 4: Heavy GC pressure — mid-operation collections, deep nesting, bounded memory.
+
+// --- GC mid-loop while building a string ---
+
+var result = "";
+for (var i = 0; i < 50; i = i + 1) {
+  result = result + "*";
+  if (i == 10) collectGarbage();
+  if (i == 25) collectGarbage();
+  if (i == 40) collectGarbage();
+}
+assert(result == "**************************************************", "string built mid-GC corrupted");
+
+// --- Nested closure chain: only reachable upvalues survive ---
+
+fun outerFactory() {
+  var outerVal = "outer";
+
+  fun middleFactory() {
+    var midVal = "middle";
+
+    fun inner() {
+      return outerVal + " " + midVal;
+    }
+    return inner;
+  }
+
+  return middleFactory;
+}
+
+var midFn = outerFactory();
+collectGarbage();             // outerFactory frame is dead
+var innerFn = midFn();
+collectGarbage();             // middleFactory frame is dead
+assert(innerFn() == "outer middle", "nested upvalues lost");
+
+// --- Many short-lived closures under pressure ---
+
+for (var i = 0; i < 100; i = i + 1) {
+  fun temp() {
+    var s = "a" + "b" + "c";
+    return s;
+  }
+  temp();
+  if (i == 50) collectGarbage();
+}
+var before = objectsAllocated();
+collectGarbage();
+var after = objectsAllocated();
+assert(after < before, "short-lived closures not freed");
+
+// --- Deep recursion with GC between unwinds ---
+
+fun sumTo(n) {
+  if (n <= 0) return 0;
+  return n + sumTo(n - 1);
+}
+
+assert(sumTo(50) == 1275, "sumTo before GC");
+collectGarbage();
+assert(sumTo(50) == 1275, "sumTo after GC");
+
+// --- Interleaved allocation and collection ---
+
+for (var round = 0; round < 5; round = round + 1) {
+  for (var j = 0; j < 20; j = j + 1) {
+    var s = "round" + "alloc";
+  }
+  collectGarbage();
+}
+assert(true);  // survived all rounds
+
+// --- Memory stays bounded in a long loop ---
+
+for (var i = 0; i < 500; i = i + 1) {
+  var temp = "loop" + "alloc";
+}
+before = objectsAllocated();
+collectGarbage();
+after = objectsAllocated();
+assert(after <= before, "memory not bounded in long loop");
+
+// --- Stress: many globals then GC ---
+
+var g0 = "global0";
+var g1 = "global1";
+var g2 = "global2";
+var g3 = "global3";
+var g4 = "global4";
+var g5 = "global5";
+var g6 = "global6";
+var g7 = "global7";
+var g8 = "global8";
+var g9 = "global9";
+
+collectGarbage();
+
+assert(g0 == "global0", "global0 lost");
+assert(g5 == "global5", "global5 lost");
+assert(g9 == "global9", "global9 lost");
+
+// --- GC with active counter closures ---
+
+fun makeCounter() {
+  var n = 0;
+  fun inc() { n = n + 1; return n; }
+  return inc;
+}
+
+var c1 = makeCounter();
+var c2 = makeCounter();
+
+for (var i = 0; i < 10; i = i + 1) {
+  c1();
+  c2();
+  if (i == 5) collectGarbage();
+}
+
+assert(c1() == 11, "counter c1 lost state");
+assert(c2() == 11, "counter c2 lost state");
+
+print "All gc_stress tests passed.";

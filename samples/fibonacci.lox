@@ -1,0 +1,57 @@
+// Fibonacci
+// Classic Fibonacci sequence — both recursive and iterative.
+
+// --- Recursive (simple but slow for large n) ---
+
+fun fibRecursive(n) {
+  if (n <= 1) return n;
+  return fibRecursive(n - 1) + fibRecursive(n - 2);
+}
+
+assert(fibRecursive(0) == 0);
+assert(fibRecursive(1) == 1);
+assert(fibRecursive(2) == 1);
+assert(fibRecursive(5) == 5);
+assert(fibRecursive(10) == 55);
+
+// --- Iterative (fast) ---
+
+fun fibIterative(n) {
+  if (n <= 1) return n;
+
+  var a = 0;
+  var b = 1;
+  for (var i = 2; i <= n; i = i + 1) {
+    var temp = a + b;
+    a = b;
+    b = temp;
+  }
+  return b;
+}
+
+assert(fibIterative(0) == 0);
+assert(fibIterative(1) == 1);
+assert(fibIterative(10) == 55);
+assert(fibIterative(20) == 6765);
+
+// Both implementations agree
+for (var i = 0; i <= 15; i = i + 1) {
+  assert(fibRecursive(i) == fibIterative(i));
+}
+
+// --- Timed comparison ---
+
+var start = clock();
+fibRecursive(25);
+var recursiveTime = clock() - start;
+
+start = clock();
+fibIterative(25);
+var iterativeTime = clock() - start;
+
+print "fib(25) recursive time:";
+print recursiveTime;
+print "fib(25) iterative time:";
+print iterativeTime;
+
+print "All fibonacci tests passed.";
