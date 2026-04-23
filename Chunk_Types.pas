@@ -1136,7 +1136,6 @@ var
   Len: Integer;
   NewSize: NativeInt;
   hash: UInt32;
-  savedNextGC : integer;
 begin
 
   AssertMemTrackerIsNotNil(MemTracker);
@@ -1170,16 +1169,12 @@ begin
   AddToCreatedObjects(PObj(Result),MemTracker);
 
   // String interning: add to intern table if VM is active
-  // Suppress GC during push+TableSet — string is in CreatedObjects but not
-  // reachable from any root yet, so GC would incorrectly sweep it.
+  // Push string onto stack to protect from GC during TableSet.
   if (VM <> nil) and (VM.Strings <> nil) then
   begin
-    savedNextGC := MemTracker.NextGC;
-    MemTracker.NextGC := MaxInt;
     pushStack(VM.Stack, StringToValue(Result), VM.MemTracker);
     TableSet(VM.Strings, Result, CreateNilValue, MemTracker);
     popStack(VM.Stack);
-    MemTracker.NextGC := savedNextGC;
   end;
   
   // ---- Exit assertions ----
@@ -1354,11 +1349,12 @@ begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsNilBeforeInit(Stack);
-  Allocate(pointer(Stack),0, Sizeof(TStack),Memtracker);
+  // Use raw memory — stack must never trigger GC (same pattern as GrayStack)
+  GetMem(Stack, SizeOf(TStack));
   Stack.Count := 0;
-  Stack.CurrentCapacity := 0;
-  Stack.Values := nil;
-  AllocateArray(pointer(Stack.Values),Stack.CurrentCapacity,Stack.Count,Sizeof(TValue),Memtracker);
+  Stack.CurrentCapacity := START_CAPACITY;
+  GetMem(Stack.Values, START_CAPACITY * SizeOf(TValue));
+  FillChar(Stack.Values^, START_CAPACITY * SizeOf(TValue), 0);
   Stack.StackTop := Stack.Values;
   
   // ---- Exit assertions ----
@@ -1375,13 +1371,11 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
-  if (stack.CurrentCapacity > 0) then
-  begin
-    Allocate(pointer(Stack.Values), stack.CurrentCapacity * sizeof(TValue), 0,Memtracker);
-    Stack.Values := nil;
-  end;
-
-  Allocate(pointer(Stack),sizeof(TStack),0,Memtracker);
+  // Raw memory — matches InitStack/pushStack (not tracked by BytesAllocated)
+  if Stack.Values <> nil then
+    FreeMem(Stack.Values);
+  Stack.Values := nil;
+  FreeMem(Stack);
   Stack := nil;
   
   // ---- Exit assertions ----
@@ -1389,15 +1383,25 @@ begin
 end;
 
 procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
+var
+  NewCapacity : integer;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
-  if AllocateArray(pointer(Stack.Values),Stack.CurrentCapacity,Stack.Count,Sizeof(TValue),Memtracker) then
+  // Grow using raw ReallocMem — must never trigger GC so push/pop
+  // can safely protect unrooted objects (same pattern as book's fixed stack)
+  if Stack.Count >= Stack.CurrentCapacity then
   begin
-    ResetStack(stack);
-    Stack.StackTop := Stack.Values + Stack.Count;  //move stack top to next pointer available (at count)
+    NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
+    ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
+    // Zero new portion
+    FillChar(Stack.Values[Stack.CurrentCapacity],
+      (NewCapacity - Stack.CurrentCapacity) * SizeOf(TValue), 0);
+    Stack.CurrentCapacity := NewCapacity;
+    // Rebase StackTop after realloc (pointer may have moved)
+    Stack.StackTop := Stack.Values + Stack.Count;
   end;
   Stack.StackTop^ := Value;
   Inc(Stack.StackTop);
@@ -1473,11 +1477,18 @@ begin
   Result^.chunk := nil;
   InitChunk(Result^.chunk, MemTracker);
   AddToCreatedObjects(pObj(Result), MemTracker);
+
+  // ---- Exit assertions ----
+  Assert(Result <> nil, 'newFunction exit: Result is nil');
+  Assert(Result^.Obj.ObjectKind = okFunction, 'newFunction exit: ObjectKind should be okFunction');
+  AssertChunkIsAssigned(Result^.chunk);
+  Assert(Result^.arity = 0, 'newFunction exit: arity should be 0');
 end;
 
 function newNative(func : TNativeFn; MemTracker : pMemTracker) : pObjNative;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
+  Assert(Assigned(func), 'newNative: func is not assigned');
   Result := nil;
   Allocate(Pointer(Result), 0, SizeOf(TObjNative), MemTracker);
   Result^.Obj.ObjectKind := okNative;
@@ -1485,6 +1496,10 @@ begin
   Result^.Obj.Next := nil;
   Result^.func := func;
   AddToCreatedObjects(pObj(Result), MemTracker);
+
+  // ---- Exit assertions ----
+  Assert(Result <> nil, 'newNative exit: Result is nil');
+  Assert(Result^.Obj.ObjectKind = okNative, 'newNative exit: ObjectKind should be okNative');
 end;
 
 function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure;
@@ -1493,6 +1508,7 @@ var
   i : integer;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
+  Assert(func <> nil, 'newClosure: func is nil');
   // Allocate the upvalue pointer array
   upvals := nil;
   if func^.upvalueCount > 0 then
@@ -1511,11 +1527,17 @@ begin
   Result^.upvalues := upvals;
   Result^.upvalueCount := func^.upvalueCount;
   AddToCreatedObjects(pObj(Result), MemTracker);
+
+  // ---- Exit assertions ----
+  Assert(Result <> nil, 'newClosure exit: Result is nil');
+  Assert(Result^.Obj.ObjectKind = okClosure, 'newClosure exit: ObjectKind should be okClosure');
+  Assert(Result^.func = func, 'newClosure exit: func does not match input');
 end;
 
 function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
+  Assert(slot <> nil, 'newUpvalue: slot is nil');
   Result := nil;
   Allocate(Pointer(Result), 0, SizeOf(TObjUpvalue), MemTracker);
   Result^.Obj.ObjectKind := okUpvalue;
@@ -1525,6 +1547,11 @@ begin
   Result^.closed := CreateNilValue;
   Result^.next := nil;
   AddToCreatedObjects(pObj(Result), MemTracker);
+
+  // ---- Exit assertions ----
+  Assert(Result <> nil, 'newUpvalue exit: Result is nil');
+  Assert(Result^.Obj.ObjectKind = okUpvalue, 'newUpvalue exit: ObjectKind should be okUpvalue');
+  Assert(Result^.location = slot, 'newUpvalue exit: location does not match input slot');
 end;
 
 function ObjStringToAnsiString(S: PObjString): AnsiString;
@@ -1601,7 +1628,8 @@ begin
     vkNumber:  Result := FloatToStr(value.NumberValue);
     vkBoolean: if value.BooleanValue then Result := 'true' else Result := 'false';
     vkNull:    Result := 'nil';
-    vkObject:
+    vkObject:  begin
+      Assert(value.ObjValue <> nil, 'ValueToStr: ObjValue is nil for object value');
       case value.ObjValue.ObjectKind of
         okString: Result := String(ObjStringToAnsiString(pObjString(value.ObjValue)));
         okFunction: begin
@@ -1621,6 +1649,7 @@ begin
       else
         Result := '<object>';
       end;
+    end;
   else
     Result := '<unknown>';
   end;
@@ -1939,6 +1968,11 @@ var
   upvalue : pObjUpvalue;
   createdUpvalue : pObjUpvalue;
 begin
+  // ---- Entry assertions ----
+  Assert(local <> nil, 'captureUpvalue: local is nil');
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+
   prevUpvalue := nil;
   upvalue := VM.OpenUpvalues;
   while (upvalue <> nil) and (NativeUInt(upvalue^.location) > NativeUInt(local)) do
@@ -1958,6 +1992,9 @@ begin
   else
     prevUpvalue^.next := createdUpvalue;
 
+  // ---- Exit assertions ----
+  Assert(createdUpvalue <> nil, 'captureUpvalue exit: result is nil');
+  Assert(createdUpvalue^.location = local, 'captureUpvalue exit: location does not match local');
   Result := createdUpvalue;
 end;
 
@@ -1965,6 +2002,10 @@ procedure closeUpvalues(last : pValue);
 var
   upvalue : pObjUpvalue;
 begin
+  // ---- Entry assertions ----
+  Assert(last <> nil, 'closeUpvalues: last is nil');
+  AssertVMIsAssigned;
+
   while (VM.OpenUpvalues <> nil) and
         (NativeUInt(VM.OpenUpvalues^.location) >= NativeUInt(last)) do
   begin
@@ -2030,6 +2071,12 @@ var
     begin
       native := pObjNative(callee.ObjValue)^.func;
       nativeResult := native(argCnt, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt) * SizeOf(TValue)));
+      // Check if native signalled a runtime error
+      if VM.RuntimeErrorStr <> '' then
+      begin
+        Result := false;
+        Exit;
+      end;
       // pop args + callee
       VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
       VM.Stack.Count := VM.Stack.Count - (argCnt + 1);
@@ -2050,6 +2097,8 @@ begin
     Assert(VM.FrameCount > 0, 'Run: no call frames');
 
     frame := @VM.Frames[VM.FrameCount - 1];
+    Assert(frame^.closure <> nil, 'Run: initial frame closure is nil');
+    Assert(frame^.ip <> nil, 'Run: initial frame ip is nil');
 
     while True do
     begin
@@ -2555,11 +2604,14 @@ end;
 procedure FreeObject(obj : pObj);
 begin
   AssertObjectIsAssigned(obj);
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
   case obj.ObjectKind of
     okString : begin
       FreeString(pObjString(obj),vm.MemTracker);
     end;
     okFunction : begin
+      Assert(pObjFunction(obj)^.chunk <> nil, 'FreeObject: function chunk is nil');
       freeChunk(pObjFunction(obj)^.chunk, vm.MemTracker);
       Allocate(Pointer(obj), SizeOf(TObjFunction), 0, vm.MemTracker);
     end;
@@ -2584,6 +2636,8 @@ var
   next : pObj;
 begin
   AssertPointerIsNotNil(objects, 'FreeObjects - objects');
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
   obj := Objects;
   while (obj <> nil) do
   begin
@@ -2597,7 +2651,12 @@ end;
 procedure MarkObject(obj : pObj);
 var
   newCapacity : integer;
+  oldGrayCount : integer;
 begin
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+
   if obj = nil then Exit;
   if obj^.IsMarked then Exit;
 
@@ -2613,9 +2672,18 @@ begin
     VM.MemTracker.GrayCapacity := newCapacity;
     // Use raw ReallocMem to avoid recursive GC trigger
     ReallocMem(VM.MemTracker.GrayStack, SizeOf(pObj) * VM.MemTracker.GrayCapacity);
+    // ---- Mid assertions ----
+    Assert(VM.MemTracker.GrayStack <> nil, 'MarkObject: GrayStack is nil after realloc');
+    Assert(VM.MemTracker.GrayCapacity > 0, 'MarkObject: GrayCapacity should be > 0 after growth');
   end;
+
+  oldGrayCount := VM.MemTracker.GrayCount;
   VM.MemTracker.GrayStack[VM.MemTracker.GrayCount] := obj;
   Inc(VM.MemTracker.GrayCount);
+
+  // ---- Exit assertions ----
+  Assert(obj^.IsMarked, 'MarkObject exit: obj should be marked');
+  Assert(VM.MemTracker.GrayCount = oldGrayCount + 1, 'MarkObject exit: GrayCount should have increased by 1');
 end;
 
 procedure MarkValue(value : TValue);
@@ -2629,6 +2697,7 @@ var
   i : integer;
 begin
   if ValueArray = nil then Exit;
+  Assert(ValueArray^.Count >= 0, 'MarkArray: Count is negative');
   for i := 0 to ValueArray^.Count - 1 do
     MarkValue(ValueArray^.Values[i]);
 end;
@@ -2667,6 +2736,10 @@ var
   i : integer;
   upvalue : pObjUpvalue;
 begin
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+
   // Mark the value stack
   if (VM.Stack <> nil) and (VM.Stack.Count > 0) then
   begin
@@ -2679,6 +2752,9 @@ begin
   end;
 
   // Mark call frame closures
+  // ---- Mid assertions ----
+  Assert(VM.FrameCount >= 0, 'MarkRoots: FrameCount is negative');
+  Assert(VM.FrameCount <= FRAMES_MAX, 'MarkRoots: FrameCount exceeds FRAMES_MAX');
   for i := 0 to VM.FrameCount - 1 do
     MarkObject(pObj(VM.Frames[i].closure));
 
@@ -2695,20 +2771,31 @@ begin
 
   // Mark compiler roots
   MarkCompilerRoots;
+
+  // ---- Exit assertions ----
+  Assert(VM.MemTracker.GrayCount >= 0, 'MarkRoots exit: GrayCount is negative');
 end;
 
 procedure BlackenObject(obj : pObj);
 var
   i : integer;
 begin
+  // ---- Entry assertions ----
+  Assert(obj <> nil, 'BlackenObject: obj is nil');
+  Assert(obj^.IsMarked, 'BlackenObject: obj is not marked (should be gray)');
+
   case obj^.ObjectKind of
     okUpvalue:
       MarkValue(pObjUpvalue(obj)^.closed);
     okFunction: begin
+      Assert(pObjFunction(obj)^.chunk <> nil, 'BlackenObject: function chunk is nil');
       MarkObject(pObj(pObjFunction(obj)^.name));
       MarkArray(pObjFunction(obj)^.chunk^.Constants);
     end;
     okClosure: begin
+      Assert(pObjClosure(obj)^.func <> nil, 'BlackenObject: closure func is nil');
+      if pObjClosure(obj)^.upvalueCount > 0 then
+        Assert(pObjClosure(obj)^.upvalues <> nil, 'BlackenObject: closure upvalues is nil with count > 0');
       MarkObject(pObj(pObjClosure(obj)^.func));
       for i := 0 to pObjClosure(obj)^.upvalueCount - 1 do
         MarkObject(pObj(pObjClosure(obj)^.upvalues^[i]));
@@ -2722,12 +2809,23 @@ procedure TraceReferences;
 var
   obj : pObj;
 begin
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+  if VM.MemTracker.GrayCount > 0 then
+    Assert(VM.MemTracker.GrayStack <> nil, 'TraceReferences: GrayStack is nil with GrayCount > 0');
+
   while VM.MemTracker.GrayCount > 0 do
   begin
     Dec(VM.MemTracker.GrayCount);
     obj := VM.MemTracker.GrayStack[VM.MemTracker.GrayCount];
+    // ---- Mid assertion ----
+    Assert(obj <> nil, 'TraceReferences: nil object popped from gray stack');
     BlackenObject(obj);
   end;
+
+  // ---- Exit assertions ----
+  Assert(VM.MemTracker.GrayCount = 0, 'TraceReferences exit: GrayCount should be 0');
 end;
 
 procedure TableRemoveWhite(Table : pTable);
@@ -2748,6 +2846,10 @@ procedure Sweep;
 var
   previous, obj, unreached : pObj;
 begin
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+
   previous := nil;
   obj := VM.MemTracker.CreatedObjects;
   while obj <> nil do
@@ -2769,6 +2871,9 @@ begin
       FreeObject(unreached);
     end;
   end;
+
+  // ---- Exit assertions ----
+  Assert(VM.MemTracker.BytesAllocated >= 0, 'Sweep exit: BytesAllocated is negative');
 end;
 
 procedure CollectGarbage;
@@ -2782,6 +2887,10 @@ begin
   Sweep;
 
   VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR;
+
+  // ---- Exit assertions ----
+  Assert(VM.MemTracker.BytesAllocated >= 0, 'CollectGarbage exit: BytesAllocated is negative');
+  Assert(VM.MemTracker.NextGC > 0, 'CollectGarbage exit: NextGC should be > 0');
 end;
 
 procedure InitMemTracker(var MemTracker : pMemTracker);
@@ -2817,21 +2926,54 @@ procedure defineNative(const name : AnsiString; func : TNativeFn);
 var
   native : pObjNative;
   nameStr : pObjString;
-  savedNextGC : integer;
 begin
-  // Suppress GC: nameStr is only in intern table (weak ref) during
-  // newNative, and native is unrooted during TableSet.
-  savedNextGC := VM.MemTracker.NextGC;
-  VM.MemTracker.NextGC := MaxInt;
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+  Assert(Length(name) > 0, 'defineNative: name is empty');
+  Assert(Assigned(func), 'defineNative: func is not assigned');
+
+  // Push nameStr and native onto stack to protect from GC (book pattern).
   nameStr := CreateString(name, VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
   native := newNative(func, VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(native)), VM.MemTracker);
   TableSet(VM.Globals, nameStr, CreateObject(pObj(native)), VM.MemTracker);
-  VM.MemTracker.NextGC := savedNextGC;
+  popStack(VM.Stack);
+  popStack(VM.Stack);
 end;
 
 function clockNative(argCount: integer; args: pValue): TValue;
 begin
   Result := CreateNumber(GetTickCount / 1000.0);
+end;
+
+function collectGarbageNative(argCount: integer; args: pValue): TValue;
+begin
+  CollectGarbage;
+  Result := CreateNilValue;
+end;
+
+function assertNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('assert() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if IsFalsey(args[0]) then
+  begin
+    RuntimeError('Assertion failed.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNilValue;
+end;
+
+function bytesAllocatedNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.MemTracker.BytesAllocated);
 end;
 
 procedure InitVM;
@@ -2855,6 +2997,9 @@ begin
 
   // Define native functions
   defineNative('clock', clockNative);
+  defineNative('collectGarbage', collectGarbageNative);
+  defineNative('assert', assertNative);
+  defineNative('bytesAllocated', bytesAllocatedNative);
 
   // ---- Exit assertions ----
   AssertVMIsAssigned;
@@ -2884,6 +3029,9 @@ begin
   FreeMemTracker(VM.MemTracker);
   dispose(VM);
   VM := nil;
+
+  // ---- Exit assertions ----
+  Assert(VM = nil, 'FreeVM exit: VM should be nil');
 end;
 
 procedure InitScanner(source : pAnsiChar);
@@ -2902,6 +3050,7 @@ end;
 
 function advance : ansichar;
 begin
+  Assert(not isAtEnd, 'advance: already at end');
   inc(scanner.Current);
   result := scanner.current[-1];
 end;
@@ -2913,15 +3062,18 @@ end;
 
 function MakeToken(const tokenType : TTokenType)  : TToken;
 begin
+  Assert(NativeUInt(scanner.current) >= NativeUInt(scanner.start), 'MakeToken: current before start');
   result.tokenType := tokenType;
   result.start := scanner.start;
   result.length := scanner.current - scanner.start;
   result.line := scanner.line;
+  Assert(result.length >= 0, 'MakeToken: negative token length');
 end;
 
 
 function ErrorToken(msg : pAnsiChar) : TToken;
 begin
+  Assert(Assigned(msg), 'ErrorToken: msg is nil');
   result.Tokentype := TOKEN_ERROR;
   result.start := msg;
   result.length := strlen(msg);
@@ -3016,6 +3168,7 @@ end;
 
 function ScanString: TToken;
 begin
+  Assert(Assigned(scanner.current), 'ScanString: scanner.current is nil');
   while (Peek <> CHAR_QUOTE) and (not IsAtEnd) do
   begin
     if Peek = CHAR_LF then
@@ -3036,6 +3189,7 @@ end;
 
 function ScanNumber: TToken;
 begin
+  Assert(Assigned(scanner.current), 'ScanNumber: scanner.current is nil');
   while IsDigit(Peek) do
     Advance;
 
@@ -3056,6 +3210,9 @@ end;
 function CheckKeyword(start, length: Integer; const rest: pAnsiChar;
   tokenType: TTokenType): TTokenType;
 begin
+  Assert(Assigned(rest), 'CheckKeyword: rest is nil');
+  Assert(start >= 0, 'CheckKeyword: start is negative');
+  Assert(length > 0, 'CheckKeyword: length must be > 0');
   if (scanner.current - scanner.start = start + length) and
      (CompareMem(scanner.start + start, rest, length)) then
     Exit(tokenType);
@@ -3113,6 +3270,7 @@ function ScanToken : TToken;
 var
   c : Ansichar;
 begin
+  Assert(Assigned(scanner.current), 'ScanToken: scanner.current is nil');
 
   skipWhitespace;
 
@@ -3303,6 +3461,7 @@ end;
 
 procedure Consume(TokenKind: TTokenType; const Msg: PAnsiChar);
 begin
+  Assert(Assigned(Msg), 'Consume: Msg is nil');
   if Parser.Current.TokenType = TokenKind then
   begin
     AdvanceParser;
@@ -3467,7 +3626,6 @@ var
   lexeme  : ansiString;
   strObj : pObjString;
   value  : TValue;
-  savedNextGC : integer;
 begin
   Assert(parser.previous.tokenType = TOKEN_STRING, 'ParseString: expected TOKEN_STRING');
   AssertVMIsAssigned;
@@ -3476,14 +3634,12 @@ begin
   // strip leading and trailing quotes
   if (Length(lexeme) >= 2) and (lexeme[1] = '"') and (lexeme[Length(lexeme)] = '"') then
     lexeme := Copy(lexeme, 2, Length(lexeme) - 2);
-  // Suppress GC: string is only in intern table (weak ref) until
-  // emitConstant stores it in the constants array.
-  savedNextGC := VM.MemTracker.NextGC;
-  VM.MemTracker.NextGC := MaxInt;
+  // Push string onto stack to protect from GC until stored in constants.
   strObj := CreateString(lexeme,VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(strObj), VM.MemTracker);
   value := StringToValue(strObj);
   emitConstant(value);
-  VM.MemTracker.NextGC := savedNextGC;
+  popStack(VM.Stack);
 end;
 
 procedure binary();
@@ -3575,12 +3731,18 @@ begin
   emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
   Result := CurrentChunk.count - 2;
+  // ---- Exit assertions ----
+  Assert(Result >= 0, 'emitJump exit: offset should be >= 0');
 end;
 
 procedure patchJump(offset : integer);
 var
   jump : integer;
 begin
+  // ---- Entry assertions ----
+  Assert(offset >= 0, 'patchJump: offset is negative');
+  Assert(offset + 1 < CurrentChunk.Count, 'patchJump: offset out of bounds');
+
   // -2 to adjust for the two-byte jump operand itself
   jump := CurrentChunk.count - offset - 2;
   if jump > $FFFF then
@@ -3593,6 +3755,7 @@ procedure emitLoop(loopStart : integer);
 var
   offset : integer;
 begin
+  Assert(loopStart >= 0, 'emitLoop: loopStart is negative');
   emitByte(OP_LOOP, CurrentChunk, parser.previous.line, vm.MemTracker);
   offset := CurrentChunk.count - loopStart + 2;
   if offset > $FFFF then
@@ -3744,11 +3907,19 @@ end;
 
 procedure beginScope();
 begin
+  Assert(Current <> nil, 'beginScope: Current compiler is nil');
   Inc(Current^.scopeDepth);
+
+  // ---- Exit assertions ----
+  Assert(Current^.scopeDepth > 0, 'beginScope exit: scopeDepth should be > 0');
 end;
 
 procedure endScope();
 begin
+  // ---- Entry assertions ----
+  Assert(Current <> nil, 'endScope: Current compiler is nil');
+  Assert(Current^.scopeDepth > 0, 'endScope: scopeDepth is already 0');
+
   Dec(Current^.scopeDepth);
   while (Current^.localCount > 0) and
         (Current^.locals[Current^.localCount - 1].depth > Current^.scopeDepth) do
@@ -3759,10 +3930,15 @@ begin
       emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
     Dec(Current^.localCount);
   end;
+
+  // ---- Exit assertions ----
+  Assert(Current^.scopeDepth >= 0, 'endScope exit: scopeDepth is negative');
+  Assert(Current^.localCount >= 0, 'endScope exit: localCount is negative');
 end;
 
 procedure addLocal(name : TToken);
 begin
+  Assert(Current <> nil, 'addLocal: Current compiler is nil');
   if Current^.localCount = UINT8_COUNT then
   begin
     Error('Too many local variables in function.');
@@ -3785,6 +3961,7 @@ procedure declareVariable();
 var
   i : integer;
 begin
+  Assert(Current <> nil, 'declareVariable: Current compiler is nil');
   if Current^.scopeDepth = 0 then Exit; // globals handled differently
 
   for i := Current^.localCount - 1 downto 0 do
@@ -3812,6 +3989,7 @@ function resolveLocal(compiler : pCompiler; const name : TToken) : integer;
 var
   i : integer;
 begin
+  Assert(compiler <> nil, 'resolveLocal: compiler is nil');
   for i := compiler^.localCount - 1 downto 0 do
   begin
     if identifiersEqual(name, compiler^.locals[i].name) then
@@ -3854,6 +4032,7 @@ var
   local : integer;
   upvalue : integer;
 begin
+  Assert(compiler <> nil, 'resolveUpvalue: compiler is nil');
   if compiler^.enclosing = nil then
     Exit(-1);
 
@@ -3875,16 +4054,12 @@ function identifierConstant(const name : TToken) : byte;
 var
   strObj : pObjString;
   idx : integer;
-  savedNextGC : integer;
 begin
-  // Suppress GC: string is only in intern table (weak ref) until stored
-  // in the constants array. Any allocation in AddValueConstant could
-  // trigger GC that sweeps the unrooted string.
-  savedNextGC := VM.MemTracker.NextGC;
-  VM.MemTracker.NextGC := MaxInt;
+  // Push string onto stack to protect from GC until stored in constants.
   strObj := CreateString(TokenToString(name), VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(strObj), VM.MemTracker);
   idx := AddValueConstant(CurrentChunk.Constants, StringToValue(strObj), VM.MemTracker);
-  VM.MemTracker.NextGC := savedNextGC;
+  popStack(VM.Stack);
   Assert(idx <= High(Byte), 'Too many constants in one chunk');
   Result := Byte(idx);
 end;
@@ -4011,8 +4186,11 @@ var
   func : pObjFunction;
   i : byte;
   j : integer;
-  savedNextGC : integer;
 begin
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+
   compiler := nil;
   initCompiler(compiler, funcType);
   beginScope();
@@ -4037,11 +4215,8 @@ begin
   func := Current^.func;
   Current := Current^.enclosing;
 
-  // Suppress GC: func is no longer reachable via compiler roots (Current
-  // chain) but not yet stored in the enclosing function's constants array.
-  // Any allocation that triggers GC here would sweep func.
-  savedNextGC := VM.MemTracker.NextGC;
-  VM.MemTracker.NextGC := MaxInt;
+  // Push func onto stack to protect from GC until stored in constants.
+  pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
 
   emitByte(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte(AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker),
@@ -4056,7 +4231,7 @@ begin
     emitByte(compiler^.upvalues[j].index, CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
 
-  VM.MemTracker.NextGC := savedNextGC;
+  popStack(VM.Stack);
 
   Dispose(compiler);
 end;
@@ -4065,6 +4240,7 @@ procedure funDeclaration();
 var
   global : byte;
 begin
+  Assert(Current <> nil, 'funDeclaration: Current compiler is nil');
   global := parseVariable('Expect function name.');
   markInitialized();
   functionBody(TYPE_FUNCTION);
@@ -4073,6 +4249,7 @@ end;
 
 procedure returnStatement();
 begin
+  Assert(Current <> nil, 'returnStatement: Current compiler is nil');
   if Current^.funcType = TYPE_SCRIPT then
   begin
     Error('Can''t return from top-level code.');
@@ -4121,6 +4298,7 @@ end;
 
 procedure declaration();
 begin
+  Assert(Current <> nil, 'declaration: Current compiler is nil');
   if matchToken(TOKEN_FUN) then
     funDeclaration()
   else if matchToken(TOKEN_VAR) then
@@ -4133,7 +4311,6 @@ function compile(source : pAnsiChar) : pObjClosure;
 var
   compiler : pCompiler;
   func : pObjFunction;
-  savedNextGC : integer;
 begin
   AssertSourceCodeIsAssigned(source);
   AssertVMIsAssigned;
@@ -4161,16 +4338,14 @@ begin
     Result := nil
   else
   begin
-    // Protect func from GC during newClosure allocation.
-    // Suppress GC so pushStack growth can't trigger collection
-    // while func is unreachable (Current is nil, func not on stack yet).
-    savedNextGC := VM.MemTracker.NextGC;
-    VM.MemTracker.NextGC := MaxInt;
+    // Push func onto stack to protect from GC during newClosure allocation.
     pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
     Result := newClosure(func, VM.MemTracker);
     popStack(VM.Stack);
-    VM.MemTracker.NextGC := savedNextGC;
   end;
+
+  // ---- Exit assertions ----
+  Assert(Current = nil, 'compile exit: Current compiler should be nil');
 end;
 
 
