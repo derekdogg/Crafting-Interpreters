@@ -8,7 +8,9 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Virtual Machine** — Stack-based VM with call frames, closures, and upvalues
 - **Garbage Collection** — Mark-sweep GC with tricolor marking and gray stack worklist
 - **String Interning** — Hash table with weak references for automatic deduplication
-- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`
+- **Arrays** — Dynamic arrays via native functions (`newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove`)
+- **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, and literals (16M constant limit)
+- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, plus 7 array functions
 
 ## Chapters Implemented
 
@@ -26,6 +28,9 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | 24 | Functions, call frames, native functions |
 | 25 | Closures and upvalues |
 | 26 | Garbage collection (mark-sweep) |
+| — | Arrays (native function API, GC-integrated) |
+| — | Modulo operator (`%`) |
+| — | Long-operand opcodes (`OP_*_LONG`) for >255 constants per chunk |
 
 ## Project Structure
 
@@ -74,7 +79,7 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 
 ### Custom Sample Tests
 
-**20 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
+**25 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
 | File | Coverage |
 |------|----------|
@@ -88,6 +93,9 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | closures.lox | Capture, counters, shared upvalues, nested closures |
 | counter.lox | Closure-based counter pattern |
 | fibonacci.lox | Recursive and iterative fibonacci |
+| modulo.lox | Modulo operator with integers, floats, negative numbers |
+| arrays.lox | Array creation, push, pop, get, set, len, remove |
+| arrays_advanced.lox | Nested arrays, arrays in closures, arrays as function args |
 | gc_basic.lox | Live data survives, dead temporaries reclaimed |
 | gc_functions.lox | Functions and closures survive GC |
 | gc_reclaim.lox | Memory reclamation verified via `objectsAllocated()` |
@@ -98,8 +106,10 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | gc_scopes_and_natives.lox | Native `clock()` survives, deep scopes, gray stack, loop capture |
 | gc_edge_cases.lox | Open upvalue list, closing order, rapid create/discard, name reuse, large constant pools |
 | gc_torture.lox | Concat chains, nested defs, slot reuse, fib, ping-pong, closure spam, alternating alloc/collect |
+| gc_gray_stack.lox | Gray stack growth under heavy marking pressure |
+| gc_arrays.lox | Array elements survive GC, nested array marking, array in closures |
 
-**8 error tests** in `samples/errors/` — expected to produce errors:
+**11 error tests** in `samples/errors/` — expected to produce errors:
 
 | File | Expected Error |
 |------|---------------|
@@ -111,6 +121,9 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | call_non_function.lox | Calling a non-callable value |
 | undefined_variable.lox | Undefined variable access |
 | stack_overflow.lox | Infinite recursion |
+| array_out_of_bounds.lox | Array index out of bounds |
+| array_pop_empty.lox | Pop from empty array |
+| array_not_array.lox | Array operation on non-array value |
 
 ## GC Hardening
 
@@ -120,7 +133,7 @@ The garbage collector has been hardened with:
 - **DEBUG_LOG_GC** — Logs allocate/free/mark/blacken events to `gc.log` with summary stats
 - **Push/pop protection** at all 7 GC-sensitive allocation sites
 - **NextGC floor** of 1024 bytes to prevent zero-threshold assertions
-- **10 dedicated GC test files** (6 new) covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, and alternating alloc/collect torture scenarios
+- **10 dedicated GC test files** (6 new) covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, and array element marking
 
 ## Build
 
