@@ -2,6 +2,7 @@ unit Chunk_Types;
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
 {$DEFINE DEBUG_LOG_GC}
+{$DEFINE DEBUG_STRESS_GC}
 interface
 
 uses
@@ -2943,6 +2944,8 @@ begin
   Sweep;
 
   VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR;
+  if VM.MemTracker.NextGC < 1024 then
+    VM.MemTracker.NextGC := 1024;
 
   {$IFDEF DEBUG_LOG_GC}
   GCLog(Format('-- gc end   collected %d bytes (from %d to %d) next at %d',
