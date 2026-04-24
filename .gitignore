@@ -1,9 +1,44 @@
+# Delphi build artifacts
 __history/
-Win32/
-Interpreter.dproj.local
-Interpreter.identcache
-Interpreter.res
-InterpreterGui.dproj.local
-InterpreterGui.identcache
 __recovery/
+Win32/
+Win64/
+*.dcu
+*.exe
+*.dll
+*.bpl
+*.bpi
+*.dcp
+*.so
+*.apk
+*.drc
+*.map
+*.dres
+*.rsm
+*.tds
+*.dcu
+*.lib
+*.a
+*.o
+*.ocx
+
+# Delphi project local/user files
+*.dproj.local
+*.identcache
+*.res
+*.stat
+*.cfg
+*.dsk
+*.todo
+
+# IDE settings
+*.lps
+*.lpi.bak
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Previous plans
 assertion-hardening-plan.md

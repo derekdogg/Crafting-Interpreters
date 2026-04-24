@@ -1,0 +1,57 @@
+name: Validate Repository
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check test suite integrity
+        run: |
+          echo "Checking test suite files..."
+          TEST_COUNT=$(find test/ -name "*.lox" | wc -l)
+          echo "Found $TEST_COUNT .lox test files"
+          if [ "$TEST_COUNT" -lt 140 ]; then
+            echo "ERROR: Expected at least 140 test files, found $TEST_COUNT"
+            exit 1
+          fi
+          echo "Test suite integrity check passed."
+
+      - name: Check required source files exist
+        run: |
+          for f in Chunk_Types.pas Main.pas Main.dfm InterpreterGui.dpr InterpreterGui.dproj Test.pas; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: Required file $f is missing"
+              exit 1
+            fi
+          done
+          echo "All required source files present."
+
+      - name: Check for sensitive data leaks
+        run: |
+          echo "Scanning for potential secrets..."
+          # Check for common secret patterns in tracked files
+          if git grep -lPi '(password|secret|api_key|private_key)\s*[:=]\s*["\x27][^\s]+' -- '*.pas' '*.dpr' '*.dfm' 2>/dev/null; then
+            echo "WARNING: Possible secrets found in source files (review above)"
+            exit 1
+          fi
+          echo "No obvious secrets detected."
+
+      - name: Validate no binary artifacts committed
+        run: |
+          BINARIES=$(find . -name "*.dcu" -o -name "*.exe" -o -name "*.dll" -o -name "*.res" | grep -v ".git/" | head -20)
+          if [ -n "$BINARIES" ]; then
+            echo "WARNING: Binary artifacts found in repo:"
+            echo "$BINARIES"
+            exit 1
+          fi
+          echo "No binary artifacts found."
