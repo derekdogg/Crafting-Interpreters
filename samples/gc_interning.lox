@@ -1,0 +1,57 @@
+// GC Interning
+// Verify string interning stays consistent under garbage collection.
+
+// --- Identical string literals remain interned ---
+
+var a = "interned";
+var b = "interned";
+collectGarbage();
+assert(a == b, "interned strings diverged after GC");
+
+// --- Concatenation produces correct results after GC ---
+
+var prefix = "hello";
+collectGarbage();
+var suffix = " world";
+collectGarbage();
+var combined = prefix + suffix;
+assert(combined == "hello world", "concat after GC corrupted");
+
+// --- Repeated identical concatenations produce equal strings ---
+
+var s1 = "foo" + "bar";
+collectGarbage();
+var s2 = "foo" + "bar";
+collectGarbage();
+assert(s1 == s2, "identical concats not equal after GC");
+
+// --- Intern table survives heavy churn ---
+
+for (var i = 0; i < 100; i = i + 1) {
+  var waste = "churn" + "waste";
+}
+collectGarbage();
+var probe = "interned";
+assert(probe == a, "intern table lost entry after churn + GC");
+
+// --- Many unique strings don't corrupt intern table ---
+
+var sentinel = "sentinel";
+for (var i = 0; i < 200; i = i + 1) {
+  // Each iteration creates unique-ish temporaries
+  var t = "unique";
+  t = t + "str";
+}
+collectGarbage();
+assert(sentinel == "sentinel", "sentinel corrupted after many unique strings + GC");
+
+// --- String used as hash key (global variable name) survives ---
+
+var myGlobalVar = "value_from_global";
+for (var i = 0; i < 50; i = i + 1) {
+  var junk = "noise" + "data";
+}
+collectGarbage();
+assert(myGlobalVar == "value_from_global", "global variable name string collected");
+
+print "All gc_interning tests passed.";

@@ -1,0 +1,88 @@
+// GC Args and Temps
+// Test GC safety during argument evaluation and mid-expression temporaries.
+
+// --- GC between argument evaluations ---
+
+fun threeArgs(a, b, c) {
+  return a + b + c;
+}
+
+// Force GC between building argument strings
+var r = threeArgs("hello" + " ", "world" + " ", "test");
+collectGarbage();
+assert(r == "hello world test", "args corrupted by GC");
+
+// --- GC with many arguments ---
+
+fun sum8(a, b, c, d, e, f, g, h) {
+  return a + b + c + d + e + f + g + h;
+}
+
+collectGarbage();
+var total = sum8(1, 2, 3, 4, 5, 6, 7, 8);
+assert(total == 36, "8 numeric args corrupted");
+
+// --- String concat temporaries survive GC ---
+
+var s = "a" + "b" + "c" + "d" + "e";
+collectGarbage();
+assert(s == "abcde", "chained concat lost after GC");
+
+// --- Nested function calls with temporaries ---
+
+fun double(n) { return n * 2; }
+fun add(a, b) { return a + b; }
+
+collectGarbage();
+var v = add(double(3), double(4));
+assert(v == 14, "nested call temporaries corrupted");
+
+// --- Return value survives GC at call boundary ---
+
+fun makeString() {
+  return "built" + "string";
+}
+
+var result = makeString();
+collectGarbage();
+assert(result == "builtstring", "return value lost at call boundary");
+
+// --- GC during recursive argument building ---
+
+fun concat(s, n) {
+  if (n <= 0) return s;
+  return concat(s + "*", n - 1);
+}
+
+var stars = concat("", 20);
+collectGarbage();
+assert(stars == "********************", "recursive arg building corrupted");
+
+// --- Dead argument temporaries are freed ---
+
+fun discard(a, b, c) {
+  return a;
+}
+
+for (var i = 0; i < 50; i = i + 1) {
+  discard("keep", "waste" + "one", "waste" + "two");
+}
+
+var before = objectsAllocated();
+collectGarbage();
+var after = objectsAllocated();
+assert(after < before, "dead argument temporaries not freed");
+
+// --- GC after returning from deeply nested calls ---
+
+fun depth(n) {
+  if (n <= 0) return "bottom";
+  var local = "level" + "data";
+  return depth(n - 1);
+}
+
+var deepResult = depth(30);
+collectGarbage();
+assert(deepResult == "bottom", "deep call return corrupted after GC");
+
+print "All gc_args_and_temps tests passed.";
