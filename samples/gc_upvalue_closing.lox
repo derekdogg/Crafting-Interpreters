@@ -84,15 +84,18 @@ fun captureLoop() {
 
   {
     var x = "zero";
-    a = fun() { return x; };
+    fun getA() { return x; }
+    a = getA;
   }
   {
     var x = "one";
-    b = fun() { return x; };
+    fun getB() { return x; }
+    b = getB;
   }
   {
     var x = "two";
-    c = fun() { return x; };
+    fun getC() { return x; }
+    c = getC;
   }
 
   collectGarbage();
