@@ -10,13 +10,14 @@ object Form4: TForm4
   Font.Height = -12
   Font.Name = 'Segoe UI'
   Font.Style = []
+  OnCreate = FormCreate
   TextHeight = 15
   object Button1: TButton
     Left = 24
     Top = 24
     Width = 104
     Height = 25
-    Caption = 'Init Chunk'
+    Caption = 'Run'
     TabOrder = 0
     OnClick = Button1Click
   end
@@ -46,59 +47,5 @@ object Form4: TForm4
     Lines.Strings = (
       'Memo2')
     TabOrder = 3
-  end
-  object Button3: TButton
-    Left = 24
-    Top = 80
-    Width = 104
-    Height = 25
-    Caption = 'Test Stack'
-    TabOrder = 4
-    OnClick = Button3Click
-  end
-  object Button4: TButton
-    Left = 24
-    Top = 128
-    Width = 104
-    Height = 25
-    Caption = 'Test Strings'
-    TabOrder = 5
-    OnClick = Button4Click
-  end
-  object Button5: TButton
-    Left = 24
-    Top = 176
-    Width = 104
-    Height = 25
-    Caption = 'Test Chunk'
-    TabOrder = 6
-    OnClick = Button5Click
-  end
-  object Button6: TButton
-    Left = 24
-    Top = 216
-    Width = 104
-    Height = 25
-    Caption = 'Add Value Constant'
-    TabOrder = 7
-    OnClick = Button6Click
-  end
-  object Button7: TButton
-    Left = 24
-    Top = 256
-    Width = 104
-    Height = 25
-    Caption = 'Table'
-    TabOrder = 8
-    OnClick = Button7Click
-  end
-  object Button8: TButton
-    Left = 24
-    Top = 296
-    Width = 104
-    Height = 25
-    Caption = 'Test Interpreter'
-    TabOrder = 9
-    OnClick = Button8Click
   end
 end

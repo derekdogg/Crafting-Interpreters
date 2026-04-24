@@ -1,0 +1,75 @@
+// Scoping
+// Block scoping, shadowing, and nested scopes.
+
+// --- Empty block is valid ---
+{ }
+assert(true, "empty block should not crash");
+
+// --- Block creates a new scope ---
+var a = "outer";
+{
+  var a = "inner";
+  assert(a == "inner", "inner a should shadow outer");
+}
+assert(a == "outer", "outer a should be restored after block");
+
+// --- Nested blocks ---
+var x = 1;
+{
+  var x = 2;
+  {
+    var x = 3;
+    assert(x == 3, "innermost x should be 3");
+  }
+  assert(x == 2, "middle x should be 2");
+}
+assert(x == 1, "outermost x should be 1");
+
+// --- Variables in blocks are not visible outside ---
+{
+  var secret = "hidden";
+  assert(secret == "hidden", "secret visible inside block");
+}
+// secret is no longer accessible here
+
+// --- Block with multiple variables ---
+{
+  var a = 10;
+  var b = 20;
+  var c = a + b;
+  assert(c == 30, "block-local arithmetic");
+}
+
+// --- Blocks inside if ---
+var result = "";
+if (true) {
+  var temp = "yes";
+  result = temp;
+}
+assert(result == "yes", "block inside if");
+
+// --- Blocks inside loops ---
+var sum = 0;
+for (var i = 0; i < 5; i = i + 1) {
+  var contribution = i;
+  sum = sum + contribution;
+}
+assert(sum == 10, "block-local in loop");
+
+// --- Deeply nested scopes ---
+var depth = 0;
+{
+  depth = depth + 1;
+  {
+    depth = depth + 1;
+    {
+      depth = depth + 1;
+      {
+        depth = depth + 1;
+        assert(depth == 4, "four levels deep");
+      }
+    }
+  }
+}
+
+print "All scoping tests passed.";

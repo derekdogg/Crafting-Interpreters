@@ -1,0 +1,6 @@
+// Error: Stack overflow from infinite recursion
+// expect: runtime error
+fun recurse() {
+  recurse();
+}
+recurse();

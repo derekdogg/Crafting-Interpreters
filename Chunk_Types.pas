@@ -1417,7 +1417,9 @@ begin
   // can safely protect unrooted objects (same pattern as book's fixed stack)
   if Stack.Count >= Stack.CurrentCapacity then
   begin
+    Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'pushStack: capacity overflow');
     NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
+    Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'pushStack: byte size overflow');
     ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
     // Zero new portion
     FillChar(Stack.Values[Stack.CurrentCapacity],
@@ -1934,12 +1936,8 @@ begin
 
   ValuePtr := ValueArray.Values;
 
-
-
     for i := 0 to ValueArray.Count - 1 do
     begin
-      inc(ValuePtr,i);
-
       // format value as general format with up to 12 significant digits
       valStr := Format('%.12g', [ValuePtr^.NumberValue]);
 
@@ -1948,6 +1946,7 @@ begin
 
       // Index + fixed-width value
       strings.Add(Format('%.6d  %s', [i, valStr]));
+      Inc(ValuePtr);
     end;
 
 end;
@@ -2072,8 +2071,11 @@ var
   end;
 
   function ReadConstantFr: TValue;
+  var idx: Byte;
   begin
-    Result := frame^.closure^.func^.chunk^.Constants^.Values[ReadByteFr];
+    idx := ReadByteFr;
+    Assert(idx < frame^.closure^.func^.chunk^.Constants^.Count, 'ReadConstantFr: constant index out of bounds');
+    Result := frame^.closure^.func^.chunk^.Constants^.Values[idx];
   end;
 
   function CallValue(callee : TValue; argCnt : byte) : boolean;
@@ -2111,6 +2113,7 @@ var
         Exit;
       end;
       // pop args + callee
+      Assert(VM.Stack.Count >= argCnt + 1, 'CallValue: stack underflow popping native args');
       VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
       VM.Stack.Count := VM.Stack.Count - (argCnt + 1);
       pushStack(VM.Stack, nativeResult, VM.MemTracker);
@@ -2124,6 +2127,7 @@ var
   end;
 
 begin
+    Result := Default(TInterpretResult);
     AssertVMIsAssigned;
     AssertStackIsAssigned(vm.Stack);
     AssertMemTrackerIsNotNil(vm.MemTracker);
@@ -2148,6 +2152,7 @@ begin
           i := ReadByteFr;
           i := i or (ReadByteFr shl 8);
           i := i or (ReadByteFr shl 16);
+          Assert((i >= 0) and (i < frame^.closure^.func^.chunk^.Constants^.Count), 'OP_CONSTANT_LONG: constant index out of bounds');
           value := frame^.closure^.func^.chunk^.Constants^.Values[i];
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
@@ -2279,11 +2284,13 @@ begin
 
         OP_GET_LOCAL: begin
           slot := ReadByteFr;
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop), 'OP_GET_LOCAL: slot out of stack bounds');
           pushStack(vm.Stack, frame^.slots[slot], vm.MemTracker);
         end;
 
         OP_SET_LOCAL: begin
           slot := ReadByteFr;
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop), 'OP_SET_LOCAL: slot out of stack bounds');
           frame^.slots[slot] := peekStack(vm.Stack);
         end;
 
@@ -2291,6 +2298,7 @@ begin
           offset := ReadByteFr shl 8;
           offset := offset or ReadByteFr;
           Inc(frame^.ip, offset);
+          Assert(NativeUInt(frame^.ip) <= NativeUInt(frame^.closure^.func^.chunk^.Code) + NativeUInt(frame^.closure^.func^.chunk^.Count), 'OP_JUMP: ip past end of code');
         end;
 
         OP_JUMP_IF_FALSE: begin
@@ -2304,6 +2312,7 @@ begin
           offset := ReadByteFr shl 8;
           offset := offset or ReadByteFr;
           Dec(frame^.ip, offset);
+          Assert(NativeUInt(frame^.ip) >= NativeUInt(frame^.closure^.func^.chunk^.Code), 'OP_LOOP: ip before start of code');
         end;
 
         OP_DEFINE_GLOBAL: begin
@@ -2324,7 +2333,9 @@ begin
         end;
 
         OP_CLOSURE: begin
-          func := pObjFunction(ReadConstantFr.ObjValue);
+          value := ReadConstantFr;
+          Assert(isFunction(value), 'OP_CLOSURE: constant is not a function');
+          func := pObjFunction(value.ObjValue);
           closure := newClosure(func, VM.MemTracker);
           pushStack(vm.Stack, CreateObject(pObj(closure)), vm.MemTracker);
           for i := 0 to closure^.upvalueCount - 1 do
@@ -2335,17 +2346,24 @@ begin
               closure^.upvalues^[i] := captureUpvalue(
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
             else
+            begin
+              Assert(index < frame^.closure^.upvalueCount, 'OP_CLOSURE: upvalue index out of bounds');
               closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
+            end;
           end;
         end;
 
         OP_GET_UPVALUE: begin
           slot := ReadByteFr;
+          Assert(slot < frame^.closure^.upvalueCount, 'OP_GET_UPVALUE: slot out of bounds');
+          Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_GET_UPVALUE: upvalue is nil');
           pushStack(vm.Stack, frame^.closure^.upvalues^[slot]^.location^, vm.MemTracker);
         end;
 
         OP_SET_UPVALUE: begin
           slot := ReadByteFr;
+          Assert(slot < frame^.closure^.upvalueCount, 'OP_SET_UPVALUE: slot out of bounds');
+          Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_SET_UPVALUE: upvalue is nil');
           frame^.closure^.upvalues^[slot]^.location^ := peekStack(vm.Stack);
         end;
 
@@ -2369,10 +2387,17 @@ begin
 
           // Discard the returning function's stack window
           VM.Stack.StackTop := frame^.slots;
+          Assert(NativeUInt(VM.Stack.StackTop) >= NativeUInt(VM.Stack.Values), 'OP_RETURN: StackTop before Values');
           VM.Stack.Count := (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue);
           pushStack(vm.Stack, value, vm.MemTracker);
 
           frame := @VM.Frames[VM.FrameCount - 1];
+        end;
+      else
+        begin
+          runtimeError('Unknown opcode: ' + IntToStr(instruction));
+          result.code := INTERPRET_RUNTIME_ERROR;
+          exit;
         end;
       end;
     end;
@@ -2387,9 +2412,11 @@ begin
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
   Stack.StackTop := Stack.Values;
+  Stack.Count := 0;
   
   // ---- Exit assertions ----
   Assert(Stack.StackTop = Stack.Values, 'ResetStack exit: StackTop should equal Values');
+  Assert(Stack.Count = 0, 'ResetStack exit: Count should be 0');
 end;
 
 
@@ -2713,6 +2740,7 @@ begin
       newCapacity := VM.MemTracker.GrayCapacity * 2;
     VM.MemTracker.GrayCapacity := newCapacity;
     // Use raw ReallocMem to avoid recursive GC trigger
+    Assert(VM.MemTracker.GrayCapacity <= MaxInt div SizeOf(pObj), 'MarkObject: GrayStack byte size overflow');
     ReallocMem(VM.MemTracker.GrayStack, SizeOf(pObj) * VM.MemTracker.GrayCapacity);
     // ---- Mid assertions ----
     Assert(VM.MemTracker.GrayStack <> nil, 'MarkObject: GrayStack is nil after realloc');
@@ -2943,7 +2971,10 @@ begin
   TableRemoveWhite(VM.Strings);
   Sweep;
 
-  VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR;
+  if VM.MemTracker.BytesAllocated <= MaxInt div GC_HEAP_GROW_FACTOR then
+    VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR
+  else
+    VM.MemTracker.NextGC := MaxInt;
   if VM.MemTracker.NextGC < 1024 then
     VM.MemTracker.NextGC := 1024;
 
@@ -2980,6 +3011,7 @@ procedure FreeMemTracker(var MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
+  Assert(MemTracker.GrayStack = nil, 'FreeMemTracker: GrayStack not freed before dispose');
   dispose(MemTracker);
   MemTracker := nil;  // Note here we don't dispose of the roots.stack reference.
   
@@ -4016,6 +4048,7 @@ begin
   local := @Current^.locals[Current^.localCount];
   Inc(Current^.localCount);
   local^.depth := 0;
+  local^.isCaptured := false;
   local^.name.start := nil;
   local^.name.length := 0;
 end;

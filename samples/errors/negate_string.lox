@@ -1,0 +1,3 @@
+// Error: Cannot negate a string
+// expect: runtime error
+print -"hello";
