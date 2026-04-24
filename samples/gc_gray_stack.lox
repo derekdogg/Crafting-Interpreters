@@ -1,0 +1,76 @@
+// GC Gray Stack
+// Forces the gray stack to grow during marking by keeping many live heap objects.
+// If GROW_ARRAY in the gray stack re-enters collectGarbage, this crashes.
+
+// --- Build a chain of 150 closures via recursion ---
+// Each frame creates a closure + upvalue + string = 450+ gray objects.
+
+fun buildChain(n, tail) {
+  if (n <= 0) return tail;
+
+  var myVal = "v" + "a" + "l";
+  fun link() { return myVal; }
+
+  return buildChain(n - 1, link);
+}
+
+var chainTail = buildChain(150, nil);
+collectGarbage();
+assert(chainTail() == "val", "chain tail corrupted after gray stack growth");
+
+// --- Many closures alive via globals ---
+
+fun makeKeeper(val) {
+  var captured = val;
+  fun get() { return captured; }
+  return get;
+}
+
+var k00 = makeKeeper("s00");
+var k01 = makeKeeper("s01");
+var k02 = makeKeeper("s02");
+var k03 = makeKeeper("s03");
+var k04 = makeKeeper("s04");
+var k05 = makeKeeper("s05");
+var k06 = makeKeeper("s06");
+var k07 = makeKeeper("s07");
+var k08 = makeKeeper("s08");
+var k09 = makeKeeper("s09");
+var k10 = makeKeeper("s10");
+var k11 = makeKeeper("s11");
+var k12 = makeKeeper("s12");
+var k13 = makeKeeper("s13");
+var k14 = makeKeeper("s14");
+var k15 = makeKeeper("s15");
+var k16 = makeKeeper("s16");
+var k17 = makeKeeper("s17");
+var k18 = makeKeeper("s18");
+var k19 = makeKeeper("s19");
+var k20 = makeKeeper("s20");
+var k21 = makeKeeper("s21");
+var k22 = makeKeeper("s22");
+var k23 = makeKeeper("s23");
+var k24 = makeKeeper("s24");
+var k25 = makeKeeper("s25");
+var k26 = makeKeeper("s26");
+var k27 = makeKeeper("s27");
+var k28 = makeKeeper("s28");
+var k29 = makeKeeper("s29");
+var k30 = makeKeeper("s30");
+var k31 = makeKeeper("s31");
+var k32 = makeKeeper("s32");
+var k33 = makeKeeper("s33");
+var k34 = makeKeeper("s34");
+var k35 = makeKeeper("s35");
+var k36 = makeKeeper("s36");
+var k37 = makeKeeper("s37");
+var k38 = makeKeeper("s38");
+var k39 = makeKeeper("s39");
+
+collectGarbage();
+
+assert(k00() == "s00", "keeper 00 lost");
+assert(k19() == "s19", "keeper 19 lost");
+assert(k39() == "s39", "keeper 39 lost");
+
+print "All gc_gray_stack tests passed.";
