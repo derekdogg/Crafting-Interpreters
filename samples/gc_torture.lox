@@ -175,4 +175,47 @@ for (var i = 0; i < 100; i = i + 1) {
 }
 assert(true, "alternating alloc/collect crashed");
 
+// --- Open upvalues during deep recursion ---
+// Each frame captures a local, creating a long open upvalue linked list.
+// GC fires mid-recursion and must walk the entire list safely.
+
+fun deepCapture(n) {
+  var local = n;
+  fun getter() { return local; }
+
+  if (n <= 0) {
+    collectGarbage();  // GC with many open upvalues on the linked list
+    return getter();
+  }
+
+  // Allocate to create GC pressure while upvalue list is long
+  var junk = "pressure" + "alloc";
+  var result = deepCapture(n - 1);
+
+  // Verify our own captured local survived
+  assert(getter() == n, "open upvalue lost during deep recursion");
+  return result;
+}
+
+assert(deepCapture(30) == 0, "deepCapture base case wrong");
+
+// --- Open upvalues with interleaved GC at multiple depths ---
+
+fun recurseAndCollect(n) {
+  var captured = n;
+  fun get() { return captured; }
+
+  if (n <= 0) return get();
+
+  if (n == 15) collectGarbage();
+  if (n == 10) collectGarbage();
+  if (n == 5) collectGarbage();
+
+  var result = recurseAndCollect(n - 1);
+  assert(get() == n, "upvalue at depth " + "N" + " corrupted");
+  return result;
+}
+
+assert(recurseAndCollect(20) == 0, "recurseAndCollect base wrong");
+
 print "All gc_torture tests passed.";
