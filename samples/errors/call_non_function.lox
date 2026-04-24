@@ -1,0 +1,4 @@
+// Error: Calling a non-function value
+// expect: runtime error
+var x = 1;
+x();

@@ -1,0 +1,3 @@
+// Error: Cannot add different types
+// expect: runtime error
+print "hello" + 1;
