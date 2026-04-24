@@ -33,20 +33,48 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 Chunk_Types.pas      — Core unit: scanner, parser, compiler, VM, GC, hash table
 Main.pas / Main.dfm  — GUI form with interpreter REPL and auto-run test suite
 InterpreterGui.dpr   — Delphi project file
-samples/             — Lox test programs (auto-run on startup)
+samples/             — Custom Lox test programs (auto-run on startup)
 samples/errors/      — Expected-error test programs (auto-run on startup)
+test/                — Official Crafting Interpreters test suite (auto-run on startup)
 ```
 
 ## Testing
 
-All sample files run automatically when the application starts:
+All tests run automatically when the application starts. Results are displayed in Memo2. You can also type Lox code into Memo1 and click **Run**.
 
-- **15 samples** in `samples/` — expected to pass (`INTERPRET_OK`)
-- **8 error tests** in `samples/errors/` — expected to produce runtime errors
+### Official Test Suite
 
-Results are displayed in Memo2. You can also type Lox code into Memo1 and click **Run**.
+148 tests from the [official Crafting Interpreters test suite](https://github.com/munificent/craftinginterpreters/tree/master/test), matching the **chap26_garbage** level (all features except classes/inheritance). Tests are organized across 20 categories:
 
-### Sample Programs
+| Category | Tests | Coverage |
+|----------|-------|----------|
+| assignment | 8 | Associativity, globals, locals, grouping, invalid targets |
+| block | 2 | Empty blocks, scoping |
+| bool | 2 | Equality, logical not |
+| call | 4 | Calling non-callable types (bool, nil, num, string) |
+| closure | 11 | Capture, shadowing, nesting, reuse, unused closures |
+| comments | 4 | Line comments, EOF, unicode |
+| for | 11 | Syntax, scoping, closures, return, error recovery |
+| function | 12 | Parameters, recursion, mutual recursion, limits, errors |
+| if | 10 | If/else, dangling else, truth, var/fun in branches |
+| limit | 4 | Stack overflow, loop too large, too many locals/upvalues |
+| logical_operator | 4 | And/or evaluation, truthiness |
+| nil | 1 | Literal nil |
+| number | 3 | Literals, leading dot, NaN equality |
+| operator | 20 | Arithmetic, comparison, equality, type errors |
+| print | 1 | Missing argument error |
+| regression | 1 | Bug regression (#40) |
+| return | 6 | Return from functions, after control flow, at top level |
+| string | 4 | Literals, multiline, unterminated, error after multiline |
+| variable | 18 | Scoping, shadowing, undefined, duplicate, initializer |
+| while | 7 | Syntax, closures, return, var/fun in body |
+| *(top-level)* | 3 | Precedence, empty file, unexpected character |
+
+The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N] Error` comments from each `.lox` file and verifies actual output matches expected results.
+
+### Custom Sample Tests
+
+**14 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
 | File | Coverage |
 |------|----------|
@@ -65,11 +93,10 @@ Results are displayed in Memo2. You can also type Lox code into Memo1 and click 
 | gc_reclaim.lox | Memory reclamation verified via `bytesAllocated()` |
 | gc_stress.lox | Heavy allocation patterns under GC pressure |
 
-### Error Tests
+**8 error tests** in `samples/errors/` — expected to produce errors:
 
 | File | Expected Error |
 |------|---------------|
-| division_by_zero.lox | Division by zero |
 | type_error_add.lox | String + number type mismatch |
 | negate_string.lox | Negate non-number |
 | multiply_booleans.lox | Multiply non-numbers |
