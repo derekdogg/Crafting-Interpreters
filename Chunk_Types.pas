@@ -60,8 +60,12 @@ const
   OP_SET_UPVALUE = 28;
   OP_CLOSE_UPVALUE = 29;
   OP_MODULO = 30;
+  OP_DEFINE_GLOBAL_LONG = 31;
+  OP_GET_GLOBAL_LONG = 32;
+  OP_SET_GLOBAL_LONG = 33;
+  OP_CLOSURE_LONG = 34;
 
-  OP_STRINGS : array[0..30] of string = (
+  OP_STRINGS : array[0..34] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -92,7 +96,11 @@ const
     'OP_GET_UPVALUE',
     'OP_SET_UPVALUE',
     'OP_CLOSE_UPVALUE',
-    'OP_MODULO');
+    'OP_MODULO',
+    'OP_DEFINE_GLOBAL_LONG',
+    'OP_GET_GLOBAL_LONG',
+    'OP_SET_GLOBAL_LONG',
+    'OP_CLOSURE_LONG');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 64;
@@ -2139,6 +2147,16 @@ var
     Result := frame^.closure^.func^.chunk^.Constants^.Values[idx];
   end;
 
+  function ReadConstantLongFr: TValue;
+  var idx: Integer;
+  begin
+    idx := ReadByteFr;
+    idx := idx or (ReadByteFr shl 8);
+    idx := idx or (ReadByteFr shl 16);
+    Assert((idx >= 0) and (idx < frame^.closure^.func^.chunk^.Constants^.Count), 'ReadConstantLongFr: constant index out of bounds');
+    Result := frame^.closure^.func^.chunk^.Constants^.Values[idx];
+  end;
+
   function CallValue(callee : TValue; argCnt : byte) : boolean;
   begin
     if isClosure(callee) then
@@ -2461,6 +2479,58 @@ begin
           pushStack(vm.Stack, value, vm.MemTracker);
 
           frame := @VM.Frames[VM.FrameCount - 1];
+        end;
+
+        OP_DEFINE_GLOBAL_LONG: begin
+          value := ReadConstantLongFr;
+          AssertValueIsString(value);
+          TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker);
+          popStack(vm.Stack);
+        end;
+
+        OP_GET_GLOBAL_LONG: begin
+          value := ReadConstantLongFr;
+          AssertValueIsString(value);
+          if not TableGet(vm.Globals, ValueToString(value), ValueB) then
+          begin
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          pushStack(vm.Stack, ValueB, vm.MemTracker);
+        end;
+
+        OP_SET_GLOBAL_LONG: begin
+          value := ReadConstantLongFr;
+          AssertValueIsString(value);
+          if TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker) then
+          begin
+            TableDelete(vm.Globals, ValueToString(value));
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+        end;
+
+        OP_CLOSURE_LONG: begin
+          value := ReadConstantLongFr;
+          Assert(isFunction(value), 'OP_CLOSURE_LONG: constant is not a function');
+          func := pObjFunction(value.ObjValue);
+          closure := newClosure(func, VM.MemTracker);
+          pushStack(vm.Stack, CreateObject(pObj(closure)), vm.MemTracker);
+          for i := 0 to closure^.upvalueCount - 1 do
+          begin
+            isLocal := ReadByteFr;
+            index := ReadByteFr;
+            if isLocal = 1 then
+              closure^.upvalues^[i] := captureUpvalue(
+                pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
+            else
+            begin
+              Assert(index < frame^.closure^.upvalueCount, 'OP_CLOSURE_LONG: upvalue index out of bounds');
+              closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
+            end;
+          end;
         end;
       else
         begin
@@ -4531,7 +4601,7 @@ begin
   Result := -1;
 end;
 
-function identifierConstant(const name : TToken) : byte;
+function identifierConstant(const name : TToken) : integer;
 var
   strObj : pObjString;
   idx : integer;
@@ -4541,11 +4611,10 @@ begin
   pushStack(VM.Stack, StringToValue(strObj), VM.MemTracker);
   idx := AddValueConstant(CurrentChunk.Constants, StringToValue(strObj), VM.MemTracker);
   popStack(VM.Stack);
-  Assert(idx <= High(Byte), 'Too many constants in one chunk');
-  Result := Byte(idx);
+  Result := idx;
 end;
 
-function parseVariable(const errorMsg : PAnsiChar) : byte;
+function parseVariable(const errorMsg : PAnsiChar) : integer;
 begin
   consume(TOKEN_IDENTIFIER, errorMsg);
 
@@ -4556,20 +4625,33 @@ begin
   Result := identifierConstant(parser.previous);
 end;
 
-procedure defineVariable(global : byte);
+procedure defineVariable(global : integer);
+var
+  IntBytes : TIntToByteResult;
 begin
   if Current^.scopeDepth > 0 then
   begin
     markInitialized();
     Exit; // local is already on the stack
   end;
-  emitByte(OP_DEFINE_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
-  emitByte(global, CurrentChunk, parser.previous.line, vm.MemTracker);
+  if global <= High(Byte) then
+  begin
+    emitByte(OP_DEFINE_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(global), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    emitByte(OP_DEFINE_GLOBAL_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+    IntBytes := IntToBytes(global);
+    emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
 end;
 
 procedure varDeclaration();
 var
-  global : byte;
+  global : integer;
 begin
   global := parseVariable('Expect variable name.');
 
@@ -4586,8 +4668,11 @@ procedure namedVariable(name : TToken; canAssign : Boolean);
 var
   arg : integer;
   getOp, setOp : byte;
+  IntBytes : TIntToByteResult;
+  isGlobalLong : boolean;
 begin
   arg := resolveLocal(Current, name);
+  isGlobalLong := false;
   if arg <> -1 then
   begin
     getOp := OP_GET_LOCAL;
@@ -4604,8 +4689,17 @@ begin
     else
     begin
       arg := identifierConstant(name);
-      getOp := OP_GET_GLOBAL;
-      setOp := OP_SET_GLOBAL;
+      if arg <= High(Byte) then
+      begin
+        getOp := OP_GET_GLOBAL;
+        setOp := OP_SET_GLOBAL;
+      end
+      else
+      begin
+        getOp := OP_GET_GLOBAL_LONG;
+        setOp := OP_SET_GLOBAL_LONG;
+        isGlobalLong := true;
+      end;
     end;
   end;
 
@@ -4613,12 +4707,28 @@ begin
   begin
     Expression();
     emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+    if isGlobalLong then
+    begin
+      IntBytes := IntToBytes(arg);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+      emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else
   begin
     emitByte(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+    if isGlobalLong then
+    begin
+      IntBytes := IntToBytes(arg);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+      emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
 end;
 
@@ -4666,8 +4776,10 @@ procedure functionBody(funcType : TFunctionType);
 var
   compiler : pCompiler;
   func : pObjFunction;
-  i : byte;
+  i : integer;
   j : integer;
+  closureIdx : integer;
+  closureBytes : TIntToByteResult;
 begin
   // ---- Entry assertions ----
   AssertVMIsAssigned;
@@ -4700,9 +4812,20 @@ begin
   // Push func onto stack to protect from GC until stored in constants.
   pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
 
-  emitByte(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
-  emitByte(AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker),
-    CurrentChunk, parser.previous.line, vm.MemTracker);
+  closureIdx := AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker);
+  if closureIdx <= High(Byte) then
+  begin
+    emitByte(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(closureIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    emitByte(OP_CLOSURE_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+    closureBytes := IntToBytes(closureIdx);
+    emitByte(closureBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(closureBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(closureBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
 
   for j := 0 to func^.upvalueCount - 1 do
   begin
@@ -4720,7 +4843,7 @@ end;
 
 procedure funDeclaration();
 var
-  global : byte;
+  global : integer;
 begin
   Assert(Current <> nil, 'funDeclaration: Current compiler is nil');
   global := parseVariable('Expect function name.');
