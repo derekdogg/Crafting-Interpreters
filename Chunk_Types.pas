@@ -1934,12 +1934,8 @@ begin
 
   ValuePtr := ValueArray.Values;
 
-
-
     for i := 0 to ValueArray.Count - 1 do
     begin
-      inc(ValuePtr,i);
-
       // format value as general format with up to 12 significant digits
       valStr := Format('%.12g', [ValuePtr^.NumberValue]);
 
@@ -1948,6 +1944,7 @@ begin
 
       // Index + fixed-width value
       strings.Add(Format('%.6d  %s', [i, valStr]));
+      Inc(ValuePtr);
     end;
 
 end;
@@ -2072,8 +2069,11 @@ var
   end;
 
   function ReadConstantFr: TValue;
+  var idx: Byte;
   begin
-    Result := frame^.closure^.func^.chunk^.Constants^.Values[ReadByteFr];
+    idx := ReadByteFr;
+    Assert(idx < frame^.closure^.func^.chunk^.Constants^.Count, 'ReadConstantFr: constant index out of bounds');
+    Result := frame^.closure^.func^.chunk^.Constants^.Values[idx];
   end;
 
   function CallValue(callee : TValue; argCnt : byte) : boolean;
@@ -2148,6 +2148,7 @@ begin
           i := ReadByteFr;
           i := i or (ReadByteFr shl 8);
           i := i or (ReadByteFr shl 16);
+          Assert((i >= 0) and (i < frame^.closure^.func^.chunk^.Constants^.Count), 'OP_CONSTANT_LONG: constant index out of bounds');
           value := frame^.closure^.func^.chunk^.Constants^.Values[i];
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
@@ -2324,7 +2325,9 @@ begin
         end;
 
         OP_CLOSURE: begin
-          func := pObjFunction(ReadConstantFr.ObjValue);
+          value := ReadConstantFr;
+          Assert(isFunction(value), 'OP_CLOSURE: constant is not a function');
+          func := pObjFunction(value.ObjValue);
           closure := newClosure(func, VM.MemTracker);
           pushStack(vm.Stack, CreateObject(pObj(closure)), vm.MemTracker);
           for i := 0 to closure^.upvalueCount - 1 do
@@ -2335,17 +2338,24 @@ begin
               closure^.upvalues^[i] := captureUpvalue(
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
             else
+            begin
+              Assert(index < frame^.closure^.upvalueCount, 'OP_CLOSURE: upvalue index out of bounds');
               closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
+            end;
           end;
         end;
 
         OP_GET_UPVALUE: begin
           slot := ReadByteFr;
+          Assert(slot < frame^.closure^.upvalueCount, 'OP_GET_UPVALUE: slot out of bounds');
+          Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_GET_UPVALUE: upvalue is nil');
           pushStack(vm.Stack, frame^.closure^.upvalues^[slot]^.location^, vm.MemTracker);
         end;
 
         OP_SET_UPVALUE: begin
           slot := ReadByteFr;
+          Assert(slot < frame^.closure^.upvalueCount, 'OP_SET_UPVALUE: slot out of bounds');
+          Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_SET_UPVALUE: upvalue is nil');
           frame^.closure^.upvalues^[slot]^.location^ := peekStack(vm.Stack);
         end;
 
@@ -2387,9 +2397,11 @@ begin
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
   Stack.StackTop := Stack.Values;
+  Stack.Count := 0;
   
   // ---- Exit assertions ----
   Assert(Stack.StackTop = Stack.Values, 'ResetStack exit: StackTop should equal Values');
+  Assert(Stack.Count = 0, 'ResetStack exit: Count should be 0');
 end;
 
 
@@ -4016,6 +4028,7 @@ begin
   local := @Current^.locals[Current^.localCount];
   Inc(Current^.localCount);
   local^.depth := 0;
+  local^.isCaptured := false;
   local^.name.start := nil;
   local^.name.length := 0;
 end;
