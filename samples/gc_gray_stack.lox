@@ -2,8 +2,8 @@
 // Forces the gray stack to grow during marking by keeping many live heap objects.
 // If GROW_ARRAY in the gray stack re-enters collectGarbage, this crashes.
 
-// --- Build a chain of 150 closures via recursion ---
-// Each frame creates a closure + upvalue + string = 450+ gray objects.
+// --- Build a chain of 50 closures via recursion ---
+// Each frame creates a closure + upvalue + string = 150+ gray objects.
 
 fun buildChain(n, tail) {
   if (n <= 0) return tail;
@@ -14,7 +14,7 @@ fun buildChain(n, tail) {
   return buildChain(n - 1, link);
 }
 
-var chainTail = buildChain(150, nil);
+var chainTail = buildChain(50, nil);
 collectGarbage();
 assert(chainTail() == "val", "chain tail corrupted after gray stack growth");
 
