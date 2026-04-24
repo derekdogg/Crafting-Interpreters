@@ -1,0 +1,104 @@
+// ============================================================
+// arrays.lox — Array basics: create, push, get, set, pop,
+//              remove, mixed types, identity, print
+// Each test group is wrapped in a function to stay within
+// the 256-constant-per-chunk limit.
+// ============================================================
+
+fun testBasics() {
+  var a = newArray();
+  assert(arrayLen(a) == 0);
+  arrayPush(a, 10);
+  arrayPush(a, 20);
+  arrayPush(a, 30);
+  assert(arrayLen(a) == 3);
+  assert(arrayGet(a, 0) == 10);
+  assert(arrayGet(a, 1) == 20);
+  assert(arrayGet(a, 2) == 30);
+  print "PASS: basics";
+}
+
+fun testSetAndPop() {
+  var a = newArray();
+  arrayPush(a, 10);
+  arrayPush(a, 20);
+  arrayPush(a, 30);
+  arraySet(a, 1, 99);
+  assert(arrayGet(a, 1) == 99);
+  var popped = arrayPop(a);
+  assert(popped == 30);
+  assert(arrayLen(a) == 2);
+  print "PASS: set and pop";
+}
+
+fun testRemove() {
+  var a = newArray();
+  arrayPush(a, 10);
+  arrayPush(a, 99);
+  arrayPush(a, 40);
+  arrayPush(a, 50);
+  var removed = arrayRemove(a, 1);
+  assert(removed == 99);
+  assert(arrayLen(a) == 3);
+  assert(arrayGet(a, 0) == 10);
+  assert(arrayGet(a, 1) == 40);
+  assert(arrayGet(a, 2) == 50);
+  print "PASS: remove";
+}
+
+fun testMixedTypes() {
+  var b = newArray();
+  arrayPush(b, 42);
+  arrayPush(b, "hello");
+  arrayPush(b, true);
+  arrayPush(b, nil);
+  assert(arrayGet(b, 0) == 42);
+  assert(arrayGet(b, 1) == "hello");
+  assert(arrayGet(b, 2) == true);
+  assert(arrayGet(b, 3) == nil);
+  print b;
+  print "PASS: mixed types";
+}
+
+fun testIdentity() {
+  var a = newArray();
+  var b = newArray();
+  arrayPush(a, 1);
+  arrayPush(b, 1);
+  assert(a == a);
+  assert(!(a == b));
+  print "PASS: identity";
+}
+
+fun testNested() {
+  var outer = newArray();
+  var inner1 = newArray();
+  var inner2 = newArray();
+  arrayPush(inner1, 1);
+  arrayPush(inner1, 2);
+  arrayPush(inner2, 3);
+  arrayPush(inner2, 4);
+  arrayPush(outer, inner1);
+  arrayPush(outer, inner2);
+  assert(arrayLen(outer) == 2);
+  var first = arrayGet(outer, 0);
+  assert(arrayGet(first, 0) == 1);
+  assert(arrayGet(first, 1) == 2);
+  print "PASS: nested";
+}
+
+fun testPushReturn() {
+  var d = newArray();
+  var ret = arrayPush(d, 100);
+  assert(arrayGet(ret, 0) == 100);
+  print "PASS: push returns array";
+}
+
+testBasics();
+testSetAndPop();
+testRemove();
+testMixedTypes();
+testIdentity();
+testNested();
+testPushReturn();
+print "ALL ARRAY TESTS PASSED";

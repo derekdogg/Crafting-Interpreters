@@ -1,0 +1,3 @@
+// Error: arrayPop on empty array should produce runtime error
+var a = newArray();
+arrayPop(a);
