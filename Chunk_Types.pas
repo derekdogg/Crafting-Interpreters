@@ -1417,7 +1417,9 @@ begin
   // can safely protect unrooted objects (same pattern as book's fixed stack)
   if Stack.Count >= Stack.CurrentCapacity then
   begin
+    Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'pushStack: capacity overflow');
     NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
+    Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'pushStack: byte size overflow');
     ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
     // Zero new portion
     FillChar(Stack.Values[Stack.CurrentCapacity],
@@ -2111,6 +2113,7 @@ var
         Exit;
       end;
       // pop args + callee
+      Assert(VM.Stack.Count >= argCnt + 1, 'CallValue: stack underflow popping native args');
       VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
       VM.Stack.Count := VM.Stack.Count - (argCnt + 1);
       pushStack(VM.Stack, nativeResult, VM.MemTracker);
@@ -2124,6 +2127,7 @@ var
   end;
 
 begin
+    Result := Default(TInterpretResult);
     AssertVMIsAssigned;
     AssertStackIsAssigned(vm.Stack);
     AssertMemTrackerIsNotNil(vm.MemTracker);
@@ -2280,11 +2284,13 @@ begin
 
         OP_GET_LOCAL: begin
           slot := ReadByteFr;
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop), 'OP_GET_LOCAL: slot out of stack bounds');
           pushStack(vm.Stack, frame^.slots[slot], vm.MemTracker);
         end;
 
         OP_SET_LOCAL: begin
           slot := ReadByteFr;
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop), 'OP_SET_LOCAL: slot out of stack bounds');
           frame^.slots[slot] := peekStack(vm.Stack);
         end;
 
@@ -2292,6 +2298,7 @@ begin
           offset := ReadByteFr shl 8;
           offset := offset or ReadByteFr;
           Inc(frame^.ip, offset);
+          Assert(NativeUInt(frame^.ip) <= NativeUInt(frame^.closure^.func^.chunk^.Code) + NativeUInt(frame^.closure^.func^.chunk^.Count), 'OP_JUMP: ip past end of code');
         end;
 
         OP_JUMP_IF_FALSE: begin
@@ -2305,6 +2312,7 @@ begin
           offset := ReadByteFr shl 8;
           offset := offset or ReadByteFr;
           Dec(frame^.ip, offset);
+          Assert(NativeUInt(frame^.ip) >= NativeUInt(frame^.closure^.func^.chunk^.Code), 'OP_LOOP: ip before start of code');
         end;
 
         OP_DEFINE_GLOBAL: begin
@@ -2383,6 +2391,12 @@ begin
           pushStack(vm.Stack, value, vm.MemTracker);
 
           frame := @VM.Frames[VM.FrameCount - 1];
+        end;
+      else
+        begin
+          runtimeError('Unknown opcode: ' + IntToStr(instruction));
+          result.code := INTERPRET_RUNTIME_ERROR;
+          exit;
         end;
       end;
     end;
@@ -2955,7 +2969,10 @@ begin
   TableRemoveWhite(VM.Strings);
   Sweep;
 
-  VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR;
+  if VM.MemTracker.BytesAllocated <= MaxInt div GC_HEAP_GROW_FACTOR then
+    VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR
+  else
+    VM.MemTracker.NextGC := MaxInt;
   if VM.MemTracker.NextGC < 1024 then
     VM.MemTracker.NextGC := 1024;
 
