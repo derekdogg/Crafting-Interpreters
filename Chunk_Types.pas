@@ -2387,6 +2387,7 @@ begin
 
           // Discard the returning function's stack window
           VM.Stack.StackTop := frame^.slots;
+          Assert(NativeUInt(VM.Stack.StackTop) >= NativeUInt(VM.Stack.Values), 'OP_RETURN: StackTop before Values');
           VM.Stack.Count := (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue);
           pushStack(vm.Stack, value, vm.MemTracker);
 
@@ -2739,6 +2740,7 @@ begin
       newCapacity := VM.MemTracker.GrayCapacity * 2;
     VM.MemTracker.GrayCapacity := newCapacity;
     // Use raw ReallocMem to avoid recursive GC trigger
+    Assert(VM.MemTracker.GrayCapacity <= MaxInt div SizeOf(pObj), 'MarkObject: GrayStack byte size overflow');
     ReallocMem(VM.MemTracker.GrayStack, SizeOf(pObj) * VM.MemTracker.GrayCapacity);
     // ---- Mid assertions ----
     Assert(VM.MemTracker.GrayStack <> nil, 'MarkObject: GrayStack is nil after realloc');
@@ -3009,6 +3011,7 @@ procedure FreeMemTracker(var MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
+  Assert(MemTracker.GrayStack = nil, 'FreeMemTracker: GrayStack not freed before dispose');
   dispose(MemTracker);
   MemTracker := nil;  // Note here we don't dispose of the roots.stack reference.
   
