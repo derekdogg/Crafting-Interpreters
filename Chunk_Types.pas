@@ -11,7 +11,7 @@ uses
 const
 
   START_CAPACITY =  256;
-  MAX_SIZE       =  START_CAPACITY * 256;
+  MAX_SIZE       =  MaxInt div 2;
   GROWTH_FACTOR  =  2;
   GC_HEAP_GROW_FACTOR = 2;
 
@@ -347,7 +347,7 @@ type
 
 
   //Prat parsing structs
-  TParseFn = procedure;
+  TParseFn = procedure(canAssign: Boolean);
 
   TParseRule = record
     prefix : TParseFn;
@@ -526,6 +526,7 @@ function  isAtEnd : boolean;
 function BinaryOp(Op: TBinaryOperation): boolean;
 function compile(source : pAnsiChar) : pObjClosure;
 procedure declaration();
+procedure synchronize();
 procedure varDeclaration();
 procedure funDeclaration();
 procedure returnStatement();
@@ -536,16 +537,16 @@ procedure ifStatement();
 procedure whileStatement();
 procedure forStatement();
 procedure expressionStatement();
-procedure Number();
-procedure grouping();
-procedure unary();
-procedure binary();
-procedure literal();
-procedure ParseString();
-procedure variable();
-procedure call();
-procedure and_();
-procedure or_();
+procedure Number(canAssign: Boolean);
+procedure grouping(canAssign: Boolean);
+procedure unary(canAssign: Boolean);
+procedure binary(canAssign: Boolean);
+procedure literal(canAssign: Boolean);
+procedure ParseString(canAssign: Boolean);
+procedure variable(canAssign: Boolean);
+procedure call(canAssign: Boolean);
+procedure and_(canAssign: Boolean);
+procedure or_(canAssign: Boolean);
 procedure beginScope();
 procedure endScope();
 function newFunction(MemTracker : pMemTracker) : pObjFunction;
@@ -1655,7 +1656,17 @@ end;
 function ValueToStr(const value : TValue) : String;
 begin
   case value.ValueKind of
-    vkNumber:  Result := FloatToStr(value.NumberValue);
+    vkNumber:
+      if IsNan(value.NumberValue) then
+        Result := 'nan'
+      else if IsInfinite(value.NumberValue) then
+      begin
+        if value.NumberValue > 0 then Result := 'inf' else Result := '-inf';
+      end
+      else if (value.NumberValue = 0) and (IsInfinite(1 / value.NumberValue)) and ((1 / value.NumberValue) < 0) then
+        Result := '-0'
+      else
+        Result := FloatToStr(value.NumberValue);
     vkBoolean: if value.BooleanValue then Result := 'true' else Result := 'false';
     vkNull:    Result := 'nil';
     vkObject:  begin
@@ -2550,12 +2561,6 @@ begin
   B := GetNumber(PopStack(vm.Stack));
   A := GetNumber(PopStack(vm.stack));
 
-  if B = 0 then
-  begin
-    RuntimeError('Division by zero.');
-    Exit(false);
-  end;
-
   PushStack(vm.stack,CreateNumber(A / B),vm.MemTracker);
   
   // ---- Exit assertions ----
@@ -3093,6 +3098,8 @@ end;
 
 procedure InitVM;
 begin
+  // Allow IEEE 754 semantics: NaN, Inf, -Inf instead of FPU exceptions
+  SetExceptionMask(exAllArithmeticExceptions);
   {$IFDEF DEBUG_LOG_GC}
   AssignFile(GCLogFile, 'gc.log');
   Rewrite(GCLogFile);
@@ -3141,6 +3148,9 @@ procedure FreeVM;
 begin
   AssertVMIsAssigned;
   AssertMemTrackerIsNotNil(VM.MemTracker);
+  {$IFDEF DEBUG_LOG_GC}
+  try
+  {$ENDIF}
   FreeStack(VM.Stack,Vm.MemTracker);
   FreeTable(VM.Globals, VM.MemTracker);
   FreeTable(VM.Strings, VM.MemTracker);
@@ -3158,23 +3168,28 @@ begin
   VM := nil;
 
   {$IFDEF DEBUG_LOG_GC}
-  GCLog('');
-  GCLog('== Summary ==');
-  GCLog(Format('  GC cycles:    %d', [GCLogCycles]));
-  GCLog(Format('  Allocations:  %d', [GCLogAllocations]));
-  GCLog(Format('  Frees:        %d', [GCLogFrees]));
-  GCLog(Format('  Marks:        %d', [GCLogMarks]));
-  GCLog(Format('  Blackens:     %d', [GCLogBlackens]));
-  if GCLogAllocations = GCLogFrees then
-    GCLog('  Leak check:   OK (allocations == frees)')
-  else
-    GCLog(Format('  Leak check:   LEAK (%d objects unaccounted)', [GCLogAllocations - GCLogFrees]));
-  if GCLogMarks = GCLogBlackens then
-    GCLog('  Trace check:  OK (marks == blackens)')
-  else
-    GCLog(Format('  Trace check:  MISMATCH (marks=%d, blackens=%d)', [GCLogMarks, GCLogBlackens]));
-  GCLog('== GC log finished ==');
-  CloseFile(GCLogFile);
+  finally
+  try
+    GCLog('');
+    GCLog('== Summary ==');
+    GCLog(Format('  GC cycles:    %d', [GCLogCycles]));
+    GCLog(Format('  Allocations:  %d', [GCLogAllocations]));
+    GCLog(Format('  Frees:        %d', [GCLogFrees]));
+    GCLog(Format('  Marks:        %d', [GCLogMarks]));
+    GCLog(Format('  Blackens:     %d', [GCLogBlackens]));
+    if GCLogAllocations = GCLogFrees then
+      GCLog('  Leak check:   OK (allocations == frees)')
+    else
+      GCLog(Format('  Leak check:   LEAK (%d objects unaccounted)', [GCLogAllocations - GCLogFrees]));
+    if GCLogMarks = GCLogBlackens then
+      GCLog('  Trace check:  OK (marks == blackens)')
+    else
+      GCLog(Format('  Trace check:  MISMATCH (marks=%d, blackens=%d)', [GCLogMarks, GCLogBlackens]));
+    GCLog('== GC log finished ==');
+  finally
+    CloseFile(GCLogFile);
+  end;
+  end;
   {$ENDIF}
 
   // ---- Exit assertions ----
@@ -3576,7 +3591,10 @@ begin
 
   s := s + ': ' + string(AnsiString(Msg));
 
-  Parser.ErrorStr := s;
+  if Parser.ErrorStr <> '' then
+    Parser.ErrorStr := Parser.ErrorStr + sLineBreak + s
+  else
+    Parser.ErrorStr := s;
   Parser.HadError := True;
 end;
 
@@ -3688,8 +3706,8 @@ end;
 
 procedure parsePrecedence(precedence : TPrecedence);
 var
-  prefixRule : procedure;
-  infixRule  : procedure;
+  prefixRule : TParseFn;
+  infixRule  : TParseFn;
   canAssign  : boolean;
 begin
   prefixRule := nil;
@@ -3705,7 +3723,7 @@ begin
   end;
 
   canAssign := precedence <= PREC_ASSIGNMENT;
-  prefixRule();
+  prefixRule(canAssign);
 
   //now do infix
   while (precedence <= (getRule(parser.current.tokenType).precedence)) do
@@ -3718,7 +3736,7 @@ begin
       Exit;
     end;
 
-    infixRule();
+    infixRule(canAssign);
   end;
 
   if canAssign and matchToken(TOKEN_EQUAL) then
@@ -3728,7 +3746,7 @@ begin
 end;
 
 
-procedure Number();
+procedure Number(canAssign: Boolean);
 var
   Value  : TValue;
   lexeme : AnsiString;
@@ -3747,13 +3765,13 @@ begin
   parsePrecedence(PREC_ASSIGNMENT);
 end;
 
-procedure grouping;
+procedure grouping(canAssign: Boolean);
 begin
   expression;
   consume(TOKEN_RIGHT_PAREN,'Expect '')'' after expression.');
 end;
 
-procedure unary();
+procedure unary(canAssign: Boolean);
 var
   operatorType : TTokenType;
 begin
@@ -3768,7 +3786,7 @@ begin
 end;
 
 
-procedure ParseString();
+procedure ParseString(canAssign: Boolean);
 var
   lexeme  : ansiString;
   strObj : pObjString;
@@ -3789,7 +3807,7 @@ begin
   popStack(VM.Stack);
 end;
 
-procedure binary();
+procedure binary(canAssign: Boolean);
 var
   tokenType : TTokenType;
   rule : TParseRule;
@@ -3851,7 +3869,7 @@ begin
 end;
 
 
-procedure literal();
+procedure literal(canAssign: Boolean);
 begin
   Assert((parser.previous.tokenType = TOKEN_FALSE) or
          (parser.previous.tokenType = TOKEN_TRUE) or
@@ -4002,7 +4020,7 @@ begin
   endScope();
 end;
 
-procedure and_();
+procedure and_(canAssign: Boolean);
 var
   endJump : integer;
 begin
@@ -4012,7 +4030,7 @@ begin
   patchJump(endJump);
 end;
 
-procedure or_();
+procedure or_(canAssign: Boolean);
 var
   elseJump, endJump : integer;
 begin
@@ -4249,7 +4267,7 @@ begin
   defineVariable(global);
 end;
 
-procedure namedVariable(name : TToken);
+procedure namedVariable(name : TToken; canAssign : Boolean);
 var
   arg : integer;
   getOp, setOp : byte;
@@ -4276,7 +4294,7 @@ begin
     end;
   end;
 
-  if matchToken(TOKEN_EQUAL) then
+  if canAssign and matchToken(TOKEN_EQUAL) then
   begin
     Expression();
     emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -4289,9 +4307,9 @@ begin
   end;
 end;
 
-procedure variable();
+procedure variable(canAssign: Boolean);
 begin
-  namedVariable(parser.previous);
+  namedVariable(parser.previous, canAssign);
 end;
 
 procedure expressionStatement();
@@ -4311,15 +4329,16 @@ begin
     repeat
       Expression();
       if argCount = 255 then
-        Error('Can''t have more than 255 arguments.');
-      Inc(argCount);
+        Error('Can''t have more than 255 arguments.')
+      else
+        Inc(argCount);
     until not matchToken(TOKEN_COMMA);
   end;
   consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after arguments.');
   Result := argCount;
 end;
 
-procedure call();
+procedure call(canAssign: Boolean);
 var
   argCount : byte;
 begin
@@ -4444,6 +4463,22 @@ begin
     expressionStatement();
 end;
 
+procedure synchronize();
+begin
+  Parser.PanicMode := false;
+  while Parser.Current.TokenType <> TOKEN_EOF do
+  begin
+    if Parser.Previous.TokenType = TOKEN_SEMICOLON then
+      Exit;
+    case Parser.Current.TokenType of
+      TOKEN_CLASS, TOKEN_FUN, TOKEN_VAR, TOKEN_FOR,
+      TOKEN_IF, TOKEN_WHILE, TOKEN_PRINT, TOKEN_RETURN:
+        Exit;
+    end;
+    advanceParser();
+  end;
+end;
+
 procedure declaration();
 begin
   Assert(Current <> nil, 'declaration: Current compiler is nil');
@@ -4453,6 +4488,9 @@ begin
     varDeclaration()
   else
     statement();
+
+  if Parser.PanicMode then
+    synchronize();
 end;
 
 function compile(source : pAnsiChar) : pObjClosure;
@@ -4469,6 +4507,7 @@ begin
   initCompiler(compiler, TYPE_SCRIPT);
   parser.hadError := false;
   parser.panicMode := false;
+  parser.ErrorStr := '';
   advanceParser();
   while not check(TOKEN_EOF) do
   begin
