@@ -1,0 +1,153 @@
+// GC Upvalue Closing
+// Test that closed-over variables survive GC after their enclosing scope exits.
+
+// --- Basic closed upvalue survives ---
+
+fun makeGetter() {
+  var local = "captured";
+  fun getter() { return local; }
+  return getter;
+}
+
+var g = makeGetter();
+// makeGetter's stack frame is gone; local is now a closed upvalue
+collectGarbage();
+assert(g() == "captured", "basic closed upvalue lost");
+
+// --- Mutable closed upvalue survives ---
+
+fun makeMutable() {
+  var count = 0;
+  fun bump() { count = count + 1; return count; }
+  return bump;
+}
+
+var bump = makeMutable();
+bump(); bump(); bump();
+collectGarbage();
+assert(bump() == 4, "mutable closed upvalue lost state");
+
+// --- Two closures sharing a closed upvalue ---
+
+fun makeShared() {
+  var shared = 10;
+  fun reader() { return shared; }
+  fun writer(v) { shared = v; }
+  writer(42);
+  collectGarbage();
+  return reader;
+}
+
+var r = makeShared();
+collectGarbage();
+assert(r() == 42, "shared closed upvalue lost");
+
+// --- Nested closing: inner captures outer's closed upvalue ---
+
+fun outerFn() {
+  var outerVal = "outer";
+  fun middleFn() {
+    var midVal = "mid";
+    fun innerFn() {
+      return outerVal + " " + midVal;
+    }
+    return innerFn;
+  }
+  return middleFn;
+}
+
+var mid = outerFn();
+collectGarbage();  // outerFn frame dead, outerVal closed
+var inner = mid();
+collectGarbage();  // middleFn frame dead, midVal closed
+assert(inner() == "outer mid", "nested closed upvalues lost");
+
+// --- Closure over loop variable (capture-by-reference) ---
+
+var closures = nil;
+
+fun makePair(val, next) {
+  // Simulating a list with closures since we have no classes
+  fun get() { return val; }
+  return get;
+}
+
+// Each iteration captures its own 'i' via a new scope
+fun captureLoop() {
+  var getters = nil;
+  var last = nil;
+
+  // Capture different values
+  var a = nil;
+  var b = nil;
+  var c = nil;
+
+  {
+    var x = "zero";
+    fun getA() { return x; }
+    a = getA;
+  }
+  {
+    var x = "one";
+    fun getB() { return x; }
+    b = getB;
+  }
+  {
+    var x = "two";
+    fun getC() { return x; }
+    c = getC;
+  }
+
+  collectGarbage();
+  assert(a() == "zero", "closure a lost value");
+  assert(b() == "one", "closure b lost value");
+  assert(c() == "two", "closure c lost value");
+}
+
+captureLoop();
+
+// --- Upvalue closed mid-GC pressure ---
+
+fun stressClose() {
+  var alive = "survivor";
+  fun getter() { return alive; }
+
+  // Create allocation pressure
+  for (var i = 0; i < 100; i = i + 1) {
+    var junk = "pressure" + "alloc";
+  }
+
+  collectGarbage();
+  return getter;
+}
+
+var stressGetter = stressClose();
+collectGarbage();
+assert(stressGetter() == "survivor", "upvalue lost under stress");
+
+// --- Many closures each closing over different upvalues ---
+
+fun factory(n) {
+  var val = n;
+  fun get() { return val; }
+  return get;
+}
+
+var f0 = factory(0);
+var f1 = factory(1);
+var f2 = factory(2);
+var f3 = factory(3);
+var f4 = factory(4);
+var f5 = factory(5);
+var f6 = factory(6);
+var f7 = factory(7);
+var f8 = factory(8);
+var f9 = factory(9);
+
+collectGarbage();
+
+assert(f0() == 0, "factory 0 lost");
+assert(f5() == 5, "factory 5 lost");
+assert(f9() == 9, "factory 9 lost");
+
+print "All gc_upvalue_closing tests passed.";

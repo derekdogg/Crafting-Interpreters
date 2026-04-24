@@ -1,0 +1,156 @@
+// GC Scopes and Natives
+// Test GC with deeply nested scopes, native functions, and many live closures.
+
+// --- Native function (clock) survives GC ---
+
+var t1 = clock();
+collectGarbage();
+var t2 = clock();
+assert(t2 >= t1, "clock broken after GC");
+
+// --- Native functions still callable after heavy GC ---
+
+for (var i = 0; i < 50; i = i + 1) {
+  var junk = "waste" + "data";
+}
+collectGarbage();
+var t3 = clock();
+assert(t3 >= 0, "clock native lost after GC + allocations");
+
+// --- Deeply nested block scopes ---
+
+var deepResult = "none";
+{
+  var a = "L1";
+  {
+    var b = "L2";
+    {
+      var c = "L3";
+      {
+        var d = "L4";
+        {
+          var e = "L5";
+          {
+            var f = "L6";
+            {
+              var g = "L7";
+              {
+                var h = "L8";
+                collectGarbage();
+                deepResult = a + b + c + d + e + f + g + h;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+assert(deepResult == "L1L2L3L4L5L6L7L8", "deeply nested locals lost after GC");
+
+// --- Dead nested scope locals are freed ---
+
+for (var i = 0; i < 50; i = i + 1) {
+  {
+    var a = "dead" + "scope";
+    {
+      var b = "also" + "dead";
+      {
+        var c = "very" + "dead";
+      }
+    }
+  }
+}
+var before = objectsAllocated();
+collectGarbage();
+var after = objectsAllocated();
+assert(after < before, "nested scope dead locals not freed");
+
+// --- Many simultaneous live closures (tests gray stack growth) ---
+
+fun make(n) {
+  fun get() { return n; }
+  return get;
+}
+
+var c0 = make(0);
+var c1 = make(1);
+var c2 = make(2);
+var c3 = make(3);
+var c4 = make(4);
+var c5 = make(5);
+var c6 = make(6);
+var c7 = make(7);
+var c8 = make(8);
+var c9 = make(9);
+var c10 = make(10);
+var c11 = make(11);
+var c12 = make(12);
+var c13 = make(13);
+var c14 = make(14);
+var c15 = make(15);
+var c16 = make(16);
+var c17 = make(17);
+var c18 = make(18);
+var c19 = make(19);
+
+collectGarbage();
+
+assert(c0() == 0, "live closure 0 lost");
+assert(c9() == 9, "live closure 9 lost");
+assert(c19() == 19, "live closure 19 lost");
+
+// --- GC during if/else with temporaries ---
+
+var branch = "";
+if (true) {
+  branch = "true" + "branch";
+  collectGarbage();
+} else {
+  branch = "false" + "branch";
+}
+assert(branch == "truebranch", "if branch temp lost after GC");
+
+// --- GC in while loop with closure capture ---
+
+fun loopCapture() {
+  var results = nil;
+  var last = nil;
+  var i = 0;
+
+  while (i < 5) {
+    var captured = i;
+    fun getter() { return captured; }
+    if (i == 4) last = getter;
+    i = i + 1;
+    collectGarbage();
+  }
+  return last;
+}
+
+var lastGetter = loopCapture();
+collectGarbage();
+assert(lastGetter() == 4, "loop capture with GC lost value");
+
+// --- GC in for loop with many iterations ---
+
+var forResult = 0;
+for (var i = 0; i < 200; i = i + 1) {
+  forResult = forResult + 1;
+  if (i == 50) collectGarbage();
+  if (i == 100) collectGarbage();
+  if (i == 150) collectGarbage();
+}
+assert(forResult == 200, "for loop with GC got wrong count");
+
+// --- Logical operators with GC ---
+
+var logResult = false or "fallback";
+collectGarbage();
+assert(logResult == "fallback", "logical or result lost after GC");
+
+var andResult = "truthy" and "second";
+collectGarbage();
+assert(andResult == "second", "logical and result lost after GC");
+
+print "All gc_scopes_and_natives tests passed.";
