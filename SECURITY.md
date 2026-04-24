@@ -13,15 +13,13 @@ If you discover a security vulnerability in this project, please report it respo
 
 **Do NOT open a public issue.**
 
-Instead, please email: **derekdogg@users.noreply.github.com**
+Instead, please use [GitHub Security Advisories](https://github.com/derekdogg/Crafting-Interpreters/security/advisories/new) to privately report the vulnerability.
 
 Include:
 - A description of the vulnerability
 - Steps to reproduce
 - Potential impact
 - Suggested fix (if any)
-
-You can expect an initial response within 72 hours.
 
 ## Scope
 
