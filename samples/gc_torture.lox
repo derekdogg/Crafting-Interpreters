@@ -1,0 +1,178 @@
+// GC Torture
+// Extreme scenarios designed to expose subtle GC timing bugs.
+// Best run with DEBUG_STRESS_GC enabled (GC on every allocation).
+
+// --- Concatenation chain: each "+" allocates, prior temps must survive ---
+
+var chain = "";
+chain = chain + "a";
+chain = chain + "b";
+chain = chain + "c";
+chain = chain + "d";
+chain = chain + "e";
+chain = chain + "f";
+chain = chain + "g";
+chain = chain + "h";
+chain = chain + "i";
+chain = chain + "j";
+collectGarbage();
+assert(chain == "abcdefghij", "concat chain corrupted");
+
+// --- Nested function definitions: compiler allocates ObjFunction + name string ---
+// If GC fires during compilation constants, the half-built function could be lost.
+
+fun outerDef() {
+  fun mid1() {
+    fun inner1() { return "i1"; }
+    return inner1;
+  }
+  fun mid2() {
+    fun inner2() { return "i2"; }
+    return inner2;
+  }
+  var r1 = mid1()();
+  var r2 = mid2()();
+  return r1 + r2;
+}
+
+assert(outerDef() == "i1i2", "nested function definitions corrupted");
+
+// --- Upvalue slot reuse: same slot index, different lifetimes ---
+
+fun slotReuse() {
+  var results = "";
+  {
+    var x = "first";
+    fun getFirst() { return x; }
+    results = results + getFirst();
+  }
+  collectGarbage();
+  {
+    var x = "second";
+    fun getSecond() { return x; }
+    results = results + getSecond();
+  }
+  collectGarbage();
+  {
+    var x = "third";
+    fun getThird() { return x; }
+    results = results + getThird();
+  }
+  return results;
+}
+
+assert(slotReuse() == "firstsecondthird", "upvalue slot reuse corrupted");
+
+// --- Fibonacci with GC: live frames hold temporaries on stack ---
+
+fun fib(n) {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+collectGarbage();
+assert(fib(15) == 610, "fib(15) wrong after GC");
+collectGarbage();
+assert(fib(15) == 610, "fib(15) wrong after second GC");
+
+// --- Ping-pong between two functions building strings ---
+
+fun ping(s, n) {
+  if (n <= 0) return s;
+  return pong(s + "<", n - 1);
+}
+
+fun pong(s, n) {
+  if (n <= 0) return s;
+  return ping(s + ">", n - 1);
+}
+
+var pp = ping("", 10);
+collectGarbage();
+assert(pp == "<><><><><>", "ping-pong string corrupted");
+
+// --- Closure factory in a loop: tests GC with many ObjClosure allocations ---
+
+fun closureSpam() {
+  var last = nil;
+  for (var i = 0; i < 100; i = i + 1) {
+    var captured = i;
+    fun getter() { return captured; }
+    last = getter;
+  }
+  collectGarbage();
+  return last();
+}
+
+assert(closureSpam() == 99, "closure spam last value wrong");
+
+// --- GC between comparison operands ---
+
+fun compare() {
+  var a = "left" + "side";
+  collectGarbage();
+  var b = "leftside";
+  collectGarbage();
+  return a == b;
+}
+
+assert(compare(), "comparison operands corrupted by GC");
+
+// --- Deeply nested calls returning closures ---
+
+fun chain1(n) {
+  if (n <= 0) {
+    var val = "end";
+    fun get() { return val; }
+    return get;
+  }
+  var junk = "noise" + "data";
+  return chain1(n - 1);
+}
+
+var deepClosure = chain1(20);
+collectGarbage();
+assert(deepClosure() == "end", "deep chain closure lost");
+
+// --- Global reassignment interleaved with GC ---
+
+var g = "start";
+collectGarbage();
+g = g + "A";
+collectGarbage();
+g = g + "B";
+collectGarbage();
+g = g + "C";
+collectGarbage();
+assert(g == "startABC", "global reassignment + GC corrupted");
+
+// --- Many globals created then GC'd ---
+
+var v00 = "00"; var v01 = "01"; var v02 = "02"; var v03 = "03";
+var v04 = "04"; var v05 = "05"; var v06 = "06"; var v07 = "07";
+var v08 = "08"; var v09 = "09"; var v10 = "10"; var v11 = "11";
+var v12 = "12"; var v13 = "13"; var v14 = "14"; var v15 = "15";
+var v16 = "16"; var v17 = "17"; var v18 = "18"; var v19 = "19";
+var v20 = "20"; var v21 = "21"; var v22 = "22"; var v23 = "23";
+var v24 = "24"; var v25 = "25"; var v26 = "26"; var v27 = "27";
+var v28 = "28"; var v29 = "29"; var v30 = "30"; var v31 = "31";
+
+collectGarbage();
+
+assert(v00 == "00", "global v00 lost");
+assert(v15 == "15", "global v15 lost");
+assert(v31 == "31", "global v31 lost");
+
+// --- Stress: alternating allocations and collections ---
+
+for (var i = 0; i < 100; i = i + 1) {
+  var a = "alloc" + "one";
+  collectGarbage();
+  var b = "alloc" + "two";
+  collectGarbage();
+  var c = a + b;
+  collectGarbage();
+}
+assert(true, "alternating alloc/collect crashed");
+
+print "All gc_torture tests passed.";
