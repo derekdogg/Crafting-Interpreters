@@ -6,3 +6,4 @@ Interpreter.res
 InterpreterGui.dproj.local
 InterpreterGui.identcache
 __recovery/
+assertion-hardening-plan.md

@@ -1,6 +1,7 @@
 unit Chunk_Types;
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
+{$DEFINE DEBUG_LOG_GC}
 interface
 
 uses
@@ -701,11 +702,32 @@ var
   Parser  : TParser;
   Current : pCompiler;
   //Output : TStrings;
+  {$IFDEF DEBUG_LOG_GC}
+  GCLogFile : TextFile;
+  GCLogAllocations : integer;
+  GCLogFrees : integer;
+  GCLogMarks : integer;
+  GCLogBlackens : integer;
+  GCLogCycles : integer;
+  {$ENDIF}
 
 implementation
 
 uses
   sysutils, Math, strUtils, typinfo, Windows;
+
+{$IFDEF DEBUG_LOG_GC}
+function ObjectKindStr(kind : TObjectKind) : string;
+begin
+  Result := GetEnumName(TypeInfo(TObjectKind), Ord(kind));
+end;
+
+procedure GCLog(const msg : string);
+begin
+  WriteLn(GCLogFile, msg);
+  Flush(GCLogFile);
+end;
+{$ENDIF}
 
 procedure AssertTable(Table : pTable);
 begin
@@ -1584,6 +1606,11 @@ begin
 
   p^.Next := Memtracker.CreatedObjects;
   Memtracker.CreatedObjects := p;
+
+  {$IFDEF DEBUG_LOG_GC}
+  GCLog(Format('allocate %p kind=%s', [Pointer(p), ObjectKindStr(p^.ObjectKind)]));
+  Inc(GCLogAllocations);
+  {$ENDIF}
   
   // ---- Exit assertions ----
   Assert(MemTracker.CreatedObjects = p, 'AddToCreatedObjects exit: object should be at head of list');
@@ -1832,9 +1859,14 @@ begin
   AssertValueArrayIsAssigned(ValueArray);
 
   oldCount := ValueArray.Count;
+
+  // Push value onto stack to protect from GC during potential array growth.
+  pushStack(VM.Stack, value, VM.MemTracker);
   
   // Add the value to the ValueArray -- note here the value array can grow
   writeValueArray(ValueArray, value,Memtracker);
+
+  popStack(VM.Stack);
 
   // Return the index of the newly added value
   Result := ValueArray.Count - 1;
@@ -2606,6 +2638,10 @@ begin
   AssertObjectIsAssigned(obj);
   AssertVMIsAssigned;
   AssertMemTrackerIsNotNil(VM.MemTracker);
+  {$IFDEF DEBUG_LOG_GC}
+  GCLog(Format('free %p kind=%s', [Pointer(obj), ObjectKindStr(obj^.ObjectKind)]));
+  Inc(GCLogFrees);
+  {$ENDIF}
   case obj.ObjectKind of
     okString : begin
       FreeString(pObjString(obj),vm.MemTracker);
@@ -2659,6 +2695,11 @@ begin
 
   if obj = nil then Exit;
   if obj^.IsMarked then Exit;
+
+  {$IFDEF DEBUG_LOG_GC}
+  GCLog(Format('mark %p kind=%s', [Pointer(obj), ObjectKindStr(obj^.ObjectKind)]));
+  Inc(GCLogMarks);
+  {$ENDIF}
 
   obj^.IsMarked := true;
 
@@ -2784,6 +2825,11 @@ begin
   Assert(obj <> nil, 'BlackenObject: obj is nil');
   Assert(obj^.IsMarked, 'BlackenObject: obj is not marked (should be gray)');
 
+  {$IFDEF DEBUG_LOG_GC}
+  GCLog(Format('blacken %p kind=%s', [Pointer(obj), ObjectKindStr(obj^.ObjectKind)]));
+  Inc(GCLogBlackens);
+  {$ENDIF}
+
   case obj^.ObjectKind of
     okUpvalue:
       MarkValue(pObjUpvalue(obj)^.closed);
@@ -2877,9 +2923,19 @@ begin
 end;
 
 procedure CollectGarbage;
+{$IFDEF DEBUG_LOG_GC}
+var
+  bytesBefore : integer;
+{$ENDIF}
 begin
   if VM = nil then Exit;
   if VM.MemTracker = nil then Exit;
+
+  {$IFDEF DEBUG_LOG_GC}
+  GCLog('-- gc begin');
+  bytesBefore := VM.MemTracker.BytesAllocated;
+  Inc(GCLogCycles);
+  {$ENDIF}
 
   MarkRoots;
   TraceReferences;
@@ -2887,6 +2943,12 @@ begin
   Sweep;
 
   VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR;
+
+  {$IFDEF DEBUG_LOG_GC}
+  GCLog(Format('-- gc end   collected %d bytes (from %d to %d) next at %d',
+    [bytesBefore - VM.MemTracker.BytesAllocated, bytesBefore,
+     VM.MemTracker.BytesAllocated, VM.MemTracker.NextGC]));
+  {$ENDIF}
 
   // ---- Exit assertions ----
   Assert(VM.MemTracker.BytesAllocated >= 0, 'CollectGarbage exit: BytesAllocated is negative');
@@ -2996,6 +3058,17 @@ end;
 
 procedure InitVM;
 begin
+  {$IFDEF DEBUG_LOG_GC}
+  AssignFile(GCLogFile, 'gc.log');
+  Rewrite(GCLogFile);
+  GCLog('== GC log started ==');
+  GCLogAllocations := 0;
+  GCLogFrees := 0;
+  GCLogMarks := 0;
+  GCLogBlackens := 0;
+  GCLogCycles := 0;
+  {$ENDIF}
+
   new(VM); //we don't care about making this route through allocate
   VM.FrameCount := 0;
   VM.Stack := nil;
@@ -3048,6 +3121,26 @@ begin
   FreeMemTracker(VM.MemTracker);
   dispose(VM);
   VM := nil;
+
+  {$IFDEF DEBUG_LOG_GC}
+  GCLog('');
+  GCLog('== Summary ==');
+  GCLog(Format('  GC cycles:    %d', [GCLogCycles]));
+  GCLog(Format('  Allocations:  %d', [GCLogAllocations]));
+  GCLog(Format('  Frees:        %d', [GCLogFrees]));
+  GCLog(Format('  Marks:        %d', [GCLogMarks]));
+  GCLog(Format('  Blackens:     %d', [GCLogBlackens]));
+  if GCLogAllocations = GCLogFrees then
+    GCLog('  Leak check:   OK (allocations == frees)')
+  else
+    GCLog(Format('  Leak check:   LEAK (%d objects unaccounted)', [GCLogAllocations - GCLogFrees]));
+  if GCLogMarks = GCLogBlackens then
+    GCLog('  Trace check:  OK (marks == blackens)')
+  else
+    GCLog(Format('  Trace check:  MISMATCH (marks=%d, blackens=%d)', [GCLogMarks, GCLogBlackens]));
+  GCLog('== GC log finished ==');
+  CloseFile(GCLogFile);
+  {$ENDIF}
 
   // ---- Exit assertions ----
   Assert(VM = nil, 'FreeVM exit: VM should be nil');
