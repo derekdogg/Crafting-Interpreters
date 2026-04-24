@@ -74,7 +74,7 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 
 ### Custom Sample Tests
 
-**14 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
+**20 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
 | File | Coverage |
 |------|----------|
@@ -90,8 +90,14 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | fibonacci.lox | Recursive and iterative fibonacci |
 | gc_basic.lox | Live data survives, dead temporaries reclaimed |
 | gc_functions.lox | Functions and closures survive GC |
-| gc_reclaim.lox | Memory reclamation verified via `bytesAllocated()` |
+| gc_reclaim.lox | Memory reclamation verified via `objectsAllocated()` |
 | gc_stress.lox | Heavy allocation patterns under GC pressure |
+| gc_interning.lox | String interning consistency, intern table under churn |
+| gc_upvalue_closing.lox | Closed upvalues, nested closing, capture-by-reference, factories |
+| gc_args_and_temps.lox | GC between args, mid-expression temps, recursive arg building |
+| gc_scopes_and_natives.lox | Native `clock()` survives, deep scopes, gray stack, loop capture |
+| gc_edge_cases.lox | Open upvalue list, closing order, rapid create/discard, name reuse, large constant pools |
+| gc_torture.lox | Concat chains, nested defs, slot reuse, fib, ping-pong, closure spam, alternating alloc/collect |
 
 **8 error tests** in `samples/errors/` — expected to produce errors:
 
@@ -114,6 +120,7 @@ The garbage collector has been hardened with:
 - **DEBUG_LOG_GC** — Logs allocate/free/mark/blacken events to `gc.log` with summary stats
 - **Push/pop protection** at all 7 GC-sensitive allocation sites
 - **NextGC floor** of 1024 bytes to prevent zero-threshold assertions
+- **10 dedicated GC test files** (6 new) covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, and alternating alloc/collect torture scenarios
 
 ## Build
 

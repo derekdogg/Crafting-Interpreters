@@ -1,0 +1,185 @@
+// GC Edge Cases
+// Targets subtle GC bugs: open upvalue lists, rapid cycles, name reuse, constant pools.
+
+// --- Open upvalue linked list integrity ---
+// Multiple locals captured in the same scope form a chain of open upvalues.
+
+fun multiCapture() {
+  var a = "first";
+  var b = "second";
+  var c = "third";
+
+  fun getA() { return a; }
+  fun getB() { return b; }
+  fun getC() { return c; }
+
+  collectGarbage();  // GC with 3 open upvalues in the linked list
+
+  return getA() + " " + getB() + " " + getC();
+}
+
+assert(multiCapture() == "first second third", "open upvalue list corrupted");
+
+// --- Open upvalues closed in order ---
+// Inner scope closes before outer; tests upvalue list unlinking.
+
+fun closingOrder() {
+  var outer = "O";
+  fun getOuter() { return outer; }
+
+  var result = "";
+  {
+    var inner = "I";
+    fun getInner() { return inner; }
+    collectGarbage();  // both outer and inner are open upvalues
+    result = getInner();
+  }
+  // inner's upvalue is now closed, outer is still open
+  collectGarbage();
+  result = result + getOuter();
+  return result;
+}
+
+assert(closingOrder() == "IO", "upvalue closing order broke");
+
+// --- Rapid create/discard: closure created and immediately lost ---
+
+for (var i = 0; i < 200; i = i + 1) {
+  fun ephemeral() {
+    var x = "short" + "lived";
+    return x;
+  }
+  ephemeral();
+  // closure + string allocated, then immediately unreachable
+}
+collectGarbage();
+assert(true, "rapid create/discard crashed");
+
+// --- Same variable name reused across many scopes ---
+// Tests that interned name strings aren't freed while still needed.
+
+fun nameReuse() {
+  var result = "";
+  {
+    var x = "A";
+    result = result + x;
+    collectGarbage();
+  }
+  {
+    var x = "B";
+    result = result + x;
+    collectGarbage();
+  }
+  {
+    var x = "C";
+    result = result + x;
+    collectGarbage();
+  }
+  {
+    var x = "D";
+    result = result + x;
+    collectGarbage();
+  }
+  {
+    var x = "E";
+    result = result + x;
+    collectGarbage();
+  }
+  return result;
+}
+
+assert(nameReuse() == "ABCDE", "name reuse across scopes corrupted");
+
+// --- Large constant pool: many unique string literals ---
+
+fun manyConstants() {
+  var r = "";
+  r = r + "s00"; r = r + "s01"; r = r + "s02"; r = r + "s03";
+  r = r + "s04"; r = r + "s05"; r = r + "s06"; r = r + "s07";
+  r = r + "s08"; r = r + "s09"; r = r + "s10"; r = r + "s11";
+  r = r + "s12"; r = r + "s13"; r = r + "s14"; r = r + "s15";
+  r = r + "s16"; r = r + "s17"; r = r + "s18"; r = r + "s19";
+  r = r + "s20"; r = r + "s21"; r = r + "s22"; r = r + "s23";
+  r = r + "s24"; r = r + "s25"; r = r + "s26"; r = r + "s27";
+  r = r + "s28"; r = r + "s29"; r = r + "s30"; r = r + "s31";
+  collectGarbage();
+  return r;
+}
+
+var big = manyConstants();
+assert(big == "s00s01s02s03s04s05s06s07s08s09s10s11s12s13s14s15s16s17s18s19s20s21s22s23s24s25s26s27s28s29s30s31",
+       "large constant pool corrupted");
+
+// --- GC at call boundary: function returns a freshly allocated string ---
+
+fun freshReturn() {
+  return "fresh" + "alloc";
+}
+
+var results = "";
+for (var i = 0; i < 100; i = i + 1) {
+  results = freshReturn();
+  collectGarbage();
+}
+assert(results == "freshalloc", "GC at return boundary corrupted value");
+
+// --- GC at call setup: many args being pushed while GC fires ---
+
+fun fiveStrings(a, b, c, d, e) {
+  return a + b + c + d + e;
+}
+
+for (var i = 0; i < 50; i = i + 1) {
+  var r = fiveStrings("a" + "1", "b" + "2", "c" + "3", "d" + "4", "e" + "5");
+  assert(r == "a1b2c3d4e5", "call setup GC corrupted args");
+}
+
+// --- Mutual closures: two closures sharing state, alternating calls + GC ---
+
+fun makePair() {
+  var state = 0;
+  fun inc() { state = state + 1; return state; }
+  fun dec() { state = state - 1; return state; }
+  inc();  // state = 1
+  inc();  // state = 2
+  collectGarbage();
+  dec();  // state = 1
+  return state;
+}
+
+assert(makePair() == 1, "mutual closures + GC corrupted shared state");
+
+// --- Closure returned through multiple call levels ---
+
+fun level3() {
+  var deep = "deep" + "value";
+  fun getter() { return deep; }
+  return getter;
+}
+
+fun level2() {
+  var noise = "noise" + "data";
+  return level3();
+}
+
+fun level1() {
+  var more = "more" + "noise";
+  return level2();
+}
+
+var deepGetter = level1();
+collectGarbage();  // all intermediate frames dead
+assert(deepGetter() == "deepvalue", "closure through call levels lost");
+
+// --- String identity after GC churn ---
+// Same literal used before and after heavy GC should still be equal.
+
+var sentinel = "canary";
+for (var i = 0; i < 300; i = i + 1) {
+  var waste = "unique" + "junk";
+}
+collectGarbage();
+assert(sentinel == "canary", "string identity lost after GC churn");
+assert("canary" == sentinel, "reverse comparison failed after GC churn");
+
+print "All gc_edge_cases tests passed.";
