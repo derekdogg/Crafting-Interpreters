@@ -59,8 +59,9 @@ const
   OP_GET_UPVALUE = 27;
   OP_SET_UPVALUE = 28;
   OP_CLOSE_UPVALUE = 29;
+  OP_MODULO = 30;
 
-  OP_STRINGS : array[0..29] of string = (
+  OP_STRINGS : array[0..30] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -90,7 +91,8 @@ const
     'OP_CLOSURE',
     'OP_GET_UPVALUE',
     'OP_SET_UPVALUE',
-    'OP_CLOSE_UPVALUE');
+    'OP_CLOSE_UPVALUE',
+    'OP_MODULO');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 64;
@@ -102,14 +104,14 @@ type
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
   TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue);
-  TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boGreater, boLess);
+  TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boModulo, boGreater, boLess);
   TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
     // Single-character tokens
     TOKEN_LEFT_PAREN, TOKEN_RIGHT_PAREN,
     TOKEN_LEFT_BRACE, TOKEN_RIGHT_BRACE,
     TOKEN_COMMA, TOKEN_DOT, TOKEN_MINUS, TOKEN_PLUS,
-    TOKEN_SEMICOLON, TOKEN_SLASH, TOKEN_STAR,
+    TOKEN_SEMICOLON, TOKEN_SLASH, TOKEN_STAR, TOKEN_PERCENT,
 
     // One or two character tokens
     TOKEN_BANG, TOKEN_BANG_EQUAL,
@@ -606,6 +608,9 @@ const
     (Prefix: nil;      Infix: binary;  Precedence: PREC_FACTOR),
 
     { TOKEN_STAR }
+    (Prefix: nil;      Infix: binary;  Precedence: PREC_FACTOR),
+
+    { TOKEN_PERCENT }
     (Prefix: nil;      Infix: binary;  Precedence: PREC_FACTOR),
 
     { TOKEN_BANG }
@@ -2256,6 +2261,14 @@ begin
                         end;
                       end;
 
+        OP_MODULO   : begin
+                        if not BinaryOp(boModulo) then
+                        begin
+                          result.code := INTERPRET_RUNTIME_ERROR;
+                          exit;
+                        end;
+                      end;
+
         OP_NOT      : pushStack(vm.Stack,CreateBoolean(isFalsey(popStack(vm.Stack))),vm.MemTracker);
 
         OP_PRINT: begin
@@ -2570,6 +2583,28 @@ begin
   Result := true;
 end;
 
+function BinaryOpNumber_Modulo: boolean;
+var
+  A, B: Double;
+  oldCount : integer;
+begin
+  if not CheckBinaryNumbers then
+    Exit(false);
+
+  oldCount := vm.stack.Count;
+
+  B := GetNumber(PopStack(vm.Stack));
+  A := GetNumber(PopStack(vm.stack));
+
+  PushStack(vm.stack,CreateNumber(A - Trunc(A / B) * B),vm.MemTracker);
+
+  // ---- Exit assertions ----
+  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Modulo exit: should pop 2, push 1 (net -1)');
+  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Modulo exit: result should be a number');
+
+  Result := true;
+end;
+
 function BinaryOpNumber_Greater: boolean;
 var
   A, B: Double;
@@ -2622,6 +2657,7 @@ begin
     boSubtract  : Result := BinaryOpNumber_subtract;
     boMultiply  : Result := BinaryOpNumber_Multiply;
     boDivide    : Result := BinaryOpNumber_Divide;
+    boModulo    : Result := BinaryOpNumber_Modulo;
     boGreater   : Result := BinaryOpNumber_Greater;
     boLess      : Result := BinaryOpNumber_Less;
   else
@@ -3475,6 +3511,8 @@ begin
 
       '*': result :=  makeToken(TOKEN_STAR);
 
+      '%': result :=  makeToken(TOKEN_PERCENT);
+
      '!':
         begin
           if Match('=') then
@@ -3859,6 +3897,10 @@ begin
 
       TOKEN_SLASH : begin
         emitByte(OP_DIVIDE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+      end;
+
+      TOKEN_PERCENT : begin
+        emitByte(OP_MODULO,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end
       else
       begin
