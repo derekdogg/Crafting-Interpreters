@@ -1,0 +1,88 @@
+// ============================================================
+// gc_arrays.lox — GC stress test for array objects
+// Each test wrapped in a function for constant-pool budget.
+// ============================================================
+
+fun testSurvive() {
+  var a = newArray();
+  arrayPush(a, "alive");
+  arrayPush(a, 42);
+  collectGarbage();
+  assert(arrayGet(a, 0) == "alive");
+  assert(arrayGet(a, 1) == 42);
+  print "PASS: survive GC";
+}
+
+fun testNestedSurvive() {
+  var outer = newArray();
+  var inner = newArray();
+  arrayPush(inner, "nested");
+  arrayPush(outer, inner);
+  collectGarbage();
+  var retrieved = arrayGet(outer, 0);
+  assert(arrayGet(retrieved, 0) == "nested");
+  print "PASS: nested survive GC";
+}
+
+fun testCollected() {
+  var before = objectsAllocated();
+  var temp = newArray();
+  arrayPush(temp, "discard");
+  arrayPush(temp, newArray());
+  temp = nil;
+  collectGarbage();
+  var after = objectsAllocated();
+  assert(after < before);
+  print "PASS: unreachable collected";
+}
+
+fun testClosureSurvive() {
+  fun makeHolder() {
+    var data = newArray();
+    arrayPush(data, "held");
+    fun get() { return data; }
+    return get;
+  }
+  var getter = makeHolder();
+  collectGarbage();
+  var held = getter();
+  assert(arrayGet(held, 0) == "held");
+  print "PASS: closure survive GC";
+}
+
+fun testStress() {
+  var keep = newArray();
+  var j = 0;
+  while (j < 50) {
+    var small = newArray();
+    arrayPush(small, j);
+    arrayPush(keep, small);
+    j = j + 1;
+  }
+  collectGarbage();
+  assert(arrayLen(keep) == 50);
+  assert(arrayGet(arrayGet(keep, 49), 0) == 49);
+  print "PASS: stress small arrays";
+}
+
+fun testInterleaved() {
+  var arr = newArray();
+  var k = 0;
+  while (k < 30) {
+    arrayPush(arr, k);
+    if (k % 5 == 0) {
+      collectGarbage();
+    }
+    k = k + 1;
+  }
+  assert(arrayLen(arr) == 30);
+  print "PASS: interleaved GC";
+}
+
+testSurvive();
+testNestedSurvive();
+testCollected();
+testClosureSurvive();
+testStress();
+testInterleaved();
+print "ALL GC ARRAY TESTS PASSED";

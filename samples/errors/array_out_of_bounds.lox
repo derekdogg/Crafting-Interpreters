@@ -1,0 +1,4 @@
+// Error: arrayGet out of bounds should produce runtime error
+var a = newArray();
+arrayPush(a, 10);
+arrayGet(a, 5);

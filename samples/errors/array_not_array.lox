@@ -1,0 +1,2 @@
+// Error: arrayGet on non-array should produce runtime error
+arrayGet(42, 0);

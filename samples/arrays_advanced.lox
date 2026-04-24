@@ -1,0 +1,38 @@
+// ============================================================
+// arrays_advanced.lox — Array closures and growth tests
+// ============================================================
+
+fun testClosures() {
+  fun makeCounter() {
+    var counts = newArray();
+    fun add(val) {
+      arrayPush(counts, val);
+      return counts;
+    }
+    return add;
+  }
+  var adder = makeCounter();
+  adder(10);
+  adder(20);
+  var result = adder(30);
+  assert(arrayLen(result) == 3);
+  assert(arrayGet(result, 2) == 30);
+  print "PASS: closures";
+}
+
+fun testGrowth() {
+  var big = newArray();
+  var i = 0;
+  while (i < 100) {
+    arrayPush(big, i);
+    i = i + 1;
+  }
+  assert(arrayLen(big) == 100);
+  assert(arrayGet(big, 0) == 0);
+  assert(arrayGet(big, 99) == 99);
+  print "PASS: growth";
+}
+
+testClosures();
+testGrowth();
+print "ALL ADVANCED ARRAY TESTS PASSED";
