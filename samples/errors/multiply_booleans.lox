@@ -1,0 +1,3 @@
+// Error: Cannot multiply booleans
+// expect: runtime error
+print true * false;

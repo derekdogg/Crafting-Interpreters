@@ -1,0 +1,3 @@
+// Error: Division by zero
+// expect: runtime error
+print 1 / 0;

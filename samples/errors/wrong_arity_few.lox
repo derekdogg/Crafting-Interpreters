@@ -1,0 +1,4 @@
+// Error: Wrong number of arguments (too few)
+// expect: runtime error
+fun f(a, b) { return a + b; }
+f(1);

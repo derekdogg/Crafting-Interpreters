@@ -2,8 +2,7 @@ program InterpreterGui;
 uses
 
   Vcl.Forms,
-  Main in 'Main.pas' {Form4},
-  Test in 'Test.pas';
+  Main in 'Main.pas' {Form4};
 
 {$R *.res}
 

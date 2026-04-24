@@ -33,6 +33,24 @@ fun doNothing() {
 
 assert(doNothing() == nil);
 
+// --- Expression-statement body returns nil ---
+
+fun compute() {
+  1 + 2;
+}
+
+assert(compute() == nil, "expression-statement body should return nil");
+
+// --- Return with no value gives nil ---
+
+fun earlyExit(n) {
+  if (n < 0) return;
+  return n;
+}
+
+assert(earlyExit(-1) == nil, "return with no value should give nil");
+assert(earlyExit(5) == 5, "return with value should give that value");
+
 // --- Recursion ---
 
 fun factorial(n) {

@@ -12,22 +12,12 @@ type
     Memo1: TMemo;
     Button2: TButton;
     Memo2: TMemo;
-    Button3: TButton;
-    Button4: TButton;
-    Button5: TButton;
-    Button6: TButton;
-    Button7: TButton;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
-    procedure Button3Click(Sender: TObject);
-    procedure Button4Click(Sender: TObject);
-    procedure Button5Click(Sender: TObject);
-    procedure Button6Click(Sender: TObject);
-    procedure Button7Click(Sender: TObject);
-    procedure Button8Click(Sender: TObject);
+    procedure FormCreate(Sender: TObject);
 
   private
-    { Private declarations }
+    procedure RunSampleFiles;
   public
     { Public declarations }
   end;
@@ -37,7 +27,7 @@ var
 
 implementation
 uses
-  Chunk_Types, Test;
+  Chunk_Types, IOUtils, Types;
 
 {$R *.dfm}
 
@@ -94,52 +84,75 @@ begin
 
 end;
 
-
-
-procedure TForm4.Button3Click(Sender: TObject);
+procedure TForm4.RunSampleFiles;
+var
+  SamplesDir, ErrorsDir: string;
+  Files: TStringDynArray;
+  F, FileName, Content, FirstLine: string;
+  IR: TInterpretResult;
+  Passed, Failed: integer;
 begin
-  TestStackPush;
-  TestStackPop;
-  TestStackPeek;
+  SamplesDir := TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\samples');
+  if not TDirectory.Exists(SamplesDir) then
+  begin
+    Memo2.Lines.Add('samples/ directory not found');
+    Exit;
+  end;
+
+  Passed := 0;
+  Failed := 0;
+
+  // Run normal samples (expect INTERPRET_OK)
+  Files := TDirectory.GetFiles(SamplesDir, '*.lox');
+  for F in Files do
+  begin
+    FileName := TPath.GetFileName(F);
+    Content := TFile.ReadAllText(F);
+    IR := InterpretResult(PAnsiChar(AnsiString(Content)));
+    if IR.code = INTERPRET_OK then
+      Inc(Passed)
+    else
+    begin
+      Inc(Failed);
+      Memo2.Lines.Add('FAIL: ' + FileName + ' - ' + IR.ErrorStr);
+    end;
+  end;
+
+  // Run error samples (expect runtime or compile error)
+  ErrorsDir := TPath.Combine(SamplesDir, 'errors');
+  if TDirectory.Exists(ErrorsDir) then
+  begin
+    Files := TDirectory.GetFiles(ErrorsDir, '*.lox');
+    for F in Files do
+    begin
+      FileName := TPath.GetFileName(F);
+      Content := TFile.ReadAllText(F);
+      IR := InterpretResult(PAnsiChar(AnsiString(Content)));
+      if (IR.code = INTERPRET_RUNTIME_ERROR) or (IR.code = INTERPRET_COMPILE_ERROR) then
+        Inc(Passed)
+      else
+      begin
+        Inc(Failed);
+        Memo2.Lines.Add('FAIL: errors/' + FileName + ' - expected error but got OK');
+      end;
+    end;
+  end;
+
+  if Failed = 0 then
+    Memo2.Lines.Add('All ' + IntToStr(Passed) + ' sample tests passed.')
+  else
+    Memo2.Lines.Add(IntToStr(Failed) + ' of ' + IntToStr(Passed + Failed) + ' sample tests FAILED.');
 end;
 
-procedure TForm4.Button4Click(Sender: TObject);
+procedure TForm4.FormCreate(Sender: TObject);
 begin
-  TestStringEqual;
-  TestStringUnequal;
-  TestValuesEqual;
-end;
-
-procedure TForm4.Button5Click(Sender: TObject);
-begin
-  TestInitChunkAndFreeChunk;
-end;
-
-
-procedure TForm4.Button6Click(Sender: TObject);
-begin
-
-  TestAddValueConstant;
-end;
-
-procedure TForm4.Button7Click(Sender: TObject);
-begin
-  testTable;
-  TestTableResize;
-  TestStringInterning;
-  Memo2.Lines.Add('All table tests passed.');
-end;
-
-procedure TForm4.Button8Click(Sender: TObject);
-begin
-  TestInterpreter;
-  TestGlobals;
-  TestLocals;
-  TestControlFlow;
-  TestFunctions;
-  TestClosures;
-  TestGarbageCollection;
-  Memo2.Lines.Add('All interpreter tests passed.');
+  Memo2.Lines.Clear;
+  try
+    RunSampleFiles;
+  except
+    on E: Exception do
+      Memo2.Lines.Add('TEST FAILURE: ' + E.Message);
+  end;
 end;
 
 end.
