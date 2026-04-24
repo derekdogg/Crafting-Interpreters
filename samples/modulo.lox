@@ -1,0 +1,63 @@
+// Modulo operator tests
+
+// Basic modulo
+assert(10 % 3 == 1, "10 % 3");
+assert(7 % 2 == 1, "7 % 2");
+assert(6 % 3 == 0, "6 % 3");
+assert(0 % 5 == 0, "0 % 5");
+assert(1 % 1 == 0, "1 % 1");
+
+// Larger numbers
+assert(100 % 7 == 2, "100 % 7");
+assert(255 % 16 == 15, "255 % 16");
+
+// Negative dividend (C-style truncated modulo)
+assert(-10 % 3 == -1, "-10 % 3");
+assert(-7 % 2 == -1, "-7 % 2");
+
+// Negative divisor
+assert(10 % -3 == 1, "10 % -3");
+
+// Both negative
+assert(-10 % -3 == -1, "-10 % -3");
+
+// Floating point modulo
+assert(5.5 % 2 == 1.5, "5.5 % 2");
+assert(10.5 % 3 == 1.5, "10.5 % 3");
+
+// Precedence: % should be same as * and /
+assert(2 + 10 % 3 == 3, "precedence: 2 + 10 % 3");
+assert(10 % 3 + 2 == 3, "precedence: 10 % 3 + 2");
+assert(10 % 3 * 2 == 2, "precedence: 10 % 3 * 2");
+
+// Even/odd check pattern
+fun isEven(n) {
+  return n % 2 == 0;
+}
+
+assert(isEven(0), "0 is even");
+assert(!isEven(1), "1 is odd");
+assert(isEven(42), "42 is even");
+assert(!isEven(99), "99 is odd");
+
+// FizzBuzz pattern
+fun fizzBuzz(n) {
+  if (n % 15 == 0) return "FizzBuzz";
+  if (n % 3 == 0) return "Fizz";
+  if (n % 5 == 0) return "Buzz";
+  return "other";
+}
+
+assert(fizzBuzz(15) == "FizzBuzz", "fizzBuzz(15)");
+assert(fizzBuzz(9) == "Fizz", "fizzBuzz(9)");
+assert(fizzBuzz(10) == "Buzz", "fizzBuzz(10)");
+assert(fizzBuzz(7) == "other", "fizzBuzz(7)");
+
+// Modulo in a loop (wrapping)
+var sum = 0;
+for (var i = 0; i < 20; i = i + 1) {
+  sum = sum + (i % 4);
+}
+assert(sum == 30, "modulo wrapping sum");
+
+print "All modulo tests passed.";
