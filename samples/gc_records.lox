@@ -1,0 +1,119 @@
+// GC stress test for records
+// Verifies records are properly traced, preserved when live, and freed when dead.
+
+record Point(x, y);
+record Person(name, age);
+record Pair(first, second);
+
+// --- Test 1: Dead records are freed ---
+
+for (var i = 0; i < 50; i = i + 1) {
+  var throwaway = Point(i, i * 2);
+}
+var before = objectsAllocated();
+collectGarbage();
+var after = objectsAllocated();
+assert(after < before, "dead records not freed");
+
+// --- Test 2: Live record survives GC ---
+
+var alive = Point(42, 99);
+collectGarbage();
+assert(alive.x == 42, "live record field x corrupted after GC");
+assert(alive.y == 99, "live record field y corrupted after GC");
+
+// --- Test 3: Record with string fields — strings must be traced ---
+
+var bob = Person("Bob", 25);
+for (var i = 0; i < 30; i = i + 1) {
+  var trash = Person("Garbage" + "Name", i);
+}
+collectGarbage();
+assert(bob.name == "Bob", "live record string field corrupted after GC");
+assert(bob.age == 25, "live record number field corrupted after GC");
+
+// --- Test 4: Dead records with string fields are freed ---
+
+for (var i = 0; i < 50; i = i + 1) {
+  var dead = Person("Dead" + "Person", i);
+}
+before = objectsAllocated();
+collectGarbage();
+after = objectsAllocated();
+assert(after < before, "dead records with string fields not freed");
+
+// --- Test 5: Nested records — inner records traced through outer ---
+
+var nested = Pair(Point(1, 2), Point(3, 4));
+for (var i = 0; i < 30; i = i + 1) {
+  var junk = Pair(Point(i, i), Point(i, i));
+}
+collectGarbage();
+assert(nested.first.x == 1, "nested record inner field corrupted after GC");
+assert(nested.second.y == 4, "nested record inner field corrupted after GC");
+
+// --- Test 6: Record survives when captured by closure ---
+
+fun makeGetter(x, y) {
+  var p = Point(x, y);
+  fun get() { return p; }
+  return get;
+}
+var getter = makeGetter(10, 20);
+for (var i = 0; i < 30; i = i + 1) {
+  makeGetter(i, i);
+}
+collectGarbage();
+var got = getter();
+assert(got.x == 10, "record in closure corrupted after GC");
+assert(got.y == 20, "record in closure corrupted after GC");
+
+// --- Test 7: Unreachable closure-held records are freed ---
+
+fun closureFactory(x, y) {
+  var p = Point(x, y);
+  fun inner() { return p; }
+  return inner;
+}
+for (var i = 0; i < 50; i = i + 1) {
+  closureFactory(i, i);
+}
+before = objectsAllocated();
+collectGarbage();
+after = objectsAllocated();
+assert(after < before, "unreachable closure-held records not freed");
+
+// --- Test 8: Mutated record fields survive GC correctly ---
+
+var mut = Person("Start", 0);
+for (var i = 0; i < 30; i = i + 1) {
+  mut.name = "Name" + "X";
+  mut.age = i;
+}
+collectGarbage();
+assert(mut.name == "NameX", "mutated record string field wrong after GC");
+assert(mut.age == 29, "mutated record number field wrong after GC");
+
+// --- Test 9: Record type objects survive GC ---
+
+record R1(a);
+record R2(a, b);
+record R3(a, b, c);
+collectGarbage();
+var v1 = R1(1);
+var v2 = R2(1, 2);
+var v3 = R3(1, 2, 3);
+assert(v1.a == 1, "record type R1 lost after GC");
+assert(v2.b == 2, "record type R2 lost after GC");
+assert(v3.c == 3, "record type R3 lost after GC");
+
+// --- Test 10: Record type as value survives GC ---
+
+record Empty();
+var t = Empty;
+collectGarbage();
+var e = t();
+collectGarbage();
+assert(e == e, "empty record identity broken after GC");
+
+print "All gc_records tests passed.";
