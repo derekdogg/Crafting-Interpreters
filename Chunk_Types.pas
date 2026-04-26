@@ -2135,6 +2135,8 @@ var
 
   function ReadByteFr: Byte;
   begin
+    Assert(frame <> nil, 'ReadByteFr: frame is nil');
+    Assert(frame^.ip <> nil, 'ReadByteFr: frame^.ip is nil');
     Result := frame^.ip^;
     Inc(frame^.ip);
   end;
