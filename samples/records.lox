@@ -1,0 +1,31 @@
+// Record type declaration
+record Point(x, y);
+
+// Construction
+var p = Point(10, 20);
+print p;           // Point(x: 10, y: 20)
+
+// Field access
+print p.x;         // 10
+print p.y;         // 20
+
+// Field mutation
+p.x = 99;
+print p.x;         // 99
+print p;           // Point(x: 99, y: 20)
+
+// Multiple record types
+record Person(name, age);
+var bob = Person("Bob", 30);
+print bob;         // Person(name: Bob, age: 30)
+print bob.name;    // Bob
+print bob.age;     // 30
+
+// Mutation
+bob.age = 31;
+print bob.age;     // 31
+
+// Record with single field
+record Wrapper(value);
+var w = Wrapper(42);
+print w.value;     // 42

@@ -64,8 +64,11 @@ const
   OP_GET_GLOBAL_LONG = 32;
   OP_SET_GLOBAL_LONG = 33;
   OP_CLOSURE_LONG = 34;
+  OP_RECORD = 35;
+  OP_GET_PROPERTY = 36;
+  OP_SET_PROPERTY = 37;
 
-  OP_STRINGS : array[0..34] of string = (
+  OP_STRINGS : array[0..37] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -100,7 +103,10 @@ const
     'OP_DEFINE_GLOBAL_LONG',
     'OP_GET_GLOBAL_LONG',
     'OP_SET_GLOBAL_LONG',
-    'OP_CLOSURE_LONG');
+    'OP_CLOSURE_LONG',
+    'OP_RECORD',
+    'OP_GET_PROPERTY',
+    'OP_SET_PROPERTY');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 64;
@@ -111,7 +117,7 @@ type
 
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
-  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray);
+  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord);
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boModulo, boGreater, boLess);
   TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
@@ -134,7 +140,7 @@ type
     TOKEN_AND, TOKEN_CLASS, TOKEN_ELSE, TOKEN_FALSE,
     TOKEN_FOR, TOKEN_FUN, TOKEN_IF, TOKEN_NIL, TOKEN_OR,
     TOKEN_PRINT, TOKEN_RETURN, TOKEN_SUPER, TOKEN_THIS,
-    TOKEN_TRUE, TOKEN_VAR, TOKEN_WHILE,
+    TOKEN_TRUE, TOKEN_VAR, TOKEN_WHILE, TOKEN_RECORD,
 
     TOKEN_ERROR, TOKEN_EOF
   );
@@ -167,6 +173,9 @@ type
   pObjClosure     = ^TObjClosure;
   pObjUpvalue     = ^TObjUpvalue;
   pObjArray       = ^TObjArray;
+  pObjRecordType  = ^TObjRecordType;
+  pObjRecord      = ^TObjRecord;
+  ppObjString     = ^pObjString;
   pUpvalueArray   = ^TUpvalueArray;
   pCompiler       = ^TCompiler;
   pStack          = ^TStack;
@@ -260,6 +269,19 @@ type
     Count    : integer;
     Capacity : integer;
     Elements : pValue;
+  end;
+
+  TObjRecordType = record
+    Obj        : TObj;
+    name       : pObjString;
+    fieldCount : integer;
+    fieldNames : ppObjString;  // array of pObjString
+  end;
+
+  TObjRecord = record
+    Obj        : TObj;
+    recordType : pObjRecordType;
+    fields     : pValue;  // flat array indexed by field position
   end;
 
   TChunk = record
@@ -563,6 +585,7 @@ procedure literal(canAssign: Boolean);
 procedure ParseString(canAssign: Boolean);
 procedure variable(canAssign: Boolean);
 procedure call(canAssign: Boolean);
+procedure dot_(canAssign: Boolean);
 procedure and_(canAssign: Boolean);
 procedure or_(canAssign: Boolean);
 procedure beginScope();
@@ -573,6 +596,11 @@ function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure
 function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
 function newArray(MemTracker : pMemTracker) : pObjArray;
 function isArray(value : TValue) : boolean;
+function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppObjString; MemTracker : pMemTracker) : pObjRecordType;
+function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
+function isRecordType(value : TValue) : boolean;
+function isRecord(value : TValue) : boolean;
+procedure recordDeclaration();
 procedure defineNative(const name : AnsiString; func : TNativeFn);
 
 //Hash
@@ -611,7 +639,7 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_DOT }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: nil;      Infix: dot_;    Precedence: PREC_CALL),
 
     { TOKEN_MINUS }
     (Prefix: unary;    Infix: binary;  Precedence: PREC_TERM),
@@ -710,6 +738,9 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_WHILE }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_RECORD }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_ERROR }
@@ -1627,6 +1658,74 @@ begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okArray);
 end;
 
+function isRecordType(value : TValue) : boolean;
+begin
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okRecordType);
+end;
+
+function isRecord(value : TValue) : boolean;
+begin
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okRecord);
+end;
+
+function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppObjString; MemTracker : pMemTracker) : pObjRecordType;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(name <> nil, 'newRecordType: name is nil');
+  Assert(fieldCount >= 0, 'newRecordType: fieldCount is negative');
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjRecordType), MemTracker);
+  Result^.Obj.ObjectKind := okRecordType;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.name := name;
+  Result^.fieldCount := fieldCount;
+  Result^.fieldNames := fieldNames;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+
+  Assert(Result <> nil, 'newRecordType exit: Result is nil');
+  Assert(Result^.Obj.ObjectKind = okRecordType, 'newRecordType exit: ObjectKind should be okRecordType');
+end;
+
+function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
+var
+  i : integer;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(recType <> nil, 'newRecord: recType is nil');
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjRecord), MemTracker);
+  Result^.Obj.ObjectKind := okRecord;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.recordType := recType;
+  Result^.fields := nil;
+  if recType^.fieldCount > 0 then
+  begin
+    Allocate(Pointer(Result^.fields), 0, recType^.fieldCount * SizeOf(TValue), MemTracker);
+    for i := 0 to recType^.fieldCount - 1 do
+      Result^.fields[i] := CreateNilValue;
+  end;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+
+  Assert(Result <> nil, 'newRecord exit: Result is nil');
+  Assert(Result^.Obj.ObjectKind = okRecord, 'newRecord exit: ObjectKind should be okRecord');
+end;
+
+function findFieldIndex(recType : pObjRecordType; name : pObjString) : integer;
+var
+  i : integer;
+begin
+  Assert(recType <> nil, 'findFieldIndex: recType is nil');
+  Assert(name <> nil, 'findFieldIndex: name is nil');
+  for i := 0 to recType^.fieldCount - 1 do
+  begin
+    if StringsEqual(recType^.fieldNames[i], name) then
+      Exit(i);
+  end;
+  Result := -1;
+end;
+
 function ObjStringToAnsiString(S: PObjString): AnsiString;
 begin
   AssertObjStringIsAssigned(S);
@@ -1744,6 +1843,19 @@ begin
             Result := Result + ValueToStr(pObjArray(value.ObjValue)^.Elements[i]);
           end;
           Result := Result + ']';
+        end;
+        okRecordType: begin
+          Result := '<record ' + String(ObjStringToAnsiString(pObjRecordType(value.ObjValue)^.name)) + '>';
+        end;
+        okRecord: begin
+          Result := String(ObjStringToAnsiString(pObjRecord(value.ObjValue)^.recordType^.name)) + '(';
+          for i := 0 to pObjRecord(value.ObjValue)^.recordType^.fieldCount - 1 do
+          begin
+            if i > 0 then Result := Result + ', ';
+            Result := Result + String(ObjStringToAnsiString(pObjRecord(value.ObjValue)^.recordType^.fieldNames[i]))
+              + ': ' + ValueToStr(pObjRecord(value.ObjValue)^.fields[i]);
+          end;
+          Result := Result + ')';
         end;
       else
         Result := '<object>';
@@ -2132,6 +2244,15 @@ var
   isLocal : byte;
   index : byte;
   i : integer;
+  // record support
+  recFieldNames : array[0..255] of pObjString;
+  recNameIdx : byte;
+  recTypeName : pObjString;
+  recType : pObjRecordType;
+  recFieldNamesCopy : ppObjString;
+  rec : pObjRecord;
+  fieldName : pObjString;
+  fieldIdx : integer;
 
   function ReadByteFr: Byte;
   begin
@@ -2214,6 +2335,8 @@ var
   end;
 
   function CallValue(callee : TValue; argCnt : byte) : boolean;
+  var
+    j : integer;
   begin
     if isClosure(callee) then
     begin
@@ -2252,6 +2375,31 @@ var
       VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
       VM.Stack.Count := VM.Stack.Count - (argCnt + 1);
       pushStack(VM.Stack, nativeResult, VM.MemTracker);
+      Result := true;
+    end
+    else if isRecordType(callee) then
+    begin
+      // Construct a new record instance
+      if argCnt <> pObjRecordType(callee.ObjValue)^.fieldCount then
+      begin
+        runtimeError('Expected ' + IntToStr(pObjRecordType(callee.ObjValue)^.fieldCount) +
+          ' arguments but got ' + IntToStr(argCnt) + '.');
+        Exit(false);
+      end;
+      // Create the record instance — push onto stack to protect from GC
+      value := CreateObject(pObj(newRecord(pObjRecordType(callee.ObjValue), VM.MemTracker)));
+      pushStack(VM.Stack, value, VM.MemTracker);
+      // Copy arguments into the record's fields (args are on stack below the new record)
+      for j := 0 to argCnt - 1 do
+        pObjRecord(value.ObjValue)^.fields[j] :=
+          VM.Stack.Values[VM.Stack.Count - 1 - argCnt + j];
+      // Pop the record instance we just pushed for protection
+      popStack(VM.Stack);
+      // Pop args + callee, push result
+      Assert(VM.Stack.Count >= argCnt + 1, 'CallValue: stack underflow popping record args');
+      VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
+      VM.Stack.Count := VM.Stack.Count - (argCnt + 1);
+      pushStack(VM.Stack, value, VM.MemTracker);
       Result := true;
     end
     else
@@ -2591,6 +2739,93 @@ begin
             end;
           end;
         end;
+
+        OP_RECORD: begin
+          // Read field count and field name constant indices
+          argCount := ReadByteFr; // fieldCount
+          for i := 0 to argCount - 1 do
+          begin
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_RECORD field name');
+            AssertFrameValues('OP_RECORD field name');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_RECORD: field name constant is not a string');
+            recFieldNames[i] := ValueToString(value);
+          end;
+          // Read the record type name
+          recNameIdx := ReadByteFr;
+          AssertConstantIndex(recNameIdx, 'OP_RECORD type name');
+          AssertFrameValues('OP_RECORD type name');
+          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+          Assert(isString(value), 'OP_RECORD: type name constant is not a string');
+          recTypeName := ValueToString(value);
+          // Allocate persistent field names array
+          recFieldNamesCopy := nil;
+          if argCount > 0 then
+          begin
+            Allocate(Pointer(recFieldNamesCopy), 0, argCount * SizeOf(pObjString), VM.MemTracker);
+            for i := 0 to argCount - 1 do
+              recFieldNamesCopy[i] := recFieldNames[i];
+          end;
+          recType := newRecordType(recTypeName, argCount, recFieldNamesCopy, VM.MemTracker);
+          pushStack(vm.Stack, CreateObject(pObj(recType)), vm.MemTracker);
+        end;
+
+        OP_GET_PROPERTY: begin
+          if not isRecord(peekStack(vm.Stack)) then
+          begin
+            runtimeError('Only records have properties.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          rec := pObjRecord(peekStack(vm.Stack).ObjValue);
+          recNameIdx := ReadByteFr;
+          AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
+          AssertFrameValues('OP_GET_PROPERTY');
+          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+          Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
+          fieldName := ValueToString(value);
+          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+          if fieldIdx < 0 then
+          begin
+            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          // Replace the record on the stack with the field value
+          popStack(vm.Stack);
+          pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+        end;
+
+        OP_SET_PROPERTY: begin
+          if not isRecord(peekStack(vm.Stack, 1)) then
+          begin
+            runtimeError('Only records have properties.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
+          recNameIdx := ReadByteFr;
+          AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
+          AssertFrameValues('OP_SET_PROPERTY');
+          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+          Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
+          fieldName := ValueToString(value);
+          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+          if fieldIdx < 0 then
+          begin
+            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          // Set field value from top of stack
+          rec^.fields[fieldIdx] := peekStack(vm.Stack);
+          // Pop the value, pop the record, push the value back (assignment expression)
+          value := popStack(vm.Stack);
+          popStack(vm.Stack);
+          pushStack(vm.Stack, value, vm.MemTracker);
+        end;
+
       else
         begin
           runtimeError('Unknown opcode: ' + IntToStr(instruction));
@@ -2912,6 +3147,18 @@ begin
                  pObjArray(obj)^.Capacity * SizeOf(TValue), 0, vm.MemTracker);
       Allocate(Pointer(obj), SizeOf(TObjArray), 0, vm.MemTracker);
     end;
+    okRecordType : begin
+      if pObjRecordType(obj)^.fieldNames <> nil then
+        Allocate(Pointer(pObjRecordType(obj)^.fieldNames),
+                 pObjRecordType(obj)^.fieldCount * SizeOf(pObjString), 0, vm.MemTracker);
+      Allocate(Pointer(obj), SizeOf(TObjRecordType), 0, vm.MemTracker);
+    end;
+    okRecord : begin
+      if pObjRecord(obj)^.fields <> nil then
+        Allocate(Pointer(pObjRecord(obj)^.fields),
+                 pObjRecord(obj)^.recordType^.fieldCount * SizeOf(TValue), 0, vm.MemTracker);
+      Allocate(Pointer(obj), SizeOf(TObjRecord), 0, vm.MemTracker);
+    end;
   end;
 end;
 
@@ -3105,6 +3352,16 @@ begin
         for i := 0 to pObjArray(obj)^.Count - 1 do
           MarkValue(pObjArray(obj)^.Elements[i]);
       end;
+    end;
+    okRecordType: begin
+      MarkObject(pObj(pObjRecordType(obj)^.name));
+      for i := 0 to pObjRecordType(obj)^.fieldCount - 1 do
+        MarkObject(pObj(pObjRecordType(obj)^.fieldNames[i]));
+    end;
+    okRecord: begin
+      MarkObject(pObj(pObjRecord(obj)^.recordType));
+      for i := 0 to pObjRecord(obj)^.recordType^.fieldCount - 1 do
+        MarkValue(pObjRecord(obj)^.fields[i]);
     end;
   end;
 end;
@@ -3841,7 +4098,24 @@ begin
       'n': Exit(CheckKeyword(1, 2, 'il',    TOKEN_NIL));
       'o': Exit(CheckKeyword(1, 1, 'r',     TOKEN_OR));
       'p': Exit(CheckKeyword(1, 4, 'rint',  TOKEN_PRINT));
-      'r': Exit(CheckKeyword(1, 5, 'eturn', TOKEN_RETURN));
+      'r':
+      begin
+        if (scanner.current - scanner.start > 1) then
+        begin
+          case (scanner.start + 1)^ of
+            'e':
+            begin
+              if (scanner.current - scanner.start > 2) then
+              begin
+                case (scanner.start + 2)^ of
+                  't': Exit(CheckKeyword(2, 4, 'turn', TOKEN_RETURN));
+                  'c': Exit(CheckKeyword(2, 4, 'cord', TOKEN_RECORD));
+                end;
+              end;
+            end;
+          end;
+        end;
+      end;
       's': Exit(CheckKeyword(1, 4, 'uper',  TOKEN_SUPER));
       't':
       begin
@@ -4831,6 +5105,26 @@ begin
   emitByte(argCount, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
 
+procedure dot_(canAssign: Boolean);
+var
+  nameIdx : integer;
+begin
+  consume(TOKEN_IDENTIFIER, 'Expect property name after ''.''.');
+  nameIdx := identifierConstant(parser.previous);
+
+  if canAssign and matchToken(TOKEN_EQUAL) then
+  begin
+    Expression();
+    emitByte(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    emitByte(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+end;
+
 procedure functionBody(funcType : TFunctionType);
 var
   compiler : pCompiler;
@@ -4911,6 +5205,61 @@ begin
   defineVariable(global);
 end;
 
+procedure recordDeclaration();
+var
+  global : integer;
+  fieldCount : integer;
+  fieldNameIndices : array[0..255] of integer;
+  i : integer;
+  nameStr : pObjString;
+  nameToken : TToken;
+begin
+  Assert(Current <> nil, 'recordDeclaration: Current compiler is nil');
+  global := parseVariable('Expect record name.');
+  nameToken := parser.previous;  // save the record name token
+  markInitialized();
+
+  consume(TOKEN_LEFT_PAREN, 'Expect ''('' after record name.');
+  fieldCount := 0;
+  if not check(TOKEN_RIGHT_PAREN) then
+  begin
+    repeat
+      consume(TOKEN_IDENTIFIER, 'Expect field name.');
+      if fieldCount >= 256 then
+      begin
+        Error('Can''t have more than 256 fields.');
+        Break;
+      end;
+      nameStr := CreateString(TokenToString(parser.previous), VM.MemTracker);
+      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+      fieldNameIndices[fieldCount] := AddValueConstant(CurrentChunk.Constants,
+        StringToValue(nameStr), VM.MemTracker);
+      popStack(VM.Stack);
+      Inc(fieldCount);
+    until not matchToken(TOKEN_COMMA);
+  end;
+  consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after record fields.');
+  consume(TOKEN_SEMICOLON, 'Expect '';'' after record declaration.');
+
+  // Emit OP_RECORD with field count
+  emitByte(OP_RECORD, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitByte(Byte(fieldCount), CurrentChunk, parser.previous.line, vm.MemTracker);
+
+  // Emit each field name constant index
+  for i := 0 to fieldCount - 1 do
+    emitByte(Byte(fieldNameIndices[i]), CurrentChunk, parser.previous.line, vm.MemTracker);
+
+  // Store the record type name as a constant and emit its index
+  nameStr := CreateString(TokenToString(nameToken), VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+  emitByte(Byte(AddValueConstant(CurrentChunk.Constants,
+    StringToValue(nameStr), VM.MemTracker)),
+    CurrentChunk, parser.previous.line, vm.MemTracker);
+  popStack(VM.Stack);
+
+  defineVariable(global);
+end;
+
 procedure returnStatement();
 begin
   Assert(Current <> nil, 'returnStatement: Current compiler is nil');
@@ -4969,7 +5318,8 @@ begin
       Exit;
     case Parser.Current.TokenType of
       TOKEN_CLASS, TOKEN_FUN, TOKEN_VAR, TOKEN_FOR,
-      TOKEN_IF, TOKEN_WHILE, TOKEN_PRINT, TOKEN_RETURN:
+      TOKEN_IF, TOKEN_WHILE, TOKEN_PRINT, TOKEN_RETURN,
+      TOKEN_RECORD:
         Exit;
     end;
     advanceParser();
@@ -4983,6 +5333,8 @@ begin
     funDeclaration()
   else if matchToken(TOKEN_VAR) then
     varDeclaration()
+  else if matchToken(TOKEN_RECORD) then
+    recordDeclaration()
   else
     statement();
 
