@@ -9,6 +9,7 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Garbage Collection** — Mark-sweep GC with tricolor marking and gray stack worklist
 - **String Interning** — Hash table with weak references for automatic deduplication
 - **Arrays** — Dynamic arrays via native functions (`newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove`)
+- **Records** — Immutable-structure value types via `record Name(field1, field2);` syntax with dot access and field mutation
 - **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, and literals (16M constant limit)
 - **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, plus 7 array functions
 
@@ -29,6 +30,7 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | 25 | Closures and upvalues |
 | 26 | Garbage collection (mark-sweep) |
 | — | Arrays (native function API, GC-integrated) |
+| — | Records (`record Name(fields);`, dot access, field mutation, GC-integrated) |
 | — | Modulo operator (`%`) |
 | — | Long-operand opcodes (`OP_*_LONG`) for >255 constants per chunk |
 
@@ -79,7 +81,7 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 
 ### Custom Sample Tests
 
-**25 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
+**27 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
 | File | Coverage |
 |------|----------|
@@ -108,6 +110,8 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | gc_torture.lox | Concat chains, nested defs, slot reuse, fib, ping-pong, closure spam, alternating alloc/collect |
 | gc_gray_stack.lox | Gray stack growth under heavy marking pressure |
 | gc_arrays.lox | Array elements survive GC, nested array marking, array in closures |
+| records.lox | Record declaration, construction, field access, mutation, multiple types |
+| gc_records.lox | Record GC reclamation, live record survival, nested records, closure-captured records |
 
 **11 error tests** in `samples/errors/` — expected to produce errors:
 
@@ -133,7 +137,7 @@ The garbage collector has been hardened with:
 - **DEBUG_LOG_GC** — Logs allocate/free/mark/blacken events to `gc.log` with summary stats
 - **Push/pop protection** at all 7 GC-sensitive allocation sites
 - **NextGC floor** of 1024 bytes to prevent zero-threshold assertions
-- **10 dedicated GC test files** (6 new) covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, and array element marking
+- **11 dedicated GC test files** (7 new) covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, array element marking, and record type/instance reclamation
 
 ## Build
 
