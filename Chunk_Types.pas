@@ -2139,11 +2139,64 @@ var
     Inc(frame^.ip);
   end;
 
+  procedure AssertFrameConstants(const context: string);
+  begin
+    Assert(frame <> nil, context + ': frame is nil');
+    Assert(frame^.closure <> nil, context + ': frame^.closure is nil');
+    Assert(frame^.closure^.func <> nil, context + ': frame^.closure^.func is nil');
+    Assert(frame^.closure^.func^.chunk <> nil, context + ': frame^.closure^.func^.chunk is nil');
+    Assert(frame^.closure^.func^.chunk^.Constants <> nil, context + ': chunk^.Constants is nil');
+  end;
+
+  procedure AssertFrameValues(const context: string);
+  var
+    cl: pObjClosure;
+    fn: pObjFunction;
+    ch: pChunk;
+    constants: pValueArray;
+  begin
+    Assert(frame <> nil, context + ': frame is nil');
+    cl := frame^.closure;
+    Assert(cl <> nil, context + ': frame^.closure is nil');
+    fn := cl^.func;
+    Assert(fn <> nil, context + ': closure^.func is nil');
+    ch := fn^.chunk;
+    Assert(ch <> nil, context + ': func^.chunk is nil');
+    constants := ch^.Constants;
+    Assert(constants <> nil, context + ': chunk^.Constants is nil');
+    Assert(constants^.Values <> nil, context + ': chunk^.Constants^.Values is nil');
+  end;
+
+  procedure AssertConstantIndex(idx: Integer; const context: string);
+  begin
+    AssertFrameConstants(context);
+    Assert((idx >= 0) and (idx < frame^.closure^.func^.chunk^.Constants^.Count),
+      context + ': constant index out of bounds');
+  end;
+
+  procedure AssertFrameCode(const context: string);
+  begin
+    Assert(frame <> nil, context + ': frame is nil');
+    Assert(frame^.closure <> nil, context + ': frame^.closure is nil');
+    Assert(frame^.closure^.func <> nil, context + ': frame^.closure^.func is nil');
+    Assert(frame^.closure^.func^.chunk <> nil, context + ': frame^.closure^.func^.chunk is nil');
+    Assert(frame^.closure^.func^.chunk^.Code <> nil, context + ': chunk^.Code is nil');
+  end;
+
+  procedure AssertUpvalueIndex(idx: Integer; const context: string);
+  begin
+    Assert(frame <> nil, context + ': frame is nil');
+    Assert(frame^.closure <> nil, context + ': frame^.closure is nil');
+    Assert((idx >= 0) and (idx < frame^.closure^.upvalueCount),
+      context + ': upvalue index out of bounds');
+  end;
+
   function ReadConstantFr: TValue;
   var idx: Byte;
   begin
     idx := ReadByteFr;
-    Assert(idx < frame^.closure^.func^.chunk^.Constants^.Count, 'ReadConstantFr: constant index out of bounds');
+    AssertConstantIndex(idx, 'ReadConstantFr');
+    AssertFrameValues('ReadConstantFr');
     Result := frame^.closure^.func^.chunk^.Constants^.Values[idx];
   end;
 
@@ -2153,7 +2206,8 @@ var
     idx := ReadByteFr;
     idx := idx or (ReadByteFr shl 8);
     idx := idx or (ReadByteFr shl 16);
-    Assert((idx >= 0) and (idx < frame^.closure^.func^.chunk^.Constants^.Count), 'ReadConstantLongFr: constant index out of bounds');
+    AssertConstantIndex(idx, 'ReadConstantLongFr');
+    AssertFrameValues('ReadConstantLongFr');
     Result := frame^.closure^.func^.chunk^.Constants^.Values[idx];
   end;
 
@@ -2231,7 +2285,8 @@ begin
           i := ReadByteFr;
           i := i or (ReadByteFr shl 8);
           i := i or (ReadByteFr shl 16);
-          Assert((i >= 0) and (i < frame^.closure^.func^.chunk^.Constants^.Count), 'OP_CONSTANT_LONG: constant index out of bounds');
+          AssertConstantIndex(i, 'OP_CONSTANT_LONG');
+          AssertFrameValues('OP_CONSTANT_LONG');
           value := frame^.closure^.func^.chunk^.Constants^.Values[i];
           pushStack(vm.Stack,value,vm.MemTracker);
         end;
@@ -2385,6 +2440,7 @@ begin
           offset := ReadByteFr shl 8;
           offset := offset or ReadByteFr;
           Inc(frame^.ip, offset);
+          AssertFrameCode('OP_JUMP');
           Assert(NativeUInt(frame^.ip) <= NativeUInt(frame^.closure^.func^.chunk^.Code) + NativeUInt(frame^.closure^.func^.chunk^.Count), 'OP_JUMP: ip past end of code');
         end;
 
@@ -2399,6 +2455,7 @@ begin
           offset := ReadByteFr shl 8;
           offset := offset or ReadByteFr;
           Dec(frame^.ip, offset);
+          AssertFrameCode('OP_LOOP');
           Assert(NativeUInt(frame^.ip) >= NativeUInt(frame^.closure^.func^.chunk^.Code), 'OP_LOOP: ip before start of code');
         end;
 
@@ -2434,7 +2491,7 @@ begin
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
             else
             begin
-              Assert(index < frame^.closure^.upvalueCount, 'OP_CLOSURE: upvalue index out of bounds');
+              AssertUpvalueIndex(index, 'OP_CLOSURE');
               closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
             end;
           end;
@@ -2442,14 +2499,14 @@ begin
 
         OP_GET_UPVALUE: begin
           slot := ReadByteFr;
-          Assert(slot < frame^.closure^.upvalueCount, 'OP_GET_UPVALUE: slot out of bounds');
+          AssertUpvalueIndex(slot, 'OP_GET_UPVALUE');
           Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_GET_UPVALUE: upvalue is nil');
           pushStack(vm.Stack, frame^.closure^.upvalues^[slot]^.location^, vm.MemTracker);
         end;
 
         OP_SET_UPVALUE: begin
           slot := ReadByteFr;
-          Assert(slot < frame^.closure^.upvalueCount, 'OP_SET_UPVALUE: slot out of bounds');
+          AssertUpvalueIndex(slot, 'OP_SET_UPVALUE');
           Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_SET_UPVALUE: upvalue is nil');
           frame^.closure^.upvalues^[slot]^.location^ := peekStack(vm.Stack);
         end;
@@ -2527,7 +2584,7 @@ begin
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
             else
             begin
-              Assert(index < frame^.closure^.upvalueCount, 'OP_CLOSURE_LONG: upvalue index out of bounds');
+              AssertUpvalueIndex(index, 'OP_CLOSURE_LONG');
               closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
             end;
           end;
