@@ -10,8 +10,9 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **String Interning** — Hash table with weak references for automatic deduplication
 - **Arrays** — Dynamic arrays via native functions (`newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove`)
 - **Records** — Immutable-structure value types via `record Name(field1, field2);` syntax with dot access and field mutation
-- **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, and literals (16M constant limit)
-- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, plus 7 array functions
+- **Native Objects** *(work in progress)* — Wrap Delphi classes as GC-tracked Lox objects with method dispatch via `OP_INVOKE`; ships with `StringList()` (add, get, count, remove)
+- **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
+- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor
 
 ## Chapters Implemented
 
@@ -31,6 +32,7 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | 26 | Garbage collection (mark-sweep) |
 | — | Arrays (native function API, GC-integrated) |
 | — | Records (`record Name(fields);`, dot access, field mutation, GC-integrated) |
+| — | Native objects (Delphi class wrapping, `StringList()`, `OP_INVOKE`, GC-integrated) |
 | — | Modulo operator (`%`) |
 | — | Long-operand opcodes (`OP_*_LONG`) for >255 constants per chunk |
 
@@ -81,7 +83,7 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 
 ### Custom Sample Tests
 
-**27 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
+**29 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
 | File | Coverage |
 |------|----------|
@@ -112,6 +114,8 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | gc_arrays.lox | Array elements survive GC, nested array marking, array in closures |
 | records.lox | Record declaration, construction, field access, mutation, multiple types |
 | gc_records.lox | Record GC reclamation, live record survival, nested records, closure-captured records |
+| native_objects.lox | StringList create, add, get, count, remove, print |
+| native_objects_stress.lox | 14 tests: multi-instance, loops, churn, closures, GC pressure, 20 simultaneous lists, interleaved GC |
 
 **11 error tests** in `samples/errors/` — expected to produce errors:
 
