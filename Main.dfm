@@ -48,4 +48,13 @@ object Form4: TForm4
       'Memo2')
     TabOrder = 3
   end
+  object Button3: TButton
+    Left = 24
+    Top = 64
+    Width = 104
+    Height = 25
+    Caption = 'NativeObj Test'
+    TabOrder = 4
+    OnClick = Button3Click
+  end
 end

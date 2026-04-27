@@ -1,0 +1,212 @@
+// Native object stress test
+// Tests: multi-instance, GC pressure, loops, scope survival, interleaving
+
+// === Test 1: Multiple independent instances ===
+var a = StringList();
+var b = StringList();
+a.add("alpha");
+a.add("bravo");
+b.add("xray");
+b.add("yankee");
+b.add("zulu");
+assert(a.count() == 2, "T1: a count");
+assert(b.count() == 3, "T1: b count");
+assert(a.get(0) == "alpha", "T1: a.get(0)");
+assert(b.get(2) == "zulu",  "T1: b.get(2)");
+print "Test 1 passed: multiple instances";
+
+// === Test 2: Loop-driven population ===
+var big = StringList();
+var i = 0;
+while (i < 100) {
+  big.add("item");
+  i = i + 1;
+}
+assert(big.count() == 100, "T2: 100 items");
+assert(big.get(99) == "item", "T2: get(99)");
+print "Test 2 passed: loop population (100 items)";
+
+// === Test 3: Add-remove churn ===
+var churn = StringList();
+i = 0;
+while (i < 50) {
+  churn.add("temp");
+  i = i + 1;
+}
+// Remove from front repeatedly (shifts all elements)
+i = 0;
+while (i < 50) {
+  churn.remove(0);
+  i = i + 1;
+}
+assert(churn.count() == 0, "T3: churn empty");
+print "Test 3 passed: add-remove churn";
+
+// === Test 4: Interleaved operations on multiple lists ===
+var x = StringList();
+var y = StringList();
+i = 0;
+while (i < 30) {
+  x.add("x");
+  y.add("y");
+  i = i + 1;
+}
+assert(x.count() == 30, "T4: x count");
+assert(y.count() == 30, "T4: y count");
+assert(x.get(15) == "x", "T4: x.get(15)");
+assert(y.get(15) == "y", "T4: y.get(15)");
+print "Test 4 passed: interleaved ops";
+
+// === Test 5: Native object survives function call ===
+fun addItems(list, n) {
+  var j = 0;
+  while (j < n) {
+    list.add("fn");
+    j = j + 1;
+  }
+}
+var passed = StringList();
+addItems(passed, 25);
+assert(passed.count() == 25, "T5: passed to function");
+assert(passed.get(0) == "fn", "T5: content check");
+print "Test 5 passed: survive function call";
+
+// === Test 6: Native object returned from function ===
+fun makeList() {
+  var tmp = StringList();
+  tmp.add("created");
+  tmp.add("inside");
+  tmp.add("function");
+  return tmp;
+}
+var fromFn = makeList();
+assert(fromFn.count() == 3, "T6: returned from function");
+assert(fromFn.get(1) == "inside", "T6: content check");
+print "Test 6 passed: returned from function";
+
+// === Test 7: Native object captured by closure ===
+fun makeAdder() {
+  var inner = StringList();
+  fun addToInner(val) {
+    inner.add(val);
+  }
+  fun getInner() {
+    return inner;
+  }
+  // Return both closures sharing the same list
+  var result = newArray();
+  arrayPush(result, addToInner);
+  arrayPush(result, getInner);
+  return result;
+}
+var closures = makeAdder();
+var adder = arrayGet(closures, 0);
+var getter = arrayGet(closures, 1);
+adder("closed");
+adder("over");
+adder("value");
+var captured = getter();
+assert(captured.count() == 3, "T7: closure captured");
+assert(captured.get(0) == "closed", "T7: content check");
+print "Test 7 passed: closure capture";
+
+// === Test 8: GC pressure with native objects ===
+// Create many short-lived lists to trigger GC while native objects exist
+var survivor = StringList();
+survivor.add("must survive");
+i = 0;
+while (i < 200) {
+  var throwaway = StringList();
+  throwaway.add("garbage");
+  throwaway.add("garbage");
+  throwaway.add("garbage");
+  // throwaway goes out of scope each iteration — GC can reclaim
+  i = i + 1;
+}
+assert(survivor.count() == 1, "T8: survivor intact after GC pressure");
+assert(survivor.get(0) == "must survive", "T8: survivor content");
+print "Test 8 passed: GC pressure (200 throwaway lists)";
+
+// === Test 9: Explicit GC with live native objects ===
+var pre = StringList();
+pre.add("before gc");
+collectGarbage();
+assert(pre.count() == 1, "T9: survives explicit GC");
+assert(pre.get(0) == "before gc", "T9: content after GC");
+pre.add("after gc");
+assert(pre.count() == 2, "T9: usable after GC");
+print "Test 9 passed: explicit collectGarbage()";
+
+// === Test 10: Many lists alive simultaneously ===
+var lists = newArray();
+i = 0;
+while (i < 20) {
+  var l = StringList();
+  l.add("list");
+  arrayPush(lists, l);
+  i = i + 1;
+}
+// Verify all 20 are independently correct
+i = 0;
+while (i < 20) {
+  var l = arrayGet(lists, i);
+  assert(l.count() == 1, "T10: list count");
+  i = i + 1;
+}
+print "Test 10 passed: 20 simultaneous lists";
+
+// === Test 11: Remove from middle, verify shuffle ===
+var mid = StringList();
+mid.add("A");
+mid.add("B");
+mid.add("C");
+mid.add("D");
+mid.add("E");
+mid.remove(2);  // remove "C"
+assert(mid.count() == 4, "T11: count after mid remove");
+assert(mid.get(0) == "A", "T11: [0]=A");
+assert(mid.get(1) == "B", "T11: [1]=B");
+assert(mid.get(2) == "D", "T11: [2]=D");
+assert(mid.get(3) == "E", "T11: [3]=E");
+print "Test 11 passed: remove from middle";
+
+// === Test 12: Bulk population ===
+var concat = StringList();
+i = 0;
+while (i < 50) {
+  concat.add("item");
+  i = i + 1;
+}
+assert(concat.count() == 50, "T12: concat count");
+assert(concat.get(0) == "item", "T12: first");
+assert(concat.get(49) == "item", "T12: last");
+print "Test 12 passed: bulk population";
+
+// === Test 13: Nested function calls with native objects ===
+fun appendAndReturn(list, val) {
+  list.add(val);
+  return list.count();
+}
+var nested = StringList();
+var c1 = appendAndReturn(nested, "one");
+var c2 = appendAndReturn(nested, "two");
+var c3 = appendAndReturn(nested, "three");
+assert(c1 == 1, "T13: count after 1");
+assert(c2 == 2, "T13: count after 2");
+assert(c3 == 3, "T13: count after 3");
+print "Test 13 passed: nested function calls";
+
+// === Test 14: GC stress interleaved with native method calls ===
+var stress = StringList();
+i = 0;
+while (i < 100) {
+  stress.add("stress");
+  if (i % 10 == 0) collectGarbage();
+  i = i + 1;
+}
+assert(stress.count() == 100, "T14: stress count");
+assert(stress.get(50) == "stress", "T14: mid check");
+print "Test 14 passed: GC interleaved with method calls";
+
+print "";
+print "All 14 native object stress tests passed.";

@@ -67,8 +67,12 @@ const
   OP_RECORD = 35;
   OP_GET_PROPERTY = 36;
   OP_SET_PROPERTY = 37;
+  OP_INVOKE = 38;
+  OP_INVOKE_LONG = 39;
+  OP_GET_PROPERTY_LONG = 40;
+  OP_SET_PROPERTY_LONG = 41;
 
-  OP_STRINGS : array[0..37] of string = (
+  OP_STRINGS : array[0..41] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -106,7 +110,11 @@ const
     'OP_CLOSURE_LONG',
     'OP_RECORD',
     'OP_GET_PROPERTY',
-    'OP_SET_PROPERTY');
+    'OP_SET_PROPERTY',
+    'OP_INVOKE',
+    'OP_INVOKE_LONG',
+    'OP_GET_PROPERTY_LONG',
+    'OP_SET_PROPERTY_LONG');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 64;
@@ -117,7 +125,7 @@ type
 
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
-  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord);
+  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord, okNativeObject);
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boModulo, boGreater, boLess);
   TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
@@ -175,6 +183,8 @@ type
   pObjArray       = ^TObjArray;
   pObjRecordType  = ^TObjRecordType;
   pObjRecord      = ^TObjRecord;
+  pObjNativeObject = ^TObjNativeObject;
+  pNativeClassInfo = ^TNativeClassInfo;
   ppObjString     = ^pObjString;
   pUpvalueArray   = ^TUpvalueArray;
   pCompiler       = ^TCompiler;
@@ -282,6 +292,27 @@ type
     Obj        : TObj;
     recordType : pObjRecordType;
     fields     : pValue;  // flat array indexed by field position
+  end;
+
+  TNativeMethodFn = function(instance: Pointer; argCount: integer; args: pValue): TValue;
+
+  TNativeMethod = record
+    name : AnsiString;
+    fn   : TNativeMethodFn;
+  end;
+
+  TNativeDestructor = procedure(instance: Pointer);
+
+  TNativeClassInfo = record
+    name       : AnsiString;
+    methods    : array of TNativeMethod;
+    destructor_: TNativeDestructor;
+  end;
+
+  TObjNativeObject = record
+    Obj       : TObj;
+    instance  : Pointer;
+    classInfo : pNativeClassInfo;
   end;
 
   TChunk = record
@@ -600,8 +631,12 @@ function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppO
 function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
 function isRecordType(value : TValue) : boolean;
 function isRecord(value : TValue) : boolean;
+function isNativeObject(value : TValue) : boolean;
+function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeObject;
+function findNativeMethod(classInfo : pNativeClassInfo; const methodName : AnsiString; out found : TNativeMethodFn) : boolean;
 procedure recordDeclaration();
 procedure defineNative(const name : AnsiString; func : TNativeFn);
+procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
 
 //Hash
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
@@ -1726,6 +1761,41 @@ begin
   Result := -1;
 end;
 
+function isNativeObject(value : TValue) : boolean;
+begin
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okNativeObject);
+end;
+
+function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeObject;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(instance <> nil, 'newNativeObject: instance is nil');
+  Assert(classInfo <> nil, 'newNativeObject: classInfo is nil');
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjNativeObject), MemTracker);
+  Result^.Obj.ObjectKind := okNativeObject;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.instance := instance;
+  Result^.classInfo := classInfo;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+  Assert(Result <> nil, 'newNativeObject exit: Result is nil');
+end;
+
+function findNativeMethod(classInfo : pNativeClassInfo; const methodName : AnsiString; out found : TNativeMethodFn) : boolean;
+var
+  i : integer;
+begin
+  for i := 0 to High(classInfo^.methods) do
+    if classInfo^.methods[i].name = methodName then
+    begin
+      found := classInfo^.methods[i].fn;
+      Exit(True);
+    end;
+  found := nil;
+  Result := False;
+end;
+
 function ObjStringToAnsiString(S: PObjString): AnsiString;
 begin
   AssertObjStringIsAssigned(S);
@@ -1856,6 +1926,9 @@ begin
               + ': ' + ValueToStr(pObjRecord(value.ObjValue)^.fields[i]);
           end;
           Result := Result + ')';
+        end;
+        okNativeObject: begin
+          Result := '<' + String(pObjNativeObject(value.ObjValue)^.classInfo^.name) + '>';
         end;
       else
         Result := '<object>';
@@ -2246,13 +2319,19 @@ var
   i : integer;
   // record support
   recFieldNames : array[0..255] of pObjString;
-  recNameIdx : byte;
+  recNameIdx : integer;
   recTypeName : pObjString;
   recType : pObjRecordType;
   recFieldNamesCopy : ppObjString;
   rec : pObjRecord;
   fieldName : pObjString;
   fieldIdx : integer;
+  // native object invoke support
+  nativeObj : pObjNativeObject;
+  nativeMethod : TNativeMethodFn;
+  invokeNameIdx : integer;
+  invokeArgCount : byte;
+  invokeMethodName : AnsiString;
 
   function ReadByteFr: Byte;
   begin
@@ -2826,6 +2905,144 @@ begin
           pushStack(vm.Stack, value, vm.MemTracker);
         end;
 
+        OP_INVOKE: begin
+          invokeNameIdx := ReadByteFr;
+          invokeArgCount := ReadByteFr;
+          AssertConstantIndex(invokeNameIdx, 'OP_INVOKE');
+          AssertFrameValues('OP_INVOKE');
+          // The receiver is on the stack below the arguments
+          value := peekStack(vm.Stack, invokeArgCount);
+          if isNativeObject(value) then
+          begin
+            nativeObj := pObjNativeObject(value.ObjValue);
+            // Get method name from constant pool
+            value := frame^.closure^.func^.chunk^.Constants^.Values[invokeNameIdx];
+            Assert(isString(value), 'OP_INVOKE: method name constant is not a string');
+            invokeMethodName := ObjStringToAnsiString(ValueToString(value));
+            if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            begin
+              runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            // Call the method: args are on stack, receiver is below them
+            nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
+              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+            if VM.RuntimeErrorStr <> '' then
+            begin
+              Result.code := INTERPRET_RUNTIME_ERROR;
+              Exit;
+            end;
+            // Pop args + receiver, push result
+            Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE: stack underflow');
+            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            VM.Stack.Count := VM.Stack.Count - (invokeArgCount + 1);
+            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+          end
+          else
+          begin
+            runtimeError('Only native objects have methods.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+        end;
+
+        OP_INVOKE_LONG: begin
+          invokeNameIdx := ReadByteFr;
+          invokeNameIdx := invokeNameIdx or (ReadByteFr shl 8);
+          invokeNameIdx := invokeNameIdx or (ReadByteFr shl 16);
+          invokeArgCount := ReadByteFr;
+          AssertConstantIndex(invokeNameIdx, 'OP_INVOKE_LONG');
+          AssertFrameValues('OP_INVOKE_LONG');
+          value := peekStack(vm.Stack, invokeArgCount);
+          if isNativeObject(value) then
+          begin
+            nativeObj := pObjNativeObject(value.ObjValue);
+            value := frame^.closure^.func^.chunk^.Constants^.Values[invokeNameIdx];
+            Assert(isString(value), 'OP_INVOKE_LONG: method name constant is not a string');
+            invokeMethodName := ObjStringToAnsiString(ValueToString(value));
+            if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            begin
+              runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
+              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+            if VM.RuntimeErrorStr <> '' then
+            begin
+              Result.code := INTERPRET_RUNTIME_ERROR;
+              Exit;
+            end;
+            Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE_LONG: stack underflow');
+            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            VM.Stack.Count := VM.Stack.Count - (invokeArgCount + 1);
+            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+          end
+          else
+          begin
+            runtimeError('Only native objects have methods.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+        end;
+
+        OP_GET_PROPERTY_LONG: begin
+          if not isRecord(peekStack(vm.Stack)) then
+          begin
+            runtimeError('Only records have properties.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          rec := pObjRecord(peekStack(vm.Stack).ObjValue);
+          recNameIdx := ReadByteFr;
+          recNameIdx := recNameIdx or (ReadByteFr shl 8);
+          recNameIdx := recNameIdx or (ReadByteFr shl 16);
+          AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
+          AssertFrameValues('OP_GET_PROPERTY_LONG');
+          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+          Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
+          fieldName := ValueToString(value);
+          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+          if fieldIdx < 0 then
+          begin
+            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          popStack(vm.Stack);
+          pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+        end;
+
+        OP_SET_PROPERTY_LONG: begin
+          if not isRecord(peekStack(vm.Stack, 1)) then
+          begin
+            runtimeError('Only records have properties.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
+          recNameIdx := ReadByteFr;
+          recNameIdx := recNameIdx or (ReadByteFr shl 8);
+          recNameIdx := recNameIdx or (ReadByteFr shl 16);
+          AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
+          AssertFrameValues('OP_SET_PROPERTY_LONG');
+          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+          Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
+          fieldName := ValueToString(value);
+          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+          if fieldIdx < 0 then
+          begin
+            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          rec^.fields[fieldIdx] := peekStack(vm.Stack);
+          value := popStack(vm.Stack);
+          popStack(vm.Stack);
+          pushStack(vm.Stack, value, vm.MemTracker);
+        end;
+
       else
         begin
           runtimeError('Unknown opcode: ' + IntToStr(instruction));
@@ -3159,6 +3376,11 @@ begin
                  pObjRecord(obj)^.recordType^.fieldCount * SizeOf(TValue), 0, vm.MemTracker);
       Allocate(Pointer(obj), SizeOf(TObjRecord), 0, vm.MemTracker);
     end;
+    okNativeObject : begin
+      if Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
+        pObjNativeObject(obj)^.classInfo^.destructor_(pObjNativeObject(obj)^.instance);
+      Allocate(Pointer(obj), SizeOf(TObjNativeObject), 0, vm.MemTracker);
+    end;
   end;
 end;
 
@@ -3363,6 +3585,7 @@ begin
       for i := 0 to pObjRecord(obj)^.recordType^.fieldCount - 1 do
         MarkValue(pObjRecord(obj)^.fields[i]);
     end;
+    okNativeObject: ; // Delphi object not traced by GC
   end;
 end;
 
@@ -3782,7 +4005,139 @@ begin
   Dec(arr^.Count);
 end;
 
+// ---- Native class registry ----
+
+var
+  NativeClassRegistry : array of pNativeClassInfo;
+  NativeClassCount    : integer = 0;
+
+procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
+var
+  i : integer;
+  info : pNativeClassInfo;
+begin
+  New(info);
+  info^.name := AName;
+  SetLength(info^.methods, Length(AMethods));
+  for i := 0 to High(AMethods) do
+    info^.methods[i] := AMethods[i];
+  info^.destructor_ := ADestructor;
+  Inc(NativeClassCount);
+  SetLength(NativeClassRegistry, NativeClassCount);
+  NativeClassRegistry[NativeClassCount - 1] := info;
+end;
+
+function findNativeClass(const name : AnsiString) : pNativeClassInfo;
+var
+  i : integer;
+begin
+  for i := 0 to NativeClassCount - 1 do
+    if NativeClassRegistry[i]^.name = name then
+      Exit(NativeClassRegistry[i]);
+  Result := nil;
+end;
+
+// ---- StringList wrapper ----
+
+function SL_Add(instance: Pointer; argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('add() takes 1 argument.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('add() argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+  TStringList(instance).Add(String(ObjStringToAnsiString(ValueToString(args[0]))));
+  Result := CreateNilValue;
+end;
+
+function SL_Get(instance: Pointer; argCount: integer; args: pValue): TValue;
+var
+  idx : integer;
+  s : AnsiString;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('get() takes 1 argument.');
+    Exit(CreateNilValue);
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('get() argument must be a number.');
+    Exit(CreateNilValue);
+  end;
+  idx := Trunc(GetNumber(args[0]));
+  if (idx < 0) or (idx >= TStringList(instance).Count) then
+  begin
+    RuntimeError('StringList index ' + IntToStr(idx) + ' out of bounds.');
+    Exit(CreateNilValue);
+  end;
+  s := AnsiString(TStringList(instance)[idx]);
+  Result := StringToValue(CreateString(s, VM.MemTracker));
+end;
+
+function SL_Count(instance: Pointer; argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 0 then
+  begin
+    RuntimeError('count() takes no arguments.');
+    Exit(CreateNilValue);
+  end;
+  Result := CreateNumber(TStringList(instance).Count);
+end;
+
+function SL_Remove(instance: Pointer; argCount: integer; args: pValue): TValue;
+var
+  idx : integer;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('remove() takes 1 argument.');
+    Exit(CreateNilValue);
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('remove() argument must be a number.');
+    Exit(CreateNilValue);
+  end;
+  idx := Trunc(GetNumber(args[0]));
+  if (idx < 0) or (idx >= TStringList(instance).Count) then
+  begin
+    RuntimeError('StringList index ' + IntToStr(idx) + ' out of bounds.');
+    Exit(CreateNilValue);
+  end;
+  TStringList(instance).Delete(idx);
+  Result := CreateNilValue;
+end;
+
+procedure SL_Destroy(instance: Pointer);
+begin
+  TStringList(instance).Free;
+end;
+
+function stringListNative(argCount: integer; args: pValue): TValue;
+var
+  classInfo : pNativeClassInfo;
+  obj : pObjNativeObject;
+begin
+  if argCount <> 0 then
+  begin
+    RuntimeError('StringList() takes no arguments.');
+    Exit(CreateNilValue);
+  end;
+  classInfo := findNativeClass('StringList');
+  Assert(classInfo <> nil, 'StringList class not registered');
+  obj := newNativeObject(TStringList.Create, classInfo, VM.MemTracker);
+  Result := CreateObject(pObj(obj));
+end;
+
 procedure InitVM;
+var
+  slMethods : array[0..3] of TNativeMethod;
 begin
   // Allow IEEE 754 semantics: NaN, Inf, -Inf instead of FPU exceptions
   SetExceptionMask(exAllArithmeticExceptions);
@@ -3830,6 +4185,14 @@ begin
   defineNative('arrayLen', arrayLenNative);
   defineNative('arrayRemove', arrayRemoveNative);
 
+  // Native object classes
+  slMethods[0].name := 'add';    slMethods[0].fn := SL_Add;
+  slMethods[1].name := 'get';    slMethods[1].fn := SL_Get;
+  slMethods[2].name := 'count';  slMethods[2].fn := SL_Count;
+  slMethods[3].name := 'remove'; slMethods[3].fn := SL_Remove;
+  registerNativeClass('StringList', slMethods, SL_Destroy);
+  defineNative('StringList', stringListNative);
+
   // ---- Exit assertions ----
   AssertVMIsAssigned;
   Assert(VM.Stack <> nil, 'InitVM exit: Stack should not be nil');
@@ -3840,6 +4203,8 @@ begin
 end;
 
 procedure FreeVM;
+var
+  i : integer;
 begin
   AssertVMIsAssigned;
   AssertMemTrackerIsNotNil(VM.MemTracker);
@@ -3861,6 +4226,11 @@ begin
   FreeMemTracker(VM.MemTracker);
   dispose(VM);
   VM := nil;
+  // Reset native class registry
+  for i := 0 to NativeClassCount - 1 do
+    Dispose(NativeClassRegistry[i]);
+  SetLength(NativeClassRegistry, 0);
+  NativeClassCount := 0;
 
   {$IFDEF DEBUG_LOG_GC}
   finally
@@ -5108,6 +5478,8 @@ end;
 procedure dot_(canAssign: Boolean);
 var
   nameIdx : integer;
+  argCount : byte;
+  IntBytes : TIntToByteResult;
 begin
   consume(TOKEN_IDENTIFIER, 'Expect property name after ''.''.');
   nameIdx := identifierConstant(parser.previous);
@@ -5115,13 +5487,54 @@ begin
   if canAssign and matchToken(TOKEN_EQUAL) then
   begin
     Expression();
-    emitByte(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+    if nameIdx <= High(Byte) then
+    begin
+      emitByte(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+    begin
+      emitByte(OP_SET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      IntBytes := IntToBytes(nameIdx);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end;
+  end
+  else if matchToken(TOKEN_LEFT_PAREN) then
+  begin
+    argCount := argumentList();
+    if nameIdx <= High(Byte) then
+    begin
+      emitByte(OP_INVOKE, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(argCount, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+    begin
+      emitByte(OP_INVOKE_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      IntBytes := IntToBytes(nameIdx);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(argCount, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end;
   end
   else
   begin
-    emitByte(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+    if nameIdx <= High(Byte) then
+    begin
+      emitByte(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+    begin
+      emitByte(OP_GET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      IntBytes := IntToBytes(nameIdx);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end;
   end;
 end;
 

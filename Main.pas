@@ -12,8 +12,10 @@ type
     Memo1: TMemo;
     Button2: TButton;
     Memo2: TMemo;
+    Button3: TButton;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
+    procedure Button3Click(Sender: TObject);
     procedure FormCreate(Sender: TObject);
 
   private
@@ -28,7 +30,7 @@ var
 
 implementation
 uses
-  Chunk_Types, IOUtils, Types, StrUtils;
+  NativeObjectTestUnit, Chunk_Types, IOUtils, Types, StrUtils;
 
 {$R *.dfm}
 
@@ -83,6 +85,12 @@ var
 begin
   //compile(PChar(Memo1.Lines.Text),memo2.lines);
 
+end;
+
+procedure TForm4.Button3Click(Sender: TObject);
+begin
+  Memo2.Lines.Clear;
+  RunNativeObjectTest(Memo2.Lines);
 end;
 
 procedure TForm4.RunSampleFiles;

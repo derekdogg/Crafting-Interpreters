@@ -1,0 +1,8 @@
+// Minimal GC test — easy to follow in gc.log
+// Creates exactly 1 dead string, then collects it.
+
+var a = "keep";
+var b = "dead" + "str";
+b = nil;
+collectGarbage();
+print a;
