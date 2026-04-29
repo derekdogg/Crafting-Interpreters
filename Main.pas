@@ -7,6 +7,7 @@ uses
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls;
 
 type
+
   TForm4 = class(TForm)
     Button1: TButton;
     Memo1: TMemo;

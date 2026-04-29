@@ -194,6 +194,7 @@ type
   pLogs           = ^TLogs; //Note : Don't think we need this (https://www.danieleteti.it/loggerpro/) maybe add later? We use a stupidly simple approach for now
   pEntry          = ^TEntry;
   pTable          = ^TTable;
+  pLocal          = ^TLocal;
   //pRoots          = ^TRoots;
 
   //Arrays
@@ -410,9 +411,9 @@ type
     enclosing    : pCompiler;
     func         : pObjFunction;
     funcType     : TFunctionType;
-    locals       : array[0..UINT8_COUNT - 1] of TLocal;
+    locals       : array[0..UINT8_COUNT - 1] of TLocal; // hard limit: 256 per function, guarded by addLocal and asserted at access sites
     localCount   : integer;
-    upvalues     : array[0..UINT8_COUNT - 1] of TUpvalue;
+    upvalues     : array[0..UINT8_COUNT - 1] of TUpvalue; // hard limit: 256 per function, guarded by addUpvalue and asserted at access sites
     scopeDepth   : integer;
   end;
 
@@ -5132,7 +5133,7 @@ end;
 
 procedure initCompiler(var compiler : pCompiler; funcType : TFunctionType);
 var
-  local : ^TLocal;
+  local : pLocal;
 begin
   New(compiler);
   compiler^.enclosing := Current;
@@ -5151,6 +5152,7 @@ begin
   end;
 
   // The first slot is claimed for the VM's internal use (the function itself)
+  Assert(Current^.localCount < UINT8_COUNT, 'initCompiler: localCount overflow');
   local := @Current^.locals[Current^.localCount];
   Inc(Current^.localCount);
   local^.depth := 0;
@@ -5178,6 +5180,7 @@ begin
   while (Current^.localCount > 0) and
         (Current^.locals[Current^.localCount - 1].depth > Current^.scopeDepth) do
   begin
+    Assert(Current^.localCount - 1 < UINT8_COUNT, 'endScope: locals index out of bounds');
     if Current^.locals[Current^.localCount - 1].isCaptured then
       emitByte(OP_CLOSE_UPVALUE, CurrentChunk, parser.previous.line, vm.MemTracker)
     else
@@ -5198,6 +5201,7 @@ begin
     Error('Too many local variables in function.');
     Exit;
   end;
+  Assert(Current^.localCount < UINT8_COUNT, 'addLocal: locals index out of bounds');
   Current^.locals[Current^.localCount].name := name;
   Current^.locals[Current^.localCount].depth := -1; // sentinel: not yet initialized
   Current^.locals[Current^.localCount].isCaptured := false;
@@ -5220,6 +5224,7 @@ begin
 
   for i := Current^.localCount - 1 downto 0 do
   begin
+    Assert((i >= 0) and (i < UINT8_COUNT), 'declareVariable: locals index out of bounds');
     if Current^.locals[i].depth <> -1 then
       if Current^.locals[i].depth < Current^.scopeDepth then
         Break;
@@ -5236,6 +5241,7 @@ end;
 procedure markInitialized();
 begin
   if Current^.scopeDepth = 0 then Exit;
+  Assert((Current^.localCount > 0) and (Current^.localCount - 1 < UINT8_COUNT), 'markInitialized: locals index out of bounds');
   Current^.locals[Current^.localCount - 1].depth := Current^.scopeDepth;
 end;
 
@@ -5246,6 +5252,7 @@ begin
   Assert(compiler <> nil, 'resolveLocal: compiler is nil');
   for i := compiler^.localCount - 1 downto 0 do
   begin
+    Assert((i >= 0) and (i < UINT8_COUNT), 'resolveLocal: locals index out of bounds');
     if identifiersEqual(name, compiler^.locals[i].name) then
     begin
       if compiler^.locals[i].depth = -1 then
@@ -5265,6 +5272,7 @@ begin
 
   for i := 0 to upvalueCount - 1 do
   begin
+    Assert((i >= 0) and (i < UINT8_COUNT), 'addUpvalue: upvalues index out of bounds (search)');
     if (compiler^.upvalues[i].index = index) and (compiler^.upvalues[i].isLocal = isLocal) then
       Exit(i);
   end;
@@ -5275,6 +5283,7 @@ begin
     Exit(0);
   end;
 
+  Assert(upvalueCount < UINT8_COUNT, 'addUpvalue: upvalues index out of bounds (write)');
   compiler^.upvalues[upvalueCount].isLocal := isLocal;
   compiler^.upvalues[upvalueCount].index := index;
   Inc(compiler^.func^.upvalueCount);
@@ -5293,6 +5302,7 @@ begin
   local := resolveLocal(compiler^.enclosing, name);
   if local <> -1 then
   begin
+    Assert((local >= 0) and (local < UINT8_COUNT), 'resolveUpvalue: locals index out of bounds');
     compiler^.enclosing^.locals[local].isCaptured := true;
     Exit(addUpvalue(compiler, byte(local), true));
   end;
@@ -5753,6 +5763,7 @@ begin
 
   if Parser.PanicMode then
     synchronize();
+
 end;
 
 function compile(source : pAnsiChar) : pObjClosure;
