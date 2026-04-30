@@ -1,0 +1,79 @@
+// ============================================================
+// array_records.lox — Arrays containing records
+// ============================================================
+
+record Point(x, y);
+record Person(name, age);
+
+fun testArrayOfRecords() {
+  var points = [Point(1, 2), Point(3, 4), Point(5, 6)];
+  assert(points[0].x == 1);
+  assert(points[0].y == 2);
+  assert(points[1].x == 3);
+  assert(points[2].y == 6);
+  print "PASS: array of records"; // expect: PASS: array of records
+}
+
+fun testMutateRecordInArray() {
+  var people = [Person("Alice", 30), Person("Bob", 25)];
+  people[0].age = 31;
+  people[1].name = "Robert";
+  assert(people[0].age == 31);
+  assert(people[1].name == "Robert");
+  // Unchanged fields intact
+  assert(people[0].name == "Alice");
+  assert(people[1].age == 25);
+  print "PASS: mutate record in array"; // expect: PASS: mutate record in array
+}
+
+fun testReplaceRecordInArray() {
+  var items = [Point(0, 0), Point(1, 1), Point(2, 2)];
+  items[1] = Point(99, 99);
+  assert(items[1].x == 99);
+  assert(items[1].y == 99);
+  // Others unchanged
+  assert(items[0].x == 0);
+  assert(items[2].x == 2);
+  print "PASS: replace record in array"; // expect: PASS: replace record in array
+}
+
+fun testBuildArrayWithPush() {
+  var team = [];
+  arrayPush(team, Person("Alice", 30));
+  arrayPush(team, Person("Bob", 25));
+  arrayPush(team, Person("Charlie", 35));
+  assert(arrayLen(team) == 3);
+  assert(team[0].name == "Alice");
+  assert(team[1].age == 25);
+  assert(team[2].name == "Charlie");
+  print "PASS: build array with push"; // expect: PASS: build array with push
+}
+
+fun testLoopOverRecords() {
+  var points = [Point(1, 10), Point(2, 20), Point(3, 30)];
+  var sum = 0;
+  for (var i = 0; i < arrayLen(points); i = i + 1) {
+    sum = sum + points[i].y;
+  }
+  assert(sum == 60);
+  print "PASS: loop over records"; // expect: PASS: loop over records
+}
+
+fun testNestedRecordArray() {
+  record Team(name, members);
+  var alice = Person("Alice", 30);
+  var bob = Person("Bob", 25);
+  var t = Team("Engineering", [alice, bob]);
+  assert(t.members[0].name == "Alice");
+  assert(t.members[1].age == 25);
+  print "PASS: nested record array"; // expect: PASS: nested record array
+}
+
+testArrayOfRecords();
+testMutateRecordInArray();
+testReplaceRecordInArray();
+testBuildArrayWithPush();
+testLoopOverRecords();
+testNestedRecordArray();
+
+print "ALL PASSED"; // expect: ALL PASSED

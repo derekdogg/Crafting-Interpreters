@@ -1,0 +1,142 @@
+// Dictionary resize tests
+// Initial capacity is 8, load factor 0.75, so resize triggers at 7 entries.
+// Growth factor 2x: 8 -> 16 -> 32 -> 64
+
+// Test 1: Insert enough entries to trigger first resize (8 -> 16)
+fun testFirstResize() {
+  var d = [:];
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Set("c", 3);
+  d.Set("d", 4);
+  d.Set("e", 5);
+  d.Set("f", 6);
+  d.Set("g", 7);  // triggers resize to 16
+  d.Set("h", 8);
+  print d.Size(); // expect: 8
+  print d.Get("a"); // expect: 1
+  print d.Get("d"); // expect: 4
+  print d.Get("h"); // expect: 8
+}
+testFirstResize();
+
+// Test 2: Insert enough to trigger second resize (16 -> 32)
+fun testSecondResize() {
+  var d = [:];
+  var i = 0;
+  for (i = 0; i < 20; i = i + 1) {
+    d.Set(i, i * 10);
+  }
+  print d.Size(); // expect: 20
+  print d.Get(0); // expect: 0
+  print d.Get(10); // expect: 100
+  print d.Get(19); // expect: 190
+}
+testSecondResize();
+
+// Test 3: Large insert to trigger multiple resizes
+fun testMultipleResizes() {
+  var d = [:];
+  var i = 0;
+  for (i = 0; i < 50; i = i + 1) {
+    d.Set(i, i * 3);
+  }
+  print d.Size(); // expect: 50
+  // Verify first, middle, and last entries survived resizing
+  print d.Get(0); // expect: 0
+  print d.Get(25); // expect: 75
+  print d.Get(49); // expect: 147
+}
+testMultipleResizes();
+
+// Test 4: Resize preserves string keys correctly (rehash must work)
+fun testStringKeyRehash() {
+  var d = [:];
+  d.Set("alpha", 1);
+  d.Set("bravo", 2);
+  d.Set("charlie", 3);
+  d.Set("delta", 4);
+  d.Set("echo", 5);
+  d.Set("foxtrot", 6);
+  d.Set("golf", 7);  // triggers resize
+  d.Set("hotel", 8);
+  d.Set("india", 9);
+  d.Set("juliet", 10);
+  print d.Get("alpha"); // expect: 1
+  print d.Get("foxtrot"); // expect: 6
+  print d.Get("juliet"); // expect: 10
+  print d.Size(); // expect: 10
+}
+testStringKeyRehash();
+
+// Test 5: Resize after deletes (tombstones should not inflate count)
+fun testResizeAfterDeletes() {
+  var d = [:];
+  // Fill to near capacity
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Set("c", 3);
+  d.Set("d", 4);
+  d.Set("e", 5);
+  d.Set("f", 6);
+  // Delete some
+  d.Delete("b");
+  d.Delete("d");
+  d.Delete("f");
+  print d.Size(); // expect: 3
+  // Add more to trigger resize — tombstones count toward load
+  d.Set("g", 7);
+  d.Set("h", 8);
+  d.Set("i", 9);
+  d.Set("j", 10);  // should trigger resize, tombstones cleaned up
+  // Verify surviving entries
+  print d.Get("a"); // expect: 1
+  print d.Get("c"); // expect: 3
+  print d.Get("e"); // expect: 5
+  print d.Get("g"); // expect: 7
+  print d.Get("j"); // expect: 10
+  print d.Has("b"); // expect: false
+  print d.Has("d"); // expect: false
+  print d.Size(); // expect: 7
+}
+testResizeAfterDeletes();
+
+// Test 6: Overwrite keys across resize boundary
+fun testOverwriteAcrossResize() {
+  var d = [:];
+  d.Set("x", "old1");
+  d.Set("y", "old2");
+  d.Set("z", "old3");
+  d.Set("w", "old4");
+  d.Set("v", "old5");
+  d.Set("u", "old6");
+  d.Set("t", "old7");  // triggers resize
+  // Overwrite after resize
+  d.Set("x", "new1");
+  d.Set("z", "new3");
+  print d.Get("x"); // expect: new1
+  print d.Get("y"); // expect: old2
+  print d.Get("z"); // expect: new3
+  print d.Size(); // expect: 7
+}
+testOverwriteAcrossResize();
+
+// Test 7: Mixed key types survive resize
+fun testMixedKeysResize() {
+  var d = [:];
+  d.Set(1, "one");
+  d.Set(2, "two");
+  d.Set(true, "yes");
+  d.Set(false, "no");
+  d.Set(nil, "null");
+  d.Set("str1", "s1");
+  d.Set("str2", "s2");  // triggers resize
+  d.Set(3, "three");
+  print d.Get(1); // expect: one
+  print d.Get(true); // expect: yes
+  print d.Get(nil); // expect: null
+  print d.Get("str1"); // expect: s1
+  print d.Get(3); // expect: three
+  print d.Size(); // expect: 8
+}
+testMixedKeysResize();

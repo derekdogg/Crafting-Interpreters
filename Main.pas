@@ -14,10 +14,11 @@ type
     Button2: TButton;
     Memo2: TMemo;
     Button3: TButton;
+    Button4: TButton;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
-    procedure FormCreate(Sender: TObject);
+    procedure Button4Click(Sender: TObject);
 
   private
     procedure RunSampleFiles;
@@ -94,15 +95,26 @@ begin
   RunNativeObjectTest(Memo2.Lines);
 end;
 
+procedure TForm4.Button4Click(Sender: TObject);
+begin
+  Memo2.Lines.Clear;
+  try
+    RunSampleFiles;
+    RunOfficialTests;
+  except
+    on E: Exception do
+      Memo2.Lines.Add('TEST FAILURE: ' + E.Message);
+  end;
+end;
+
 procedure TForm4.RunSampleFiles;
 var
   SamplesDir, ErrorsDir: string;
   Files: TStringDynArray;
-  F, FileName, Content, FirstLine: string;
+  F, FileName, Content: string;
   IR: TInterpretResult;
   Passed, Failed: integer;
 begin
-
   SamplesDir := TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\samples');
   if not TDirectory.Exists(SamplesDir) then
   begin
@@ -118,6 +130,8 @@ begin
   for F in Files do
   begin
     FileName := TPath.GetFileName(F);
+    Memo2.Lines.Add('Running: samples/' + FileName);
+    Application.ProcessMessages;
     Content := TFile.ReadAllText(F);
     IR := InterpretResult(PAnsiChar(AnsiString(Content)));
     if IR.code = INTERPRET_OK then
@@ -137,6 +151,8 @@ begin
     for F in Files do
     begin
       FileName := TPath.GetFileName(F);
+      Memo2.Lines.Add('Running: samples/errors/' + FileName);
+      Application.ProcessMessages;
       Content := TFile.ReadAllText(F);
       IR := InterpretResult(PAnsiChar(AnsiString(Content)));
       if (IR.code = INTERPRET_RUNTIME_ERROR) or (IR.code = INTERPRET_COMPILE_ERROR) then
@@ -178,17 +194,21 @@ begin
   Failed := 0;
   Skipped := 0;
 
-  for F in AllFiles do
-  begin
-    // Get relative path for display (e.g. "closure\assign_to_closure.lox")
-    RelPath := F.Substring(Length(TestDir) + 1);
+  Lines := TStringList.Create;
+  ExpectedOutputs := TStringList.Create;
+  ExpectedCompileErrors := TStringList.Create;
+  ActualOutputs := TStringList.Create;
+  Failures := TStringList.Create;
+  try
+    for F in AllFiles do
+    begin
+      RelPath := F.Substring(Length(TestDir) + 1);
+      Content := TFile.ReadAllText(F);
 
-    Content := TFile.ReadAllText(F);
-    Lines := TStringList.Create;
-    ExpectedOutputs := TStringList.Create;
-    ExpectedCompileErrors := TStringList.Create;
-    Failures := TStringList.Create;
-    try
+      Lines.Clear;
+      ExpectedOutputs.Clear;
+      ExpectedCompileErrors.Clear;
+      Failures.Clear;
       Lines.Text := Content;
       ExpectedRuntimeError := '';
 
@@ -198,11 +218,9 @@ begin
         Line := Lines[i];
         LineNum := i + 1;
 
-        // Skip Java-only expectations
         if Pos('// [java', Line) > 0 then
           Continue;
 
-        // // expect runtime error: <message>
         p := Pos('// expect runtime error: ', Line);
         if p > 0 then
         begin
@@ -210,7 +228,6 @@ begin
           Continue;
         end;
 
-        // // expect: <value>
         p := Pos('// expect: ', Line);
         if p > 0 then
         begin
@@ -218,24 +235,21 @@ begin
           Continue;
         end;
 
-        // // [line N] Error...  or  // [c line N] Error...
         p := Pos('// [', Line);
         if p > 0 then
         begin
           Rest := Copy(Line, p + 4, MaxInt);
-          // [c line N] Error...
           if Copy(Rest, 1, 7) = 'c line ' then
           begin
-            Rest := Copy(Rest, 8, MaxInt); // now "N] Error..."
+            Rest := Copy(Rest, 8, MaxInt);
             BracketEnd := Pos(']', Rest);
             if BracketEnd > 0 then
               ExpectedCompileErrors.Add('[line ' + Copy(Rest, 1, BracketEnd - 1) + '] ' +
                 Trim(Copy(Rest, BracketEnd + 1, MaxInt)));
           end
-          // [line N] Error...
           else if Copy(Rest, 1, 5) = 'line ' then
           begin
-            Rest := Copy(Rest, 6, MaxInt); // now "N] Error..."
+            Rest := Copy(Rest, 6, MaxInt);
             BracketEnd := Pos(']', Rest);
             if BracketEnd > 0 then
               ExpectedCompileErrors.Add('[line ' + Copy(Rest, 1, BracketEnd - 1) + '] ' +
@@ -244,7 +258,6 @@ begin
           Continue;
         end;
 
-        // // Error... (compile error at current line)
         p := Pos('// Error', Line);
         if p > 0 then
         begin
@@ -257,64 +270,60 @@ begin
       HasRuntimeError := ExpectedRuntimeError <> '';
       HasCompileErrors := ExpectedCompileErrors.Count > 0;
 
-      // Skip files with no expectations
       if not HasOutput and not HasRuntimeError and not HasCompileErrors then
       begin
         Inc(Skipped);
         Continue;
       end;
 
+      Memo2.Lines.Add('Running: ' + RelPath);
+      Application.ProcessMessages;
+
       // --- Run the test ---
       try
-      IR := InterpretResult(PAnsiChar(AnsiString(Content)));
-      TestOK := True;
+        IR := InterpretResult(PAnsiChar(AnsiString(Content)));
+        TestOK := True;
 
-      // --- Verify expectations ---
-      if HasCompileErrors then
-      begin
-        // Expect compile error
-        if IR.code <> INTERPRET_COMPILE_ERROR then
+        if HasCompileErrors then
         begin
-          Failures.Add('Expected compile error but got ' +
-            IfThen(IR.code = INTERPRET_OK, 'OK', 'runtime error'));
-          TestOK := False;
-        end
-        else
-        begin
-          for i := 0 to ExpectedCompileErrors.Count - 1 do
+          if IR.code <> INTERPRET_COMPILE_ERROR then
           begin
-            if Pos(ExpectedCompileErrors[i], IR.ErrorStr) = 0 then
+            Failures.Add('Expected compile error but got ' +
+              IfThen(IR.code = INTERPRET_OK, 'OK', 'runtime error'));
+            TestOK := False;
+          end
+          else
+          begin
+            for i := 0 to ExpectedCompileErrors.Count - 1 do
             begin
-              Failures.Add('Missing compile error: ' + ExpectedCompileErrors[i]);
-              TestOK := False;
+              if Pos(ExpectedCompileErrors[i], IR.ErrorStr) = 0 then
+              begin
+                Failures.Add('Missing compile error: ' + ExpectedCompileErrors[i]);
+                TestOK := False;
+              end;
             end;
           end;
-        end;
-      end
-      else if HasRuntimeError then
-      begin
-        // Expect runtime error
-        if IR.code <> INTERPRET_RUNTIME_ERROR then
-        begin
-          Failures.Add('Expected runtime error but got ' +
-            IfThen(IR.code = INTERPRET_OK, 'OK', 'compile error'));
-          TestOK := False;
         end
-        else if Trim(IR.ErrorStr) <> Trim(ExpectedRuntimeError) then
+        else if HasRuntimeError then
         begin
-          Failures.Add('Expected error "' + ExpectedRuntimeError +
-            '" but got "' + IR.ErrorStr + '"');
-          TestOK := False;
-        end;
+          if IR.code <> INTERPRET_RUNTIME_ERROR then
+          begin
+            Failures.Add('Expected runtime error but got ' +
+              IfThen(IR.code = INTERPRET_OK, 'OK', 'compile error'));
+            TestOK := False;
+          end
+          else if Trim(IR.ErrorStr) <> Trim(ExpectedRuntimeError) then
+          begin
+            Failures.Add('Expected error "' + ExpectedRuntimeError +
+              '" but got "' + IR.ErrorStr + '"');
+            TestOK := False;
+          end;
 
-        // Also check output lines (program may print before crashing)
-        if HasOutput then
-        begin
-          ActualOutputs := TStringList.Create;
-          try
+          if HasOutput then
+          begin
+            ActualOutputs.Clear;
             if IR.OutputStr <> '' then
               ActualOutputs.Text := IR.OutputStr;
-            // Remove trailing empty line from TStringList.Text setter
             if (ActualOutputs.Count > 0) and (ActualOutputs[ActualOutputs.Count - 1] = '') then
               ActualOutputs.Delete(ActualOutputs.Count - 1);
             if ActualOutputs.Count <> ExpectedOutputs.Count then
@@ -333,23 +342,18 @@ begin
                   TestOK := False;
                 end;
             end;
-          finally
-            ActualOutputs.Free;
           end;
-        end;
-      end
-      else
-      begin
-        // Expect successful execution with output
-        if IR.code <> INTERPRET_OK then
-        begin
-          Failures.Add('Expected OK but got error: ' + IR.ErrorStr);
-          TestOK := False;
         end
         else
         begin
-          ActualOutputs := TStringList.Create;
-          try
+          if IR.code <> INTERPRET_OK then
+          begin
+            Failures.Add('Expected OK but got error: ' + IR.ErrorStr);
+            TestOK := False;
+          end
+          else
+          begin
+            ActualOutputs.Clear;
             if IR.OutputStr <> '' then
               ActualOutputs.Text := IR.OutputStr;
             if (ActualOutputs.Count > 0) and (ActualOutputs[ActualOutputs.Count - 1] = '') then
@@ -370,11 +374,8 @@ begin
                   TestOK := False;
                 end;
             end;
-          finally
-            ActualOutputs.Free;
           end;
         end;
-      end;
 
       except
         on E: Exception do
@@ -393,13 +394,13 @@ begin
         for i := 0 to Failures.Count - 1 do
           Memo2.Lines.Add('  ' + Failures[i]);
       end;
-
-    finally
-      Lines.Free;
-      ExpectedOutputs.Free;
-      ExpectedCompileErrors.Free;
-      Failures.Free;
     end;
+  finally
+    Lines.Free;
+    ExpectedOutputs.Free;
+    ExpectedCompileErrors.Free;
+    ActualOutputs.Free;
+    Failures.Free;
   end;
 
   Memo2.Lines.Add('');
@@ -410,18 +411,6 @@ begin
     Memo2.Lines.Add('Official tests: ' + IntToStr(Failed) + ' of ' +
       IntToStr(Passed + Failed) + ' FAILED.' +
       IfThen(Skipped > 0, ' (' + IntToStr(Skipped) + ' skipped)'));
-end;
-
-procedure TForm4.FormCreate(Sender: TObject);
-begin
-  Memo2.Lines.Clear;
-  try
-    RunSampleFiles;
-    RunOfficialTests;
-  except
-    on E: Exception do
-      Memo2.Lines.Add('TEST FAILURE: ' + E.Message);
-  end;
 end;
 
 end.

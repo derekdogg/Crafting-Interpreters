@@ -9,10 +9,11 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Garbage Collection** — Mark-sweep GC with tricolor marking and gray stack worklist
 - **String Interning** — Hash table with weak references for automatic deduplication
 - **Arrays** — Dynamic arrays via native functions (`newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove`)
+- **Dictionaries** — Hash-table dictionaries with generalized keys (any hashable TValue), Swift-style literal syntax (`[:]`, `["key": val]`), subscript get/set, PascalCase method API (Set, Get, Has, Delete, Keys, Values, Size), linear probing with tombstones, 75% load factor, bounded probing, GC-integrated
 - **Records** — Immutable-structure value types via `record Name(field1, field2);` syntax with dot access and field mutation
 - **Native Objects** *(work in progress)* — Wrap Delphi classes as GC-tracked Lox objects with method dispatch via `OP_INVOKE`; ships with `StringList()` (add, get, count, remove)
 - **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
-- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor
+- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor, dictionary functions (`dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize`)
 
 ## Chapters Implemented
 
@@ -33,6 +34,7 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | — | Arrays (native function API, GC-integrated) |
 | — | Records (`record Name(fields);`, dot access, field mutation, GC-integrated) |
 | — | Native objects (Delphi class wrapping, `StringList()`, `OP_INVOKE`, GC-integrated) |
+| — | Dictionaries (`[:]`/`["k":v]` literals, subscript, method dispatch, GC-integrated) |
 | — | Modulo operator (`%`) |
 | — | Long-operand opcodes (`OP_*_LONG`) for >255 constants per chunk |
 
@@ -53,7 +55,7 @@ All tests run automatically when the application starts. Results are displayed i
 
 ### Official Test Suite
 
-148 tests from the [official Crafting Interpreters test suite](https://github.com/munificent/craftinginterpreters/tree/master/test), matching the **chap26_garbage** level (all features except classes/inheritance). Tests are organized across 20 categories:
+156 tests from the [official Crafting Interpreters test suite](https://github.com/munificent/craftinginterpreters/tree/master/test), matching the **chap26_garbage** level (all features except classes/inheritance), plus custom dictionary and array tests. Tests are organized across 20+ categories:
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
@@ -63,6 +65,7 @@ All tests run automatically when the application starts. Results are displayed i
 | call | 4 | Calling non-callable types (bool, nil, num, string) |
 | closure | 11 | Capture, shadowing, nesting, reuse, unused closures |
 | comments | 4 | Line comments, EOF, unicode |
+| dictionary | 2 | Literal syntax, method API, subscript, resize, tombstones, mixed keys |
 | for | 11 | Syntax, scoping, closures, return, error recovery |
 | function | 12 | Parameters, recursion, mutual recursion, limits, errors |
 | if | 10 | If/else, dangling else, truth, var/fun in branches |
@@ -116,6 +119,8 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | gc_records.lox | Record GC reclamation, live record survival, nested records, closure-captured records |
 | native_objects.lox | StringList create, add, get, count, remove, print |
 | native_objects_stress.lox | 14 tests: multi-instance, loops, churn, closures, GC pressure, 20 simultaneous lists, interleaved GC |
+| dictionary.lox | Dict literal syntax, method API, subscript access, mixed key types |
+| dictionary_resize.lox | 7 tests: resize triggers, rehashing, tombstone handling, overwrite across resize boundary, mixed keys |
 
 **11 error tests** in `samples/errors/` — expected to produce errors:
 

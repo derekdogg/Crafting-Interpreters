@@ -1,0 +1,150 @@
+// Dictionary tests
+
+// Test 1: Create empty dictionary via literal
+fun testEmpty() {
+  var d = [:];
+  print d.Size(); // expect: 0
+}
+testEmpty();
+
+// Test 2: Set and get values via methods
+fun testSetGet() {
+  var d = [:];
+  d.Set("name", "Alice");
+  d.Set("age", 30);
+  print d.Get("name"); // expect: Alice
+  print d.Get("age"); // expect: 30
+}
+testSetGet();
+
+// Test 3: Has method
+fun testHas() {
+  var d = [:];
+  d.Set("x", 1);
+  print d.Has("x"); // expect: true
+  print d.Has("y"); // expect: false
+}
+testHas();
+
+// Test 4: Delete method
+fun testDelete() {
+  var d = [:];
+  d.Set("a", 1);
+  d.Set("b", 2);
+  print d.Delete("a"); // expect: true
+  print d.Has("a"); // expect: false
+  print d.Delete("z"); // expect: false
+  print d.Size(); // expect: 1
+}
+testDelete();
+
+// Test 5: Size method
+fun testSize() {
+  var d = [:];
+  print d.Size(); // expect: 0
+  d.Set("a", 1);
+  print d.Size(); // expect: 1
+  d.Set("b", 2);
+  print d.Size(); // expect: 2
+  d.Set("a", 99);
+  print d.Size(); // expect: 2
+}
+testSize();
+
+// Test 6: Overwrite existing key
+fun testOverwrite() {
+  var d = [:];
+  d.Set("key", "old");
+  d.Set("key", "new");
+  print d.Get("key"); // expect: new
+  print d.Size(); // expect: 1
+}
+testOverwrite();
+
+// Test 7: Number keys
+fun testNumberKeys() {
+  var d = [:];
+  d.Set(1, "one");
+  d.Set(2, "two");
+  d.Set(3, "three");
+  print d.Get(1); // expect: one
+  print d.Get(2); // expect: two
+  print d.Get(3); // expect: three
+}
+testNumberKeys();
+
+// Test 8: Boolean and nil keys
+fun testSpecialKeys() {
+  var d = [:];
+  d.Set(true, "yes");
+  d.Set(false, "no");
+  d.Set(nil, "nothing");
+  print d.Get(true); // expect: yes
+  print d.Get(false); // expect: no
+  print d.Get(nil); // expect: nothing
+}
+testSpecialKeys();
+
+// Test 9: Subscript get and set
+fun testSubscript() {
+  var d = [:];
+  d["x"] = 10;
+  d["y"] = 20;
+  print d["x"]; // expect: 10
+  print d["y"]; // expect: 20
+}
+testSubscript();
+
+// Test 10: Dict literal with values
+fun testLiteral() {
+  var d = ["name": "Bob", "age": 25];
+  print d["name"]; // expect: Bob
+  print d["age"]; // expect: 25
+  print d.Size(); // expect: 2
+}
+testLiteral();
+
+// Test 11: Keys method
+fun testKeys() {
+  var d = ["a": 1, "b": 2, "c": 3];
+  var keys = d.Keys();
+  print arrayLen(keys); // expect: 3
+}
+testKeys();
+
+// Test 12: Values method
+fun testValues() {
+  var d = ["x": 10, "y": 20];
+  var vals = d.Values();
+  print arrayLen(vals); // expect: 2
+}
+testValues();
+
+// Test 13: Mixed key types with subscript
+fun testMixedSubscript() {
+  var d = [:];
+  d[1] = "num";
+  d["str"] = "string";
+  d[true] = "bool";
+  print d[1]; // expect: num
+  print d["str"]; // expect: string
+  print d[true]; // expect: bool
+}
+testMixedSubscript();
+
+// Test 14: Dict literal with expression values
+fun testLiteralExpressions() {
+  var x = 5;
+  var d = ["sum": x + 10, "prod": x * 2];
+  print d["sum"]; // expect: 15
+  print d["prod"]; // expect: 10
+}
+testLiteralExpressions();
+
+// Test 15: dictNew native still works
+fun testDictNew() {
+  var d = dictNew();
+  d.Set("hello", "world");
+  print d.Get("hello"); // expect: world
+}
+testDictNew();

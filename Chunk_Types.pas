@@ -71,8 +71,12 @@ const
   OP_INVOKE_LONG = 39;
   OP_GET_PROPERTY_LONG = 40;
   OP_SET_PROPERTY_LONG = 41;
+  OP_GET_SUBSCRIPT = 42;
+  OP_SET_SUBSCRIPT = 43;
+  OP_ARRAY_LITERAL = 44;
+  OP_DICT_LITERAL = 45;
 
-  OP_STRINGS : array[0..41] of string = (
+  OP_STRINGS : array[0..45] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -114,7 +118,11 @@ const
     'OP_INVOKE',
     'OP_INVOKE_LONG',
     'OP_GET_PROPERTY_LONG',
-    'OP_SET_PROPERTY_LONG');
+    'OP_SET_PROPERTY_LONG',
+    'OP_GET_SUBSCRIPT',
+    'OP_SET_SUBSCRIPT',
+    'OP_ARRAY_LITERAL',
+    'OP_DICT_LITERAL');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 64;
@@ -125,15 +133,17 @@ type
 
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
-  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord, okNativeObject);
+  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord, okNativeObject, okDictionary);
   TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boModulo, boGreater, boLess);
   TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
     // Single-character tokens
     TOKEN_LEFT_PAREN, TOKEN_RIGHT_PAREN,
     TOKEN_LEFT_BRACE, TOKEN_RIGHT_BRACE,
+    TOKEN_LEFT_BRACKET, TOKEN_RIGHT_BRACKET,
     TOKEN_COMMA, TOKEN_DOT, TOKEN_MINUS, TOKEN_PLUS,
     TOKEN_SEMICOLON, TOKEN_SLASH, TOKEN_STAR, TOKEN_PERCENT,
+    TOKEN_COLON,
 
     // One or two character tokens
     TOKEN_BANG, TOKEN_BANG_EQUAL,
@@ -185,6 +195,8 @@ type
   pObjRecord      = ^TObjRecord;
   pObjNativeObject = ^TObjNativeObject;
   pNativeClassInfo = ^TNativeClassInfo;
+  pObjDictionary  = ^TObjDictionary;
+  pDictEntry      = ^TDictEntry;
   ppObjString     = ^pObjString;
   pUpvalueArray   = ^TUpvalueArray;
   pCompiler       = ^TCompiler;
@@ -314,6 +326,21 @@ type
     Obj       : TObj;
     instance  : Pointer;
     classInfo : pNativeClassInfo;
+  end;
+
+  TDictEntry = record
+    key       : TValue;
+    value     : TValue;
+    occupied  : boolean;  // true if slot holds a live entry
+    tombstone : boolean;  // true if slot is a deleted entry
+  end;
+
+  TObjDictionary = record
+    Obj        : TObj;
+    Count      : integer;   // live entries (excludes tombstones)
+    Tombstones : integer;   // number of tombstone slots
+    Capacity   : integer;   // total slots in Entries array
+    Entries    : pDictEntry;
   end;
 
   TChunk = record
@@ -618,6 +645,8 @@ procedure ParseString(canAssign: Boolean);
 procedure variable(canAssign: Boolean);
 procedure call(canAssign: Boolean);
 procedure dot_(canAssign: Boolean);
+procedure subscript_(canAssign: Boolean);
+procedure arrayLiteral(canAssign: Boolean);
 procedure and_(canAssign: Boolean);
 procedure or_(canAssign: Boolean);
 procedure beginScope();
@@ -628,6 +657,14 @@ function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure
 function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
 function newArray(MemTracker : pMemTracker) : pObjArray;
 function isArray(value : TValue) : boolean;
+function newDictionary(MemTracker : pMemTracker) : pObjDictionary;
+function isDictionary(value : TValue) : boolean;
+function HashValue(const value : TValue) : UInt32;
+function DictGet(dict : pObjDictionary; const key : TValue; var outValue : TValue) : boolean;
+procedure DictSet(dict : pObjDictionary; const key : TValue; const val : TValue; MemTracker : pMemTracker);
+function DictDelete(dict : pObjDictionary; const key : TValue) : boolean;
+function InvokeDictMethod(dict: pObjDictionary; const methodName: AnsiString;
+  argCount: integer; args: pValue; var outResult: TValue): boolean;
 function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppObjString; MemTracker : pMemTracker) : pObjRecordType;
 function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
 function isRecordType(value : TValue) : boolean;
@@ -671,6 +708,12 @@ const
     { TOKEN_RIGHT_BRACE }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
+    { TOKEN_LEFT_BRACKET }
+    (Prefix: arrayLiteral; Infix: subscript_;  Precedence: PREC_CALL),
+
+    { TOKEN_RIGHT_BRACKET }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
     { TOKEN_COMMA }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
@@ -694,6 +737,9 @@ const
 
     { TOKEN_PERCENT }
     (Prefix: nil;      Infix: binary;  Precedence: PREC_FACTOR),
+
+    { TOKEN_COLON }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_BANG }
     (Prefix: unary;      Infix: nil;     Precedence: PREC_NONE),
@@ -1129,9 +1175,13 @@ begin
   begin
     {$IFDEF DEBUG_STRESS_GC}
     CollectGarbage;
+    AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
     {$ENDIF}
     if MemTracker.BytesAllocated > MemTracker.NextGC then
+    begin
       CollectGarbage;
+      AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
+    end;
   end;
 
   // --------------------------------------------------------------------------
@@ -1694,6 +1744,267 @@ begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okArray);
 end;
 
+function newDictionary(MemTracker : pMemTracker) : pObjDictionary;
+begin
+  AssertMemTrackerIsNotNil(MemTracker);
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjDictionary), MemTracker);
+  Assert(Result <> nil, 'newDictionary: allocation returned nil');
+  Result^.Obj.ObjectKind := okDictionary;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.Count := 0;
+  Result^.Tombstones := 0;
+  Result^.Capacity := 0;
+  Result^.Entries := nil;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+end;
+
+function isDictionary(value : TValue) : boolean;
+begin
+  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okDictionary);
+end;
+
+function HashValue(const value : TValue) : UInt32;
+var
+  bits : UInt64;
+begin
+  case value.ValueKind of
+    vkNumber: begin
+      // Hash the raw bits of the double
+      Move(value.NumberValue, bits, SizeOf(Double));
+      Result := UInt32(bits xor (bits shr 32));
+    end;
+    vkBoolean: begin
+      if value.BooleanValue then Result := 1 else Result := 0;
+    end;
+    vkNull: begin
+      Result := 2;
+    end;
+    vkObject: begin
+      Assert(value.ObjValue <> nil, 'HashValue: ObjValue is nil');
+      case value.ObjValue^.ObjectKind of
+        okString: Result := pObjString(value.ObjValue)^.hash;
+      else
+        // Identity hash for other objects (pointer-based)
+        Result := UInt32(NativeUInt(value.ObjValue));
+      end;
+    end;
+  else
+    Result := 0;
+  end;
+end;
+
+function DictFindEntry(entries : pDictEntry; capacity : integer; const key : TValue) : pDictEntry;
+var
+  index : UInt32;
+  entry : pDictEntry;
+  tombstone : pDictEntry;
+  probeCount : integer;
+begin
+  // ---- Entry assertions ----
+  Assert(entries <> nil, 'DictFindEntry: entries is nil');
+  Assert(capacity > 0, 'DictFindEntry: capacity must be > 0');
+
+  index := HashValue(key) mod UInt32(capacity);
+  tombstone := nil;
+  for probeCount := 0 to capacity - 1 do
+  begin
+    entry := @entries[index];
+    if not entry^.occupied and not entry^.tombstone then
+    begin
+      // Empty slot — return tombstone if we passed one, else this slot
+      if tombstone <> nil then
+        Result := tombstone
+      else
+        Result := entry;
+      Exit;
+    end
+    else if entry^.tombstone then
+    begin
+      Assert(not entry^.occupied, 'DictFindEntry: tombstone has occupied=true');
+      // Remember first tombstone
+      if tombstone = nil then
+        tombstone := entry;
+    end
+    else if ValuesEqual(entry^.key, key) then
+    begin
+      // Found the key
+      Result := entry;
+      Exit;
+    end;
+    index := (index + 1) mod UInt32(capacity);
+  end;
+  // Should never reach here — load factor guarantees an empty slot exists
+  Assert(false, 'DictFindEntry: probed entire table without finding slot — table is full');
+  Result := nil;
+end;
+
+procedure DictGrow(dict : pObjDictionary; MemTracker : pMemTracker);
+var
+  newCapacity, i, oldCount : integer;
+  newEntries : pDictEntry;
+  entry, dest : pDictEntry;
+begin
+  // ---- Entry assertions ----
+  Assert(dict <> nil, 'DictGrow: dict is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(dict^.Count >= 0, 'DictGrow: count is negative');
+  Assert(dict^.Tombstones >= 0, 'DictGrow: tombstones is negative');
+  Assert(dict^.Count + dict^.Tombstones <= dict^.Capacity,
+    'DictGrow: count + tombstones exceeds capacity');
+
+  oldCount := dict^.Count;
+
+  if dict^.Capacity < 8 then
+    newCapacity := 8
+  else
+    newCapacity := dict^.Capacity * GROWTH_FACTOR;
+
+  Assert(newCapacity > dict^.Count, 'DictGrow: new capacity must exceed current count');
+
+  newEntries := nil;
+  Allocate(Pointer(newEntries), 0, newCapacity * SizeOf(TDictEntry), MemTracker);
+  Assert(newEntries <> nil, 'DictGrow: allocation returned nil');
+
+  // Rehash existing entries (skip tombstones — they are discarded)
+  dict^.Count := 0;
+  for i := 0 to dict^.Capacity - 1 do
+  begin
+    entry := @dict^.Entries[i];
+    if not entry^.occupied then Continue;
+
+    dest := DictFindEntry(newEntries, newCapacity, entry^.key);
+    dest^.key := entry^.key;
+    dest^.value := entry^.value;
+    dest^.occupied := true;
+    dest^.tombstone := false;
+    Inc(dict^.Count);
+  end;
+
+  // ---- Post-rehash assertions ----
+  Assert(dict^.Count = oldCount, 'DictGrow: count mismatch after rehash');
+
+  // Free old entries
+  if dict^.Entries <> nil then
+    Allocate(Pointer(dict^.Entries), dict^.Capacity * SizeOf(TDictEntry), 0, MemTracker);
+
+  dict^.Entries := newEntries;
+  dict^.Capacity := newCapacity;
+  dict^.Tombstones := 0;
+
+  // ---- Exit assertions ----
+  Assert(dict^.Count + dict^.Tombstones <= dict^.Capacity,
+    'DictGrow exit: count + tombstones exceeds new capacity');
+end;
+
+function DictGet(dict : pObjDictionary; const key : TValue; var outValue : TValue) : boolean;
+var
+  entry : pDictEntry;
+begin
+  // ---- Entry assertions ----
+  Assert(dict <> nil, 'DictGet: dict is nil');
+  Assert(dict^.Count >= 0, 'DictGet: count is negative');
+  Assert(dict^.Tombstones >= 0, 'DictGet: tombstones is negative');
+
+  if dict^.Count = 0 then
+  begin
+    Result := false;
+    Exit;
+  end;
+
+  Assert(dict^.Entries <> nil, 'DictGet: entries nil with count > 0');
+  Assert(dict^.Capacity > 0, 'DictGet: capacity 0 with count > 0');
+
+  entry := DictFindEntry(dict^.Entries, dict^.Capacity, key);
+  if not entry^.occupied then
+  begin
+    Result := false;
+    Exit;
+  end;
+  outValue := entry^.value;
+  Result := true;
+end;
+
+procedure DictSet(dict : pObjDictionary; const key : TValue; const val : TValue; MemTracker : pMemTracker);
+var
+  entry : pDictEntry;
+  isNewKey : boolean;
+  oldCount : integer;
+begin
+  // ---- Entry assertions ----
+  Assert(dict <> nil, 'DictSet: dict is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(dict^.Count >= 0, 'DictSet: count is negative');
+  Assert(dict^.Tombstones >= 0, 'DictSet: tombstones is negative');
+
+  oldCount := dict^.Count;
+
+  // Grow if load factor (count + tombstones) > 75%
+  if dict^.Count + dict^.Tombstones + 1 > Integer(Trunc(dict^.Capacity * TABLE_MAX_LOAD)) then
+    DictGrow(dict, MemTracker);
+
+  Assert(dict^.Entries <> nil, 'DictSet: entries nil after grow');
+  Assert(dict^.Capacity > 0, 'DictSet: capacity 0 after grow');
+
+  entry := DictFindEntry(dict^.Entries, dict^.Capacity, key);
+  isNewKey := not entry^.occupied;
+  if isNewKey then
+  begin
+    if entry^.tombstone then
+      Dec(dict^.Tombstones);  // reusing a tombstone slot
+    Inc(dict^.Count);
+  end;
+  entry^.key := key;
+  entry^.value := val;
+  entry^.occupied := true;
+  entry^.tombstone := false;
+
+  // ---- Exit assertions ----
+  Assert(dict^.Count >= oldCount, 'DictSet exit: count decreased');
+  Assert(dict^.Count <= oldCount + 1, 'DictSet exit: count increased by more than 1');
+  Assert(dict^.Count + dict^.Tombstones <= dict^.Capacity,
+    'DictSet exit: count + tombstones exceeds capacity');
+  Assert(dict^.Tombstones >= 0, 'DictSet exit: tombstones went negative');
+end;
+
+function DictDelete(dict : pObjDictionary; const key : TValue) : boolean;
+var
+  entry : pDictEntry;
+begin
+  // ---- Entry assertions ----
+  Assert(dict <> nil, 'DictDelete: dict is nil');
+  Assert(dict^.Count >= 0, 'DictDelete: count is negative');
+  Assert(dict^.Tombstones >= 0, 'DictDelete: tombstones is negative');
+
+  if dict^.Count = 0 then
+  begin
+    Result := false;
+    Exit;
+  end;
+
+  Assert(dict^.Entries <> nil, 'DictDelete: entries nil with count > 0');
+  Assert(dict^.Capacity > 0, 'DictDelete: capacity 0 with count > 0');
+
+  entry := DictFindEntry(dict^.Entries, dict^.Capacity, key);
+  if not entry^.occupied then
+  begin
+    Result := false;
+    Exit;
+  end;
+  // Place a tombstone
+  entry^.occupied := false;
+  entry^.tombstone := true;
+  Dec(dict^.Count);
+  Inc(dict^.Tombstones);
+  Result := true;
+
+  // ---- Exit assertions ----
+  Assert(dict^.Count >= 0, 'DictDelete exit: count went negative');
+  Assert(dict^.Count + dict^.Tombstones <= dict^.Capacity,
+    'DictDelete exit: count + tombstones exceeds capacity');
+end;
+
 function isRecordType(value : TValue) : boolean;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okRecordType);
@@ -1930,6 +2241,22 @@ begin
         end;
         okNativeObject: begin
           Result := '<' + String(pObjNativeObject(value.ObjValue)^.classInfo^.name) + '>';
+        end;
+        okDictionary: begin
+          Result := '{';
+          var first := true;
+          for i := 0 to pObjDictionary(value.ObjValue)^.Capacity - 1 do
+          begin
+            if pObjDictionary(value.ObjValue)^.Entries[i].occupied and
+               not pObjDictionary(value.ObjValue)^.Entries[i].tombstone then
+            begin
+              if not first then Result := Result + ', ';
+              first := false;
+              Result := Result + ValueToStr(pObjDictionary(value.ObjValue)^.Entries[i].key)
+                + ': ' + ValueToStr(pObjDictionary(value.ObjValue)^.Entries[i].value);
+            end;
+          end;
+          Result := Result + '}';
         end;
       else
         Result := '<object>';
@@ -2303,13 +2630,135 @@ begin
   end;
 end;
 
+function InvokeDictMethod(dict: pObjDictionary; const methodName: AnsiString;
+  argCount: integer; args: pValue; var outResult: TValue): boolean;
+var
+  val: TValue;
+  arr: pObjArray;
+  i, newCap, oldSize, newSize: integer;
+begin
+  Result := true;
+  if methodName = 'Set' then
+  begin
+    if argCount <> 2 then
+    begin
+      RuntimeError('Set() takes 2 arguments (key, value).');
+      Exit(false);
+    end;
+    DictSet(dict, args[0], args[1], VM.MemTracker);
+    outResult := args[1];
+  end
+  else if methodName = 'Get' then
+  begin
+    if argCount <> 1 then
+    begin
+      RuntimeError('Get() takes 1 argument (key).');
+      Exit(false);
+    end;
+    if not DictGet(dict, args[0], val) then
+    begin
+      RuntimeError('Key not found in dictionary.');
+      Exit(false);
+    end;
+    outResult := val;
+  end
+  else if methodName = 'Has' then
+  begin
+    if argCount <> 1 then
+    begin
+      RuntimeError('Has() takes 1 argument (key).');
+      Exit(false);
+    end;
+    outResult := CreateBoolean(DictGet(dict, args[0], val));
+  end
+  else if methodName = 'Delete' then
+  begin
+    if argCount <> 1 then
+    begin
+      RuntimeError('Delete() takes 1 argument (key).');
+      Exit(false);
+    end;
+    outResult := CreateBoolean(DictDelete(dict, args[0]));
+  end
+  else if methodName = 'Keys' then
+  begin
+    if argCount <> 0 then
+    begin
+      RuntimeError('Keys() takes no arguments.');
+      Exit(false);
+    end;
+    arr := newArray(VM.MemTracker);
+    if dict^.Count > 0 then
+    begin
+      newCap := dict^.Count;
+      oldSize := 0;
+      newSize := newCap * SizeOf(TValue);
+      PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
+      Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+      arr^.Capacity := newCap;
+      for i := 0 to dict^.Capacity - 1 do
+      begin
+        if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
+        begin
+          arr^.Elements[arr^.Count] := dict^.Entries[i].key;
+          Inc(arr^.Count);
+        end;
+      end;
+      PopStack(vm.stack);
+    end;
+    outResult := CreateObject(pObj(arr));
+  end
+  else if methodName = 'Values' then
+  begin
+    if argCount <> 0 then
+    begin
+      RuntimeError('Values() takes no arguments.');
+      Exit(false);
+    end;
+    arr := newArray(VM.MemTracker);
+    if dict^.Count > 0 then
+    begin
+      newCap := dict^.Count;
+      oldSize := 0;
+      newSize := newCap * SizeOf(TValue);
+      PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
+      Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+      arr^.Capacity := newCap;
+      for i := 0 to dict^.Capacity - 1 do
+      begin
+        if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
+        begin
+          arr^.Elements[arr^.Count] := dict^.Entries[i].value;
+          Inc(arr^.Count);
+        end;
+      end;
+      PopStack(vm.stack);
+    end;
+    outResult := CreateObject(pObj(arr));
+  end
+  else if methodName = 'Size' then
+  begin
+    if argCount <> 0 then
+    begin
+      RuntimeError('Size() takes no arguments.');
+      Exit(false);
+    end;
+    outResult := CreateNumber(dict^.Count);
+  end
+  else
+  begin
+    RuntimeError('Undefined dictionary method ''' + String(methodName) + '''.');
+    Exit(false);
+  end;
+end;
+
 function Run : TInterpretResult;
 var
   frame : ^TCallFrame;
   instruction: Byte;
   slot : Byte;
   offset : Word;
-  value,ValueB : TValue;
+  value,ValueB,ValueC : TValue;
   argCount : byte;
   func : pObjFunction;
   closure : pObjClosure;
@@ -2913,13 +3362,26 @@ begin
           AssertFrameValues('OP_INVOKE');
           // The receiver is on the stack below the arguments
           value := peekStack(vm.Stack, invokeArgCount);
-          if isNativeObject(value) then
+          // Get method name from constant pool
+          ValueB := frame^.closure^.func^.chunk^.Constants^.Values[invokeNameIdx];
+          Assert(isString(ValueB), 'OP_INVOKE: method name constant is not a string');
+          invokeMethodName := ObjStringToAnsiString(ValueToString(ValueB));
+          if isDictionary(value) then
+          begin
+            if not InvokeDictMethod(pObjDictionary(value.ObjValue), invokeMethodName,
+              invokeArgCount, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
+            begin
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE dict: stack underflow');
+            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            VM.Stack.Count := VM.Stack.Count - (invokeArgCount + 1);
+            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+          end
+          else if isNativeObject(value) then
           begin
             nativeObj := pObjNativeObject(value.ObjValue);
-            // Get method name from constant pool
-            value := frame^.closure^.func^.chunk^.Constants^.Values[invokeNameIdx];
-            Assert(isString(value), 'OP_INVOKE: method name constant is not a string');
-            invokeMethodName := ObjStringToAnsiString(ValueToString(value));
             if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
             begin
               runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
@@ -2942,7 +3404,7 @@ begin
           end
           else
           begin
-            runtimeError('Only native objects have methods.');
+            runtimeError('Only dictionaries and native objects have methods.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
@@ -2956,12 +3418,25 @@ begin
           AssertConstantIndex(invokeNameIdx, 'OP_INVOKE_LONG');
           AssertFrameValues('OP_INVOKE_LONG');
           value := peekStack(vm.Stack, invokeArgCount);
-          if isNativeObject(value) then
+          ValueB := frame^.closure^.func^.chunk^.Constants^.Values[invokeNameIdx];
+          Assert(isString(ValueB), 'OP_INVOKE_LONG: method name constant is not a string');
+          invokeMethodName := ObjStringToAnsiString(ValueToString(ValueB));
+          if isDictionary(value) then
+          begin
+            if not InvokeDictMethod(pObjDictionary(value.ObjValue), invokeMethodName,
+              invokeArgCount, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
+            begin
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE_LONG dict: stack underflow');
+            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            VM.Stack.Count := VM.Stack.Count - (invokeArgCount + 1);
+            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+          end
+          else if isNativeObject(value) then
           begin
             nativeObj := pObjNativeObject(value.ObjValue);
-            value := frame^.closure^.func^.chunk^.Constants^.Values[invokeNameIdx];
-            Assert(isString(value), 'OP_INVOKE_LONG: method name constant is not a string');
-            invokeMethodName := ObjStringToAnsiString(ValueToString(value));
             if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
             begin
               runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
@@ -2982,7 +3457,7 @@ begin
           end
           else
           begin
-            runtimeError('Only native objects have methods.');
+            runtimeError('Only dictionaries and native objects have methods.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
@@ -3041,6 +3516,131 @@ begin
           rec^.fields[fieldIdx] := peekStack(vm.Stack);
           value := popStack(vm.Stack);
           popStack(vm.Stack);
+          pushStack(vm.Stack, value, vm.MemTracker);
+        end;
+
+        OP_GET_SUBSCRIPT: begin
+          // Stack: [... object, index/key] -> [... result]
+          value := popStack(vm.Stack);   // index/key
+          ValueB := popStack(vm.Stack);  // object
+          if isArray(ValueB) then
+          begin
+            if not isNumber(value) then
+            begin
+              runtimeError('Array index must be a number.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            i := Trunc(value.NumberValue);
+            if (i < 0) or (i >= pObjArray(ValueB.ObjValue)^.Count) then
+            begin
+              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(ValueB.ObjValue)^.Count - 1) + '].');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            pushStack(vm.Stack, pObjArray(ValueB.ObjValue)^.Elements[i], vm.MemTracker);
+          end
+          else if isDictionary(ValueB) then
+          begin
+            if not DictGet(pObjDictionary(ValueB.ObjValue), value, ValueC) then
+            begin
+              runtimeError('Key not found in dictionary.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            pushStack(vm.Stack, ValueC, vm.MemTracker);
+          end
+          else
+          begin
+            runtimeError('Only arrays and dictionaries support subscript access.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+        end;
+
+        OP_SET_SUBSCRIPT: begin
+          // Stack: [... object, index/key, value] -> [... value]
+          value := popStack(vm.Stack);    // value to assign
+          ValueB := popStack(vm.Stack);   // index/key
+          if isArray(peekStack(vm.Stack)) then
+          begin
+            if not isNumber(ValueB) then
+            begin
+              runtimeError('Array index must be a number.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            i := Trunc(ValueB.NumberValue);
+            if (i < 0) or (i >= pObjArray(peekStack(vm.Stack).ObjValue)^.Count) then
+            begin
+              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(peekStack(vm.Stack).ObjValue)^.Count - 1) + '].');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            pObjArray(peekStack(vm.Stack).ObjValue)^.Elements[i] := value;
+            popStack(vm.Stack); // pop the array
+            pushStack(vm.Stack, value, vm.MemTracker); // leave the assigned value
+          end
+          else if isDictionary(peekStack(vm.Stack)) then
+          begin
+            DictSet(pObjDictionary(peekStack(vm.Stack).ObjValue), ValueB, value, vm.MemTracker);
+            popStack(vm.Stack); // pop the dictionary
+            pushStack(vm.Stack, value, vm.MemTracker); // leave the assigned value
+          end
+          else
+          begin
+            runtimeError('Only arrays and dictionaries support subscript assignment.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+        end;
+
+        OP_ARRAY_LITERAL: begin
+          // Operand: 1-byte element count
+          // Stack: [... elem0, elem1, ..., elemN-1] -> [... array]
+          argCount := ReadByteFr;
+          // Create the array and push it to protect from GC during Allocate
+          value := CreateObject(pObj(newArray(vm.MemTracker)));
+          pushStack(vm.Stack, value, vm.MemTracker);
+          // Pre-grow the array elements
+          if argCount > 0 then
+          begin
+            Allocate(Pointer(pObjArray(value.ObjValue)^.Elements), 0, argCount * SizeOf(TValue), vm.MemTracker);
+            pObjArray(value.ObjValue)^.Capacity := argCount;
+            pObjArray(value.ObjValue)^.Count := argCount;
+            // Elements are below the array on the stack:
+            // Stack: [... elem0, elem1, ..., elemN-1, array]
+            // Index of elem0 = Stack.Count - 1 - argCount
+            for i := 0 to argCount - 1 do
+              pObjArray(value.ObjValue)^.Elements[i] := vm.Stack.Values[vm.Stack.Count - 1 - argCount + i];
+          end;
+          // Pop array, pop elements, push array back
+          popStack(vm.Stack);
+          for i := 0 to argCount - 1 do
+            popStack(vm.Stack);
+          pushStack(vm.Stack, value, vm.MemTracker);
+        end;
+
+        OP_DICT_LITERAL: begin
+          // Operand: 1-byte pair count
+          // Stack: [... key0, val0, key1, val1, ...] -> [... dict]
+          argCount := ReadByteFr;
+          // Create dictionary and push to stack for GC safety
+          value := CreateObject(pObj(newDictionary(vm.MemTracker)));
+          pushStack(vm.Stack, value, vm.MemTracker);
+          // Insert pairs from below the dict on the stack
+          // Stack: [... k0, v0, k1, v1, ..., dict]
+          // Pair i: key at Count - 1 - (argCount - i) * 2, value at key + 1
+          for i := 0 to argCount - 1 do
+          begin
+            ValueB := vm.Stack.Values[vm.Stack.Count - 1 - (argCount - i) * 2];  // key
+            ValueC := vm.Stack.Values[vm.Stack.Count - 1 - (argCount - i) * 2 + 1]; // value
+            DictSet(pObjDictionary(value.ObjValue), ValueB, ValueC, vm.MemTracker);
+          end;
+          // Pop dict, pop key-value pairs, push dict back
+          popStack(vm.Stack);
+          for i := 0 to argCount * 2 - 1 do
+            popStack(vm.Stack);
           pushStack(vm.Stack, value, vm.MemTracker);
         end;
 
@@ -3382,6 +3982,12 @@ begin
         pObjNativeObject(obj)^.classInfo^.destructor_(pObjNativeObject(obj)^.instance);
       Allocate(Pointer(obj), SizeOf(TObjNativeObject), 0, vm.MemTracker);
     end;
+    okDictionary : begin
+      if pObjDictionary(obj)^.Entries <> nil then
+        Allocate(Pointer(pObjDictionary(obj)^.Entries),
+                 pObjDictionary(obj)^.Capacity * SizeOf(TDictEntry), 0, vm.MemTracker);
+      Allocate(Pointer(obj), SizeOf(TObjDictionary), 0, vm.MemTracker);
+    end;
   end;
 end;
 
@@ -3587,6 +4193,20 @@ begin
         MarkValue(pObjRecord(obj)^.fields[i]);
     end;
     okNativeObject: ; // Delphi object not traced by GC
+    okDictionary: begin
+      if pObjDictionary(obj)^.Capacity > 0 then
+      begin
+        Assert(pObjDictionary(obj)^.Entries <> nil, 'BlackenObject: dictionary entries is nil with capacity > 0');
+        for i := 0 to pObjDictionary(obj)^.Capacity - 1 do
+        begin
+          if pObjDictionary(obj)^.Entries[i].occupied then
+          begin
+            MarkValue(pObjDictionary(obj)^.Entries[i].key);
+            MarkValue(pObjDictionary(obj)^.Entries[i].value);
+          end;
+        end;
+      end;
+    end;
   end;
 end;
 
@@ -4006,6 +4626,215 @@ begin
   Dec(arr^.Count);
 end;
 
+// ---- Dictionary native functions ----
+
+function dictNewNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+begin
+  if argCount <> 0 then
+  begin
+    RuntimeError('dictNew() takes no arguments.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := newDictionary(VM.MemTracker);
+  Result := CreateObject(pObj(dict));
+end;
+
+function dictSetNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('dictSet() takes 3 arguments (dict, key, value).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('First argument to dictSet() must be a dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := pObjDictionary(args[0].ObjValue);
+  DictSet(dict, args[1], args[2], VM.MemTracker);
+  Result := args[2];
+end;
+
+function dictGetNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+  value : TValue;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('dictGet() takes 2 arguments (dict, key).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('First argument to dictGet() must be a dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := pObjDictionary(args[0].ObjValue);
+  if not DictGet(dict, args[1], value) then
+  begin
+    RuntimeError('Key not found in dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := value;
+end;
+
+function dictHasNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+  value : TValue;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('dictHas() takes 2 arguments (dict, key).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('First argument to dictHas() must be a dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := pObjDictionary(args[0].ObjValue);
+  Result := CreateBoolean(DictGet(dict, args[1], value));
+end;
+
+function dictDeleteNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('dictDelete() takes 2 arguments (dict, key).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('First argument to dictDelete() must be a dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := pObjDictionary(args[0].ObjValue);
+  Result := CreateBoolean(DictDelete(dict, args[1]));
+end;
+
+function dictKeysNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+  arr : pObjArray;
+  i, newCap, oldSize, newSize : integer;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('dictKeys() takes 1 argument (dict).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('First argument to dictKeys() must be a dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := pObjDictionary(args[0].ObjValue);
+  arr := newArray(VM.MemTracker);
+  // Pre-allocate elements for all keys
+  if dict^.Count > 0 then
+  begin
+    newCap := dict^.Count;
+    oldSize := 0;
+    newSize := newCap * SizeOf(TValue);
+    // Push arr to stack for GC safety before allocating
+    PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
+    Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+    arr^.Capacity := newCap;
+    for i := 0 to dict^.Capacity - 1 do
+    begin
+      if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
+      begin
+        arr^.Elements[arr^.Count] := dict^.Entries[i].key;
+        Inc(arr^.Count);
+      end;
+    end;
+    PopStack(vm.stack);
+  end;
+  Result := CreateObject(pObj(arr));
+end;
+
+function dictSizeNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('dictSize() takes 1 argument (dict).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('First argument to dictSize() must be a dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := pObjDictionary(args[0].ObjValue);
+  Result := CreateNumber(dict^.Count);
+end;
+
+function dictValuesNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+  arr : pObjArray;
+  i, newCap, oldSize, newSize : integer;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('dictValues() takes 1 argument (dict).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('First argument to dictValues() must be a dictionary.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  dict := pObjDictionary(args[0].ObjValue);
+  arr := newArray(VM.MemTracker);
+  if dict^.Count > 0 then
+  begin
+    newCap := dict^.Count;
+    oldSize := 0;
+    newSize := newCap * SizeOf(TValue);
+    PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
+    Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+    arr^.Capacity := newCap;
+    for i := 0 to dict^.Capacity - 1 do
+    begin
+      if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
+      begin
+        arr^.Elements[arr^.Count] := dict^.Entries[i].value;
+        Inc(arr^.Count);
+      end;
+    end;
+    PopStack(vm.stack);
+  end;
+  Result := CreateObject(pObj(arr));
+end;
+
 // ---- Native class registry ----
 
 var
@@ -4185,6 +5014,16 @@ begin
   defineNative('arraySet', arraySetNative);
   defineNative('arrayLen', arrayLenNative);
   defineNative('arrayRemove', arrayRemoveNative);
+
+  // Dictionary natives
+  defineNative('dictNew', dictNewNative);
+  defineNative('dictSet', dictSetNative);
+  defineNative('dictGet', dictGetNative);
+  defineNative('dictHas', dictHasNative);
+  defineNative('dictDelete', dictDeleteNative);
+  defineNative('dictKeys', dictKeysNative);
+  defineNative('dictSize', dictSizeNative);
+  defineNative('dictValues', dictValuesNative);
 
   // Native object classes
   slMethods[0].name := 'add';    slMethods[0].fn := SL_Add;
@@ -4544,7 +5383,13 @@ begin
 
       '}': result :=  makeToken(TOKEN_RIGHT_BRACE);
 
+      '[': result :=  makeToken(TOKEN_LEFT_BRACKET);
+
+      ']': result :=  makeToken(TOKEN_RIGHT_BRACKET);
+
       ';': result :=  makeToken(TOKEN_SEMICOLON);
+
+      ':': result :=  makeToken(TOKEN_COLON);
 
       ',': result :=  makeToken(TOKEN_COMMA);
 
@@ -5545,6 +6390,89 @@ begin
       emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
     end;
+  end;
+end;
+
+procedure arrayLiteral(canAssign: Boolean);
+var
+  elemCount : integer;
+  pairCount : integer;
+begin
+  // Empty dict: [:]
+  if matchToken(TOKEN_COLON) then
+  begin
+    consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after empty dictionary literal.');
+    emitByte(OP_DICT_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    Exit;
+  end;
+
+  // Empty array: []
+  if check(TOKEN_RIGHT_BRACKET) then
+  begin
+    consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after array elements.');
+    emitByte(OP_ARRAY_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    Exit;
+  end;
+
+  // Parse first expression to determine if array or dict
+  Expression();
+
+  if matchToken(TOKEN_COLON) then
+  begin
+    // Dictionary: first expression was the first key, now parse value
+    Expression();
+    pairCount := 1;
+    while matchToken(TOKEN_COMMA) do
+    begin
+      Expression();  // key
+      consume(TOKEN_COLON, 'Expect '':'' after dictionary key.');
+      Expression();  // value
+      if pairCount = 127 then
+        Error('Can''t have more than 127 entries in a dictionary literal.')
+      else
+        Inc(pairCount);
+    end;
+    consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after dictionary entries.');
+    emitByte(OP_DICT_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(pairCount), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    // Array: first expression was the first element
+    elemCount := 1;
+    while matchToken(TOKEN_COMMA) do
+    begin
+      Expression();
+      if elemCount = 255 then
+        Error('Can''t have more than 255 elements in an array literal.')
+      else
+        Inc(elemCount);
+    end;
+    consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after array elements.');
+    emitByte(OP_ARRAY_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(elemCount), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+end;
+
+procedure subscript_(canAssign: Boolean);
+begin
+  // The object being subscripted is already on the stack.
+  // Parse the index/key expression between [ and ]
+  Expression();
+  consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after subscript.');
+
+  if canAssign and matchToken(TOKEN_EQUAL) then
+  begin
+    // a[expr] = value
+    Expression();
+    emitByte(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    // a[expr]
+    emitByte(OP_GET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
 end;
 

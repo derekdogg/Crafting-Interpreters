@@ -10,7 +10,6 @@ object Form4: TForm4
   Font.Height = -12
   Font.Name = 'Segoe UI'
   Font.Style = []
-  OnCreate = FormCreate
   TextHeight = 15
   object Button1: TButton
     Left = 24
@@ -56,5 +55,14 @@ object Form4: TForm4
     Caption = 'NativeObj Test'
     TabOrder = 4
     OnClick = Button3Click
+  end
+  object Button4: TButton
+    Left = 24
+    Top = 96
+    Width = 104
+    Height = 25
+    Caption = 'Button4'
+    TabOrder = 5
+    OnClick = Button4Click
   end
 end

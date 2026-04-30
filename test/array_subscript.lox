@@ -1,0 +1,103 @@
+// ============================================================
+// array_subscript.lox — Test array literal and subscript syntax
+// ============================================================
+
+fun testEmptyLiteral() {
+  var a = [];
+  assert(arrayLen(a) == 0);
+  print "PASS: empty literal"; // expect: PASS: empty literal
+}
+
+fun testLiteralCreation() {
+  var a = [10, 20, 30];
+  assert(arrayLen(a) == 3);
+  assert(a[0] == 10);
+  assert(a[1] == 20);
+  assert(a[2] == 30);
+  print "PASS: literal creation"; // expect: PASS: literal creation
+}
+
+fun testSubscriptGet() {
+  var a = [100, 200, 300, 400, 500];
+  assert(a[0] == 100);
+  assert(a[4] == 500);
+  assert(a[2] == 300);
+  print "PASS: subscript get"; // expect: PASS: subscript get
+}
+
+fun testSubscriptSet() {
+  var a = [1, 2, 3];
+  a[0] = 99;
+  a[2] = 77;
+  assert(a[0] == 99);
+  assert(a[1] == 2);
+  assert(a[2] == 77);
+  print "PASS: subscript set"; // expect: PASS: subscript set
+}
+
+fun testMixedTypes() {
+  var a = [1, "hello", true, nil, 3.14];
+  assert(a[0] == 1);
+  assert(a[1] == "hello");
+  assert(a[2] == true);
+  assert(a[3] == nil);
+  assert(a[4] == 3.14);
+  print "PASS: mixed types"; // expect: PASS: mixed types
+}
+
+fun testExpressionIndex() {
+  var a = [10, 20, 30, 40, 50];
+  var i = 2;
+  assert(a[i] == 30);
+  assert(a[i + 1] == 40);
+  assert(a[4 - 1] == 40);
+  print "PASS: expression index"; // expect: PASS: expression index
+}
+
+fun testNestedArrays() {
+  var inner = [100, 200];
+  var outer = [inner, 2, 3];
+  assert(outer[0] == inner);
+  assert(outer[1] == 2);
+  print "PASS: nested arrays"; // expect: PASS: nested arrays
+}
+
+fun testSubscriptWithPush() {
+  var a = [1, 2];
+  arrayPush(a, 3);
+  assert(a[2] == 3);
+  assert(arrayLen(a) == 3);
+  a[0] = 99;
+  assert(a[0] == 99);
+  print "PASS: subscript with push"; // expect: PASS: subscript with push
+}
+
+fun testAssignmentReturnsValue() {
+  var a = [0, 0, 0];
+  var x = (a[1] = 42);
+  assert(x == 42);
+  assert(a[1] == 42);
+  print "PASS: assignment returns value"; // expect: PASS: assignment returns value
+}
+
+fun testSingleElement() {
+  var a = [42];
+  assert(a[0] == 42);
+  assert(arrayLen(a) == 1);
+  a[0] = 99;
+  assert(a[0] == 99);
+  print "PASS: single element"; // expect: PASS: single element
+}
+
+testEmptyLiteral();
+testLiteralCreation();
+testSubscriptGet();
+testSubscriptSet();
+testMixedTypes();
+testExpressionIndex();
+testNestedArrays();
+testSubscriptWithPush();
+testAssignmentReturnsValue();
+testSingleElement();
+
+print "ALL PASSED"; // expect: ALL PASSED
