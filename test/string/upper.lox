@@ -1,0 +1,8 @@
+// upper() converts a string to uppercase
+
+print upper("hello"); // expect: HELLO
+print upper("Hello World"); // expect: HELLO WORLD
+print upper("ALREADY"); // expect: ALREADY
+print upper(""); // expect: 
+print upper("abc123"); // expect: ABC123
+print upper("a"); // expect: A

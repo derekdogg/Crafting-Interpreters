@@ -22,7 +22,7 @@ object Form4: TForm4
   end
   object Memo1: TMemo
     Left = 144
-    Top = 32
+    Top = 25
     Width = 409
     Height = 417
     Lines.Strings = (

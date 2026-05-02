@@ -1,0 +1,11 @@
+// bool() converts any value to a boolean using truthiness rules
+// Only nil and false are falsy; everything else is truthy
+
+print bool(true); // expect: true
+print bool(false); // expect: false
+print bool(nil); // expect: false
+print bool(0); // expect: true
+print bool(""); // expect: true
+print bool(1); // expect: true
+print bool("hi"); // expect: true
+print bool(42); // expect: true

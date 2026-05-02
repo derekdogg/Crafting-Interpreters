@@ -1,0 +1,2 @@
+// type() requires exactly 1 argument
+type(); // expect runtime error: type() takes exactly 1 argument.

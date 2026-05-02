@@ -1,0 +1,27 @@
+// num() converts strings and booleans to numbers
+
+print num("42"); // expect: 42
+print num("3.14"); // expect: 3.14
+print num(true); // expect: 1
+print num(false); // expect: 0
+print num(42); // expect: 42
+
+// Invalid conversions return nil
+print num("hello"); // expect: nil
+print num(nil); // expect: nil
+
+// Edge cases — invalid strings
+print num("3.14.15"); // expect: nil
+print num(""); // expect: nil
+print num(" "); // expect: nil
+print num("12abc"); // expect: nil
+print num("abc12"); // expect: nil
+
+// Edge cases — special number strings
+print num("0"); // expect: 0
+print num("-1"); // expect: -1
+print num("-3.14"); // expect: -3.14
+
+// Result can be used in arithmetic
+print num("10") + 5; // expect: 15
+print num("2.5") * 2; // expect: 5

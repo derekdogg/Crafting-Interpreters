@@ -1,0 +1,8 @@
+// lower() converts a string to lowercase
+
+print lower("HELLO"); // expect: hello
+print lower("Hello World"); // expect: hello world
+print lower("already"); // expect: already
+print lower(""); // expect: 
+print lower("ABC123"); // expect: abc123
+print lower("A"); // expect: a

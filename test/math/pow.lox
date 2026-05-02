@@ -1,0 +1,11 @@
+// pow() raises base to an exponent
+
+print pow(2, 10); // expect: 1024
+print pow(2, 0); // expect: 1
+print pow(2, 1); // expect: 2
+print pow(3, 3); // expect: 27
+print pow(10, 2); // expect: 100
+print pow(5, -1); // expect: 0.2
+print pow(4, 0.5); // expect: 2
+print pow(0, 5); // expect: 0
+print pow(1, 1000); // expect: 1

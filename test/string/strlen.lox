@@ -1,0 +1,10 @@
+// strlen() returns the length of a string
+
+print strlen("hello"); // expect: 5
+print strlen(""); // expect: 0
+print strlen("a"); // expect: 1
+print strlen("hello world"); // expect: 11
+
+// Edge cases
+print strlen(" "); // expect: 1
+print strlen("  spaces  "); // expect: 10

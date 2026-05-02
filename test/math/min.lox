@@ -1,0 +1,9 @@
+// min() returns the smaller of two numbers
+
+print min(3, 7); // expect: 3
+print min(7, 3); // expect: 3
+print min(-1, 1); // expect: -1
+print min(0, 0); // expect: 0
+print min(-5, -3); // expect: -5
+print min(3.14, 2.71); // expect: 2.71
+print min(1.5, 1.5); // expect: 1.5

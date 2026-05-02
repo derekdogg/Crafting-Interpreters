@@ -1,0 +1,33 @@
+// str() converts any value to a string
+
+print str(42); // expect: 42
+print str(3.14); // expect: 3.14
+print str(true); // expect: true
+print str(false); // expect: false
+print str(nil); // expect: nil
+print str("hello"); // expect: hello
+
+// Result is a string that can be concatenated
+print str(42) + " is the answer"; // expect: 42 is the answer
+print str(true) + " story"; // expect: true story
+
+// Edge cases — number formatting
+print str(0); // expect: 0
+print str(-1); // expect: -1
+print str(-3.14); // expect: -3.14
+
+// Edge cases — empty string passthrough
+print str(""); // expect: 
+
+// Edge cases — string comparison after conversion
+print str(42) == "42"; // expect: true
+print str(true) == "true"; // expect: true
+print str(nil) == "nil"; // expect: true
+
+// Edge cases — nested conversion
+print str(str(42)); // expect: 42
+
+// Edge cases — functions
+fun f() {}
+print str(f); // expect: <fn f>
+print str(clock); // expect: <native fn>

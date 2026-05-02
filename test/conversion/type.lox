@@ -1,0 +1,40 @@
+// type() returns the type of a value as a string
+
+print type(42); // expect: number
+print type(3.14); // expect: number
+print type(true); // expect: boolean
+print type(false); // expect: boolean
+print type(nil); // expect: nil
+print type("hello"); // expect: string
+print type(clock); // expect: function
+
+fun f() {}
+print type(f); // expect: function
+
+// Edge cases — type() result is a string
+print type(type(42)); // expect: string
+print type(42) == "number"; // expect: true
+
+// Edge cases — type() on expressions
+print type(1 + 2); // expect: number
+print type("a" + "b"); // expect: string
+print type(!true); // expect: boolean
+
+// Edge cases — empty string is still a string
+print type(""); // expect: string
+
+// Edge cases — zero and negative numbers
+print type(0); // expect: number
+print type(-1); // expect: number
+
+// Edge cases — native function
+print type(str); // expect: function
+print type(num); // expect: function
+
+// Edge cases — arrays and dictionaries
+var a = newArray();
+print type(a); // expect: array
+
+var d = dictNew();
+print type(d); // expect: dictionary
+

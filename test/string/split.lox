@@ -1,0 +1,53 @@
+// split() splits a string by a delimiter, returning an array
+
+// Basic splitting via arrayGet()
+var parts = split("a,b,c", ",");
+print arrayLen(parts); // expect: 3
+print arrayGet(parts, 0); // expect: a
+print arrayGet(parts, 1); // expect: b
+print arrayGet(parts, 2); // expect: c
+
+// Basic splitting via subscript []
+var parts2 = split("x,y,z", ",");
+print parts2[0]; // expect: x
+print parts2[1]; // expect: y
+print parts2[2]; // expect: z
+
+// Multi-character delimiter
+var words = split("hello--world--test", "--");
+print arrayLen(words); // expect: 3
+print arrayGet(words, 0); // expect: hello
+print words[1]; // expect: world
+print words[2]; // expect: test
+
+// No delimiter found — returns array with original string
+var none = split("hello", ",");
+print arrayLen(none); // expect: 1
+print arrayGet(none, 0); // expect: hello
+print none[0]; // expect: hello
+
+// Empty delimiter — splits into characters
+var chars = split("abc", "");
+print arrayLen(chars); // expect: 3
+print chars[0]; // expect: a
+print chars[1]; // expect: b
+print chars[2]; // expect: c
+
+// Trailing delimiter
+var trail = split("a,b,", ",");
+print arrayLen(trail); // expect: 3
+print trail[0]; // expect: a
+print trail[1]; // expect: b
+print trail[2] == ""; // expect: true
+
+// Leading delimiter
+var lead = split(",a,b", ",");
+print arrayLen(lead); // expect: 3
+print lead[0] == ""; // expect: true
+print lead[1]; // expect: a
+print lead[2]; // expect: b
+
+// Split empty string
+var empty = split("", ",");
+print arrayLen(empty); // expect: 1
+print empty[0] == ""; // expect: true

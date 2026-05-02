@@ -4421,6 +4421,574 @@ begin
   Result := CreateNumber(count);
 end;
 
+// ---- Conversion native functions ----
+
+function strNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  objStr : pObjString;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('str() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  s := AnsiString(ValueToStr(args[0]));
+  objStr := CreateString(s, VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
+function numNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  d : Double;
+  fs : TFormatSettings;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('num() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  case args[0].ValueKind of
+    vkNumber: Result := args[0];
+    vkBoolean:
+      if args[0].BooleanValue then
+        Result := CreateNumber(1)
+      else
+        Result := CreateNumber(0);
+    vkObject:
+      if isString(args[0]) then
+      begin
+        s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+        fs := TFormatSettings.Create;
+        fs.DecimalSeparator := '.';
+        if TryStrToFloat(String(s), d, fs) then
+          Result := CreateNumber(d)
+        else
+          Result := CreateNilValue;
+      end
+      else
+      begin
+        Result := CreateNilValue;
+      end;
+  else
+    Result := CreateNilValue;
+  end;
+end;
+
+function boolNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('bool() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateBoolean(not IsFalsey(args[0]));
+end;
+
+function typeNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  objStr : pObjString;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('type() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  case args[0].ValueKind of
+    vkNumber:  s := 'number';
+    vkBoolean: s := 'boolean';
+    vkNull:    s := 'nil';
+    vkObject:
+      case args[0].ObjValue.ObjectKind of
+        okString:       s := 'string';
+        okFunction:     s := 'function';
+        okNative:       s := 'function';
+        okClosure:      s := 'function';
+        okArray:        s := 'array';
+        okRecordType:   s := 'record_type';
+        okRecord:       s := 'record';
+        okNativeObject: s := 'native_object';
+        okDictionary:   s := 'dictionary';
+      else
+        s := 'unknown';
+      end;
+  else
+    s := 'unknown';
+  end;
+  objStr := CreateString(s, VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
+// ---- Math native functions ----
+
+function absNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('abs() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('abs() argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Abs(args[0].NumberValue));
+end;
+
+function floorNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('floor() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('floor() argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Math.Floor(args[0].NumberValue));
+end;
+
+function ceilNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('ceil() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('ceil() argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Math.Ceil(args[0].NumberValue));
+end;
+
+function roundNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('round() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('round() argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Round(args[0].NumberValue));
+end;
+
+function minNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('min() takes exactly 2 arguments.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) or not isNumber(args[1]) then
+  begin
+    RuntimeError('min() arguments must be numbers.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if args[0].NumberValue <= args[1].NumberValue then
+    Result := CreateNumber(args[0].NumberValue)
+  else
+    Result := CreateNumber(args[1].NumberValue);
+end;
+
+function maxNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('max() takes exactly 2 arguments.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) or not isNumber(args[1]) then
+  begin
+    RuntimeError('max() arguments must be numbers.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if args[0].NumberValue >= args[1].NumberValue then
+    Result := CreateNumber(args[0].NumberValue)
+  else
+    Result := CreateNumber(args[1].NumberValue);
+end;
+
+function sqrtNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('sqrt() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('sqrt() argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if args[0].NumberValue < 0 then
+  begin
+    RuntimeError('sqrt() argument must not be negative.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Sqrt(args[0].NumberValue));
+end;
+
+function powNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('pow() takes exactly 2 arguments (base, exponent).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) or not isNumber(args[1]) then
+  begin
+    RuntimeError('pow() arguments must be numbers.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Math.Power(args[0].NumberValue, args[1].NumberValue));
+end;
+
+function randomNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 0 then
+  begin
+    RuntimeError('random() takes no arguments.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Random);
+end;
+
+// ---- String manipulation native functions ----
+
+function strlenNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('strlen() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('strlen() argument must be a string.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(pObjString(args[0].ObjValue)^.length);
+end;
+
+function substrNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  start, len, sLen : integer;
+  objStr : pObjString;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('substr() takes exactly 3 arguments (string, start, length).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('substr() first argument must be a string.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[1]) or not isNumber(args[2]) then
+  begin
+    RuntimeError('substr() start and length must be numbers.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  sLen := Length(s);
+  start := Trunc(args[1].NumberValue);
+  len := Trunc(args[2].NumberValue);
+  if (start < 0) or (start >= sLen) then
+  begin
+    RuntimeError('substr() start index out of bounds.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if len < 0 then
+  begin
+    RuntimeError('substr() length must not be negative.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  // Clamp length to remaining characters
+  if start + len > sLen then
+    len := sLen - start;
+  objStr := CreateString(Copy(s, start + 1, len), VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
+function indexOfNative(argCount: integer; args: pValue): TValue;
+var
+  haystack, needle : AnsiString;
+  pos : integer;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('indexOf() takes exactly 2 arguments (string, needle).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) or not isString(args[1]) then
+  begin
+    RuntimeError('indexOf() arguments must be strings.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  haystack := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  needle := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+  if Length(needle) = 0 then
+    Result := CreateNumber(0)
+  else
+  begin
+    pos := System.Pos(needle, haystack);
+    if pos = 0 then
+      Result := CreateNumber(-1)
+    else
+      Result := CreateNumber(pos - 1); // 0-based index
+  end;
+end;
+
+function charAtNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  idx : integer;
+  objStr : pObjString;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('charAt() takes exactly 2 arguments (string, index).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('charAt() first argument must be a string.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[1]) then
+  begin
+    RuntimeError('charAt() second argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  idx := Trunc(args[1].NumberValue);
+  if (idx < 0) or (idx >= Length(s)) then
+  begin
+    RuntimeError('charAt() index out of bounds.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  objStr := CreateString(AnsiString(s[idx + 1]), VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
+function upperNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  objStr : pObjString;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('upper() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('upper() argument must be a string.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  objStr := CreateString(AnsiUpperCase(s), VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
+function lowerNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  objStr : pObjString;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('lower() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('lower() argument must be a string.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  objStr := CreateString(AnsiLowerCase(s), VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
+function trimNative(argCount: integer; args: pValue): TValue;
+var
+  s : AnsiString;
+  objStr : pObjString;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('trim() takes exactly 1 argument.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('trim() argument must be a string.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  objStr := CreateString(AnsiString(Trim(String(s))), VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
+function splitNative(argCount: integer; args: pValue): TValue;
+var
+  s, delim, part : AnsiString;
+  arr : pObjArray;
+  objStr : pObjString;
+  partVal : TValue;
+  pos, start, delimLen, sLen : integer;
+  newCap, oldSize, newSize : integer;
+
+  procedure ArrayAppendStr(str : pObjString);
+  var
+    val : TValue;
+  begin
+    // Push string onto stack to protect from GC during potential array growth
+    val := CreateObject(pObj(str));
+    pushStack(VM.Stack, val, VM.MemTracker);
+    if arr^.Count >= arr^.Capacity then
+    begin
+      if arr^.Capacity = 0 then newCap := 8 else newCap := arr^.Capacity * GROWTH_FACTOR;
+      oldSize := arr^.Capacity * SizeOf(TValue);
+      newSize := newCap * SizeOf(TValue);
+      Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+      arr^.Capacity := newCap;
+    end;
+    arr^.Elements[arr^.Count] := val;
+    Inc(arr^.Count);
+    popStack(VM.Stack);
+  end;
+
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('split() takes exactly 2 arguments (string, delimiter).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isString(args[0]) or not isString(args[1]) then
+  begin
+    RuntimeError('split() arguments must be strings.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  delim := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+  sLen := Length(s);
+  delimLen := Length(delim);
+  arr := newArray(VM.MemTracker);
+  // Push array onto stack to protect from GC during string allocations
+  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+
+  if delimLen = 0 then
+  begin
+    // Split into individual characters
+    for start := 1 to sLen do
+    begin
+      objStr := CreateString(AnsiString(s[start]), VM.MemTracker);
+      ArrayAppendStr(objStr);
+    end;
+    popStack(VM.Stack); // remove GC protection
+    Result := CreateObject(pObj(arr));
+    Exit;
+  end;
+
+  // Empty string with non-empty delimiter returns array with one empty string
+  if sLen = 0 then
+  begin
+    objStr := CreateString('', VM.MemTracker);
+    ArrayAppendStr(objStr);
+    popStack(VM.Stack);
+    Result := CreateObject(pObj(arr));
+    Exit;
+  end;
+
+  start := 1;
+  while start <= sLen do
+  begin
+    pos := PosEx(String(delim), String(s), start);
+    if pos = 0 then
+    begin
+      part := Copy(s, start, sLen - start + 1);
+      objStr := CreateString(part, VM.MemTracker);
+      ArrayAppendStr(objStr);
+      Break;
+    end
+    else
+    begin
+      part := Copy(s, start, pos - start);
+      objStr := CreateString(part, VM.MemTracker);
+      ArrayAppendStr(objStr);
+      start := pos + delimLen;
+    end;
+  end;
+
+  // Handle trailing delimiter (e.g. "a," -> ["a", ""])
+  if (sLen >= delimLen) and (Copy(s, sLen - delimLen + 1, delimLen) = delim) then
+  begin
+    objStr := CreateString('', VM.MemTracker);
+    ArrayAppendStr(objStr);
+  end;
+
+  popStack(VM.Stack); // remove GC protection
+  Result := CreateObject(pObj(arr));
+end;
+
 // ---- Array native functions ----
 
 function arrayNewNative(argCount: integer; args: pValue): TValue;
@@ -4999,12 +5567,42 @@ begin
   //GC set up
   VM.MemTracker.Roots.Stack := Vm.Stack;
 
+  // Seed random number generator
+  Randomize;
+
   // Define native functions
   defineNative('clock', clockNative);
   defineNative('collectGarbage', collectGarbageNative);
   defineNative('assert', assertNative);
   defineNative('bytesAllocated', bytesAllocatedNative);
   defineNative('objectsAllocated', objectsAllocatedNative);
+
+  // Conversion native functions
+  defineNative('str', strNative);
+  defineNative('num', numNative);
+  defineNative('bool', boolNative);
+  defineNative('type', typeNative);
+
+  // Math native functions
+  defineNative('abs', absNative);
+  defineNative('floor', floorNative);
+  defineNative('ceil', ceilNative);
+  defineNative('round', roundNative);
+  defineNative('min', minNative);
+  defineNative('max', maxNative);
+  defineNative('sqrt', sqrtNative);
+  defineNative('pow', powNative);
+  defineNative('random', randomNative);
+
+  // String manipulation native functions
+  defineNative('strlen', strlenNative);
+  defineNative('substr', substrNative);
+  defineNative('indexOf', indexOfNative);
+  defineNative('charAt', charAtNative);
+  defineNative('upper', upperNative);
+  defineNative('lower', lowerNative);
+  defineNative('trim', trimNative);
+  defineNative('split', splitNative);
 
   // Array native functions
   defineNative('newArray', arrayNewNative);

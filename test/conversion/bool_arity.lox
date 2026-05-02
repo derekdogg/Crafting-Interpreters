@@ -1,0 +1,2 @@
+// bool() requires exactly 1 argument
+bool(); // expect runtime error: bool() takes exactly 1 argument.

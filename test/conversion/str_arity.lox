@@ -1,0 +1,2 @@
+// str() requires exactly 1 argument
+str(); // expect runtime error: str() takes exactly 1 argument.

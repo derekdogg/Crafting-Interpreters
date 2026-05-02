@@ -1,0 +1,2 @@
+// min requires exactly 2 arguments
+min(1); // expect runtime error: min() takes exactly 2 arguments.

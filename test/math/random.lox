@@ -1,0 +1,13 @@
+// random() returns a float in [0, 1)
+
+var r = random();
+print r >= 0; // expect: true
+print r < 1; // expect: true
+
+// Multiple calls produce values in range
+var r2 = random();
+print r2 >= 0; // expect: true
+print r2 < 1; // expect: true
+
+// type is number
+print type(random()); // expect: number
