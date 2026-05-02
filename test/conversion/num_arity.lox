@@ -1,0 +1,2 @@
+// num() requires exactly 1 argument
+num(); // expect runtime error: num() takes exactly 1 argument.

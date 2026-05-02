@@ -1,0 +1,2 @@
+// abs requires a number argument
+abs("hello"); // expect runtime error: abs() argument must be a number.

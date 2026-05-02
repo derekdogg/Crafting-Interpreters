@@ -1,0 +1,15 @@
+// indexOf() finds the first occurrence of a needle in a string
+// Returns 0-based index, or -1 if not found
+
+print indexOf("hello", "ell"); // expect: 1
+print indexOf("hello", "h"); // expect: 0
+print indexOf("hello", "o"); // expect: 4
+print indexOf("hello", "xyz"); // expect: -1
+print indexOf("hello", "hello"); // expect: 0
+
+// Edge cases
+print indexOf("hello", ""); // expect: 0
+print indexOf("", ""); // expect: 0
+print indexOf("", "a"); // expect: -1
+print indexOf("aaa", "a"); // expect: 0
+print indexOf("abcabc", "bc"); // expect: 1

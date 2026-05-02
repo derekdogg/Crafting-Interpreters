@@ -1,0 +1,10 @@
+// sqrt() returns the square root of a number
+
+print sqrt(9); // expect: 3
+print sqrt(4); // expect: 2
+print sqrt(1); // expect: 1
+print sqrt(0); // expect: 0
+print sqrt(2) > 1.41; // expect: true
+print sqrt(2) < 1.42; // expect: true
+print sqrt(100); // expect: 10
+print sqrt(0.25); // expect: 0.5

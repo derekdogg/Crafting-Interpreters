@@ -1,0 +1,3 @@
+// Arity and type errors for math functions
+
+abs(); // expect runtime error: abs() takes exactly 1 argument.

@@ -1,0 +1,9 @@
+// trim() strips leading and trailing whitespace
+
+print trim("  hello  "); // expect: hello
+print trim("hello"); // expect: hello
+print trim("  hello"); // expect: hello
+print trim("hello  "); // expect: hello
+print trim(""); // expect: 
+print trim("   "); // expect: 
+print trim(" a b c "); // expect: a b c

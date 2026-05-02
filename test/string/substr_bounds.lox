@@ -1,0 +1,2 @@
+// substr start out of bounds
+substr("hello", 5, 1); // expect runtime error: substr() start index out of bounds.

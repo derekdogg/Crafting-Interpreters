@@ -1,0 +1,10 @@
+// charAt() returns the character at a 0-based index
+
+print charAt("hello", 0); // expect: h
+print charAt("hello", 1); // expect: e
+print charAt("hello", 4); // expect: o
+print charAt("a", 0); // expect: a
+
+// Result is a string
+print type(charAt("hello", 0)); // expect: string
+print charAt("hello", 0) + charAt("hello", 4); // expect: ho

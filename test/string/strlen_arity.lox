@@ -1,0 +1,4 @@
+// Arity and type errors for string functions
+
+// strlen
+strlen(); // expect runtime error: strlen() takes exactly 1 argument.

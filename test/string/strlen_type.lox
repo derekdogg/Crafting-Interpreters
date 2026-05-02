@@ -1,0 +1,2 @@
+// strlen requires a string argument
+strlen(42); // expect runtime error: strlen() argument must be a string.

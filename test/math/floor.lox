@@ -1,0 +1,10 @@
+// floor() rounds down to the nearest integer
+
+print floor(3.7); // expect: 3
+print floor(3.2); // expect: 3
+print floor(3.0); // expect: 3
+print floor(-3.2); // expect: -4
+print floor(-3.7); // expect: -4
+print floor(0.9); // expect: 0
+print floor(-0.1); // expect: -1
+print floor(0); // expect: 0

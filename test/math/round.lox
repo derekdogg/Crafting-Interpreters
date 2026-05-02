@@ -1,0 +1,14 @@
+// round() rounds to the nearest integer (banker's rounding: half rounds to even)
+
+print round(3.5); // expect: 4
+print round(3.4); // expect: 3
+print round(3.6); // expect: 4
+print round(4.5); // expect: 4
+print round(2.5); // expect: 2
+print round(-3.5); // expect: -4
+print round(-3.4); // expect: -3
+print round(-4.5); // expect: -4
+print round(0.5); // expect: 0
+print round(1.5); // expect: 2
+print round(0); // expect: 0
+print round(7); // expect: 7

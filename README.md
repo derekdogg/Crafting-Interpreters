@@ -14,6 +14,9 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Native Objects** *(work in progress)* — Wrap Delphi classes as GC-tracked Lox objects with method dispatch via `OP_INVOKE`; ships with `StringList()` (add, get, count, remove)
 - **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
 - **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor, dictionary functions (`dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize`)
+- **Conversion Functions** — `str()`, `num()`, `bool()`, `type()` for runtime type conversion and introspection
+- **String Functions** — `strlen()`, `substr()`, `indexOf()`, `charAt()`, `upper()`, `lower()`, `trim()`, `split()`
+- **Math Functions** — `abs()`, `floor()`, `ceil()`, `round()` (banker's rounding), `min()`, `max()`, `sqrt()`, `pow()`, `random()`
 
 ## Chapters Implemented
 
@@ -36,6 +39,9 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | — | Native objects (Delphi class wrapping, `StringList()`, `OP_INVOKE`, GC-integrated) |
 | — | Dictionaries (`[:]`/`["k":v]` literals, subscript, method dispatch, GC-integrated) |
 | — | Modulo operator (`%`) |
+| — | Conversion functions (`str`, `num`, `bool`, `type`) |
+| — | String manipulation (`strlen`, `substr`, `indexOf`, `charAt`, `upper`, `lower`, `trim`, `split`) |
+| — | Math library (`abs`, `floor`, `ceil`, `round`, `min`, `max`, `sqrt`, `pow`, `random`) |
 | — | Long-operand opcodes (`OP_*_LONG`) for >255 constants per chunk |
 
 ## Project Structure
@@ -77,7 +83,9 @@ All tests run automatically when the application starts. Results are displayed i
 | print | 1 | Missing argument error |
 | regression | 1 | Bug regression (#40) |
 | return | 6 | Return from functions, after control flow, at top level |
-| string | 4 | Literals, multiline, unterminated, error after multiline |
+| string | 15 | Literals, multiline, unterminated, error after multiline, strlen, substr, indexOf, charAt, upper, lower, trim, split |
+| conversion | 8 | str, num, bool, type — conversions and arity errors |
+| math | 13 | abs, floor, ceil, round, min, max, sqrt, pow, random — values, edge cases, errors |
 | variable | 18 | Scoping, shadowing, undefined, duplicate, initializer |
 | while | 7 | Syntax, closures, return, var/fun in body |
 | *(top-level)* | 3 | Precedence, empty file, unexpected character |
@@ -121,6 +129,16 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | native_objects_stress.lox | 14 tests: multi-instance, loops, churn, closures, GC pressure, 20 simultaneous lists, interleaved GC |
 | dictionary.lox | Dict literal syntax, method API, subscript access, mixed key types |
 | dictionary_resize.lox | 7 tests: resize triggers, rehashing, tombstone handling, overwrite across resize boundary, mixed keys |
+
+### Standard Library Test Suite
+
+Tests for built-in conversion, string, and math functions in `test/conversion/`, `test/string/`, and `test/math/`:
+
+| Category | Tests | Coverage |
+|----------|-------|----------|
+| conversion | 8 | `str()`, `num()`, `bool()`, `type()` — all value types, edge cases, arity errors |
+| string | 11 | `strlen()`, `substr()`, `indexOf()`, `charAt()`, `upper()`, `lower()`, `trim()`, `split()` — bounds, empty strings, arity/type errors |
+| math | 9 | `abs()`, `floor()`, `ceil()`, `round()` (banker's), `min()`, `max()`, `sqrt()`, `pow()`, `random()` — negatives, edge cases, type errors |
 
 **11 error tests** in `samples/errors/` — expected to produce errors:
 

@@ -1,0 +1,2 @@
+// sqrt of negative number is an error
+sqrt(-1); // expect runtime error: sqrt() argument must not be negative.
