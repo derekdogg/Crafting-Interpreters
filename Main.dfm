@@ -65,4 +65,12 @@ object Form4: TForm4
     TabOrder = 5
     OnClick = Button4Click
   end
+  object Button5: TButton
+    Left = 24
+    Top = 136
+    Width = 104
+    Height = 25
+    Caption = 'SQL Test'
+    TabOrder = 6
+  end
 end

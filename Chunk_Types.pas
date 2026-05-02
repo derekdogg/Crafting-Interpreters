@@ -1,8 +1,8 @@
 unit Chunk_Types;
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
-{$DEFINE DEBUG_LOG_GC}
-{$DEFINE DEBUG_STRESS_GC}
+{.$DEFINE DEBUG_LOG_GC}
+{.$DEFINE DEBUG_STRESS_GC}
 interface
 
 uses
@@ -852,7 +852,9 @@ var
 implementation
 
 uses
-  sysutils, Math, strUtils, typinfo, Windows;
+  sysutils, Math, strUtils, typinfo, Windows,
+  Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
+  FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
 
 {$IFDEF DEBUG_LOG_GC}
 function ObjectKindStr(kind : TObjectKind) : string;
@@ -4421,6 +4423,89 @@ begin
   Result := CreateNumber(count);
 end;
 
+function envNative(argCount: integer; args: pValue): TValue;
+var
+  name, val : AnsiString;
+  objStr : pObjString;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('env() takes exactly 1 argument.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('env() argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+  name := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  val := AnsiString(GetEnvironmentVariable(String(name)));
+  if val = '' then
+    Result := CreateNilValue
+  else
+  begin
+    objStr := CreateString(val, VM.MemTracker);
+    Result := CreateObject(pObj(objStr));
+  end;
+end;
+
+function loadEnvNative(argCount: integer; args: pValue): TValue;
+var
+  filePath : AnsiString;
+  lines : TStringList;
+  i, eqPos : integer;
+  line, key, value : string;
+begin
+  if argCount > 1 then
+  begin
+    RuntimeError('loadEnv() takes 0 or 1 arguments.');
+    Exit(CreateNilValue);
+  end;
+
+  if argCount = 1 then
+  begin
+    if not isString(args[0]) then
+    begin
+      RuntimeError('loadEnv() argument must be a string (file path).');
+      Exit(CreateNilValue);
+    end;
+    filePath := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  end
+  else
+    filePath := AnsiString(ExtractFilePath(ParamStr(0))) + '.env';
+
+  if not FileExists(String(filePath)) then
+  begin
+    RuntimeError('loadEnv() file not found: ' + filePath);
+    Exit(CreateNilValue);
+  end;
+
+  lines := TStringList.Create;
+  try
+    lines.LoadFromFile(String(filePath));
+    for i := 0 to lines.Count - 1 do
+    begin
+      line := Trim(lines[i]);
+      if (line = '') or (line[1] = '#') then
+        Continue;
+      eqPos := Pos('=', line);
+      if eqPos = 0 then
+        Continue;
+      key := Trim(Copy(line, 1, eqPos - 1));
+      value := Trim(Copy(line, eqPos + 1, MaxInt));
+      // Strip surrounding quotes if present
+      if (Length(value) >= 2) and
+         ((value[1] = '"') or (value[1] = '''')) and
+         (value[Length(value)] = value[1]) then
+        value := Copy(value, 2, Length(value) - 2);
+      SetEnvironmentVariable(PChar(key), PChar(value));
+    end;
+  finally
+    lines.Free;
+  end;
+  Result := CreateNilValue;
+end;
+
 // ---- Conversion native functions ----
 
 function strNative(argCount: integer; args: pValue): TValue;
@@ -5533,9 +5618,420 @@ begin
   Result := CreateObject(pObj(obj));
 end;
 
+// ==== SQL Connection native object ====
+
+procedure SQL_Destroy(instance: Pointer);
+begin
+  if TFDConnection(instance).Connected then
+    TFDConnection(instance).Close;
+  TFDConnection(instance).Free;
+end;
+
+function sqlConnectNative(argCount: integer; args: pValue): TValue;
+var
+  dict : pObjDictionary;
+  classInfo : pNativeClassInfo;
+  obj : pObjNativeObject;
+  conn : TFDConnection;
+  serverVal, dbVal, authVal, userVal, passVal : TValue;
+  server, db, auth, user, pass : AnsiString;
+  serverKey, dbKey, authKey, userKey, passKey : TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('sqlConnect() takes 1 argument (config dictionary).');
+    Exit(CreateNilValue);
+  end;
+  if not isDictionary(args[0]) then
+  begin
+    RuntimeError('sqlConnect() argument must be a dictionary.');
+    Exit(CreateNilValue);
+  end;
+
+  dict := pObjDictionary(args[0].ObjValue);
+
+  // Build key values for lookup
+  serverKey := CreateObject(pObj(CreateString('server', VM.MemTracker)));
+  dbKey := CreateObject(pObj(CreateString('database', VM.MemTracker)));
+  authKey := CreateObject(pObj(CreateString('auth', VM.MemTracker)));
+  userKey := CreateObject(pObj(CreateString('user', VM.MemTracker)));
+  passKey := CreateObject(pObj(CreateString('password', VM.MemTracker)));
+
+  // Required: server
+  if not DictGet(dict, serverKey, serverVal) then
+  begin
+    RuntimeError('sqlConnect() config missing "server" key.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(serverVal) then
+  begin
+    RuntimeError('sqlConnect() "server" must be a string.');
+    Exit(CreateNilValue);
+  end;
+  server := ObjStringToAnsiString(pObjString(serverVal.ObjValue));
+
+  // Required: database
+  if not DictGet(dict, dbKey, dbVal) then
+  begin
+    RuntimeError('sqlConnect() config missing "database" key.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(dbVal) then
+  begin
+    RuntimeError('sqlConnect() "database" must be a string.');
+    Exit(CreateNilValue);
+  end;
+  db := ObjStringToAnsiString(pObjString(dbVal.ObjValue));
+
+  // Optional: auth (default "windows")
+  auth := 'windows';
+  if DictGet(dict, authKey, authVal) then
+  begin
+    if isString(authVal) then
+      auth := LowerCase(ObjStringToAnsiString(pObjString(authVal.ObjValue)));
+  end;
+
+  // Optional: user, password (for SQL auth)
+  user := '';
+  pass := '';
+  if DictGet(dict, userKey, userVal) then
+    if isString(userVal) then
+      user := ObjStringToAnsiString(pObjString(userVal.ObjValue));
+  if DictGet(dict, passKey, passVal) then
+    if isString(passVal) then
+      pass := ObjStringToAnsiString(pObjString(passVal.ObjValue));
+
+  // Create and configure the connection
+  conn := TFDConnection.Create(nil);
+  try
+    conn.DriverName := 'MSSQL';
+    conn.Params.Values['Server'] := string(server);
+    conn.Params.Database := string(db);
+
+    if auth = 'sql' then
+    begin
+      conn.Params.UserName := string(user);
+      conn.Params.Password := string(pass);
+    end
+    else
+    begin
+      conn.Params.Values['OSAuthent'] := 'Yes';
+    end;
+
+    conn.LoginPrompt := False;
+    conn.Open;
+  except
+    on E: Exception do
+    begin
+      conn.Free;
+      RuntimeError('sqlConnect() failed: ' + AnsiString(E.Message));
+      Exit(CreateNilValue);
+    end;
+  end;
+
+  classInfo := findNativeClass('SqlConnection');
+  Assert(classInfo <> nil, 'SqlConnection class not registered');
+  obj := newNativeObject(conn, classInfo, VM.MemTracker);
+  Result := CreateObject(pObj(obj));
+end;
+
+function sqlCloseNative(argCount: integer; args: pValue): TValue;
+var
+  nativeObj : pObjNativeObject;
+  conn : TFDConnection;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('sqlClose() takes 1 argument (connection).');
+    Exit(CreateNilValue);
+  end;
+  if not isNativeObject(args[0]) then
+  begin
+    RuntimeError('sqlClose() argument must be a SQL connection.');
+    Exit(CreateNilValue);
+  end;
+  nativeObj := pObjNativeObject(args[0].ObjValue);
+  if nativeObj^.classInfo^.name <> 'SqlConnection' then
+  begin
+    RuntimeError('sqlClose() argument must be a SQL connection.');
+    Exit(CreateNilValue);
+  end;
+  conn := TFDConnection(nativeObj^.instance);
+  if conn.Connected then
+    conn.Close;
+  Result := CreateNilValue;
+end;
+
+function sqlQueryNative(argCount: integer; args: pValue): TValue;
+var
+  nativeObj : pObjNativeObject;
+  conn : TFDConnection;
+  query : TFDQuery;
+  sql : AnsiString;
+  arr : pObjArray;
+  dict : pObjDictionary;
+  colCount, i : integer;
+  colName : AnsiString;
+  keyVal, valVal : TValue;
+  newCap, oldSize, newSize : integer;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('sqlQuery() takes 2 arguments (connection, sql string).');
+    Exit(CreateNilValue);
+  end;
+  if not isNativeObject(args[0]) then
+  begin
+    RuntimeError('sqlQuery() first argument must be a SQL connection.');
+    Exit(CreateNilValue);
+  end;
+  nativeObj := pObjNativeObject(args[0].ObjValue);
+  if nativeObj^.classInfo^.name <> 'SqlConnection' then
+  begin
+    RuntimeError('sqlQuery() first argument must be a SQL connection.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[1]) then
+  begin
+    RuntimeError('sqlQuery() second argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+
+  conn := TFDConnection(nativeObj^.instance);
+  if not conn.Connected then
+  begin
+    RuntimeError('sqlQuery() connection is not open.');
+    Exit(CreateNilValue);
+  end;
+
+  sql := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+
+  // Create result array and protect from GC
+  arr := newArray(VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+
+  query := TFDQuery.Create(nil);
+  try
+    query.Connection := conn;
+    query.SQL.Text := string(sql);
+    query.Open;
+
+    colCount := query.FieldCount;
+
+    while not query.Eof do
+    begin
+      // Create a dictionary for this row, protect from GC
+      dict := newDictionary(VM.MemTracker);
+      pushStack(VM.Stack, CreateObject(pObj(dict)), VM.MemTracker);
+
+      for i := 0 to colCount - 1 do
+      begin
+        // Create key string (column name), protect from GC
+        colName := AnsiString(query.Fields[i].FieldName);
+        keyVal := CreateObject(pObj(CreateString(colName, VM.MemTracker)));
+        pushStack(VM.Stack, keyVal, VM.MemTracker);
+
+        // Create value based on field type
+        if query.Fields[i].IsNull then
+          valVal := CreateNilValue
+        else if query.Fields[i].DataType in [ftInteger, ftSmallint, ftWord, ftLargeint,
+            ftFloat, ftCurrency, ftBCD, ftFMTBcd] then
+          valVal := CreateNumber(query.Fields[i].AsFloat)
+        else if query.Fields[i].DataType in [ftBoolean] then
+          valVal := CreateBoolean(query.Fields[i].AsBoolean)
+        else
+        begin
+          // Everything else as string
+          valVal := CreateObject(pObj(CreateString(AnsiString(query.Fields[i].AsString), VM.MemTracker)));
+        end;
+
+        DictSet(dict, keyVal, valVal, VM.MemTracker);
+        popStack(VM.Stack); // pop keyVal
+      end;
+
+      // Append dict to array (GC-safe growth)
+      if arr^.Count >= arr^.Capacity then
+      begin
+        if arr^.Capacity = 0 then newCap := 8 else newCap := arr^.Capacity * GROWTH_FACTOR;
+        oldSize := arr^.Capacity * SizeOf(TValue);
+        newSize := newCap * SizeOf(TValue);
+        Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+        arr^.Capacity := newCap;
+      end;
+      arr^.Elements[arr^.Count] := CreateObject(pObj(dict));
+      Inc(arr^.Count);
+
+      // Pop dict from GC protection
+      popStack(VM.Stack);
+
+      query.Next;
+    end;
+
+    query.Close;
+  except
+    on E: Exception do
+    begin
+      query.Free;
+      popStack(VM.Stack);
+      RuntimeError('sqlQuery() failed: ' + AnsiString(E.Message));
+      Exit(CreateNilValue);
+    end;
+  end;
+  query.Free;
+
+  // Pop array from GC protection
+  popStack(VM.Stack);
+  Result := CreateObject(pObj(arr));
+end;
+
+function sqlQueryParamsNative(argCount: integer; args: pValue): TValue;
+var
+  nativeObj : pObjNativeObject;
+  conn : TFDConnection;
+  query : TFDQuery;
+  sql : AnsiString;
+  arr : pObjArray;
+  params : pObjArray;
+  dict : pObjDictionary;
+  colCount, i, p : integer;
+  colName : AnsiString;
+  keyVal, valVal, paramVal : TValue;
+  newCap, oldSize, newSize : integer;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('sqlQueryParams() takes 3 arguments (connection, sql, params array).');
+    Exit(CreateNilValue);
+  end;
+  if not isNativeObject(args[0]) then
+  begin
+    RuntimeError('sqlQueryParams() first argument must be a SQL connection.');
+    Exit(CreateNilValue);
+  end;
+  nativeObj := pObjNativeObject(args[0].ObjValue);
+  if nativeObj^.classInfo^.name <> 'SqlConnection' then
+  begin
+    RuntimeError('sqlQueryParams() first argument must be a SQL connection.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[1]) then
+  begin
+    RuntimeError('sqlQueryParams() second argument must be a SQL string.');
+    Exit(CreateNilValue);
+  end;
+  if not isArray(args[2]) then
+  begin
+    RuntimeError('sqlQueryParams() third argument must be a params array.');
+    Exit(CreateNilValue);
+  end;
+
+  conn := TFDConnection(nativeObj^.instance);
+  if not conn.Connected then
+  begin
+    RuntimeError('sqlQueryParams() connection is not open.');
+    Exit(CreateNilValue);
+  end;
+
+  sql := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+  params := pObjArray(args[2].ObjValue);
+
+  // Create result array and protect from GC
+  arr := newArray(VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+
+  query := TFDQuery.Create(nil);
+  try
+    query.Connection := conn;
+    query.SQL.Text := string(sql);
+
+    // Bind parameters: :p0, :p1, :p2, etc.
+    for p := 0 to params^.Count - 1 do
+    begin
+      paramVal := params^.Elements[p];
+      case paramVal.ValueKind of
+        vkNumber:
+          query.ParamByName('p' + IntToStr(p)).AsFloat := paramVal.NumberValue;
+        vkBoolean:
+          query.ParamByName('p' + IntToStr(p)).AsBoolean := paramVal.BooleanValue;
+        vkNull:
+          query.ParamByName('p' + IntToStr(p)).Clear;
+        vkObject:
+          if isString(paramVal) then
+            query.ParamByName('p' + IntToStr(p)).AsString := string(ObjStringToAnsiString(pObjString(paramVal.ObjValue)))
+          else
+          begin
+            RuntimeError('sqlQueryParams() parameter ' + IntToStr(p) + ' must be a string, number, boolean, or nil.');
+            query.Free;
+            popStack(VM.Stack);
+            Exit(CreateNilValue);
+          end;
+      end;
+    end;
+
+    query.Open;
+
+    colCount := query.FieldCount;
+
+    while not query.Eof do
+    begin
+      dict := newDictionary(VM.MemTracker);
+      pushStack(VM.Stack, CreateObject(pObj(dict)), VM.MemTracker);
+
+      for i := 0 to colCount - 1 do
+      begin
+        colName := AnsiString(query.Fields[i].FieldName);
+        keyVal := CreateObject(pObj(CreateString(colName, VM.MemTracker)));
+        pushStack(VM.Stack, keyVal, VM.MemTracker);
+
+        if query.Fields[i].IsNull then
+          valVal := CreateNilValue
+        else if query.Fields[i].DataType in [ftInteger, ftSmallint, ftWord, ftLargeint,
+            ftFloat, ftCurrency, ftBCD, ftFMTBcd] then
+          valVal := CreateNumber(query.Fields[i].AsFloat)
+        else if query.Fields[i].DataType in [ftBoolean] then
+          valVal := CreateBoolean(query.Fields[i].AsBoolean)
+        else
+          valVal := CreateObject(pObj(CreateString(AnsiString(query.Fields[i].AsString), VM.MemTracker)));
+
+        DictSet(dict, keyVal, valVal, VM.MemTracker);
+        popStack(VM.Stack); // pop keyVal
+      end;
+
+      if arr^.Count >= arr^.Capacity then
+      begin
+        if arr^.Capacity = 0 then newCap := 8 else newCap := arr^.Capacity * GROWTH_FACTOR;
+        oldSize := arr^.Capacity * SizeOf(TValue);
+        newSize := newCap * SizeOf(TValue);
+        Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+        arr^.Capacity := newCap;
+      end;
+      arr^.Elements[arr^.Count] := CreateObject(pObj(dict));
+      Inc(arr^.Count);
+
+      popStack(VM.Stack); // pop dict
+      query.Next;
+    end;
+
+    query.Close;
+  except
+    on E: Exception do
+    begin
+      query.Free;
+      popStack(VM.Stack);
+      RuntimeError('sqlQueryParams() failed: ' + AnsiString(E.Message));
+      Exit(CreateNilValue);
+    end;
+  end;
+  query.Free;
+
+  popStack(VM.Stack);
+  Result := CreateObject(pObj(arr));
+end;
+
 procedure InitVM;
 var
   slMethods : array[0..3] of TNativeMethod;
+  sqlMethods : array of TNativeMethod;
 begin
   // Allow IEEE 754 semantics: NaN, Inf, -Inf instead of FPU exceptions
   SetExceptionMask(exAllArithmeticExceptions);
@@ -5576,6 +6072,8 @@ begin
   defineNative('assert', assertNative);
   defineNative('bytesAllocated', bytesAllocatedNative);
   defineNative('objectsAllocated', objectsAllocatedNative);
+  defineNative('env', envNative);
+  defineNative('loadEnv', loadEnvNative);
 
   // Conversion native functions
   defineNative('str', strNative);
@@ -5630,6 +6128,13 @@ begin
   slMethods[3].name := 'remove'; slMethods[3].fn := SL_Remove;
   registerNativeClass('StringList', slMethods, SL_Destroy);
   defineNative('StringList', stringListNative);
+
+  // SQL connection native object class
+  registerNativeClass('SqlConnection', sqlMethods, SQL_Destroy);
+  defineNative('sqlConnect', sqlConnectNative);
+  defineNative('sqlQuery', sqlQueryNative);
+  defineNative('sqlQueryParams', sqlQueryParamsNative);
+  defineNative('sqlClose', sqlCloseNative);
 
   // ---- Exit assertions ----
   AssertVMIsAssigned;
