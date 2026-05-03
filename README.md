@@ -52,6 +52,7 @@ Main.pas / Main.dfm  — GUI form with interpreter REPL and auto-run test suite
 InterpreterGui.dpr   — Delphi project file
 samples/             — Custom Lox test programs (auto-run on startup)
 samples/errors/      — Expected-error test programs (auto-run on startup)
+samples/stress/      — GC stress patterns (run via Button2)
 test/                — Official Crafting Interpreters test suite (auto-run on startup)
 ```
 
@@ -94,7 +95,7 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 
 ### Custom Sample Tests
 
-**29 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
+**32 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
 | File | Coverage |
 |------|----------|
@@ -127,8 +128,17 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | gc_records.lox | Record GC reclamation, live record survival, nested records, closure-captured records |
 | native_objects.lox | StringList create, add, get, count, remove, print |
 | native_objects_stress.lox | 14 tests: multi-instance, loops, churn, closures, GC pressure, 20 simultaneous lists, interleaved GC |
-| dictionary.lox | Dict literal syntax, method API, subscript access, mixed key types |
-| dictionary_resize.lox | 7 tests: resize triggers, rehashing, tombstone handling, overwrite across resize boundary, mixed keys |
+| gc_coverage_gaps.lox | GC coverage gaps: edge cases not hit by other tests |
+| gc_simple_log.lox | Basic GC logging verification |
+| gc_stress_collections.lox | Stress collection patterns under sustained pressure |
+
+### GC Stress Test Suite
+
+**1 comprehensive stress file** in `samples/stress/` — run via the **Run Stress Tests** button (Button2):
+
+| File | Coverage |
+|------|----------|
+| gc_stress_patterns.lox | 15 patterns: allocation storm, long/short-lived mix, pointer graphs, cycles, mutation, deep chains (2000 levels), container thrash, random lifetimes, closure capture, combined stress, shared-object explosion, sustained pressure (5000 iterations), cycle reclamation verification, intern table churn (2000+ strings), stack realloc with open upvalues |
 
 ### Standard Library Test Suite
 
@@ -164,7 +174,10 @@ The garbage collector has been hardened with:
 - **DEBUG_LOG_GC** — Logs allocate/free/mark/blacken events to `gc.log` with summary stats
 - **Push/pop protection** at all 7 GC-sensitive allocation sites
 - **NextGC floor** of 1024 bytes to prevent zero-threshold assertions
-- **11 dedicated GC test files** (7 new) covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, array element marking, and record type/instance reclamation
+- **Stack realloc rebase fix** — After `ReallocMem` moves the stack buffer, rebases all `VM.Frames[i].slots` and open upvalue `location` pointers
+- **AssertTableConsistency** — Debug assertion validating `live + tombstones = Table.Count`
+- **15-pattern stress test suite** (`samples/stress/gc_stress_patterns.lox`) covering allocation storms, cycles, deep chains, container thrash, closure capture, shared-object explosion, sustained pressure, cycle reclamation, intern table churn, and stack realloc with open upvalues
+- **14 dedicated GC test files** covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, array element marking, record type/instance reclamation, coverage gaps, and stress collections
 
 ## Build
 

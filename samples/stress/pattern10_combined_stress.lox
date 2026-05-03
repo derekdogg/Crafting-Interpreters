@@ -1,0 +1,66 @@
+// GC Stress Pattern 10: Repeated Full GC During All Patterns Combined
+//
+// Purpose: Combines multiple object types (linked list, array, dictionary)
+// into one interconnected live set, then forces GC on EVERY iteration while
+// simultaneously creating garbage. This is the "everything at once" test.
+//
+// What this catches:
+// - Interactions between different object types during concurrent marking
+// - Objects referenced from multiple containers (array + dict + list)
+//   where one container is traced first and the others aren't yet
+// - GC failing under maximum frequency (every single allocation triggers it)
+// - Garbage objects referencing live objects confusing the tracer
+//
+// The live set grows by one node per iteration, with references from both
+// the array and dict to the same node. Meanwhile, 3 garbage objects per
+// iteration reference each other (garbage1 -> garbage2 -> garbage3) but
+// nothing roots them. The GC must distinguish the interconnected live
+// graph from the interconnected garbage graph.
+
+record Node(value, next);
+
+// Build a complex live set with cross-references
+var liveList = nil;        // linked list of 100 nodes
+var liveArr2 = newArray(); // array with references to each list node
+var liveDict2 = dictNew(); // dict with references to each list node
+
+for (var i = 0; i < 100; i = i + 1) {
+  // Grow the live set — all three structures point to the same nodes
+  liveList = Node("live" + str(i), liveList);
+  arrayPush(liveArr2, liveList);          // array[i] -> newest node
+  dictSet(liveDict2, "k" + str(i), liveList); // dict["kN"] -> newest node
+  
+  // Create interconnected garbage — three objects referencing each other
+  // but nothing outside this iteration references them
+  var garbage1 = newArray();
+  arrayPush(garbage1, "g" + str(i));
+  var garbage2 = dictNew();
+  dictSet(garbage2, "gk", garbage1);  // garbage2 -> garbage1
+  var garbage3 = Node(garbage2, nil);  // garbage3 -> garbage2
+  
+  // Force GC every single iteration — maximum collection pressure
+  collectGarbage();
+}
+
+// Verify everything survived
+assert(liveList.value == "live99");
+assert(arrayLen(liveArr2) == 100);
+var node50 = arrayGet(liveArr2, 50);
+assert(node50.value == "live50");
+assert(dictGet(liveDict2, "k0").value == "live0");
+assert(dictGet(liveDict2, "k99").value == "live99");
+
+// Final double-collect
+collectGarbage();
+collectGarbage();
+
+// Verify integrity after final collection
+var walkList = liveList;
+var listLen = 0;
+while (walkList != nil) {
+  listLen = listLen + 1;
+  walkList = walkList.next;
+}
+assert(listLen == 100);
+
+print "pattern 10 (combined stress with GC every iteration): passed";

@@ -1,0 +1,55 @@
+// GC Stress Pattern 5: Mutation — change references during execution
+//
+// Purpose: Tests that the GC handles objects whose reference graph changes
+// BETWEEN collections. Objects are initially reachable one way (via array)
+// then rewired so they're reachable a different way (via .next chain).
+// Then some array slots are cleared — objects survive only via the chain.
+//
+// What this catches:
+// - GC failing to follow newly-written .next pointers (stale marking)
+// - Objects freed when their only remaining reference is through another
+//   heap object's field (not directly from a root)
+// - Write barrier issues (if the GC uses incremental/generational marking)
+// - Corruption when field assignment triggers GC (mid-mutation)
+//
+// The key insight: after clearing array slots 0-24, nodes 0-24 are ONLY
+// reachable via the .next chain starting from node 25 (still in the array).
+// If the GC doesn't trace .next recursively, those nodes are incorrectly freed.
+
+record Node(value, next);
+
+// Create 50 nodes, initially all reachable directly via array slots
+var mutArr = newArray();
+for (var i = 0; i < 50; i = i + 1) arrayPush(mutArr, Node(i, nil));
+
+// Rewire: link each node to the next, creating a chain through .next fields
+for (var i = 0; i < 49; i = i + 1) {
+  var curr2 = arrayGet(mutArr, i);
+  var nxt = arrayGet(mutArr, i + 1);
+  curr2.next = nxt;  // node[i].next = node[i+1]
+  if (i % 10 == 0) {
+    collectGarbage();  // GC while references are being rewired
+  }
+}
+
+// Verify chain is intact through the first node
+var chainNode = arrayGet(mutArr, 0);
+for (var i = 0; i < 49; i = i + 1) {
+  assert(chainNode.value == i);
+  chainNode = chainNode.next;
+}
+assert(chainNode.value == 49);
+collectGarbage();
+
+// Overwrite half the array — orphaning nodes only reachable via chain
+for (var i = 0; i < 25; i = i + 1) {
+  arraySet(mutArr, i, nil);
+  if (i % 5 == 0) collectGarbage();
+}
+// Chain still reachable via arrayGet(mutArr, 25).value ... but the head is gone
+// The head's chain is only reachable if something still points to it — it shouldn't be
+collectGarbage();
+// Node at index 25 should still be intact
+var midNode = arrayGet(mutArr, 25);
+assert(midNode.value == 25);
+print "pattern 5 (mutation): passed";

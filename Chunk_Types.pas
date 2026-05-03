@@ -1,4 +1,4 @@
-unit Chunk_Types;
+﻿unit Chunk_Types;
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
 {$DEFINE DEBUG_LOG_GC}
@@ -10,7 +10,7 @@ uses
 
 const
 
-  START_CAPACITY =  256;
+  START_CAPACITY =  16; //was 256 --- this is to stress array cap growth, and highlight issues with the GC
   MAX_SIZE       =  MaxInt div 2;
   GROWTH_FACTOR  =  2;
   GC_HEAP_GROW_FACTOR = 2;

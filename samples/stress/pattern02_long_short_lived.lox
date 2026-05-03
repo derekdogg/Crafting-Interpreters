@@ -1,0 +1,43 @@
+// GC Stress Pattern 2: Long-Lived + Short-Lived Mix
+//
+// Purpose: Tests that long-lived "anchor" objects survive GC even when
+// surrounded by massive amounts of short-lived garbage. This is the most
+// common real-world GC pattern — a few persistent data structures being
+// modified while many temporaries are created and discarded.
+//
+// What this catches:
+// - GC prematurely freeing objects that are still referenced by globals
+// - Corruption of growing containers (array/dict) during collection
+// - Failure to mark objects reachable through container elements
+// - Tracing errors when a temporary object points TO a live object
+//   (the temp is garbage, but the thing it points to is not)
+//
+// The anchors grow every iteration (arrayPush, dictSet), meaning their
+// backing storage may be reallocated — triggering GC during growth.
+// Meanwhile, temp objects reference the anchors but are immediately
+// discarded, creating a pattern where dead objects point to live ones.
+
+record Node(value, next);
+
+var anchor1 = newArray();     // survives all 150 iterations, grows to 150 elements
+var anchor2 = dictNew();      // survives all 150 iterations, grows to 150 entries
+var anchor3 = Node("root", nil);  // never mutated — simplest survival test
+
+for (var i = 0; i < 150; i = i + 1) {
+  // Grow the long-lived containers
+  arrayPush(anchor1, "a" + str(i));
+  dictSet(anchor2, "k" + str(i), i);
+  // Create temporaries that REFERENCE the anchors — these die at end of
+  // iteration, but the GC must not follow their pointers and free the anchors
+  var temp = Node(anchor1, nil);   // dead Node pointing to live array
+  var tempArr = newArray();
+  arrayPush(tempArr, anchor2);     // dead array containing live dict
+  if (i % 10 == 0) collectGarbage();
+}
+
+collectGarbage();
+assert(arrayLen(anchor1) == 150);
+assert(dictGet(anchor2, "k0") == 0);
+assert(dictGet(anchor2, "k149") == 149);
+assert(anchor3.value == "root");
+print "pattern 2 (long+short lived mix): passed";

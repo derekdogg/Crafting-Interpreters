@@ -1,0 +1,47 @@
+// GC Stress Pattern 8: Random Lifetimes — unpredictable object death patterns
+//
+// Purpose: Simulates a real workload where objects die in no particular order.
+// Uses a fixed-size "slot pool" of 40 entries. Each iteration overwrites a
+// pseudo-randomly chosen slot with a new object, killing whatever was there.
+// Objects have varying complexity (records, arrays, strings) and may reference
+// each other across slots.
+//
+// What this catches:
+// - GC bugs that only manifest with specific death orderings
+// - Cross-references between pool slots creating accidental cycles
+// - Premature freeing of objects still referenced from other slots
+// - Issues with objects of different types/sizes being freed interleaved
+//
+// The deterministic pseudo-random formula (i*7+13) % 40 ensures the test
+// is reproducible while still exercising unpredictable slot overwrites.
+// After 300 iterations of random churn, all slots are accessed to verify
+// no corruption occurred.
+
+record Node(value, next);
+
+// Initialize 40-slot pool with nil placeholders
+var slots = newArray();
+for (var i = 0; i < 40; i = i + 1) arrayPush(slots, nil);
+
+for (var i = 0; i < 300; i = i + 1) {
+  // Pseudo-random slot selection (deterministic for reproducibility)
+  var slot = (i * 7 + 13) % 40;
+  // Create a new object with varying complexity
+  if (i % 3 == 0) {
+    arraySet(slots, slot, Node("n" + str(i), arrayGet(slots, (slot + 1) % 40)));
+  } else if (i % 3 == 1) {
+    var tmpArr2 = newArray();
+    arrayPush(tmpArr2, str(i));
+    arrayPush(tmpArr2, arrayGet(slots, (slot + 5) % 40));
+    arraySet(slots, slot, tmpArr2);
+  } else {
+    arraySet(slots, slot, "s" + str(i) + "end");
+  }
+  if (i % 25 == 0) collectGarbage();
+}
+collectGarbage();
+// Verify slots are still accessible (no corruption)
+for (var i = 0; i < 40; i = i + 1) {
+  var s = arrayGet(slots, i); // just accessing shouldn't crash
+}
+print "pattern 8 (random lifetimes): passed";

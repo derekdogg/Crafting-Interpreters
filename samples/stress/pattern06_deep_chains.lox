@@ -1,0 +1,40 @@
+// GC Stress Pattern 6: Deep Chains — very deep object hierarchy
+//
+// Purpose: Stresses the gray stack (marking worklist) by creating a chain
+// 2000 levels deep. The GC must push/pop 2000 objects onto the gray stack
+// during the mark phase without overflow or stack corruption.
+//
+// What this catches:
+// - Gray stack overflow (if it has a fixed size and doesn't grow)
+// - Stack overflow in recursive marking (if marking isn't iterative)
+// - Failure to trace deeply nested object graphs to completion
+// - Objects at the "bottom" of a deep chain being prematurely freed
+//
+// After verifying the full depth, all references are dropped and the
+// GC must free all 2000 Wrapper records in a single collection.
+
+record Wrapper(ref);
+
+// Build a chain: Wrapper(Wrapper(Wrapper(...nil...)))
+// Each Wrapper's .ref field points to the previous one.
+var deep = nil;
+for (var i = 0; i < 2000; i = i + 1) {
+  deep = Wrapper(deep);  // new wrapper contains reference to previous chain
+  if (i % 200 == 0) collectGarbage();  // GC at various chain depths
+}
+collectGarbage();
+
+// Verify the full chain survived by unwinding it
+var depth = 0;
+var unwinding = deep;
+while (unwinding != nil) {
+  depth = depth + 1;
+  unwinding = unwinding.ref;
+}
+assert(depth == 2000);
+
+// Drop everything — all 2000 wrappers become unreachable simultaneously
+deep = nil;
+unwinding = nil;
+collectGarbage();
+print "pattern 6 (deep chains 2000 levels): passed";

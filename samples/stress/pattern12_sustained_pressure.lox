@@ -1,0 +1,58 @@
+// GC Stress Pattern 12: Long-running sustained pressure — no rest phases
+//
+// Purpose: Simulates a long-running program that never pauses for explicit
+// garbage collection. Over 5000 iterations, it creates short-lived garbage
+// (a string concatenation + an array per iteration = 10,000 garbage objects)
+// while periodically anchoring long-lived objects. The GC must trigger
+// automatically via the bytesAllocated threshold (or DEBUG_STRESS_GC fires
+// on every allocation in debug builds).
+//
+// What this catches:
+// - Threshold-triggered GC failing to fire (memory grows unbounded)
+// - GC threshold growing too fast (nextGC doubles after each collection;
+//   if it doubles without bound, collections become too infrequent)
+// - Long-lived objects in a linked list being incorrectly swept because
+//   the GC fails to trace the entire list to its tail
+// - Corruption from thousands of collections without any explicit sync point
+//
+// No collectGarbage() calls are made inside the loop — this is intentional.
+// Under DEBUG_STRESS_GC, the GC fires on every allocation, meaning ~10,000
+// GC cycles happen during this loop. If any one of them corrupts state,
+// the post-loop assertions will catch it.
+
+record Node(value, next);
+
+var sustainedArr = newArray();  // long-lived: grows to 100 entries
+var sustainedList = nil;         // long-lived: linked list of 100 nodes
+
+for (var i = 0; i < 5000; i = i + 1) {
+  // Short-lived garbage: dies at end of this iteration
+  var tmp2 = "s" + str(i) + "e";  // string concat creates garbage
+  var tmpA = newArray();            // array dies at loop boundary
+  arrayPush(tmpA, tmp2);
+
+  // Every 50th iteration: anchor a node into the long-lived structures
+  if (i % 50 == 0) {
+    sustainedList = Node(i, sustainedList);    // prepend to linked list
+    arrayPush(sustainedArr, sustainedList);     // also reference from array
+  }
+}
+
+// Verify long-lived structures survived thousands of GC cycles
+assert(arrayLen(sustainedArr) == 100); // 5000 / 50
+var sNode = arrayGet(sustainedArr, 0);
+assert(sNode.value == 0);
+sNode = arrayGet(sustainedArr, 99);
+assert(sNode.value == 4950);
+
+// Walk the list to verify structural integrity
+var sWalk = sustainedList;
+var sCount = 0;
+while (sWalk != nil) {
+  sCount = sCount + 1;
+  sWalk = sWalk.next;
+}
+assert(sCount == 100);
+
+collectGarbage();
+print "pattern 12 (sustained pressure 5000 iterations): passed";

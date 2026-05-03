@@ -1,0 +1,32 @@
+// GC Stress Pattern 1: Allocation Storm
+//
+// Purpose: Exercises the GC's ability to handle rapid creation and immediate
+// abandonment of mixed object types. Every iteration allocates a string
+// (via concatenation), an array, and a dictionary — then discards all of them.
+//
+// What this catches:
+// - GC failing to sweep short-lived objects (memory leak)
+// - Incorrect root scanning when many temporaries exist on the stack
+// - Intern table issues when many unique strings are created and abandoned
+// - Crashes during collection when allocation triggers GC mid-expression
+//
+// The periodic collectGarbage() every 20 iterations forces collection while
+// the loop variables and temporaries are still on the stack, ensuring the
+// GC correctly identifies live vs dead objects during iteration.
+
+record Node(value, next);
+
+for (var i = 0; i < 200; i = i + 1) {
+  // Each concat creates a unique interned string; the array and dict are
+  // fresh heap objects. All three become garbage at end of iteration since
+  // nothing outside this scope references them.
+  var tmp = "storm" + str(i) + "x";
+  var arr = newArray();
+  arrayPush(arr, tmp);
+  arrayPush(arr, newArray());  // nested array — tests multi-level unreachable graphs
+  var d = dictNew();
+  dictSet(d, "k", tmp);       // dict references the string — both die together
+  if (i % 20 == 0) collectGarbage();
+}
+collectGarbage();  // final sweep of remaining iteration garbage
+print "pattern 1 (allocation storm): passed";
