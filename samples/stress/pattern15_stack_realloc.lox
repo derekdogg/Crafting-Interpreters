@@ -19,7 +19,7 @@
 //      stack well past 256 slots and triggering ReallocMem growth
 //   3. After fillStack() returns, inner() reads the captured variable
 //      through its upvalue — if the pointer wasn't rebased, this crashes
-//   4. The test runs 3 times to catch intermittent failures
+//   4. The script runs the test once, then forces a GC before reporting success
 //
 // The 255 locals in fillStack are the maximum per-function limit. Combined
 // with the outer frames' slots, total stack usage exceeds 256, guaranteeing
