@@ -1617,6 +1617,10 @@ end;
 procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
 var
   NewCapacity : integer;
+  OldValues   : pValue;
+  Offset      : NativeInt;
+  i           : integer;
+  upval       : pObjUpvalue;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
@@ -1629,6 +1633,7 @@ begin
     Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'pushStack: capacity overflow');
     NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
     Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'pushStack: byte size overflow');
+    OldValues := Stack.Values;
     ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
     // Zero new portion
     FillChar(Stack.Values[Stack.CurrentCapacity],
@@ -1636,6 +1641,24 @@ begin
     Stack.CurrentCapacity := NewCapacity;
     // Rebase StackTop after realloc (pointer may have moved)
     Stack.StackTop := Stack.Values + Stack.Count;
+    // If the buffer moved, rebase all frame.slots and open upvalue locations
+    if Stack.Values <> OldValues then
+    begin
+      Offset := NativeInt(Stack.Values) - NativeInt(OldValues);
+      // Rebase call frame slot pointers
+      if (VM <> nil) and (Stack = VM.Stack) then
+      begin
+        for i := 0 to VM.FrameCount - 1 do
+          Inc(PByte(VM.Frames[i].slots), Offset);
+        // Rebase open upvalue location pointers
+        upval := VM.OpenUpvalues;
+        while upval <> nil do
+        begin
+          Inc(PByte(upval^.location), Offset);
+          upval := upval^.next;
+        end;
+      end;
+    end;
   end;
   Stack.StackTop^ := Value;
   Inc(Stack.StackTop);
