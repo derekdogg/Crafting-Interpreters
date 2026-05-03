@@ -40,5 +40,10 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Environment files (secrets)
+.env
+samples/sql_*
+
 # Previous plans
 assertion-hardening-plan.md
+samples/# Code Citations.md
