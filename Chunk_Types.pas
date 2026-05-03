@@ -7936,9 +7936,9 @@ begin
   begin
     repeat
       consume(TOKEN_IDENTIFIER, 'Expect field name.');
-      if fieldCount >= 256 then
+      if fieldCount >= 255 then
       begin
-        Error('Can''t have more than 256 fields.');
+        Error('Can''t have more than 255 fields.');
         Break;
       end;
       nameStr := CreateString(TokenToString(parser.previous), VM.MemTracker);
