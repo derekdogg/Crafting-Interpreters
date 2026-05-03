@@ -1,0 +1,302 @@
+// GC edge-case tests targeting gaps in existing coverage.
+// Each section exercises a specific allocation pattern known to be GC-sensitive.
+
+// =========================================================================
+// TEST 1: 64+ globals defined back-to-back
+// Forces the globals hash table to resize during OP_DEFINE_GLOBAL.
+// If GC fires mid-resize, the half-populated table could lose entries.
+// =========================================================================
+
+var g00 = "v00"; var g01 = "v01"; var g02 = "v02"; var g03 = "v03";
+var g04 = "v04"; var g05 = "v05"; var g06 = "v06"; var g07 = "v07";
+var g08 = "v08"; var g09 = "v09"; var g10 = "v10"; var g11 = "v11";
+var g12 = "v12"; var g13 = "v13"; var g14 = "v14"; var g15 = "v15";
+var g16 = "v16"; var g17 = "v17"; var g18 = "v18"; var g19 = "v19";
+var g20 = "v20"; var g21 = "v21"; var g22 = "v22"; var g23 = "v23";
+var g24 = "v24"; var g25 = "v25"; var g26 = "v26"; var g27 = "v27";
+var g28 = "v28"; var g29 = "v29"; var g30 = "v30"; var g31 = "v31";
+var g32 = "v32"; var g33 = "v33"; var g34 = "v34"; var g35 = "v35";
+var g36 = "v36"; var g37 = "v37"; var g38 = "v38"; var g39 = "v39";
+var g40 = "v40"; var g41 = "v41"; var g42 = "v42"; var g43 = "v43";
+var g44 = "v44"; var g45 = "v45"; var g46 = "v46"; var g47 = "v47";
+var g48 = "v48"; var g49 = "v49"; var g50 = "v50"; var g51 = "v51";
+var g52 = "v52"; var g53 = "v53"; var g54 = "v54"; var g55 = "v55";
+var g56 = "v56"; var g57 = "v57"; var g58 = "v58"; var g59 = "v59";
+var g60 = "v60"; var g61 = "v61"; var g62 = "v62"; var g63 = "v63";
+var g64 = "v64"; var g65 = "v65"; var g66 = "v66"; var g67 = "v67";
+var g68 = "v68"; var g69 = "v69"; var g70 = "v70"; var g71 = "v71";
+
+collectGarbage();
+
+// Spot-check that values survived
+assert(g00 == "v00");
+assert(g35 == "v35");
+assert(g63 == "v63");
+assert(g71 == "v71");
+
+// =========================================================================
+// TEST 2: OP_CLOSE_UPVALUE where closed value is an array
+// The upvalue's `closed` field becomes the sole root for the collection.
+// If BlackenObject doesn't trace ObjUpvalue → closed → array elements,
+// the array's contents get collected.
+// =========================================================================
+
+fun closeArray() {
+  var arr = newArray();
+  arrayPush(arr, "survive1");
+  arrayPush(arr, "survive2");
+  arrayPush(arr, "survive3");
+  fun getter() { return arr; }
+  return getter;
+}
+var getArr = closeArray();
+// arr is now only reachable via closed upvalue
+collectGarbage();
+collectGarbage();
+var closedArr = getArr();
+assert(arrayLen(closedArr) == 3);
+assert(arrayGet(closedArr, 0) == "survive1");
+assert(arrayGet(closedArr, 2) == "survive3");
+
+// =========================================================================
+// TEST 3: OP_CLOSE_UPVALUE where closed value is a dictionary
+// =========================================================================
+
+fun closeDict() {
+  var d = dictNew();
+  dictSet(d, "key1", "val1");
+  dictSet(d, "key2", "val2");
+  fun getter() { return d; }
+  return getter;
+}
+var getDict = closeDict();
+collectGarbage();
+collectGarbage();
+var closedDict = getDict();
+assert(dictGet(closedDict, "key1") == "val1");
+assert(dictGet(closedDict, "key2") == "val2");
+
+// =========================================================================
+// TEST 4: Array/dict passed as function argument while other args allocate
+// The array sits on the stack during call setup. If evaluating subsequent
+// arguments triggers GC, the array must remain rooted via the stack.
+// =========================================================================
+
+fun takeBoth(collection, str) {
+  arrayPush(collection, str);
+  return collection;
+}
+
+var argArr = newArray();
+// "heavy" + "alloc" creates a new string — may trigger GC — while argArr is already on stack
+var result = takeBoth(argArr, "heavy" + "alloc" + "string" + "concat");
+assert(arrayGet(result, 0) == "heavyallocstringconcat");
+
+// More aggressive: multiple allocating args
+fun take3(a, b, c) { return a + b + c; }
+var r = take3("x" + "1", "y" + "2", "z" + "3");
+assert(r == "x1y2z3");
+
+// Dict as argument with allocating second arg
+fun dictAndStr(d, s) { dictSet(d, "k", s); return d; }
+var argDict = dictNew();
+var rd = dictAndStr(argDict, "alloc" + "value");
+assert(dictGet(rd, "k") == "allocvalue");
+
+// =========================================================================
+// TEST 5: Record constructor with allocating field expressions
+// First field value is on the stack while second field allocates.
+// =========================================================================
+
+record Pair(first, second);
+record Triple(a, b, c);
+
+// Concat in field expressions
+var p = Pair("hello" + "world", "foo" + "bar");
+assert(p.first == "helloworld");
+assert(p.second == "foobar");
+
+// Multiple allocating fields
+var t = Triple("a" + "1", "b" + "2", "c" + "3");
+collectGarbage();
+assert(t.a == "a1");
+assert(t.b == "b2");
+assert(t.c == "c3");
+
+// Nested record constructor — inner record allocates while outer fields on stack
+var nested = Pair(Pair("x" + "y", "z" + "w"), "after" + "inner");
+collectGarbage();
+assert(nested.first.first == "xy");
+assert(nested.first.second == "zw");
+assert(nested.second == "afterinner");
+
+// Record with array field constructed inline
+var withArr = Pair(newArray(), "str" + "val");
+arrayPush(withArr.first, "elem");
+collectGarbage();
+assert(arrayGet(withArr.first, 0) == "elem");
+assert(withArr.second == "strval");
+
+// =========================================================================
+// TEST 6: 256+ constants in one function (triggers OP_CONSTANT_LONG)
+// The large constant pool means 3-byte operand paths are used.
+// All constant objects must be rooted during compilation and execution.
+// =========================================================================
+
+fun manyConstants() {
+  // Each unique string literal is a separate constant
+  var x = "";
+  x = "c000"; x = "c001"; x = "c002"; x = "c003"; x = "c004"; x = "c005"; x = "c006"; x = "c007";
+  x = "c008"; x = "c009"; x = "c010"; x = "c011"; x = "c012"; x = "c013"; x = "c014"; x = "c015";
+  x = "c016"; x = "c017"; x = "c018"; x = "c019"; x = "c020"; x = "c021"; x = "c022"; x = "c023";
+  x = "c024"; x = "c025"; x = "c026"; x = "c027"; x = "c028"; x = "c029"; x = "c030"; x = "c031";
+  x = "c032"; x = "c033"; x = "c034"; x = "c035"; x = "c036"; x = "c037"; x = "c038"; x = "c039";
+  x = "c040"; x = "c041"; x = "c042"; x = "c043"; x = "c044"; x = "c045"; x = "c046"; x = "c047";
+  x = "c048"; x = "c049"; x = "c050"; x = "c051"; x = "c052"; x = "c053"; x = "c054"; x = "c055";
+  x = "c056"; x = "c057"; x = "c058"; x = "c059"; x = "c060"; x = "c061"; x = "c062"; x = "c063";
+  x = "c064"; x = "c065"; x = "c066"; x = "c067"; x = "c068"; x = "c069"; x = "c070"; x = "c071";
+  x = "c072"; x = "c073"; x = "c074"; x = "c075"; x = "c076"; x = "c077"; x = "c078"; x = "c079";
+  x = "c080"; x = "c081"; x = "c082"; x = "c083"; x = "c084"; x = "c085"; x = "c086"; x = "c087";
+  x = "c088"; x = "c089"; x = "c090"; x = "c091"; x = "c092"; x = "c093"; x = "c094"; x = "c095";
+  x = "c096"; x = "c097"; x = "c098"; x = "c099"; x = "c100"; x = "c101"; x = "c102"; x = "c103";
+  x = "c104"; x = "c105"; x = "c106"; x = "c107"; x = "c108"; x = "c109"; x = "c110"; x = "c111";
+  x = "c112"; x = "c113"; x = "c114"; x = "c115"; x = "c116"; x = "c117"; x = "c118"; x = "c119";
+  x = "c120"; x = "c121"; x = "c122"; x = "c123"; x = "c124"; x = "c125"; x = "c126"; x = "c127";
+  x = "c128"; x = "c129"; x = "c130"; x = "c131"; x = "c132"; x = "c133"; x = "c134"; x = "c135";
+  x = "c136"; x = "c137"; x = "c138"; x = "c139"; x = "c140"; x = "c141"; x = "c142"; x = "c143";
+  x = "c144"; x = "c145"; x = "c146"; x = "c147"; x = "c148"; x = "c149"; x = "c150"; x = "c151";
+  x = "c152"; x = "c153"; x = "c154"; x = "c155"; x = "c156"; x = "c157"; x = "c158"; x = "c159";
+  x = "c160"; x = "c161"; x = "c162"; x = "c163"; x = "c164"; x = "c165"; x = "c166"; x = "c167";
+  x = "c168"; x = "c169"; x = "c170"; x = "c171"; x = "c172"; x = "c173"; x = "c174"; x = "c175";
+  x = "c176"; x = "c177"; x = "c178"; x = "c179"; x = "c180"; x = "c181"; x = "c182"; x = "c183";
+  x = "c184"; x = "c185"; x = "c186"; x = "c187"; x = "c188"; x = "c189"; x = "c190"; x = "c191";
+  x = "c192"; x = "c193"; x = "c194"; x = "c195"; x = "c196"; x = "c197"; x = "c198"; x = "c199";
+  x = "c200"; x = "c201"; x = "c202"; x = "c203"; x = "c204"; x = "c205"; x = "c206"; x = "c207";
+  x = "c208"; x = "c209"; x = "c210"; x = "c211"; x = "c212"; x = "c213"; x = "c214"; x = "c215";
+  x = "c216"; x = "c217"; x = "c218"; x = "c219"; x = "c220"; x = "c221"; x = "c222"; x = "c223";
+  x = "c224"; x = "c225"; x = "c226"; x = "c227"; x = "c228"; x = "c229"; x = "c230"; x = "c231";
+  x = "c232"; x = "c233"; x = "c234"; x = "c235"; x = "c236"; x = "c237"; x = "c238"; x = "c239";
+  x = "c240"; x = "c241"; x = "c242"; x = "c243"; x = "c244"; x = "c245"; x = "c246"; x = "c247";
+  x = "c248"; x = "c249"; x = "c250"; x = "c251"; x = "c252"; x = "c253"; x = "c254"; x = "c255";
+  // Now past 256 — these use OP_CONSTANT_LONG
+  x = "c256"; x = "c257"; x = "c258"; x = "c259"; x = "c260"; x = "c261"; x = "c262"; x = "c263";
+  x = "c264"; x = "c265"; x = "c266"; x = "c267"; x = "c268"; x = "c269"; x = "c270"; x = "c271";
+  x = "c272"; x = "c273"; x = "c274"; x = "c275"; x = "c276"; x = "c277"; x = "c278"; x = "c279";
+  x = "c280"; x = "c281"; x = "c282"; x = "c283"; x = "c284"; x = "c285"; x = "c286"; x = "c287";
+  x = "c288"; x = "c289"; x = "c290"; x = "c291"; x = "c292"; x = "c293"; x = "c294"; x = "c295";
+  x = "c296"; x = "c297"; x = "c298"; x = "c299";
+  return x;
+}
+var lastConst = manyConstants();
+assert(lastConst == "c299");
+collectGarbage();
+
+// =========================================================================
+// TEST 7: Concat result matching an existing interned string (dedup + GC)
+// If the concat result deduplicates to an existing interned string,
+// the intern table must keep the original alive.
+// =========================================================================
+
+var original = "foobar";
+collectGarbage();
+// This concat produces "foobar" — should deduplicate to `original`
+var concat = "foo" + "bar";
+assert(concat == original);
+collectGarbage();
+// Both must survive
+assert(original == "foobar");
+assert(concat == "foobar");
+
+// Stress: interning dedup in a loop
+var target = "xy";
+for (var i = 0; i < 20; i = i + 1) {
+  var dup = "x" + "y";
+  assert(dup == target);
+  collectGarbage();
+}
+assert(target == "xy");
+
+// =========================================================================
+// TEST 8: Mixed-type upvalues all closed at once on scope exit
+// When a scope exits with multiple locals of different heap types,
+// OP_CLOSE_UPVALUE is called for each. GC must trace all of them.
+// =========================================================================
+
+fun closeMixed() {
+  var s = "stringval";
+  var arr = newArray();
+  arrayPush(arr, "elem1");
+  arrayPush(arr, "elem2");
+  var d = dictNew();
+  dictSet(d, "dk", "dv");
+  var rec = Pair("rx", "ry");
+  fun inner() { return s; }
+  fun inner2() { return arr; }
+  fun inner3() { return d; }
+  fun inner4() { return rec; }
+
+  // All four locals will be closed when closeMixed returns
+  return Pair(Pair(inner, inner2), Pair(inner3, inner4));
+}
+
+var closures = closeMixed();
+// All frames dead — only closed upvalues keep objects alive
+collectGarbage();
+collectGarbage();
+
+var getS = closures.first.first;
+var getArr2 = closures.first.second;
+var getD = closures.second.first;
+var getRec = closures.second.second;
+
+assert(getS() == "stringval");
+var a2 = getArr2();
+assert(arrayLen(a2) == 2);
+assert(arrayGet(a2, 0) == "elem1");
+var d2 = getD();
+assert(dictGet(d2, "dk") == "dv");
+var r2 = getRec();
+assert(r2.first == "rx");
+assert(r2.second == "ry");
+
+// =========================================================================
+// TEST 9: Record as closed upvalue with field mutation after closing
+// =========================================================================
+
+fun closeAndMutateRecord() {
+  var r = Pair("original", 0);
+  fun getR() { return r; }
+  fun setR(v) { r.first = v; }
+  return Pair(getR, setR);
+}
+
+var accessors = closeAndMutateRecord();
+collectGarbage();
+var getR = accessors.first;
+var setR = accessors.second;
+assert(getR().first == "original");
+setR("mutated" + "value");
+collectGarbage();
+assert(getR().first == "mutatedvalue");
+
+// =========================================================================
+// TEST 10: Passing records as arguments while other args allocate
+// =========================================================================
+
+record Data(amount);
+var dataTest = Data(1);
+assert(dataTest.amount == 1);
+
+// rec is on stack while "prefix" + ":" allocates
+var d10 = Data(42);
+fun fmt(r, prefix) { return prefix + str(r.amount); }
+var out = fmt(d10, "num" + ":");
+assert(out == "num:42");
+
+// Multiple records as args with interleaved allocations
+fun add3(a, b, c) { return a.amount + b.amount + c.amount; }
+var sum = add3(Data(10), Data(20), Data(30));
+assert(sum == 60);
+collectGarbage();
+
+print "gc_coverage_gaps: all passed";
