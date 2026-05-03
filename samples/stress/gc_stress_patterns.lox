@@ -216,8 +216,20 @@ for (var round = 0; round < 5; round = round + 1) {
   collectGarbage();
 }
 // Should have 5 rounds * 20 remaining = 100 entries
-assert(dictGet(thrashDict, "r0k79") == 0);
-assert(dictGet(thrashDict, "r4k79") == 316);
+// Exhaustively verify every key: deleted ones absent, survivors have correct value
+var thrashSurvivors = 0;
+for (var round = 0; round < 5; round = round + 1) {
+  for (var i = 0; i < 60; i = i + 1) {
+    assert(dictHas(thrashDict, "r" + str(round) + "k" + str(i)) == false);
+  }
+  for (var i = 60; i < 80; i = i + 1) {
+    var key = "r" + str(round) + "k" + str(i);
+    assert(dictHas(thrashDict, key) == true);
+    assert(dictGet(thrashDict, key) == i * round);
+    thrashSurvivors = thrashSurvivors + 1;
+  }
+}
+assert(thrashSurvivors == 100);
 
 // Array thrash: push many, pop many
 var thrashArr = newArray();
@@ -593,8 +605,10 @@ fun stackReallocTest() {
     // The upvalue for `captured` still points into the outer frame's slot.
 
     fun fillStack() {
-      // 200 locals — each one is a stack slot. Combined with the frames
-      // above us, this pushes past the 256-slot START_CAPACITY.
+      // 255 locals (max per function) — each is a stack slot. With slot 0
+      // reserved for the function object, this frame alone needs 256 slots.
+      // Combined with enclosing frames, it guarantees pushStack() must grow
+      // past START_CAPACITY (256), triggering the ReallocMem code path.
       var a0=0; var a1=1; var a2=2; var a3=3; var a4=4; var a5=5; var a6=6; var a7=7;
       var a8=8; var a9=9; var a10=10; var a11=11; var a12=12; var a13=13; var a14=14; var a15=15;
       var a16=16; var a17=17; var a18=18; var a19=19; var a20=20; var a21=21; var a22=22; var a23=23;
@@ -620,13 +634,20 @@ fun stackReallocTest() {
       var a176=176; var a177=177; var a178=178; var a179=179; var a180=180; var a181=181; var a182=182; var a183=183;
       var a184=184; var a185=185; var a186=186; var a187=187; var a188=188; var a189=189; var a190=190; var a191=191;
       var a192=192; var a193=193; var a194=194; var a195=195; var a196=196; var a197=197; var a198=198; var a199=199;
+      var a200=200; var a201=201; var a202=202; var a203=203; var a204=204; var a205=205; var a206=206; var a207=207;
+      var a208=208; var a209=209; var a210=210; var a211=211; var a212=212; var a213=213; var a214=214; var a215=215;
+      var a216=216; var a217=217; var a218=218; var a219=219; var a220=220; var a221=221; var a222=222; var a223=223;
+      var a224=224; var a225=225; var a226=226; var a227=227; var a228=228; var a229=229; var a230=230; var a231=231;
+      var a232=232; var a233=233; var a234=234; var a235=235; var a236=236; var a237=237; var a238=238; var a239=239;
+      var a240=240; var a241=241; var a242=242; var a243=243; var a244=244; var a245=245; var a246=246; var a247=247;
+      var a248=248; var a249=249; var a250=250; var a251=251; var a252=252; var a253=253; var a254=254;
       // Use the last one to prevent optimization
-      return a199;
+      return a254;
     }
 
     // Call fillStack — this pushes the stack way past 256 slots
     var filler = fillStack();
-    assert(filler == 199);
+    assert(filler == 254);
 
     // NOW read the captured variable via the open upvalue.
     // Without the rebase fix, `captured` points to the OLD (freed) stack buffer.
