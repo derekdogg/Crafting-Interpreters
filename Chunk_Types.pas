@@ -5774,6 +5774,7 @@ var
   colName : AnsiString;
   keyVal, valVal : TValue;
   newCap, oldSize, newSize : integer;
+  stackBase : integer;
 begin
   if argCount <> 2 then
   begin
@@ -5805,6 +5806,9 @@ begin
   end;
 
   sql := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+
+  // Save stack depth so we can unwind on any exit path
+  stackBase := VM.Stack.Count;
 
   // Create result array and protect from GC
   arr := newArray(VM.MemTracker);
@@ -5845,7 +5849,10 @@ begin
           valVal := CreateObject(pObj(CreateString(AnsiString(query.Fields[i].AsString), VM.MemTracker)));
         end;
 
+        // Protect valVal from GC during DictSet (which may trigger table growth)
+        pushStack(VM.Stack, valVal, VM.MemTracker);
         DictSet(dict, keyVal, valVal, VM.MemTracker);
+        popStack(VM.Stack); // pop valVal
         popStack(VM.Stack); // pop keyVal
       end;
 
@@ -5872,7 +5879,9 @@ begin
     on E: Exception do
     begin
       query.Free;
-      popStack(VM.Stack);
+      // Unwind stack to saved depth
+      while VM.Stack.Count > stackBase do
+        popStack(VM.Stack);
       RuntimeError('sqlQuery() failed: ' + AnsiString(E.Message));
       Exit(CreateNilValue);
     end;
@@ -5897,6 +5906,7 @@ var
   colName : AnsiString;
   keyVal, valVal, paramVal : TValue;
   newCap, oldSize, newSize : integer;
+  stackBase : integer;
 begin
   if argCount <> 3 then
   begin
@@ -5935,6 +5945,9 @@ begin
   sql := ObjStringToAnsiString(pObjString(args[1].ObjValue));
   params := pObjArray(args[2].ObjValue);
 
+  // Save stack depth so we can unwind on any exit path
+  stackBase := VM.Stack.Count;
+
   // Create result array and protect from GC
   arr := newArray(VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
@@ -5962,7 +5975,8 @@ begin
           begin
             RuntimeError('sqlQueryParams() parameter ' + IntToStr(p) + ' must be a string, number, boolean, or nil.');
             query.Free;
-            popStack(VM.Stack);
+            while VM.Stack.Count > stackBase do
+              popStack(VM.Stack);
             Exit(CreateNilValue);
           end;
       end;
@@ -5993,7 +6007,10 @@ begin
         else
           valVal := CreateObject(pObj(CreateString(AnsiString(query.Fields[i].AsString), VM.MemTracker)));
 
+        // Protect valVal from GC during DictSet (which may trigger table growth)
+        pushStack(VM.Stack, valVal, VM.MemTracker);
         DictSet(dict, keyVal, valVal, VM.MemTracker);
+        popStack(VM.Stack); // pop valVal
         popStack(VM.Stack); // pop keyVal
       end;
 
@@ -6017,7 +6034,9 @@ begin
     on E: Exception do
     begin
       query.Free;
-      popStack(VM.Stack);
+      // Unwind stack to saved depth
+      while VM.Stack.Count > stackBase do
+        popStack(VM.Stack);
       RuntimeError('sqlQueryParams() failed: ' + AnsiString(E.Message));
       Exit(CreateNilValue);
     end;
