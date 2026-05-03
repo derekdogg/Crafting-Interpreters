@@ -1,0 +1,366 @@
+// GC Stress Patterns — exercises all major GC-sensitive allocation patterns.
+// Each section forces collection repeatedly during the stress operation.
+
+record Node(value, next);
+record Tree(left, right, data);
+record Wrapper(ref);
+
+// =========================================================================
+// PATTERN 1: Allocation Storm
+// Rapidly create lots of short-lived objects, discard most immediately.
+// =========================================================================
+
+for (var i = 0; i < 200; i = i + 1) {
+  // Each iteration creates a temporary string, array, and dict — all discarded
+  var tmp = "storm" + str(i) + "x";
+  var arr = newArray();
+  arrayPush(arr, tmp);
+  arrayPush(arr, newArray());
+  var d = dictNew();
+  dictSet(d, "k", tmp);
+  if (i % 20 == 0) collectGarbage();
+}
+collectGarbage();
+print "pattern 1 (allocation storm): passed";
+
+// =========================================================================
+// PATTERN 2: Long-Lived + Short-Lived Mix
+// Keep anchors alive while churning many temporaries around them.
+// =========================================================================
+
+var anchor1 = newArray();
+var anchor2 = dictNew();
+var anchor3 = Node("root", nil);
+
+for (var i = 0; i < 150; i = i + 1) {
+  // Anchor survives; temps die
+  arrayPush(anchor1, "a" + str(i));
+  dictSet(anchor2, "k" + str(i), i);
+  // Create temps that reference the anchor (but we drop the temp)
+  var temp = Node(anchor1, nil);
+  var tempArr = newArray();
+  arrayPush(tempArr, anchor2);
+  if (i % 10 == 0) collectGarbage();
+}
+
+collectGarbage();
+assert(arrayLen(anchor1) == 150);
+assert(dictGet(anchor2, "k0") == 0);
+assert(dictGet(anchor2, "k149") == 149);
+assert(anchor3.value == "root");
+print "pattern 2 (long+short lived mix): passed";
+
+// =========================================================================
+// PATTERN 3: Pointer Graphs — linked list construction and traversal
+// =========================================================================
+
+// Build a linked list of 500 nodes
+var head = nil;
+for (var i = 0; i < 500; i = i + 1) {
+  head = Node(i, head);
+  if (i % 50 == 0) collectGarbage();
+}
+
+// Traverse and verify
+var current = head;
+var count = 0;
+while (current != nil) {
+  count = count + 1;
+  current = current.next;
+}
+assert(count == 500);
+assert(head.value == 499);
+
+// Walk halfway, GC, continue
+current = head;
+for (var i = 0; i < 250; i = i + 1) current = current.next;
+collectGarbage();
+assert(current.value == 249);
+
+// Drop the list
+head = nil;
+current = nil;
+collectGarbage();
+print "pattern 3 (linked list pointer graph): passed";
+
+// =========================================================================
+// PATTERN 4: Cycles — create circular references, then drop all roots
+// =========================================================================
+
+// Circular linked list
+fun buildCycle(size) {
+  var first = Node("cycle0", nil);
+  var prev = first;
+  for (var i = 1; i < size; i = i + 1) {
+    var n = Node("cycle" + str(i), nil);
+    prev.next = n;
+    prev = n;
+    if (i % 20 == 0) collectGarbage();
+  }
+  // Close the cycle
+  prev.next = first;
+  return first;
+}
+
+var cycle = buildCycle(100);
+// Verify cycle: walk 200 steps (wraps around)
+var walk = cycle;
+for (var i = 0; i < 200; i = i + 1) walk = walk.next;
+assert(walk.value == "cycle0"); // back to start after 100 * 2
+collectGarbage();
+
+// Drop the cycle — all 100 nodes become garbage
+cycle = nil;
+walk = nil;
+collectGarbage();
+collectGarbage();
+
+// Dict-based cycle: A -> B -> A
+var dictA = dictNew();
+var dictB = dictNew();
+dictSet(dictA, "partner", dictB);
+dictSet(dictB, "partner", dictA);
+dictSet(dictA, "name", "A");
+dictSet(dictB, "name", "B");
+collectGarbage();
+assert(dictGet(dictGet(dictGet(dictA, "partner"), "partner"), "name") == "A");
+// Drop both
+dictA = nil;
+dictB = nil;
+collectGarbage();
+print "pattern 4 (cycles): passed";
+
+// =========================================================================
+// PATTERN 5: Mutation — change references during execution
+// =========================================================================
+
+var mutArr = newArray();
+for (var i = 0; i < 50; i = i + 1) arrayPush(mutArr, Node(i, nil));
+
+// Mutate: rewire each node's next to point to the following node
+for (var i = 0; i < 49; i = i + 1) {
+  var curr2 = arrayGet(mutArr, i);
+  var nxt = arrayGet(mutArr, i + 1);
+  curr2.next = nxt;
+  // Replace array entry with new object (old one survives via .next chain)
+  if (i % 10 == 0) {
+    collectGarbage();
+  }
+}
+
+// Verify chain is intact through the first node
+var chainNode = arrayGet(mutArr, 0);
+for (var i = 0; i < 49; i = i + 1) {
+  assert(chainNode.value == i);
+  chainNode = chainNode.next;
+}
+assert(chainNode.value == 49);
+collectGarbage();
+
+// Overwrite half the array — orphaning nodes only reachable via chain
+for (var i = 0; i < 25; i = i + 1) {
+  arraySet(mutArr, i, nil);
+  if (i % 5 == 0) collectGarbage();
+}
+// Chain still reachable via arrayGet(mutArr, 25).value ... but the head is gone
+// The head's chain is only reachable if something still points to it — it shouldn't be
+collectGarbage();
+// Node at index 25 should still be intact
+var midNode = arrayGet(mutArr, 25);
+assert(midNode.value == 25);
+print "pattern 5 (mutation): passed";
+
+// =========================================================================
+// PATTERN 6: Deep Chains — very deep object hierarchy
+// =========================================================================
+
+// Build a chain 2000 levels deep
+var deep = nil;
+for (var i = 0; i < 2000; i = i + 1) {
+  deep = Wrapper(deep);
+  if (i % 200 == 0) collectGarbage();
+}
+collectGarbage();
+
+// Verify depth by unwinding
+var depth = 0;
+var unwinding = deep;
+while (unwinding != nil) {
+  depth = depth + 1;
+  unwinding = unwinding.ref;
+}
+assert(depth == 2000);
+
+// Drop it all
+deep = nil;
+unwinding = nil;
+collectGarbage();
+print "pattern 6 (deep chains 2000 levels): passed";
+
+// =========================================================================
+// PATTERN 7: Container Thrash — repeated insert/delete forcing resize
+// =========================================================================
+
+// Dict thrash: insert many, remove many, repeat
+var thrashDict = dictNew();
+for (var round = 0; round < 5; round = round + 1) {
+  // Insert 80 entries
+  for (var i = 0; i < 80; i = i + 1) {
+    dictSet(thrashDict, "r" + str(round) + "k" + str(i), i * round);
+  }
+  collectGarbage();
+  // Remove 60 of them
+  for (var i = 0; i < 60; i = i + 1) {
+    dictDelete(thrashDict, "r" + str(round) + "k" + str(i));
+  }
+  collectGarbage();
+}
+// Should have 5 rounds * 20 remaining = 100 entries
+assert(dictGet(thrashDict, "r0k79") == 0);
+assert(dictGet(thrashDict, "r4k79") == 316);
+
+// Array thrash: push many, pop many
+var thrashArr = newArray();
+for (var round = 0; round < 10; round = round + 1) {
+  for (var i = 0; i < 50; i = i + 1) {
+    arrayPush(thrashArr, "item" + str(round) + "_" + str(i));
+  }
+  for (var i = 0; i < 40; i = i + 1) {
+    arrayPop(thrashArr);
+  }
+  if (round % 3 == 0) collectGarbage();
+}
+collectGarbage();
+// 10 rounds * 10 remaining per round = 100 elements
+assert(arrayLen(thrashArr) == 100);
+print "pattern 7 (container thrash): passed";
+
+// =========================================================================
+// PATTERN 8: Random Lifetimes — unpredictable object death patterns
+// =========================================================================
+
+// Use an array as a "slot pool" — randomly overwrite slots
+var slots = newArray();
+for (var i = 0; i < 40; i = i + 1) arrayPush(slots, nil);
+
+for (var i = 0; i < 300; i = i + 1) {
+  // Pseudo-random slot selection (deterministic for reproducibility)
+  var slot = (i * 7 + 13) % 40;
+  // Create a new object with varying complexity
+  if (i % 3 == 0) {
+    arraySet(slots, slot, Node("n" + str(i), arrayGet(slots, (slot + 1) % 40)));
+  } else if (i % 3 == 1) {
+    var tmpArr2 = newArray();
+    arrayPush(tmpArr2, str(i));
+    arrayPush(tmpArr2, arrayGet(slots, (slot + 5) % 40));
+    arraySet(slots, slot, tmpArr2);
+  } else {
+    arraySet(slots, slot, "s" + str(i) + "end");
+  }
+  if (i % 25 == 0) collectGarbage();
+}
+collectGarbage();
+// Verify slots are still accessible (no corruption)
+for (var i = 0; i < 40; i = i + 1) {
+  var s = arrayGet(slots, i); // just accessing shouldn't crash
+}
+print "pattern 8 (random lifetimes): passed";
+
+// =========================================================================
+// PATTERN 9: Closure Capture — objects reachable only via environments
+// =========================================================================
+
+// Build an array of closures, each capturing unique objects
+var closureArr = newArray();
+for (var i = 0; i < 50; i = i + 1) {
+  // Each iteration creates a new scope with captured vars
+  fun makeCapture(idx) {
+    var captured = newArray();
+    arrayPush(captured, "cap" + str(idx));
+    var capturedDict = dictNew();
+    dictSet(capturedDict, "id", idx);
+    fun accessor() {
+      return Node(arrayGet(captured, 0), capturedDict);
+    }
+    return accessor;
+  }
+  arrayPush(closureArr, makeCapture(i));
+  if (i % 10 == 0) collectGarbage();
+}
+
+collectGarbage();
+collectGarbage();
+
+// Verify all 50 closures still work
+for (var i = 0; i < 50; i = i + 1) {
+  var fn = arrayGet(closureArr, i);
+  var result2 = fn();
+  assert(result2.value == "cap" + str(i));
+  assert(dictGet(result2.next, "id") == i);
+}
+
+// Drop half the closures — their captured objects become garbage
+for (var i = 0; i < 25; i = i + 1) {
+  arraySet(closureArr, i, nil);
+}
+collectGarbage();
+
+// Remaining half still works
+for (var i = 25; i < 50; i = i + 1) {
+  var fn2 = arrayGet(closureArr, i);
+  var res2 = fn2();
+  assert(res2.value == "cap" + str(i));
+}
+print "pattern 9 (closure capture): passed";
+
+// =========================================================================
+// PATTERN 10: Repeated Full GC During All Patterns Combined
+// =========================================================================
+
+// Build a complex live set, then hammer GC while mutating it
+var liveList = nil;
+var liveArr2 = newArray();
+var liveDict2 = dictNew();
+
+for (var i = 0; i < 100; i = i + 1) {
+  // Grow linked list
+  liveList = Node("live" + str(i), liveList);
+  // Grow array with references to list nodes
+  arrayPush(liveArr2, liveList);
+  // Grow dict
+  dictSet(liveDict2, "k" + str(i), liveList);
+  
+  // Create garbage (short-lived temps)
+  var garbage1 = newArray();
+  arrayPush(garbage1, "g" + str(i));
+  var garbage2 = dictNew();
+  dictSet(garbage2, "gk", garbage1);
+  var garbage3 = Node(garbage2, nil);
+  
+  // Force GC every iteration — maximum stress
+  collectGarbage();
+}
+
+// Verify everything survived
+assert(liveList.value == "live99");
+assert(arrayLen(liveArr2) == 100);
+var node50 = arrayGet(liveArr2, 50);
+assert(node50.value == "live50");
+assert(dictGet(liveDict2, "k0").value == "live0");
+assert(dictGet(liveDict2, "k99").value == "live99");
+
+// Final double-collect
+collectGarbage();
+collectGarbage();
+
+// Verify integrity after final collection
+var walkList = liveList;
+var listLen = 0;
+while (walkList != nil) {
+  listLen = listLen + 1;
+  walkList = walkList.next;
+}
+assert(listLen == 100);
+
+print "pattern 10 (combined stress with GC every iteration): passed";
+print "gc_stress_patterns: all passed";

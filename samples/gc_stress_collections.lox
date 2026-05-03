@@ -1,0 +1,139 @@
+// GC stress tests for arrays, dictionaries, and multi-allocation natives.
+// These patterns are most likely to expose unrooted references because they
+// create multiple heap objects in quick succession.
+
+// --- Array push loop (forces internal realloc which may trigger GC) ---
+var a = newArray();
+for (var i = 0; i < 30; i = i + 1) {
+  arrayPush(a, "item" + str(i));
+}
+assert(arrayLen(a) == 30);
+assert(arrayGet(a, 0) == "item0");
+assert(arrayGet(a, 29) == "item29");
+
+// --- Array of closures (closure alloc + array realloc interleaved) ---
+var fns = newArray();
+for (var i = 0; i < 10; i = i + 1) {
+  fun f() { return i; }
+  arrayPush(fns, f);
+}
+var lastFn = arrayGet(fns, 9);
+assert(lastFn() == 10);
+
+// --- Array survives explicit GC ---
+var kept = newArray();
+arrayPush(kept, "alive");
+collectGarbage();
+assert(arrayGet(kept, 0) == "alive");
+
+// --- Dictionary set loop (forces resize which may trigger GC) ---
+var d = dictNew();
+for (var i = 0; i < 20; i = i + 1) {
+  dictSet(d, str(i), "val" + str(i));
+}
+assert(dictGet(d, "0") == "val0");
+assert(dictGet(d, "19") == "val19");
+assert(dictHas(d, "10"));
+
+// --- Dictionary survives explicit GC ---
+var dk = dictNew();
+dictSet(dk, "x", "alive");
+collectGarbage();
+assert(dictGet(dk, "x") == "alive");
+
+// --- split() allocates array + N strings in one native call ---
+var parts = split("one,two,three,four,five", ",");
+assert(arrayLen(parts) == 5);
+assert(arrayGet(parts, 0) == "one");
+assert(arrayGet(parts, 4) == "five");
+
+// --- split() in a loop (many short-lived arrays/strings) ---
+for (var i = 0; i < 20; i = i + 1) {
+  var p = split("a,b,c", ",");
+  assert(arrayGet(p, 2) == "c");
+}
+
+// --- str() + upper() + lower() chained (multiple allocs feeding concat) ---
+var combo = upper("abc") + lower("XYZ") + str(42);
+assert(combo == "ABCxyz42");
+
+// --- substr allocations ---
+var src = "hello world";
+assert(substr(src, 0, 5) == "hello");
+assert(substr(src, 6, 5) == "world");
+
+// --- Nested function calls with allocs at each level ---
+fun cat(x, y) { return x + y; }
+assert(cat(cat("a", "b"), cat("c", "d")) == "abcd");
+
+// --- Recursive function building array ---
+fun buildArr(arr, n) {
+  if (n <= 0) return arr;
+  arrayPush(arr, "x" + str(n));
+  return buildArr(arr, n - 1);
+}
+var built = buildArr(newArray(), 20);
+assert(arrayLen(built) == 20);
+assert(arrayGet(built, 0) == "x20");
+assert(arrayGet(built, 19) == "x1");
+
+// --- Array and dict together (cross-references) ---
+var d2 = dictNew();
+var a2 = newArray();
+for (var i = 0; i < 10; i = i + 1) {
+  var key = "k" + str(i);
+  dictSet(d2, key, i);
+  arrayPush(a2, key);
+}
+assert(dictGet(d2, arrayGet(a2, 7)) == 7);
+
+// --- Subscript operators (OP_SET_SUBSCRIPT / OP_GET_SUBSCRIPT) ---
+var sa = newArray();
+arrayPush(sa, nil);
+arrayPush(sa, nil);
+sa[0] = "first";
+sa[1] = "second" + "!";
+assert(sa[0] == "first");
+assert(sa[1] == "second!");
+
+var sd = dictNew();
+sd["foo"] = "bar";
+sd["baz"] = "q" + "ux";
+assert(sd["foo"] == "bar");
+assert(sd["baz"] == "qux");
+
+// --- Subscript with GC between ops ---
+var da = newArray();
+arrayPush(da, nil);
+da[0] = "before";
+collectGarbage();
+assert(da[0] == "before");
+da[0] = "after";
+collectGarbage();
+assert(da[0] == "after");
+
+// --- Many dictionaries created and discarded (GC reclaims) ---
+for (var i = 0; i < 50; i = i + 1) {
+  var tmp = dictNew();
+  dictSet(tmp, "k", "v" + str(i));
+}
+var before = bytesAllocated();
+collectGarbage();
+var after = bytesAllocated();
+assert(after < before);
+
+// --- Array with mixed value types ---
+var mixed = newArray();
+arrayPush(mixed, 42);
+arrayPush(mixed, true);
+arrayPush(mixed, nil);
+arrayPush(mixed, "hello");
+fun dummy() { return "fn"; }
+arrayPush(mixed, dummy);
+collectGarbage();
+assert(arrayGet(mixed, 0) == 42);
+assert(arrayGet(mixed, 3) == "hello");
+var fn = arrayGet(mixed, 4);
+assert(fn() == "fn");
+
+print "gc_stress_collections: all passed";
