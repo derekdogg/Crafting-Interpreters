@@ -1,8 +1,8 @@
 unit Chunk_Types;
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
-{.$DEFINE DEBUG_LOG_GC}
-{.$DEFINE DEBUG_STRESS_GC}
+{$DEFINE DEBUG_LOG_GC}
+{$DEFINE DEBUG_STRESS_GC}
 interface
 
 uses
@@ -3562,10 +3562,11 @@ begin
 
         OP_SET_SUBSCRIPT: begin
           // Stack: [... object, index/key, value] -> [... value]
-          value := popStack(vm.Stack);    // value to assign
-          ValueB := popStack(vm.Stack);   // index/key
-          if isArray(peekStack(vm.Stack)) then
+          // Keep values on stack during DictSet which may trigger GC
+          if isArray(peekStack(vm.Stack, 2)) then
           begin
+            value := popStack(vm.Stack);    // value to assign
+            ValueB := popStack(vm.Stack);   // index/key
             if not isNumber(ValueB) then
             begin
               runtimeError('Array index must be a number.');
@@ -3583,11 +3584,18 @@ begin
             popStack(vm.Stack); // pop the array
             pushStack(vm.Stack, value, vm.MemTracker); // leave the assigned value
           end
-          else if isDictionary(peekStack(vm.Stack)) then
+          else if isDictionary(peekStack(vm.Stack, 2)) then
           begin
-            DictSet(pObjDictionary(peekStack(vm.Stack).ObjValue), ValueB, value, vm.MemTracker);
-            popStack(vm.Stack); // pop the dictionary
-            pushStack(vm.Stack, value, vm.MemTracker); // leave the assigned value
+            // Stack: [... dict, key, value]
+            // Leave all on stack during DictSet to protect from GC
+            value := peekStack(vm.Stack, 0);   // value
+            ValueB := peekStack(vm.Stack, 1);  // key
+            DictSet(pObjDictionary(peekStack(vm.Stack, 2).ObjValue), ValueB, value, vm.MemTracker);
+            // Pop value, key, dict; push value as result
+            popStack(vm.Stack);
+            popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
           end
           else
           begin
