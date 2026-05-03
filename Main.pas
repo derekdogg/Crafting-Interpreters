@@ -25,6 +25,7 @@ type
   private
     procedure RunSampleFiles;
     procedure RunOfficialTests;
+    procedure RunStressTests;
   public
     { Public declarations }
   end;
@@ -84,11 +85,14 @@ end;
 
 
 procedure TForm4.Button2Click(Sender: TObject);
-var
-  c : Char;
 begin
-  //compile(PChar(Memo1.Lines.Text),memo2.lines);
-
+  Memo2.Lines.Clear;
+  try
+    RunStressTests;
+  except
+    on E: Exception do
+      Memo2.Lines.Add('STRESS TEST FAILURE: ' + E.Message);
+  end;
 end;
 
 procedure TForm4.Button3Click(Sender: TObject);
@@ -107,6 +111,47 @@ begin
     on E: Exception do
       Memo2.Lines.Add('TEST FAILURE: ' + E.Message);
   end;
+end;
+
+procedure TForm4.RunStressTests;
+var
+  StressDir: string;
+  Files: TStringDynArray;
+  F, FileName, Content: string;
+  IR: TInterpretResult;
+  Passed, Failed: integer;
+begin
+  StressDir := TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\samples\stress');
+  if not TDirectory.Exists(StressDir) then
+  begin
+    Memo2.Lines.Add('samples/stress/ directory not found');
+    Exit;
+  end;
+
+  Passed := 0;
+  Failed := 0;
+
+  Files := TDirectory.GetFiles(StressDir, '*.lox');
+  for F in Files do
+  begin
+    FileName := TPath.GetFileName(F);
+    Memo2.Lines.Add('Running stress: ' + FileName);
+    Application.ProcessMessages;
+    Content := TFile.ReadAllText(F);
+    IR := InterpretResult(PAnsiChar(AnsiString(Content)));
+    if IR.code = INTERPRET_OK then
+      Inc(Passed)
+    else
+    begin
+      Inc(Failed);
+      Memo2.Lines.Add('FAIL: ' + FileName + ' - ' + IR.ErrorStr);
+    end;
+  end;
+
+  if Failed = 0 then
+    Memo2.Lines.Add('All ' + IntToStr(Passed) + ' stress tests passed.')
+  else
+    Memo2.Lines.Add(IntToStr(Failed) + ' of ' + IntToStr(Passed + Failed) + ' stress tests FAILED.');
 end;
 
 procedure TForm4.RunSampleFiles;

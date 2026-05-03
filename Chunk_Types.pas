@@ -75,8 +75,9 @@ const
   OP_SET_SUBSCRIPT = 43;
   OP_ARRAY_LITERAL = 44;
   OP_DICT_LITERAL = 45;
+  OP_RECORD_LONG = 46;
 
-  OP_STRINGS : array[0..45] of string = (
+  OP_STRINGS : array[0..46] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -122,7 +123,8 @@ const
     'OP_GET_SUBSCRIPT',
     'OP_SET_SUBSCRIPT',
     'OP_ARRAY_LITERAL',
-    'OP_DICT_LITERAL');
+    'OP_DICT_LITERAL',
+    'OP_RECORD_LONG');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 64;
@@ -495,6 +497,7 @@ procedure AssertValueArrayCount(ValueArray : pValueArray);
 //Object assertions
 procedure AssertObjectIsAssigned(Obj : pObj);
 procedure AssertObjStringIsAssigned(ObjString : pObjString);
+procedure AssertValidObjPointer(obj : pObj; const context : string);
 
 //Index and range assertions
 procedure AssertIndexIsNotNegative(Index : integer);
@@ -874,6 +877,62 @@ begin
   Assert(assigned(Table), 'Table is not assigned');
 end;
 
+procedure AssertTableConsistency(Table : pTable);
+{$IFDEF DEBUG_STRESS_GC}
+var
+  i, liveCount, tombstoneCount: integer;
+  entry: pEntry;
+{$ENDIF}
+begin
+  {$IFDEF DEBUG_STRESS_GC}
+  AssertTable(Table);
+  if Table.CurrentCapacity = 0 then
+  begin
+    Assert(Table.Count = 0, 'AssertTableConsistency: capacity=0 but count<>0');
+    Assert(Table.Entries = nil, 'AssertTableConsistency: capacity=0 but entries<>nil');
+    Exit;
+  end;
+
+  Assert(Table.Entries <> nil, 'AssertTableConsistency: capacity>0 but entries=nil');
+  Assert(Table.CurrentCapacity >= 8, 'AssertTableConsistency: capacity below minimum (8)');
+  Assert(Table.Count >= 0, 'AssertTableConsistency: negative count');
+  Assert(Table.Count <= Table.CurrentCapacity,
+    'AssertTableConsistency: count exceeds capacity');
+
+  // Walk entries and count live + tombstone
+  liveCount := 0;
+  tombstoneCount := 0;
+  for i := 0 to Table.CurrentCapacity - 1 do
+  begin
+    entry := @Table.Entries[i];
+    if entry.key <> nil then
+    begin
+      // Live entry — key must be a valid string object
+      Assert(entry.key^.Obj.ObjectKind = okString,
+        'AssertTableConsistency: entry key is not a string object');
+      Assert(entry.key^.length >= 0,
+        'AssertTableConsistency: entry key has negative length');
+      Inc(liveCount);
+    end
+    else
+    begin
+      // key=nil: either empty (value=nil) or tombstone (value=true boolean)
+      if entry.value.ValueKind <> vkNull then
+        Inc(tombstoneCount);
+    end;
+  end;
+
+  Assert(liveCount + tombstoneCount = Table.Count,
+    'AssertTableConsistency: live (' + IntToStr(liveCount) +
+    ') + tombstones (' + IntToStr(tombstoneCount) +
+    ') <> Table.Count (' + IntToStr(Table.Count) + ')');
+
+  // Count + tombstones must not exceed capacity (no overflows possible)
+  Assert(liveCount + tombstoneCount <= Table.CurrentCapacity,
+    'AssertTableConsistency: live + tombstones exceed capacity');
+  {$ENDIF}
+end;
+
 procedure AssertTableEntries(Table : pTable);
 begin
   AssertTable(Table);
@@ -978,6 +1037,13 @@ end;
 procedure AssertObjStringIsAssigned(ObjString : pObjString);
 begin
   Assert(Assigned(ObjString), 'ObjString is not assigned');
+end;
+
+procedure AssertValidObjPointer(obj : pObj; const context : string);
+begin
+  if obj = nil then Exit;
+  Assert(Ord(obj^.ObjectKind) <= Ord(High(TObjectKind)),
+    context + ': invalid ObjectKind (corrupt or freed pointer)');
 end;
 
 //Index and range assertions
@@ -1551,6 +1617,10 @@ end;
 procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
 var
   NewCapacity : integer;
+  OldValues   : pValue;
+  Offset      : NativeInt;
+  i           : integer;
+  upval       : pObjUpvalue;
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
@@ -1563,6 +1633,7 @@ begin
     Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'pushStack: capacity overflow');
     NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
     Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'pushStack: byte size overflow');
+    OldValues := Stack.Values;
     ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
     // Zero new portion
     FillChar(Stack.Values[Stack.CurrentCapacity],
@@ -1570,6 +1641,24 @@ begin
     Stack.CurrentCapacity := NewCapacity;
     // Rebase StackTop after realloc (pointer may have moved)
     Stack.StackTop := Stack.Values + Stack.Count;
+    // If the buffer moved, rebase all frame.slots and open upvalue locations
+    if Stack.Values <> OldValues then
+    begin
+      Offset := NativeInt(Stack.Values) - NativeInt(OldValues);
+      // Rebase call frame slot pointers
+      if (VM <> nil) and (Stack = VM.Stack) then
+      begin
+        for i := 0 to VM.FrameCount - 1 do
+          Inc(PByte(VM.Frames[i].slots), Offset);
+        // Rebase open upvalue location pointers
+        upval := VM.OpenUpvalues;
+        while upval <> nil do
+        begin
+          Inc(PByte(upval^.location), Offset);
+          upval := upval^.next;
+        end;
+      end;
+    end;
   end;
   Stack.StackTop^ := Value;
   Inc(Stack.StackTop);
@@ -3272,7 +3361,7 @@ begin
         end;
 
         OP_RECORD: begin
-          // Read field count and field name constant indices
+          // Read field count and field name constant indices (1 byte each)
           argCount := ReadByteFr; // fieldCount
           for i := 0 to argCount - 1 do
           begin
@@ -3283,12 +3372,47 @@ begin
             Assert(isString(value), 'OP_RECORD: field name constant is not a string');
             recFieldNames[i] := ValueToString(value);
           end;
-          // Read the record type name
+          // Read the record type name (1 byte)
           recNameIdx := ReadByteFr;
           AssertConstantIndex(recNameIdx, 'OP_RECORD type name');
           AssertFrameValues('OP_RECORD type name');
           value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
           Assert(isString(value), 'OP_RECORD: type name constant is not a string');
+          recTypeName := ValueToString(value);
+          // Allocate persistent field names array
+          recFieldNamesCopy := nil;
+          if argCount > 0 then
+          begin
+            Allocate(Pointer(recFieldNamesCopy), 0, argCount * SizeOf(pObjString), VM.MemTracker);
+            for i := 0 to argCount - 1 do
+              recFieldNamesCopy[i] := recFieldNames[i];
+          end;
+          recType := newRecordType(recTypeName, argCount, recFieldNamesCopy, VM.MemTracker);
+          pushStack(vm.Stack, CreateObject(pObj(recType)), vm.MemTracker);
+        end;
+
+        OP_RECORD_LONG: begin
+          // Read field count and field name constant indices (3 bytes each, 24-bit LE)
+          argCount := ReadByteFr; // fieldCount
+          for i := 0 to argCount - 1 do
+          begin
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG field name');
+            AssertFrameValues('OP_RECORD_LONG field name');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_RECORD_LONG: field name constant is not a string');
+            recFieldNames[i] := ValueToString(value);
+          end;
+          // Read the record type name (3 bytes, 24-bit LE)
+          recNameIdx := ReadByteFr;
+          recNameIdx := recNameIdx or (ReadByteFr shl 8);
+          recNameIdx := recNameIdx or (ReadByteFr shl 16);
+          AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG type name');
+          AssertFrameValues('OP_RECORD_LONG type name');
+          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+          Assert(isString(value), 'OP_RECORD_LONG: type name constant is not a string');
           recTypeName := ValueToString(value);
           // Allocate persistent field names array
           recFieldNamesCopy := nil;
@@ -3942,6 +4066,7 @@ end;
 procedure FreeObject(obj : pObj);
 begin
   AssertObjectIsAssigned(obj);
+  AssertValidObjPointer(obj, 'FreeObject');
   AssertVMIsAssigned;
   AssertMemTrackerIsNotNil(VM.MemTracker);
   {$IFDEF DEBUG_LOG_GC}
@@ -3998,6 +4123,8 @@ begin
                  pObjDictionary(obj)^.Capacity * SizeOf(TDictEntry), 0, vm.MemTracker);
       Allocate(Pointer(obj), SizeOf(TObjDictionary), 0, vm.MemTracker);
     end;
+  else
+    Assert(false, 'FreeObject: unknown or corrupt ObjectKind (possible double-free)');
   end;
 end;
 
@@ -4029,6 +4156,7 @@ begin
   AssertMemTrackerIsNotNil(VM.MemTracker);
 
   if obj = nil then Exit;
+  AssertValidObjPointer(obj, 'MarkObject');
   if obj^.IsMarked then Exit;
 
   {$IFDEF DEBUG_LOG_GC}
@@ -4123,6 +4251,11 @@ begin
     slot := VM.Stack.Values;
     while NativeUInt(slot) < NativeUInt(VM.Stack.StackTop) do
     begin
+      // Validate stack slot holds a valid value kind
+      Assert(Ord(slot^.ValueKind) <= Ord(High(TValueKind)),
+        'MarkRoots: invalid ValueKind on stack');
+      if isObject(slot^) then
+        AssertValidObjPointer(slot^.ObjValue, 'MarkRoots stack');
       MarkValue(slot^);
       Inc(slot);
     end;
@@ -4133,12 +4266,22 @@ begin
   Assert(VM.FrameCount >= 0, 'MarkRoots: FrameCount is negative');
   Assert(VM.FrameCount <= FRAMES_MAX, 'MarkRoots: FrameCount exceeds FRAMES_MAX');
   for i := 0 to VM.FrameCount - 1 do
+  begin
+    Assert(VM.Frames[i].closure <> nil, 'MarkRoots: frame closure is nil');
+    AssertValidObjPointer(pObj(VM.Frames[i].closure), 'MarkRoots frame closure');
     MarkObject(pObj(VM.Frames[i].closure));
+  end;
 
   // Mark open upvalues
   upvalue := VM.OpenUpvalues;
   while upvalue <> nil do
   begin
+    AssertValidObjPointer(pObj(upvalue), 'MarkRoots open upvalue');
+    // Verify open upvalue location points into the VM stack
+    Assert(NativeUInt(upvalue^.location) >= NativeUInt(VM.Stack.Values),
+      'MarkRoots: open upvalue location is below stack base');
+    Assert(NativeUInt(upvalue^.location) < NativeUInt(VM.Stack.StackTop),
+      'MarkRoots: open upvalue location is at or above stack top');
     MarkObject(pObj(upvalue));
     upvalue := upvalue^.next;
   end;
@@ -4171,16 +4314,21 @@ begin
       MarkValue(pObjUpvalue(obj)^.closed);
     okFunction: begin
       Assert(pObjFunction(obj)^.chunk <> nil, 'BlackenObject: function chunk is nil');
+      AssertValidObjPointer(pObj(pObjFunction(obj)^.name), 'BlackenObject function name');
       MarkObject(pObj(pObjFunction(obj)^.name));
       MarkArray(pObjFunction(obj)^.chunk^.Constants);
     end;
     okClosure: begin
       Assert(pObjClosure(obj)^.func <> nil, 'BlackenObject: closure func is nil');
+      AssertValidObjPointer(pObj(pObjClosure(obj)^.func), 'BlackenObject closure func');
       if pObjClosure(obj)^.upvalueCount > 0 then
         Assert(pObjClosure(obj)^.upvalues <> nil, 'BlackenObject: closure upvalues is nil with count > 0');
       MarkObject(pObj(pObjClosure(obj)^.func));
       for i := 0 to pObjClosure(obj)^.upvalueCount - 1 do
+      begin
+        AssertValidObjPointer(pObj(pObjClosure(obj)^.upvalues^[i]), 'BlackenObject closure upvalue');
         MarkObject(pObj(pObjClosure(obj)^.upvalues^[i]));
+      end;
     end;
     okNative: ;
     okString: ;
@@ -4189,18 +4337,31 @@ begin
       begin
         Assert(pObjArray(obj)^.Elements <> nil, 'BlackenObject: array elements is nil with count > 0');
         for i := 0 to pObjArray(obj)^.Count - 1 do
+        begin
+          if isObject(pObjArray(obj)^.Elements[i]) then
+            AssertValidObjPointer(pObjArray(obj)^.Elements[i].ObjValue, 'BlackenObject array element');
           MarkValue(pObjArray(obj)^.Elements[i]);
+        end;
       end;
     end;
     okRecordType: begin
+      AssertValidObjPointer(pObj(pObjRecordType(obj)^.name), 'BlackenObject recordType name');
       MarkObject(pObj(pObjRecordType(obj)^.name));
       for i := 0 to pObjRecordType(obj)^.fieldCount - 1 do
+      begin
+        AssertValidObjPointer(pObj(pObjRecordType(obj)^.fieldNames[i]), 'BlackenObject recordType fieldName');
         MarkObject(pObj(pObjRecordType(obj)^.fieldNames[i]));
+      end;
     end;
     okRecord: begin
+      AssertValidObjPointer(pObj(pObjRecord(obj)^.recordType), 'BlackenObject record type');
       MarkObject(pObj(pObjRecord(obj)^.recordType));
       for i := 0 to pObjRecord(obj)^.recordType^.fieldCount - 1 do
+      begin
+        if isObject(pObjRecord(obj)^.fields[i]) then
+          AssertValidObjPointer(pObjRecord(obj)^.fields[i].ObjValue, 'BlackenObject record field');
         MarkValue(pObjRecord(obj)^.fields[i]);
+      end;
     end;
     okNativeObject: ; // Delphi object not traced by GC
     okDictionary: begin
@@ -4211,6 +4372,10 @@ begin
         begin
           if pObjDictionary(obj)^.Entries[i].occupied then
           begin
+            if isObject(pObjDictionary(obj)^.Entries[i].key) then
+              AssertValidObjPointer(pObjDictionary(obj)^.Entries[i].key.ObjValue, 'BlackenObject dict key');
+            if isObject(pObjDictionary(obj)^.Entries[i].value) then
+              AssertValidObjPointer(pObjDictionary(obj)^.Entries[i].value.ObjValue, 'BlackenObject dict value');
             MarkValue(pObjDictionary(obj)^.Entries[i].key);
             MarkValue(pObjDictionary(obj)^.Entries[i].value);
           end;
@@ -4278,6 +4443,7 @@ begin
     else
     begin
       unreached := obj;
+      Assert(not unreached^.IsMarked, 'Sweep: about to free a marked (live) object');
       obj := obj^.Next;
       if previous <> nil then
         previous^.Next := obj
@@ -4308,8 +4474,56 @@ begin
 
   MarkRoots;
   TraceReferences;
+  Assert(VM.MemTracker.GrayCount = 0, 'CollectGarbage: gray stack not drained after TraceReferences');
+
+  {$IFDEF DEBUG_STRESS_GC}
+  // Post-mark reachability verification: all stack roots must be marked
+  if (VM.Stack <> nil) and (VM.Stack.Count > 0) then
+  begin
+    var verifySlot : pValue := VM.Stack.Values;
+    while NativeUInt(verifySlot) < NativeUInt(VM.Stack.StackTop) do
+    begin
+      if isObject(verifySlot^) and (verifySlot^.ObjValue <> nil) then
+        Assert(verifySlot^.ObjValue^.IsMarked,
+          'Post-mark verify: stack root object is not marked');
+      Inc(verifySlot);
+    end;
+  end;
+  var verifyIdx : integer;
+  for verifyIdx := 0 to VM.FrameCount - 1 do
+    Assert(pObj(VM.Frames[verifyIdx].closure)^.IsMarked,
+      'Post-mark verify: frame closure is not marked');
+  {$ENDIF}
+
   TableRemoveWhite(VM.Strings);
   Sweep;
+
+  {$IFDEF DEBUG_STRESS_GC}
+  // Tracked-allocation verification: all surviving objects must have valid structure
+  begin
+    var verifyObj : pObj := VM.MemTracker.CreatedObjects;
+    while verifyObj <> nil do
+    begin
+      AssertValidObjPointer(verifyObj, 'Post-sweep verify surviving object');
+      // After sweep, IsMarked is cleared for the next cycle — do not check it
+      verifyObj := verifyObj^.Next;
+    end;
+  end;
+  // Interned string table consistency: every entry must point to a valid okString
+  if (VM.Strings <> nil) and (VM.Strings.Entries <> nil) then
+  begin
+    var strIdx : integer;
+    for strIdx := 0 to VM.Strings.CurrentCapacity - 1 do
+    begin
+      if VM.Strings.Entries[strIdx].key <> nil then
+      begin
+        AssertValidObjPointer(pObj(VM.Strings.Entries[strIdx].key), 'Post-sweep VM.Strings entry');
+        Assert(VM.Strings.Entries[strIdx].key^.Obj.ObjectKind = okString,
+          'Post-sweep VM.Strings: entry key is not okString');
+      end;
+    end;
+  end;
+  {$ENDIF}
 
   if VM.MemTracker.BytesAllocated <= MaxInt div GC_HEAP_GROW_FACTOR then
     VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR
@@ -7722,9 +7936,9 @@ begin
   begin
     repeat
       consume(TOKEN_IDENTIFIER, 'Expect field name.');
-      if fieldCount >= 256 then
+      if fieldCount >= 255 then
       begin
-        Error('Can''t have more than 256 fields.');
+        Error('Can''t have more than 255 fields.');
         Break;
       end;
       nameStr := CreateString(TokenToString(parser.previous), VM.MemTracker);
@@ -7738,21 +7952,50 @@ begin
   consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after record fields.');
   consume(TOKEN_SEMICOLON, 'Expect '';'' after record declaration.');
 
-  // Emit OP_RECORD with field count
-  emitByte(OP_RECORD, CurrentChunk, parser.previous.line, vm.MemTracker);
-  emitByte(Byte(fieldCount), CurrentChunk, parser.previous.line, vm.MemTracker);
-
-  // Emit each field name constant index
-  for i := 0 to fieldCount - 1 do
-    emitByte(Byte(fieldNameIndices[i]), CurrentChunk, parser.previous.line, vm.MemTracker);
-
-  // Store the record type name as a constant and emit its index
+  // Store the record type name as a constant
   nameStr := CreateString(TokenToString(nameToken), VM.MemTracker);
   pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-  emitByte(Byte(AddValueConstant(CurrentChunk.Constants,
-    StringToValue(nameStr), VM.MemTracker)),
-    CurrentChunk, parser.previous.line, vm.MemTracker);
+  var typeNameIdx : integer := AddValueConstant(CurrentChunk.Constants,
+    StringToValue(nameStr), VM.MemTracker);
   popStack(VM.Stack);
+
+  // Determine whether any constant index exceeds a single byte
+  var needsLong : Boolean := (typeNameIdx > High(Byte));
+  if not needsLong then
+    for i := 0 to fieldCount - 1 do
+      if fieldNameIndices[i] > High(Byte) then
+      begin
+        needsLong := True;
+        Break;
+      end;
+
+  if not needsLong then
+  begin
+    // Short form: 1 byte per index
+    emitByte(OP_RECORD, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(fieldCount), CurrentChunk, parser.previous.line, vm.MemTracker);
+    for i := 0 to fieldCount - 1 do
+      emitByte(Byte(fieldNameIndices[i]), CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(typeNameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    // Long form: 3 bytes per index (24-bit little-endian)
+    var intBytes : TIntToByteResult;
+    emitByte(OP_RECORD_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(fieldCount), CurrentChunk, parser.previous.line, vm.MemTracker);
+    for i := 0 to fieldCount - 1 do
+    begin
+      intBytes := IntToBytes(fieldNameIndices[i]);
+      emitByte(intBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(intBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(intBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end;
+    intBytes := IntToBytes(typeNameIdx);
+    emitByte(intBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(intBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(intBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
 
   defineVariable(global);
 end;
@@ -8003,6 +8246,7 @@ begin
   // ---- Exit assertions ----
   Assert(Table.Entries <> nil, 'AdjustCapacity exit: entries should not be nil');
   Assert(Table.CurrentCapacity = NewCapacity, 'AdjustCapacity exit: capacity mismatch');
+  AssertTableConsistency(Table);
 end;
 
 
@@ -8034,6 +8278,7 @@ begin
 
   // ---- Exit assertions ----
   Assert(Entry.key = key, 'TableSet exit: key not written');
+  AssertTableConsistency(Table);
 end;
 
 
@@ -8055,6 +8300,7 @@ begin
   Entry.key := nil;
   Entry.value := CreateBoolean(true);
   Result := true;
+  AssertTableConsistency(Table);
 end;
 
 

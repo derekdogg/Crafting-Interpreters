@@ -1603,6 +1603,150 @@ begin
     'var s12 = "mm"; var s13 = "nn"; var s14 = "oo"; var s15 = "pp"; ' +
     'print s0 + s15;',
     'aapp');
+
+  // =========================================================================
+  // PART 6: Arrays and dictionaries under stress GC
+  // These exercise heap objects that hold references to other heap objects,
+  // and whose internal storage can be reallocated (triggering GC).
+  // =========================================================================
+
+  // --- Array creation and push under stress ---
+  AssertStressOutput(
+    'var a = newArray(); arrayPush(a, "hello"); arrayPush(a, "world"); ' +
+    'print arrayGet(a, 0) + " " + arrayGet(a, 1);',
+    'hello world');
+
+  // --- Array push in a loop (forces internal realloc) ---
+  AssertStressOutput(
+    'var a = newArray(); ' +
+    'for (var i = 0; i < 20; i = i + 1) { arrayPush(a, "item"); } ' +
+    'print arrayLen(a);',
+    '20');
+
+  // --- Array holding strings created by concatenation ---
+  AssertStressOutput(
+    'var a = newArray(); ' +
+    'for (var i = 0; i < 5; i = i + 1) { arrayPush(a, "x" + str(i)); } ' +
+    'print arrayGet(a, 0) + arrayGet(a, 4);',
+    'x0x4');
+
+  // --- Array survives GC via collectGarbage() ---
+  AssertOutput(
+    'var a = newArray(); arrayPush(a, "kept"); collectGarbage(); ' +
+    'assert(arrayGet(a, 0) == "kept"); print arrayGet(a, 0);',
+    'kept');
+
+  // --- Array of closures under stress ---
+  AssertStressOutput(
+    'var a = newArray(); ' +
+    'for (var i = 0; i < 5; i = i + 1) { ' +
+    '  fun f() { return i; } ' +
+    '  arrayPush(a, f); ' +
+    '} ' +
+    'var fn = arrayGet(a, 4); print fn();',
+    '5');
+
+  // --- Dictionary creation and set under stress ---
+  AssertStressOutput(
+    'var d = dictNew(); dictSet(d, "key", "value"); ' +
+    'print dictGet(d, "key");',
+    'value');
+
+  // --- Dictionary with multiple keys (forces internal resize) ---
+  AssertStressOutput(
+    'var d = dictNew(); ' +
+    'dictSet(d, "a", 1); dictSet(d, "b", 2); dictSet(d, "c", 3); ' +
+    'dictSet(d, "d", 4); dictSet(d, "e", 5); dictSet(d, "f", 6); ' +
+    'dictSet(d, "g", 7); dictSet(d, "h", 8); dictSet(d, "i", 9); ' +
+    'print dictGet(d, "a") + dictGet(d, "i");',
+    '10');
+
+  // --- Dictionary with string values from concat under stress ---
+  AssertStressOutput(
+    'var d = dictNew(); ' +
+    'for (var i = 0; i < 10; i = i + 1) { ' +
+    '  dictSet(d, str(i), "val" + str(i)); ' +
+    '} ' +
+    'print dictGet(d, "0") + " " + dictGet(d, "9");',
+    'val0 val9');
+
+  // --- Dictionary survives GC ---
+  AssertOutput(
+    'var d = dictNew(); dictSet(d, "x", "alive"); collectGarbage(); ' +
+    'assert(dictGet(d, "x") == "alive"); print dictGet(d, "x");',
+    'alive');
+
+  // --- split() returns array with multiple allocations in one call ---
+  AssertStressOutput(
+    'var parts = split("a,b,c,d,e", ","); ' +
+    'print arrayGet(parts, 0) + arrayGet(parts, 4);',
+    'ae');
+
+  // --- split() in a loop under stress ---
+  AssertStressOutput(
+    'var result = ""; ' +
+    'for (var i = 0; i < 5; i = i + 1) { ' +
+    '  var parts = split("x,y", ","); ' +
+    '  result = result + arrayGet(parts, 0); ' +
+    '} print result;',
+    'xxxxx');
+
+  // --- str() conversion allocating strings under stress ---
+  AssertStressOutput(
+    'var s = str(1) + str(2) + str(3); print s;',
+    '123');
+
+  // --- Multiple native calls feeding into concatenation ---
+  AssertStressOutput(
+    'print upper("abc") + lower("XYZ") + str(42);',
+    'ABCxyz42');
+
+  // --- substr allocations under stress ---
+  AssertStressOutput(
+    'var s = "hello world"; ' +
+    'var a = substr(s, 0, 5); var b = substr(s, 6, 5); ' +
+    'print a + " " + b;',
+    'hello world');
+
+  // --- Nested function calls that all allocate under stress ---
+  AssertStressOutput(
+    'fun cat(a, b) { return a + b; } ' +
+    'print cat(cat("a", "b"), cat("c", "d"));',
+    'abcd');
+
+  // --- Recursive function building array under stress ---
+  AssertStressOutput(
+    'fun build(arr, n) { ' +
+    '  if (n <= 0) return arr; ' +
+    '  arrayPush(arr, "x" + str(n)); ' +
+    '  return build(arr, n - 1); ' +
+    '} ' +
+    'var a = build(newArray(), 10); ' +
+    'print arrayLen(a);',
+    '10');
+
+  // --- Array and dict together under stress ---
+  AssertStressOutput(
+    'var d = dictNew(); ' +
+    'var a = newArray(); ' +
+    'for (var i = 0; i < 5; i = i + 1) { ' +
+    '  var key = "k" + str(i); ' +
+    '  dictSet(d, key, i); ' +
+    '  arrayPush(a, key); ' +
+    '} ' +
+    'print dictGet(d, arrayGet(a, 3));',
+    '3');
+
+  // --- Subscript operators (if OP_GET/SET_SUBSCRIPT exist) ---
+  AssertStressOutput(
+    'var a = newArray(); arrayPush(a, nil); ' +
+    'a[0] = "replaced"; print a[0];',
+    'replaced');
+
+  // --- Dict subscript under stress ---
+  AssertStressOutput(
+    'var d = dictNew(); d["foo"] = "bar"; print d["foo"];',
+    'bar');
 end;
 
 initialization
