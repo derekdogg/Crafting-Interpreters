@@ -5636,6 +5636,7 @@ var
   serverVal, dbVal, authVal, userVal, passVal : TValue;
   server, db, auth, user, pass : AnsiString;
   serverKey, dbKey, authKey, userKey, passKey : TValue;
+  stackBase : integer;
 begin
   if argCount <> 1 then
   begin
@@ -5650,21 +5651,31 @@ begin
 
   dict := pObjDictionary(args[0].ObjValue);
 
-  // Build key values for lookup
+  // Save stack depth for unwinding on all exit paths
+  stackBase := VM.Stack.Count;
+
+  // Build key values for lookup — protect each from GC before next allocation
   serverKey := CreateObject(pObj(CreateString('server', VM.MemTracker)));
+  pushStack(VM.Stack, serverKey, VM.MemTracker);
   dbKey := CreateObject(pObj(CreateString('database', VM.MemTracker)));
+  pushStack(VM.Stack, dbKey, VM.MemTracker);
   authKey := CreateObject(pObj(CreateString('auth', VM.MemTracker)));
+  pushStack(VM.Stack, authKey, VM.MemTracker);
   userKey := CreateObject(pObj(CreateString('user', VM.MemTracker)));
+  pushStack(VM.Stack, userKey, VM.MemTracker);
   passKey := CreateObject(pObj(CreateString('password', VM.MemTracker)));
+  pushStack(VM.Stack, passKey, VM.MemTracker);
 
   // Required: server
   if not DictGet(dict, serverKey, serverVal) then
   begin
+    while VM.Stack.Count > stackBase do popStack(VM.Stack);
     RuntimeError('sqlConnect() config missing "server" key.');
     Exit(CreateNilValue);
   end;
   if not isString(serverVal) then
   begin
+    while VM.Stack.Count > stackBase do popStack(VM.Stack);
     RuntimeError('sqlConnect() "server" must be a string.');
     Exit(CreateNilValue);
   end;
@@ -5673,11 +5684,13 @@ begin
   // Required: database
   if not DictGet(dict, dbKey, dbVal) then
   begin
+    while VM.Stack.Count > stackBase do popStack(VM.Stack);
     RuntimeError('sqlConnect() config missing "database" key.');
     Exit(CreateNilValue);
   end;
   if not isString(dbVal) then
   begin
+    while VM.Stack.Count > stackBase do popStack(VM.Stack);
     RuntimeError('sqlConnect() "database" must be a string.');
     Exit(CreateNilValue);
   end;
@@ -5700,6 +5713,9 @@ begin
   if DictGet(dict, passKey, passVal) then
     if isString(passVal) then
       pass := ObjStringToAnsiString(pObjString(passVal.ObjValue));
+
+  // Keys no longer needed — unwind stack
+  while VM.Stack.Count > stackBase do popStack(VM.Stack);
 
   // Create and configure the connection
   conn := TFDConnection.Create(nil);
