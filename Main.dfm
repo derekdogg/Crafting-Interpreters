@@ -30,11 +30,11 @@ object Form4: TForm4
     TabOrder = 1
   end
   object Button2: TButton
-    Left = 569
-    Top = 144
-    Width = 72
+    Left = 24
+    Top = 127
+    Width = 104
     Height = 25
-    Caption = 'Scanner >>'
+    Caption = 'Run GC Stress test'
     TabOrder = 2
     OnClick = Button2Click
   end
