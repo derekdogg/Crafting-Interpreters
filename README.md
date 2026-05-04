@@ -177,7 +177,7 @@ The garbage collector has been hardened with:
 - **Stack realloc rebase fix** — After `ReallocMem` moves the stack buffer, rebases all `VM.Frames[i].slots` and open upvalue `location` pointers
 - **AssertTableConsistency** — Debug assertion validating `live + tombstones = Table.Count`
 - **15-pattern stress test suite** (`samples/stress/gc_stress_patterns.lox`) covering allocation storms, cycles, deep chains, container thrash, closure capture, shared-object explosion, sustained pressure, cycle reclamation, intern table churn, and stack realloc with open upvalues
-- **14 dedicated GC test files** covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, array element marking, record type/instance reclamation, coverage gaps, and stress collections
+- **16 dedicated GC test files** covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, array element marking, record type/instance reclamation, coverage gaps, and stress collections
 
 ## Build
 
