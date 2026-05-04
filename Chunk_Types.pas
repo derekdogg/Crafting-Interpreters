@@ -127,7 +127,7 @@ const
     'OP_RECORD_LONG');
 
   UINT8_COUNT = 256;
-  FRAMES_MAX = 64;
+  FRAMES_MAX = 256;
   STACK_MAX = FRAMES_MAX * UINT8_COUNT;
 
 
@@ -383,6 +383,7 @@ type
     GrayCapacity    : integer;
     GrayStack       : ^pObj;
     Roots           : TRoots;
+    GCCollections   : integer;
   end;
 
   TCallFrame = record
@@ -2968,7 +2969,8 @@ var
       end;
       if VM.FrameCount = FRAMES_MAX then
       begin
-        runtimeError('Stack overflow.');
+        runtimeError('Stack overflow (max ' + IntToStr(FRAMES_MAX) +
+          ' frames). Last call: ' + String(pObjClosure(callee.ObjValue)^.func^.name^.chars));
         Exit(false);
       end;
       frame := @VM.Frames[VM.FrameCount];
@@ -4472,6 +4474,8 @@ begin
   Inc(GCLogCycles);
   {$ENDIF}
 
+  Inc(VM.MemTracker.GCCollections);
+
   MarkRoots;
   TraceReferences;
   Assert(VM.MemTracker.GrayCount = 0, 'CollectGarbage: gray stack not drained after TraceReferences');
@@ -4554,6 +4558,7 @@ begin
   MemTracker.GrayCount := 0;
   MemTracker.GrayCapacity := 0;
   MemTracker.GrayStack := nil;
+  MemTracker.GCCollections := 0;
   
   // ---- Exit assertions ----
   AssertMemTrackerIsNotNil(MemTracker);
@@ -4643,6 +4648,79 @@ begin
     obj := obj.Next;
   end;
   Result := CreateNumber(count);
+end;
+
+function vmStackDepthNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber( (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue) );
+end;
+
+function vmStackCapacityNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.Stack.CurrentCapacity);
+end;
+
+function vmCallDepthNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.FrameCount);
+end;
+
+function vmOpenUpvaluesNative(argCount: integer; args: pValue): TValue;
+var
+  upval: pObjUpvalue;
+  count: integer;
+begin
+  count := 0;
+  upval := VM.OpenUpvalues;
+  while upval <> nil do
+  begin
+    count := count + 1;
+    upval := upval^.next;
+  end;
+  Result := CreateNumber(count);
+end;
+
+function gcNextThresholdNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.MemTracker.NextGC);
+end;
+
+function gcCollectionCountNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.MemTracker.GCCollections);
+end;
+
+function internTableStatsNative(argCount: integer; args: pValue): TValue;
+var
+  dict: pObjDictionary;
+  liveCount, capacity, tombstones, i: integer;
+  keyStr: pObjString;
+  dictVal: TValue;
+begin
+  capacity := VM.Strings.CurrentCapacity;
+  // Count live entries and tombstones separately
+  liveCount := 0;
+  tombstones := 0;
+  if (VM.Strings.Entries <> nil) and (capacity > 0) then
+    for i := 0 to capacity - 1 do
+      if VM.Strings.Entries[i].key <> nil then
+        Inc(liveCount)
+      else if VM.Strings.Entries[i].value.ValueKind <> vkNull then
+        Inc(tombstones);
+  // Create dictionary and push onto stack to protect from GC during allocations
+  dict := newDictionary(VM.MemTracker);
+  dictVal := CreateObject(pObj(dict));
+  pushStack(VM.Stack, dictVal, VM.MemTracker);
+  // Now safe to allocate key strings — dict is rooted via stack
+  keyStr := CreateString('liveStrings', VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(liveCount), VM.MemTracker);
+  keyStr := CreateString('slots', VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(capacity), VM.MemTracker);
+  keyStr := CreateString('tombstones', VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(tombstones), VM.MemTracker);
+  // Pop the protection slot — caller will push result onto stack
+  popStack(VM.Stack);
+  Result := dictVal;
 end;
 
 function envNative(argCount: integer; args: pValue): TValue;
@@ -6329,6 +6407,13 @@ begin
   defineNative('assert', assertNative);
   defineNative('bytesAllocated', bytesAllocatedNative);
   defineNative('objectsAllocated', objectsAllocatedNative);
+  defineNative('vmStackDepth', vmStackDepthNative);
+  defineNative('vmStackCapacity', vmStackCapacityNative);
+  defineNative('vmCallDepth', vmCallDepthNative);
+  defineNative('vmOpenUpvalues', vmOpenUpvaluesNative);
+  defineNative('gcNextThreshold', gcNextThresholdNative);
+  defineNative('gcCollectionCount', gcCollectionCountNative);
+  defineNative('internTableStats', internTableStatsNative);
   defineNative('env', envNative);
   defineNative('loadEnv', loadEnvNative);
 

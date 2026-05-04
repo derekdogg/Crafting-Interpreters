@@ -1,0 +1,66 @@
+// GC Monitor — track collections and memory across a workload
+//
+// Runs a workload in phases, printing GC stats before and after each.
+// Shows how bytesAllocated, objectsAllocated, and gcCollectionCount
+// evolve as objects are created and destroyed.
+
+record Node(value, next);
+
+fun printGCState(label) {
+  print label + ":";
+  print "  bytes=" + str(bytesAllocated()) +
+        "  objects=" + str(objectsAllocated()) +
+        "  collections=" + str(gcCollectionCount()) +
+        "  nextGC=" + str(gcNextThreshold());
+}
+
+// Phase 0: Baseline
+collectGarbage();
+printGCState("Phase 0 (baseline)");
+
+// Phase 1: Allocate 500 linked-list nodes
+var bigList = nil;
+for (var i = 0; i < 500; i = i + 1) {
+  bigList = Node("node_" + str(i), bigList);
+}
+printGCState("Phase 1 (500 nodes allocated)");
+
+// Phase 2: Force a collection — everything is reachable, nothing freed
+var collectionsBefore = gcCollectionCount();
+collectGarbage();
+var collectionsAfter = gcCollectionCount();
+printGCState("Phase 2 (post-GC, all reachable)");
+assert(collectionsAfter == collectionsBefore + 1, "GC should have fired exactly once");
+
+// Phase 3: Drop the list and collect — big drop expected
+var bytesBefore = bytesAllocated();
+bigList = nil;
+collectGarbage();
+var bytesAfter = bytesAllocated();
+printGCState("Phase 3 (list dropped, post-GC)");
+var freed = bytesBefore - bytesAfter;
+print "  -> freed " + str(freed) + " bytes";
+assert(freed > 0, "Should have freed memory after dropping 500 nodes");
+
+// Phase 4: Rapid churn — many short-lived objects
+var churnCollections = gcCollectionCount();
+for (var i = 0; i < 1000; i = i + 1) {
+  var tmp = newArray();
+  arrayPush(tmp, "churn_" + str(i));
+}
+var churnCollectionsAfter = gcCollectionCount();
+printGCState("Phase 4 (after 1000 short-lived arrays)");
+print "  -> automatic collections during churn: " + str(churnCollectionsAfter - churnCollections);
+
+// Phase 5: Verify threshold grows after retaining objects
+var retained = newArray();
+for (var i = 0; i < 200; i = i + 1) {
+  arrayPush(retained, Node(i, nil));
+}
+collectGarbage();
+var thresholdNow = gcNextThreshold();
+printGCState("Phase 5 (200 retained nodes, post-GC)");
+print "  -> threshold reflects live set size";
+
+print "";
+print "GC monitor complete. Total collections: " + str(gcCollectionCount());

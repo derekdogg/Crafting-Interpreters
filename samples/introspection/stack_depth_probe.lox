@@ -1,0 +1,85 @@
+// Stack Depth Probe — observe how recursion and closures affect the VM stack
+//
+// Shows vmStackDepth() and vmCallDepth() at various points:
+// - Top-level code
+// - Inside nested function calls
+// - During recursion (watching the stack grow)
+// - With closures capturing upvalues
+
+fun printStack(label) {
+  print label + ": stackDepth=" + str(vmStackDepth()) +
+        " callDepth=" + str(vmCallDepth()) +
+        " capacity=" + str(vmStackCapacity()) +
+        " openUpvalues=" + str(vmOpenUpvalues());
+}
+
+// 1. Top-level
+printStack("Top-level");
+
+// 2. One function deep
+fun levelOne() {
+  printStack("  levelOne");
+  fun levelTwo() {
+    printStack("    levelTwo");
+    fun levelThree() {
+      printStack("      levelThree");
+    }
+    levelThree();
+  }
+  levelTwo();
+}
+levelOne();
+
+// 3. Recursion — watch stack depth grow linearly
+print "";
+print "Recursive depth probe:";
+fun recurse(n, maxN) {
+  if (n == maxN) {
+    printStack("  recursion depth=" + str(n));
+    return nil;
+  }
+  if (n % 10 == 0) {
+    printStack("  recursion depth=" + str(n));
+  }
+  recurse(n + 1, maxN);
+}
+recurse(0, 40);
+
+// 4. Closures and upvalues
+print "";
+print "Closure upvalue probe:";
+printStack("Before closures");
+
+var closures = newArray();
+for (var i = 0; i < 10; i = i + 1) {
+  var captured = "val_" + str(i);
+  fun getter() { return captured; }
+  arrayPush(closures, getter);
+}
+// Open upvalues should be non-zero while closures reference stack locals
+// (but after the loop, locals are off the stack — upvalues get closed)
+printStack("After creating 10 closures");
+
+// Call each closure to verify they work
+for (var i = 0; i < 10; i = i + 1) {
+  var fn = arrayGet(closures, i);
+  assert(fn() == "val_" + str(i));
+}
+printStack("After calling all closures");
+
+// 5. Stack capacity check — use max safe depth (FRAMES_MAX = 64)
+print "";
+print "Stack capacity before/after deep call:";
+var capBefore = vmStackCapacity();
+recurse(0, 55);
+var capAfter = vmStackCapacity();
+print "  capacity before: " + str(capBefore);
+print "  capacity after:  " + str(capAfter);
+if (capAfter > capBefore) {
+  print "  -> stack was reallocated!";
+} else {
+  print "  -> stack fit within existing capacity";
+}
+
+print "";
+print "Stack depth probe complete.";

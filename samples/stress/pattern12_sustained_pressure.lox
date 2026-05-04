@@ -25,6 +25,9 @@ record Node(value, next);
 var sustainedArr = newArray();  // long-lived: grows to 100 entries
 var sustainedList = nil;         // long-lived: linked list of 100 nodes
 
+// Introspection: record GC count before the loop — no explicit collectGarbage() inside
+var gcBefore = gcCollectionCount();
+
 for (var i = 0; i < 5000; i = i + 1) {
   // Short-lived garbage: dies at end of this iteration
   var tmp2 = "s" + str(i) + "e";  // string concat creates garbage
@@ -53,6 +56,12 @@ while (sWalk != nil) {
   sWalk = sWalk.next;
 }
 assert(sCount == 100);
+
+// Introspection: prove GC fired automatically during the loop (no explicit calls)
+var gcAfter = gcCollectionCount();
+var autoCollections = gcAfter - gcBefore;
+print "pattern 12: automatic GC collections during loop: " + str(autoCollections);
+assert(autoCollections > 0, "GC should have triggered automatically during 5000 iterations");
 
 collectGarbage();
 print "pattern 12 (sustained pressure 5000 iterations): passed";

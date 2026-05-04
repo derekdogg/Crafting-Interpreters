@@ -129,4 +129,10 @@ fun stackReallocTest() {
 
 stackReallocTest();
 collectGarbage();
+
+// Introspection: prove the stack actually grew past the initial capacity.
+// START_CAPACITY = 16 and fillStack() uses 255 locals, so capacity must have grown.
+assert(vmStackCapacity() > 16, "Stack capacity should have grown past START_CAPACITY (16)");
+print "pattern 15: final stack capacity = " + str(vmStackCapacity());
+
 print "pattern 15 (stack realloc with open upvalues): passed";
