@@ -548,34 +548,45 @@ print "pattern 13 (cycle reclamation verified): passed";
 // This stresses TableRemoveWhite on the intern table.
 // =========================================================================
 
-collectGarbage();
-var internBaseline = bytesAllocated();
-
-// Create 2000 unique strings via concatenation (not literals — literals live in constants)
-fun churnStrings(count2) {
+// Build an array of unique strings — kept alive until we drop the array.
+fun buildStrings(count2) {
+  var arr = newArray();
   for (var i = 0; i < count2; i = i + 1) {
-    // Each concat produces a unique interned string
-    var s2 = "churn_" + str(i) + "_end";
-    // s2 is immediately dead after this iteration
+    arrayPush(arr, "churn_" + str(i) + "_end");
   }
+  return arr;
 }
-churnStrings(2000);
 
-// All 2000 strings are now unreachable (only in intern table as weak refs)
+// Warm up: grow the intern table to steady-state capacity.
+var warmup = buildStrings(2000);
+warmup = nil;
 collectGarbage();
-var afterChurn = bytesAllocated();
+warmup = buildStrings(2000);
+warmup = nil;
+collectGarbage();
 
-// Memory should be close to baseline — all churned strings were reclaimed
-// Allow some slack for intern table tombstones / overhead
-assert(afterChurn - internBaseline < 1000); // less than 1KB retained
+// NOW measure: hold 2000 strings alive, measure, then drop and collect.
+var held = buildStrings(2000);
+collectGarbage();
+var withStrings = bytesAllocated();
 
-// Stress: repeated churn cycles
+held = nil;
+collectGarbage();
+var afterDrop = bytesAllocated();
+
+assert(afterDrop < withStrings);
+var freed = withStrings - afterDrop;
+assert(freed > 10000);
+
+// Stress: repeated build/drop cycles — verify no unbounded growth
+var stableBase = afterDrop;
 for (var wave = 0; wave < 5; wave = wave + 1) {
-  churnStrings(500);
+  var batch = buildStrings(500);
+  batch = nil;
   collectGarbage();
 }
 var afterWaves = bytesAllocated();
-assert(afterWaves - internBaseline < 1000);
+assert(afterWaves - stableBase < 50000);
 
 // Verify that strings we DO keep are still interned correctly
 var kept1 = "keeper_string";

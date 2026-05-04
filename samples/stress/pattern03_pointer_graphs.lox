@@ -1,0 +1,48 @@
+// GC Stress Pattern 3: Pointer Graphs — linked list construction and traversal
+//
+// Purpose: Verifies that the GC correctly traces through chains of record
+// references. A linked list of 500 nodes is only reachable via `head` —
+// if tracing fails to follow .next pointers, interior nodes get freed.
+//
+// What this catches:
+// - Incomplete tracing through record fields (blackenObject skipping fields)
+// - Premature collection of objects only reachable through other heap objects
+// - Corruption when GC runs during list construction (mid-link)
+// - Gray stack overflow with deep object graphs
+//
+// The test also verifies that after dropping all references (head = nil),
+// the entire 500-node chain is properly reclaimed — no memory leak.
+
+record Node(value, next);
+
+// Build a linked list of 500 nodes — each node is only kept alive by the
+// previous node's .next field, ultimately rooted at `head`.
+var head = nil;
+for (var i = 0; i < 500; i = i + 1) {
+  head = Node(i, head);  // new head points to old head via .next
+  if (i % 50 == 0) collectGarbage();  // GC mid-construction
+}
+
+// Traverse and verify — proves all 500 nodes survived
+var current = head;
+var count = 0;
+while (current != nil) {
+  count = count + 1;
+  current = current.next;
+}
+assert(count == 500);
+assert(head.value == 499);  // last pushed = head
+
+// Walk halfway, then GC — the first 250 nodes are only reachable via
+// the `head` variable (not `current`), testing that the GC doesn't
+// only trace from the currently-held pointer.
+current = head;
+for (var i = 0; i < 250; i = i + 1) current = current.next;
+collectGarbage();
+assert(current.value == 249);
+
+// Drop all references — entire list becomes garbage
+head = nil;
+current = nil;
+collectGarbage();
+print "pattern 3 (linked list pointer graph): passed";

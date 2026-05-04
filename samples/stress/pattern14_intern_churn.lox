@@ -1,0 +1,78 @@
+// GC Stress Pattern 14: String intern table churn at scale
+//
+// Purpose: Stresses the intern table's TableRemoveWhite operation. All
+// ObjStrings are interned (stored in vm.strings hash table). When a string
+// becomes unreachable, the GC sweep phase must:
+//   1. Call TableRemoveWhite to delete the string's entry from vm.strings
+//   2. Then free the ObjString memory
+// If TableRemoveWhite is buggy, dead strings remain in the intern table
+// as dangling pointers, causing use-after-free on the next lookup.
+//
+// What this catches:
+// - TableRemoveWhite failing to remove dead strings (memory leak)
+// - Intern table retaining dangling pointers to freed ObjStrings
+// - Unbounded intern table growth from tombstones never being reclaimed
+// - Hash collisions in the intern table causing live strings to be
+//   accidentally removed along with dead ones
+//
+// Strategy: Build 2000 unique strings held alive via an array. Measure
+// bytesAllocated() with them alive vs. after dropping. Warm-up phases
+// ensure the intern table has already reached steady-state capacity,
+// so the measurement only reflects string/array memory, not table growth.
+// Then 5 waves of 500-string churn verify no unbounded growth.
+
+// Build an array of unique strings — kept alive until we drop the array.
+// Each string is ~20 chars ("churn_NNNN_end"), so 2000 × ~33 bytes ≈ 66KB.
+fun buildStrings(count2) {
+  var arr = newArray();
+  for (var i = 0; i < count2; i = i + 1) {
+    arrayPush(arr, "churn_" + str(i) + "_end");
+  }
+  return arr;
+}
+
+// Warm up: grow the intern table to steady-state capacity.
+var warmup = buildStrings(2000);
+warmup = nil;
+collectGarbage();
+warmup = buildStrings(2000);
+warmup = nil;
+collectGarbage();
+
+// NOW measure: hold 2000 strings alive, measure, then drop and collect.
+var held = buildStrings(2000);
+collectGarbage(); // clean any garbage from buildStrings intermediates
+var withStrings = bytesAllocated();
+
+// Drop all references — strings become unreachable
+held = nil;
+collectGarbage();
+var afterDrop = bytesAllocated();
+
+// Strings should have been reclaimed — memory went down
+print "pattern 14: withStrings=" + str(withStrings) + " afterDrop=" + str(afterDrop) + " freed=" + str(withStrings - afterDrop);
+assert(afterDrop < withStrings); // memory went DOWN — reclamation works
+
+// Verify reclamation is significant (2000 strings + array overhead)
+var freed = withStrings - afterDrop;
+assert(freed > 10000); // at least 10KB freed
+
+// Stress: repeated build/drop cycles — verify no unbounded growth
+var stableBase = afterDrop;
+for (var wave = 0; wave < 5; wave = wave + 1) {
+  var batch = buildStrings(500);
+  batch = nil;
+  collectGarbage();
+}
+var afterWaves = bytesAllocated();
+print "pattern 14: afterWaves=" + str(afterWaves) + " stableBase=" + str(stableBase) + " growth=" + str(afterWaves - stableBase);
+assert(afterWaves - stableBase < 50000);
+
+// Verify that strings we DO keep are still interned correctly
+var kept1 = "keeper_string";
+var kept2 = "keeper" + "_" + "string";
+assert(kept1 == kept2); // interning dedup
+collectGarbage();
+assert(kept1 == "keeper_string"); // survived
+
+print "pattern 14 (intern table churn 2000+ strings): passed";

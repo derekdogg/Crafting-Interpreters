@@ -1,0 +1,64 @@
+// GC Stress Pattern 9: Closure Capture — objects reachable only via environments
+//
+// Purpose: Verifies that objects captured by closures remain alive even when
+// no other reference exists. Captured variables live in ObjUpvalue objects
+// on the heap (after the enclosing scope returns). If the GC doesn't trace
+// closure -> upvalue -> captured object, the object gets prematurely freed.
+//
+// What this catches:
+// - Failure to mark closed upvalue values during GC
+// - Closure environments being freed while the closure is still reachable
+// - Objects reachable ONLY through closure capture being collected
+// - Corruption when GC fires during closure construction (makeCapture)
+//
+// The test builds 50 closures, each capturing a unique array and dict.
+// After GC, all 50 closures are called and their captured data verified.
+// Then half are dropped and GC runs again — the surviving half must still work.
+
+record Node(value, next);
+
+// Build an array of closures, each capturing unique objects
+var closureArr = newArray();
+for (var i = 0; i < 50; i = i + 1) {
+  // makeCapture creates a new scope with local variables that get captured
+  // by the inner `accessor` function. Once makeCapture returns, these locals
+  // are only reachable via the returned closure's upvalue chain.
+  fun makeCapture(idx) {
+    var captured = newArray();       // will only survive via closure
+    arrayPush(captured, "cap" + str(idx));
+    var capturedDict = dictNew();    // will only survive via closure
+    dictSet(capturedDict, "id", idx);
+    fun accessor() {
+      // References `captured` and `capturedDict` through closed upvalues
+      return Node(arrayGet(captured, 0), capturedDict);
+    }
+    return accessor;
+  }
+  arrayPush(closureArr, makeCapture(i));
+  if (i % 10 == 0) collectGarbage();  // GC between closure creations
+}
+
+collectGarbage();
+collectGarbage();
+
+// Verify all 50 closures still work
+for (var i = 0; i < 50; i = i + 1) {
+  var fn = arrayGet(closureArr, i);
+  var result2 = fn();
+  assert(result2.value == "cap" + str(i));
+  assert(dictGet(result2.next, "id") == i);
+}
+
+// Drop half the closures — their captured objects become garbage
+for (var i = 0; i < 25; i = i + 1) {
+  arraySet(closureArr, i, nil);
+}
+collectGarbage();
+
+// Remaining half still works
+for (var i = 25; i < 50; i = i + 1) {
+  var fn2 = arrayGet(closureArr, i);
+  var res2 = fn2();
+  assert(res2.value == "cap" + str(i));
+}
+print "pattern 9 (closure capture): passed";

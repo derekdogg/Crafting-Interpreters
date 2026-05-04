@@ -1,0 +1,77 @@
+// GC Stress Pattern 11: Shared-object explosion — many references to same object
+//
+// Purpose: Creates a single Node record with 2000+ inbound references
+// (1000 array slots + 1000 dictionary entries). The GC mark phase will
+// encounter this object thousands of times. It must:
+//   1. Mark it on first encounter only (isMarked = true)
+//   2. Skip it on subsequent encounters (already marked)
+//   3. Never corrupt the object due to concurrent mark attempts
+//
+// What this catches:
+// - Double-marking bugs that push the same object to the gray stack twice
+// - Reference counting errors (this VM uses tracing, but any hybrid would fail)
+// - Prematurely freeing an object that has many inbound refs but appears "cold"
+// - Mutation visibility: mutating the shared object must be visible through
+//   ALL references after GC (no stale copies)
+// - Closure capture of shared objects: 100 closures share the same array
+//
+// Phase 2 tests that dropping the containers (array, dict) while keeping
+// one direct reference is sufficient to keep the object alive.
+// Phase 3 tests that 100 closures all capturing the same array see the
+// same data after GC.
+
+record Node(value, next);
+
+// One object, 2000 inbound references (array + dict)
+var shared = Node("shared_target", nil);
+var refArr = newArray();
+var refDict = dictNew();
+
+for (var i = 0; i < 1000; i = i + 1) {
+  arrayPush(refArr, shared);                // array slot -> shared
+  dictSet(refDict, "ref" + str(i), shared); // dict entry -> shared
+  if (i % 100 == 0) collectGarbage();       // GC with partial fan-out built
+}
+
+collectGarbage();
+collectGarbage();
+
+// Verify the shared object is still intact through all references
+assert(arrayGet(refArr, 0).value == "shared_target");
+assert(arrayGet(refArr, 500).value == "shared_target");
+assert(arrayGet(refArr, 999).value == "shared_target");
+assert(dictGet(refDict, "ref0").value == "shared_target");
+assert(dictGet(refDict, "ref999").value == "shared_target");
+
+// Mutate the shared object — all references should see the change
+shared.value = "mutated";
+assert(arrayGet(refArr, 0).value == "mutated");
+assert(dictGet(refDict, "ref500").value == "mutated");
+
+// Drop most references but keep one — object must survive
+refArr = nil;
+refDict = nil;
+collectGarbage();
+assert(shared.value == "mutated");
+
+// Now build a second shared object embedded in closures
+var shared2 = newArray();
+arrayPush(shared2, "payload");
+var closureFans = newArray();
+for (var i = 0; i < 100; i = i + 1) {
+  fun capture(s) {
+    fun get() { return s; }
+    return get;
+  }
+  arrayPush(closureFans, capture(shared2));
+  if (i % 20 == 0) collectGarbage();
+}
+collectGarbage();
+
+// All 100 closures return the same array
+for (var i = 0; i < 100; i = i + 1) {
+  var fn3 = arrayGet(closureFans, i);
+  var got = fn3();
+  assert(arrayGet(got, 0) == "payload");
+}
+print "pattern 11 (shared-object explosion): passed";

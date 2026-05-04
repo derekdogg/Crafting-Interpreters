@@ -1,0 +1,81 @@
+// GC Stress Pattern 13: Verify unreachable cycles are actually reclaimed
+//
+// Purpose: Proves that circular reference chains are properly collected.
+// Reference-counting GCs cannot free cycles, but our mark-sweep GC can.
+// This test creates cycles, drops all external references, runs GC, and
+// uses bytesAllocated() to verify memory actually decreased.
+//
+// What this catches:
+// - Cycles surviving GC (would happen with reference counting)
+// - Mark phase entering infinite loops when following circular .next pointers
+// - Sweep phase skipping objects that form a cycle (e.g., if sweep walks
+//   the object list and cycles break the list structure)
+// - Dictionary-based cycles: dicts referencing each other via values
+//
+// Two cycle types are tested:
+//   1. Node record cycle: 200 Nodes where last.next = first
+//   2. Dict cycle: three dicts forming A->B->C->A with bulk data
+// Both must show memory decrease after dropping all external references.
+
+record Node(value, next);
+
+// Build a fat cycle — each node has a padded string field to ensure
+// significant memory usage that's measurable via bytesAllocated().
+fun buildFatCycle(size) {
+  var first = Node("fat_cycle_node_0_padding_string", nil);
+  var prev2 = first;
+  for (var i = 1; i < size; i = i + 1) {
+    var n2 = Node("fat_cycle_node_" + str(i) + "_padding_string", nil);
+    prev2.next = n2;
+    prev2 = n2;
+  }
+  prev2.next = first;  // close the cycle: last -> first
+  return first;
+}
+
+// Force a clean baseline
+collectGarbage();
+var baseline = bytesAllocated();
+
+// Create the cycle
+var fatCycle = buildFatCycle(200);
+collectGarbage();
+var withCycle = bytesAllocated();
+assert(withCycle > baseline); // cycle is using memory
+
+// Drop all references to the cycle
+fatCycle = nil;
+collectGarbage();
+var afterDrop = bytesAllocated();
+
+// Memory should have decreased — the cycle was reclaimed
+assert(afterDrop < withCycle);
+
+// Repeat with dict-based cycle
+collectGarbage();
+var base2 = bytesAllocated();
+
+var cA = dictNew();
+var cB = dictNew();
+var cC = dictNew();
+dictSet(cA, "next", cB);
+dictSet(cB, "next", cC);
+dictSet(cC, "next", cA);
+// Add bulk data
+for (var i = 0; i < 50; i = i + 1) {
+  dictSet(cA, "data" + str(i), "value" + str(i));
+  dictSet(cB, "data" + str(i), "value" + str(i));
+  dictSet(cC, "data" + str(i), "value" + str(i));
+}
+collectGarbage();
+var withDictCycle = bytesAllocated();
+assert(withDictCycle > base2);
+
+cA = nil;
+cB = nil;
+cC = nil;
+collectGarbage();
+var afterDictDrop = bytesAllocated();
+assert(afterDictDrop < withDictCycle);
+
+print "pattern 13 (cycle reclamation verified): passed";

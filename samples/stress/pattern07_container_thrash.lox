@@ -1,0 +1,65 @@
+// GC Stress Pattern 7: Container Thrash — repeated insert/delete forcing resize
+//
+// Purpose: Hammers dictionary and array resize paths under GC pressure.
+// Dictionaries grow their backing array when load factor exceeds 75%,
+// and deletions leave tombstones. This pattern creates a worst-case mix:
+// many inserts (forcing resize), many deletes (creating tombstones),
+// repeated over multiple rounds.
+//
+// What this catches:
+// - GC corrupting dictionary entries array during or after resize
+// - Tombstones being incorrectly treated as live entries during marking
+// - TableRemoveWhite accidentally removing keys that are still reachable
+// - Array backing buffer corruption when GC fires during arrayPush growth
+// - Memory leaks from tombstones preventing proper reclamation
+//
+// After 5 rounds of insert-80/delete-60, we exhaustively verify:
+// - All 300 deleted keys return false from dictHas (no ghost entries)
+// - All 100 surviving keys return true from dictHas with correct values
+// This catches any off-by-one or stale-entry bugs in the hash table.
+
+// Dict thrash: insert many, remove many, repeat
+var thrashDict = dictNew();
+for (var round = 0; round < 5; round = round + 1) {
+  // Insert 80 entries
+  for (var i = 0; i < 80; i = i + 1) {
+    dictSet(thrashDict, "r" + str(round) + "k" + str(i), i * round);
+  }
+  collectGarbage();
+  // Remove 60 of them
+  for (var i = 0; i < 60; i = i + 1) {
+    dictDelete(thrashDict, "r" + str(round) + "k" + str(i));
+  }
+  collectGarbage();
+}
+// Should have 5 rounds * 20 remaining = 100 entries
+// Exhaustively verify every key: deleted ones absent, survivors have correct value
+var thrashSurvivors = 0;
+for (var round = 0; round < 5; round = round + 1) {
+  for (var i = 0; i < 60; i = i + 1) {
+    assert(dictHas(thrashDict, "r" + str(round) + "k" + str(i)) == false);
+  }
+  for (var i = 60; i < 80; i = i + 1) {
+    var key = "r" + str(round) + "k" + str(i);
+    assert(dictHas(thrashDict, key) == true);
+    assert(dictGet(thrashDict, key) == i * round);
+    thrashSurvivors = thrashSurvivors + 1;
+  }
+}
+assert(thrashSurvivors == 100);
+
+// Array thrash: push many, pop many
+var thrashArr = newArray();
+for (var round = 0; round < 10; round = round + 1) {
+  for (var i = 0; i < 50; i = i + 1) {
+    arrayPush(thrashArr, "item" + str(round) + "_" + str(i));
+  }
+  for (var i = 0; i < 40; i = i + 1) {
+    arrayPop(thrashArr);
+  }
+  if (round % 3 == 0) collectGarbage();
+}
+collectGarbage();
+// 10 rounds * 10 remaining per round = 100 elements
+assert(arrayLen(thrashArr) == 100);
+print "pattern 7 (container thrash): passed";

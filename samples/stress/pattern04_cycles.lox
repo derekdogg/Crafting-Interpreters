@@ -1,0 +1,61 @@
+// GC Stress Pattern 4: Cycles — create circular references, then drop all roots
+//
+// Purpose: Proves that mark-sweep correctly handles circular references.
+// Reference-counting GCs leak cycles, but mark-sweep (which this VM uses)
+// traces from roots — if no root reaches the cycle, all nodes are swept
+// regardless of internal pointers keeping each other "alive".
+//
+// What this catches:
+// - GC failing to collect unreachable cycles (memory leak)
+// - Infinite loops during marking if cycle detection is broken
+// - Crashes when traversing circular .next chains during blacken phase
+// - Dict-based cycles (values referencing other dicts) not being collected
+//
+// Two variants are tested:
+// 1. Record-based cycle: 100 Node records with .next forming a ring
+// 2. Dict-based cycle: Two dicts pointing to each other via keys
+
+record Node(value, next);
+
+// Builds a circular linked list: last.next = first
+fun buildCycle(size) {
+  var first = Node("cycle0", nil);
+  var prev = first;
+  for (var i = 1; i < size; i = i + 1) {
+    var n = Node("cycle" + str(i), nil);
+    prev.next = n;
+    prev = n;
+    if (i % 20 == 0) collectGarbage();  // GC while building — partial cycle exists
+  }
+  // Close the cycle — now first.next...next = first
+  prev.next = first;
+  return first;
+}
+
+var cycle = buildCycle(100);
+// Verify cycle: walk 200 steps (wraps around)
+var walk = cycle;
+for (var i = 0; i < 200; i = i + 1) walk = walk.next;
+assert(walk.value == "cycle0"); // back to start after 100 * 2
+collectGarbage();
+
+// Drop the cycle — all 100 nodes become garbage
+cycle = nil;
+walk = nil;
+collectGarbage();
+collectGarbage();
+
+// Dict-based cycle: A -> B -> A
+var dictA = dictNew();
+var dictB = dictNew();
+dictSet(dictA, "partner", dictB);
+dictSet(dictB, "partner", dictA);
+dictSet(dictA, "name", "A");
+dictSet(dictB, "name", "B");
+collectGarbage();
+assert(dictGet(dictGet(dictGet(dictA, "partner"), "partner"), "name") == "A");
+// Drop both
+dictA = nil;
+dictB = nil;
+collectGarbage();
+print "pattern 4 (cycles): passed";
