@@ -12,8 +12,10 @@
 // - Write barrier issues (if the GC uses incremental/generational marking)
 // - Corruption when field assignment triggers GC (mid-mutation)
 //
-// The key insight: after clearing array slots 0-24, nodes 0-24 are ONLY
-// reachable via the .next chain starting from node 25 (still in the array).
+// The key insight: the chain is built BACKWARDS — node[i].next = node[i-1].
+// So node 25 reaches back through 24, 23, ..., 0 via .next pointers.
+// After clearing array slots 0-24, nodes 0-24 are ONLY reachable via the
+// .next chain starting from node 25 (still in the array at slot 25).
 // If the GC doesn't trace .next recursively, those nodes are incorrectly freed.
 
 record Node(value, next);
@@ -22,34 +24,42 @@ record Node(value, next);
 var mutArr = newArray();
 for (var i = 0; i < 50; i = i + 1) arrayPush(mutArr, Node(i, nil));
 
-// Rewire: link each node to the next, creating a chain through .next fields
-for (var i = 0; i < 49; i = i + 1) {
+// Rewire BACKWARDS: link each node to the previous one
+// Result: node[49] -> node[48] -> ... -> node[1] -> node[0] -> nil
+for (var i = 1; i < 50; i = i + 1) {
   var curr2 = arrayGet(mutArr, i);
-  var nxt = arrayGet(mutArr, i + 1);
-  curr2.next = nxt;  // node[i].next = node[i+1]
+  var prev = arrayGet(mutArr, i - 1);
+  curr2.next = prev;  // node[i].next = node[i-1]
   if (i % 10 == 0) {
     collectGarbage();  // GC while references are being rewired
   }
 }
 
-// Verify chain is intact through the first node
-var chainNode = arrayGet(mutArr, 0);
-for (var i = 0; i < 49; i = i + 1) {
+// Verify chain is intact: walk from node 49 back to node 0
+var chainNode = arrayGet(mutArr, 49);
+for (var i = 49; i > 0; i = i - 1) {
   assert(chainNode.value == i);
   chainNode = chainNode.next;
 }
-assert(chainNode.value == 49);
+assert(chainNode.value == 0);
+assert(chainNode.next == nil);
 collectGarbage();
 
-// Overwrite half the array — orphaning nodes only reachable via chain
+// Clear array slots 0-24. Nodes 0-24 lose their direct array reference,
+// but node 25 (still in slot 25) has .next -> 24 -> 23 -> ... -> 0.
+// They MUST survive — they're reachable through the chain.
 for (var i = 0; i < 25; i = i + 1) {
   arraySet(mutArr, i, nil);
   if (i % 5 == 0) collectGarbage();
 }
-// Chain still reachable via arrayGet(mutArr, 25).value ... but the head is gone
-// The head's chain is only reachable if something still points to it — it shouldn't be
 collectGarbage();
-// Node at index 25 should still be intact
-var midNode = arrayGet(mutArr, 25);
-assert(midNode.value == 25);
+
+// Verify nodes 0-24 survived by walking from node 25 through the chain
+var walkNode = arrayGet(mutArr, 25);
+assert(walkNode.value == 25);
+for (var i = 24; i >= 0; i = i - 1) {
+  walkNode = walkNode.next;
+  assert(walkNode.value == i);  // node i is alive via .next chain
+}
+assert(walkNode.next == nil);  // node 0 terminates the chain
 print "pattern 5 (mutation): passed";

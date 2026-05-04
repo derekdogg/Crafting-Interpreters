@@ -12,12 +12,23 @@
 // - Garbage objects referencing live objects confusing the tracer
 //
 // The live set grows by one node per iteration, with references from both
-// the array and dict to the same node. Meanwhile, 3 garbage objects per
-// iteration reference each other (garbage1 -> garbage2 -> garbage3) but
-// nothing roots them. The GC must distinguish the interconnected live
-// graph from the interconnected garbage graph.
+// the array and dict to the same node. Meanwhile, a helper function creates
+// 3 interconnected garbage objects per iteration. Because the helper returns
+// before collectGarbage() is called, its locals are off the stack and the
+// garbage graph is truly unrooted when collection runs.
 
 record Node(value, next);
+
+// Creates an interconnected garbage graph (array -> dict -> node) then returns.
+// Once this function returns, all three objects are unreachable.
+fun makeGarbage(i) {
+  var garbage1 = newArray();
+  arrayPush(garbage1, "g" + str(i));
+  var garbage2 = dictNew();
+  dictSet(garbage2, "gk", garbage1);  // garbage2 -> garbage1
+  var garbage3 = Node(garbage2, nil);  // garbage3 -> garbage2
+  // All three reference each other but nothing is returned — they die here.
+}
 
 // Build a complex live set with cross-references
 var liveList = nil;        // linked list of 100 nodes
@@ -30,15 +41,11 @@ for (var i = 0; i < 100; i = i + 1) {
   arrayPush(liveArr2, liveList);          // array[i] -> newest node
   dictSet(liveDict2, "k" + str(i), liveList); // dict["kN"] -> newest node
   
-  // Create interconnected garbage — three objects referencing each other
-  // but nothing outside this iteration references them
-  var garbage1 = newArray();
-  arrayPush(garbage1, "g" + str(i));
-  var garbage2 = dictNew();
-  dictSet(garbage2, "gk", garbage1);  // garbage2 -> garbage1
-  var garbage3 = Node(garbage2, nil);  // garbage3 -> garbage2
+  // Create interconnected garbage — function returns before GC fires,
+  // so its locals are off the stack and the graph is truly unreachable.
+  makeGarbage(i);
   
-  // Force GC every single iteration — maximum collection pressure
+  // Force GC every single iteration — garbage graph is now unrooted
   collectGarbage();
 }
 
