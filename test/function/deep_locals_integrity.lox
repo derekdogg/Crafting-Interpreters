@@ -1,0 +1,61 @@
+// Stress test: deep recursion with multiple locals per frame.
+// Each frame has several locals that must survive the recursive call.
+// Verifies: frame slots pointer is correct, locals don't bleed between frames,
+//           mutation within frames works, cross-frame contamination is impossible.
+
+fun deepLocals(n) {
+  var a = n;
+  var b = n * 2;
+  var c = n * 3;
+  var d = n + 1000; // sentinel offset to detect cross-frame bleed
+  if (n == 0) return a + b + c + d;
+
+  // Mutate locals before recursive call — validates assignment in active frame
+  a = a + 1;
+  b = b - 1;
+
+  var result = deepLocals(n - 1);
+
+  // Verify mutations persisted correctly across recursive call
+  if (a != n + 1) return -1;
+  if (b != n * 2 - 1) return -2;
+  // Verify unmutated locals survived
+  if (c != n * 3) return -3;
+  if (d != n + 1000) return -4;
+
+  // Restore and verify round-trip
+  a = a - 1;
+  if (a != n) return -5;
+
+  return result;
+}
+
+// At depth 0: a=0, b=0, c=0, d=1000 → returns 1000
+print deepLocals(200); // expect: 1000
+
+// Now combine with closure capture — validate locals AND upvalues coexist
+fun deepLocalsWithClosure(n) {
+  var x = n;
+  var y = n + 50;
+  fun getter() { return x + y; }
+
+  if (n == 0) return getter;
+
+  var g = deepLocalsWithClosure(n - 1);
+
+  // Verify our locals survived
+  if (x != n) return -10;
+  if (y != n + 50) return -11;
+  // Verify our own closure still works (open upvalue path)
+  if (getter() != n + n + 50) return -12;
+
+  return g;
+}
+
+var deepGetter = deepLocalsWithClosure(150);
+// deepGetter captures x=0, y=50 → returns 50
+print deepGetter(); // expect: 50
+
+// Post-test sanity
+fun sanity() { return 77; }
+print sanity(); // expect: 77

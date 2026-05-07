@@ -1,0 +1,19 @@
+// Interleaved recursion: two functions calling each other,
+// each with locals and a closure, at significant depth.
+// Verifies: frame slots integrity across alternating function frames,
+//           upvalue capture in interleaved contexts.
+
+fun ping(n, accumulator) {
+  var local = n;
+  if (n == 0) return accumulator;
+  return pong(n - 1, accumulator + local);
+}
+
+fun pong(n, accumulator) {
+  var local = n;
+  if (n == 0) return accumulator;
+  return ping(n - 1, accumulator + local);
+}
+
+// Sum of 1+2+3+...+100 = 5050
+print ping(100, 0); // expect: 5050

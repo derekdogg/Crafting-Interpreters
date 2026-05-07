@@ -1,0 +1,37 @@
+// Boundary test: recursion to exactly depth 250, 253, and 254.
+// These are the critical boundaries just below the 256-frame limit.
+// Frame counting (current VM convention, subject to change):
+//   top-level = frame 1. recurse(n) uses n+2 total frames
+//   (1 top-level + 1 initial call + n recursive calls).
+//   So recurse(254) = 256 frames (the absolute max).
+// Verifies: frame stack at near-capacity, correct return at boundary,
+//           clean recovery after near-overflow, stability across repeated max-depth calls.
+// Overflow (recurse(255)) is tested separately in boundary_overflow.lox.
+
+fun recurse(n) {
+  if (n == 0) return "ok";
+  return recurse(n - 1);
+}
+
+fun sanity() {
+  return 42;
+}
+
+// Depth 250: uses 252 frames (4 frames of headroom)
+print recurse(250); // expect: ok
+
+// Depth 253: uses 255 frames (1 frame of headroom)
+print recurse(253); // expect: ok
+
+// Depth 254: uses exactly 256 frames — the absolute maximum
+print recurse(254); // expect: ok
+
+// Post-unwind sanity: verify VM state is clean after max-depth recursion
+print sanity(); // expect: 42
+
+// Repeat max-depth call: detects lingering corruption from first unwind
+print recurse(254); // expect: ok
+
+// Interleave different depths: verifies no state leakage between calls
+print recurse(250); // expect: ok
+print sanity(); // expect: 42

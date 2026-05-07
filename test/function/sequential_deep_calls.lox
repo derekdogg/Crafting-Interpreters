@@ -1,0 +1,53 @@
+// Multiple independent deep recursions in sequence + interleaved.
+// Verifies: frame stack is fully clean after return from deep recursion,
+//           second deep recursion doesn't see stale state from the first,
+//           nested recursion types interleave correctly.
+
+fun countUp(n) {
+  if (n == 0) return 0;
+  return countUp(n - 1) + 1;
+}
+
+fun factorial(n) {
+  if (n <= 1) return 1;
+  return n * factorial(n - 1);
+}
+
+fun sumTo(n) {
+  if (n == 0) return 0;
+  return n + sumTo(n - 1);
+}
+
+// State fingerprint: verify top-level locals don't get corrupted by deep calls
+var marker = 12345;
+
+// First deep call
+print countUp(200); // expect: 200
+
+// Second deep call — different function, same frame slots
+print factorial(12); // expect: 479001600
+
+// Third deep call
+print sumTo(200); // expect: 20100
+
+// Repeat first to verify no state leakage
+print countUp(200); // expect: 200
+
+// Verify marker survived all the deep recursion
+print marker; // expect: 12345
+
+// Interleaved: nest recursion types inside each other
+// countUp(factorial(5)) = countUp(120) = 120
+print countUp(factorial(5)); // expect: 120
+
+// sumTo(countUp(10)) = sumTo(10) = 55
+print sumTo(countUp(10)); // expect: 55
+
+// Aggressive reuse: rapid alternation at depth
+print countUp(200); // expect: 200
+print sumTo(200);   // expect: 20100
+print countUp(200); // expect: 200
+print sumTo(200);   // expect: 20100
+
+// Final marker check after all interleaving
+print marker; // expect: 12345

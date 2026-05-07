@@ -1,0 +1,25 @@
+// Multi-return value propagation through a deep call chain.
+// Each level transforms the value differently on the way down AND up.
+// Verifies: return values, local variables, and frame slots are intact
+//           across 100/200 levels of nesting.
+// Invariant: each frame adds n going down and subtracts n coming back up,
+//            so the final result must equal the initial value (self-checking).
+
+fun transform(n, val) {
+  if (n == 0) return val;
+  var local = val + n;
+  // Mutate local to stress write-back correctness
+  local = local + 1;
+  var result = transform(n - 1, local);
+  // Undo: subtract the +1 mutation and the +n from descent
+  return result - n - 1;
+}
+
+// If every frame correctly preserves its local `n`, the round-trip is identity
+print transform(100, 7); // expect: 7
+print transform(200, 0); // expect: 0
+print transform(50, 99); // expect: 99
+
+// Post-recursion VM sanity
+fun sanity() { return 42; }
+print sanity(); // expect: 42

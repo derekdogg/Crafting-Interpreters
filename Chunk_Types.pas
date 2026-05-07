@@ -130,7 +130,6 @@ const
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 256;
-  STACK_MAX = FRAMES_MAX * UINT8_COUNT;
 
 
 type
@@ -393,6 +392,7 @@ type
     ip      : pByte;
     slots   : pValue; // points into VM stack
   end;
+  pCallFrame = ^TCallFrame;
 
   //Virtual Machine
   TVirtualMachine = record
@@ -2851,7 +2851,9 @@ end;
 
 function Run : TInterpretResult;
 var
-  frame : ^TCallFrame;
+  frame : pCallFrame;  // Cached pointer to current executing frame.
+                        // Derived from VM.Frames[VM.FrameCount - 1].
+                        // Never authoritative state — recomputed after call/return.
   instruction: Byte;
   slot : Byte;
   offset : Word;
@@ -2879,6 +2881,11 @@ var
   invokeNameIdx : integer;
   invokeArgCount : byte;
   invokeMethodName : AnsiString;
+
+  function CurrentFrame: pCallFrame;
+  begin
+    Result := @VM.Frames[VM.FrameCount - 1];
+  end;
 
   function ReadByteFr: Byte;
   begin
@@ -2960,6 +2967,13 @@ var
     Result := frame^.closure^.func^.chunk^.Constants^.Values[idx];
   end;
 
+  // CallValue: Pushes a new call frame or executes a native/record call.
+  // CONTRACT:
+  //   - Does NOT read or write `frame` (Run rebases frame after return)
+  //   - May read/write `native`, `nativeResult`, `value` (shared locals)
+  //   - On success for closures: increments VM.FrameCount
+  //   - On success for natives/records: pops args, pushes result
+  //   - On failure: sets RuntimeErrorStr, returns false
   function CallValue(callee : TValue; argCnt : byte) : boolean;
   var
     j : integer;
@@ -2978,12 +2992,11 @@ var
           ' frames). Last call: ' + String(ObjStringToAnsiString(pObjClosure(callee.ObjValue)^.func^.name)));
         Exit(false);
       end;
-      frame := @VM.Frames[VM.FrameCount];
-      frame^.closure := pObjClosure(callee.ObjValue);
-      frame^.ip := pObjClosure(callee.ObjValue)^.func^.chunk^.Code;
+      VM.Frames[VM.FrameCount].closure := pObjClosure(callee.ObjValue);
+      VM.Frames[VM.FrameCount].ip := pObjClosure(callee.ObjValue)^.func^.chunk^.Code;
       // slots points to the function value on the stack (argCnt args above it)
-      frame^.slots := VM.Stack.StackTop;
-      Dec(frame^.slots, argCnt + 1);
+      VM.Frames[VM.FrameCount].slots := VM.Stack.StackTop;
+      Dec(VM.Frames[VM.FrameCount].slots, argCnt + 1);
       Inc(VM.FrameCount);
       Result := true;
     end
@@ -3043,12 +3056,24 @@ begin
     AssertMemTrackerIsNotNil(vm.MemTracker);
     Assert(VM.FrameCount > 0, 'Run: no call frames');
 
-    frame := @VM.Frames[VM.FrameCount - 1];
+    frame := CurrentFrame;
     Assert(frame^.closure <> nil, 'Run: initial frame closure is nil');
     Assert(frame^.ip <> nil, 'Run: initial frame ip is nil');
 
+    // FRAME OWNERSHIP:
+    // `frame` always points to VM.Frames[VM.FrameCount - 1] (the current executing frame).
+    // It MUST be rebased after any operation that changes VM.FrameCount:
+    //   - After CallValue returns true (OP_CALL)
+    //   - After OP_RETURN decrements FrameCount
+    // Between ReadByteFr and CallValue, frame still points to the CALLER.
+    // After CallValue, frame is stale until explicitly rebased.
+    // No nested function may mutate frame.
     while True do
     begin
+      Assert(VM.FrameCount > 0,
+        'Run dispatch: FrameCount <= 0');
+      Assert(frame = CurrentFrame,
+        'Run dispatch: frame is out of sync with FrameCount');
       instruction := ReadByteFr;
       case instruction of
 
@@ -3250,7 +3275,7 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          frame := @VM.Frames[VM.FrameCount - 1];
+          frame := CurrentFrame;
         end;
 
         OP_CLOSURE: begin
@@ -3312,7 +3337,7 @@ begin
           VM.Stack.Count := (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue);
           pushStack(vm.Stack, value, vm.MemTracker);
 
-          frame := @VM.Frames[VM.FrameCount - 1];
+          frame := CurrentFrame;
         end;
 
         OP_DEFINE_GLOBAL_LONG: begin
