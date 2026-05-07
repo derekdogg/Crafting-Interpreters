@@ -1,0 +1,166 @@
+// Dictionary delete and tombstone tests
+
+// Test 1: Delete from empty dict
+fun testDeleteEmpty() {
+  var d = [:];
+  print d.Delete("ghost"); // expect: false
+  print d.Size(); // expect: 0
+}
+testDeleteEmpty();
+
+// Test 2: Delete single entry
+fun testDeleteSingle() {
+  var d = [:];
+  d.Set("only", 42);
+  print d.Delete("only"); // expect: true
+  print d.Has("only"); // expect: false
+  print d.Size(); // expect: 0
+}
+testDeleteSingle();
+
+// Test 3: Double delete returns false
+fun testDoubleDelete() {
+  var d = [:];
+  d.Set("x", 1);
+  print d.Delete("x"); // expect: true
+  print d.Delete("x"); // expect: false
+}
+testDoubleDelete();
+
+// Test 4: Delete all entries, then re-insert
+fun testDeleteAllReinsert() {
+  var d = [:];
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Set("c", 3);
+  d.Delete("a");
+  d.Delete("b");
+  d.Delete("c");
+  print d.Size(); // expect: 0
+  print d.Has("a"); // expect: false
+  print d.Has("b"); // expect: false
+  print d.Has("c"); // expect: false
+
+  // Re-insert into fully tombstoned table
+  d.Set("a", 10);
+  print d.Get("a"); // expect: 10
+  print d.Size(); // expect: 1
+  // Others still gone
+  print d.Has("b"); // expect: false
+  print d.Has("c"); // expect: false
+}
+testDeleteAllReinsert();
+
+// Test 5: Delete preserves unrelated keys
+fun testDeletePreservesOthers() {
+  var d = ["x": 1, "y": 2, "z": 3];
+  d.Delete("y");
+  print d.Get("x"); // expect: 1
+  print d.Get("z"); // expect: 3
+  print d.Has("y"); // expect: false
+  print d.Size(); // expect: 2
+}
+testDeletePreservesOthers();
+
+// Test 6: Delete then overwrite reuses slot
+fun testDeleteAndReuse() {
+  var d = [:];
+  d.Set("key", "old");
+  d.Delete("key");
+  d.Set("key", "new");
+  print d.Get("key"); // expect: new
+  print d.Size(); // expect: 1
+}
+testDeleteAndReuse();
+
+// Test 7: Delete with different key types
+fun testDeleteKeyTypes() {
+  var d = [:];
+  d.Set(1, "num");
+  d.Set(true, "bool");
+  d.Set(nil, "nil");
+  d.Set("str", "string");
+
+  print d.Delete(1); // expect: true
+  print d.Delete(true); // expect: true
+  print d.Delete(nil); // expect: true
+  print d.Delete("str"); // expect: true
+  print d.Size(); // expect: 0
+
+  // Verify all gone
+  print d.Has(1); // expect: false
+  print d.Has(true); // expect: false
+  print d.Has(nil); // expect: false
+  print d.Has("str"); // expect: false
+}
+testDeleteKeyTypes();
+
+// Test 8: Heavy delete-reinsert cycle
+fun testHeavyDeleteReinsert() {
+  var d = [:];
+  var i = 0;
+
+  // Insert 30 keys
+  for (i = 0; i < 30; i = i + 1) {
+    d.Set(i, i * 10);
+  }
+  print d.Size(); // expect: 30
+
+  // Delete all of them
+  for (i = 0; i < 30; i = i + 1) {
+    d.Delete(i);
+  }
+  print d.Size(); // expect: 0
+
+  // Re-insert all with new values
+  for (i = 0; i < 30; i = i + 1) {
+    d.Set(i, i * 100);
+  }
+  print d.Size(); // expect: 30
+
+  // Verify new values
+  print d.Get(0); // expect: 0
+  print d.Get(15); // expect: 1500
+  print d.Get(29); // expect: 2900
+}
+testHeavyDeleteReinsert();
+
+// Test 9: Interleaved insert-delete pattern
+fun testInterleavedInsertDelete() {
+  var d = [:];
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Delete("a");
+  d.Set("c", 3);
+  d.Delete("b");
+  d.Set("d", 4);
+  d.Delete("c");
+  d.Set("e", 5);
+
+  print d.Has("a"); // expect: false
+  print d.Has("b"); // expect: false
+  print d.Has("c"); // expect: false
+  print d.Get("d"); // expect: 4
+  print d.Get("e"); // expect: 5
+  print d.Size(); // expect: 2
+}
+testInterleavedInsertDelete();
+
+// Test 10: Size stays correct through delete cycles
+fun testSizeTracking() {
+  var d = [:];
+  print d.Size(); // expect: 0
+  d.Set("a", 1);
+  print d.Size(); // expect: 1
+  d.Set("b", 2);
+  print d.Size(); // expect: 2
+  d.Delete("a");
+  print d.Size(); // expect: 1
+  d.Delete("b");
+  print d.Size(); // expect: 0
+  d.Set("c", 3);
+  print d.Size(); // expect: 1
+  d.Set("a", 10);
+  print d.Size(); // expect: 2
+}
+testSizeTracking();

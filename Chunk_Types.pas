@@ -2,7 +2,8 @@
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
 {$DEFINE DEBUG_LOG_GC}
-{$DEFINE DEBUG_STRESS_GC}
+{..$DEFINE DEBUG_STRESS_GC}
+{..$DEFINE DEBUG_STRESS_TABLE}
 interface
 
 uses
@@ -16,6 +17,7 @@ const
   GC_HEAP_GROW_FACTOR = 2;
 
   //Table
+  TABLE_START_CAPACITY = 8;
   TABLE_MAX_LOAD = 0.75;
 
   //scanner
@@ -879,13 +881,13 @@ begin
 end;
 
 procedure AssertTableConsistency(Table : pTable);
-{$IFDEF DEBUG_STRESS_GC}
+{$IFDEF DEBUG_STRESS_TABLE}
 var
   i, liveCount, tombstoneCount: integer;
   entry: pEntry;
 {$ENDIF}
 begin
-  {$IFDEF DEBUG_STRESS_GC}
+  {$IFDEF DEBUG_STRESS_TABLE}
   AssertTable(Table);
   if Table.CurrentCapacity = 0 then
   begin
@@ -895,7 +897,7 @@ begin
   end;
 
   Assert(Table.Entries <> nil, 'AssertTableConsistency: capacity>0 but entries=nil');
-  Assert(Table.CurrentCapacity >= 8, 'AssertTableConsistency: capacity below minimum (8)');
+  Assert(Table.CurrentCapacity >= TABLE_START_CAPACITY, 'AssertTableConsistency: capacity below minimum');
   Assert(Table.Count >= 0, 'AssertTableConsistency: negative count');
   Assert(Table.Count <= Table.CurrentCapacity,
     'AssertTableConsistency: count exceeds capacity');
@@ -1863,8 +1865,11 @@ var
 begin
   case value.ValueKind of
     vkNumber: begin
-      // Hash the raw bits of the double
-      Move(value.NumberValue, bits, SizeOf(Double));
+      // Canonicalize -0.0 to +0.0 so they hash identically (both compare equal via =)
+      if value.NumberValue = 0.0 then
+        bits := 0
+      else
+        Move(value.NumberValue, bits, SizeOf(Double));
       Result := UInt32(bits xor (bits shr 32));
     end;
     vkBoolean: begin
@@ -1948,8 +1953,8 @@ begin
 
   oldCount := dict^.Count;
 
-  if dict^.Capacity < 8 then
-    newCapacity := 8
+  if dict^.Capacity < TABLE_START_CAPACITY then
+    newCapacity := TABLE_START_CAPACITY
   else
     newCapacity := dict^.Capacity * GROWTH_FACTOR;
 
@@ -2970,7 +2975,7 @@ var
       if VM.FrameCount = FRAMES_MAX then
       begin
         runtimeError('Stack overflow (max ' + IntToStr(FRAMES_MAX) +
-          ' frames). Last call: ' + String(pObjClosure(callee.ObjValue)^.func^.name^.chars));
+          ' frames). Last call: ' + String(ObjStringToAnsiString(pObjClosure(callee.ObjValue)^.func^.name)));
         Exit(false);
       end;
       frame := @VM.Frames[VM.FrameCount];
@@ -8242,14 +8247,18 @@ var
   index: uint32;
   tombstone: pEntry;
   entry: pEntry;
+  probeCount: integer;
 begin
+  // ---- Entry assertions ----
   Assert(Assigned(Entries), 'FindEntry: entries not assigned');
   Assert(Capacity > 0, 'FindEntry: capacity must be > 0');
   AssertObjStringIsAssigned(key);
 
   index := Key.hash mod uint32(Capacity);
   tombstone := nil;
-  while true do
+  Result := nil;
+
+  for probeCount := 0 to Capacity - 1 do
   begin
     entry := @Entries[index];
     if entry.key = nil then
@@ -8261,7 +8270,7 @@ begin
           Result := tombstone
         else
           Result := entry;
-        Exit;
+        Break;
       end
       else
       begin
@@ -8272,15 +8281,15 @@ begin
     end
     else if entry.key = key then
     begin
-      // Found the key
+      // Found the key (pointer identity — strings are interned)
       Result := entry;
-      Exit;
+      Break;
     end;
     index := (index + 1) mod uint32(Capacity);
   end;
 
   // ---- Exit assertions ----
-  Assert(Result <> nil, 'FindEntry exit: result should not be nil');
+  Assert(Result <> nil, 'FindEntry: probed entire table without finding slot');
 end;
 
 
@@ -8290,9 +8299,11 @@ var
   OldCapacity, i: integer;
   dest: pEntry;
 begin
+  // ---- Entry assertions ----
   AssertMemTrackerIsNotNil(MemTracker);
   AssertTable(Table);
   Assert(NewCapacity > 0, 'AdjustCapacity: new capacity must be > 0');
+  Assert(NewCapacity >= Table.Count, 'AdjustCapacity: new capacity smaller than live count');
 
   // Allocate fresh array
   NewEntries := nil;
@@ -8346,8 +8357,8 @@ begin
 
   if (Table.Count + 1 > Table.CurrentCapacity * TABLE_MAX_LOAD) then
   begin
-    if Table.CurrentCapacity < 8 then
-      NewCapacity := 8
+    if Table.CurrentCapacity < TABLE_START_CAPACITY then
+      NewCapacity := TABLE_START_CAPACITY
     else
       NewCapacity := Table.CurrentCapacity * GROWTH_FACTOR;
     AdjustCapacity(Table, NewCapacity, MemTracker);
@@ -8381,7 +8392,9 @@ begin
   if Entry.key = nil then
     Exit(false);
 
-  // Place a tombstone
+  // Place a tombstone. Setting key to nil does not leak: the ObjString
+  // remains on the VM's object linked list and will be freed by Sweep
+  // if no other roots reference it. TableRemoveWhite handles the intern table.
   Entry.key := nil;
   Entry.value := CreateBoolean(true);
   Result := true;
