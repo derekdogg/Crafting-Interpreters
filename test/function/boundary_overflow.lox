@@ -1,0 +1,11 @@
+// Boundary test: recursion that hits exactly the 256-frame overflow.
+// Frame counting: top-level = frame 1. recurse(n) uses n+2 total frames.
+// recurse(254) = 256 frames (ok). recurse(255) needs frame 257 → overflow.
+// Verifies: overflow error fires at the correct boundary.
+
+fun recurse(n) {
+  if (n == 0) return "ok";
+  return recurse(n - 1);
+}
+
+recurse(255); // expect runtime error: Stack overflow (max 256 frames). Last call: recurse

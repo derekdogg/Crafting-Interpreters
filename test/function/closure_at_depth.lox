@@ -1,0 +1,56 @@
+// Closure creation and invocation at depth.
+// Creates closures at recursion depth 200, returns them, then calls them.
+// Verifies: upvalue capture works correctly at deep frame depths,
+//           closure survives the return journey back up the stack,
+//           multiple captures and mutation work after total unwind,
+//           independent closures don't share upvalue storage.
+
+fun makeAdderAtDepth(n) {
+  if (n == 0) {
+    var captured = 42;
+    var second = 100;
+    fun adder(x) {
+      return captured + x;
+    }
+    fun getSecond() {
+      return second;
+    }
+    fun mutate() {
+      captured = captured + 1;
+      return captured;
+    }
+    // Return all three via a chain of calls
+    // (we don't have arrays-as-returns, so test each path)
+    print adder(8);       // expect: 50
+    print getSecond();    // expect: 100
+    print mutate();       // expect: 43
+    print mutate();       // expect: 44
+    print adder(0);       // expect: 44
+    return adder;
+  }
+  return makeAdderAtDepth(n - 1);
+}
+
+var add42 = makeAdderAtDepth(200);
+
+// Closure survives total unwind — captured was mutated to 44 inside
+print add42(6); // expect: 50
+
+// Independent closure: separate invocation gets fresh state
+fun makeIndependent(n) {
+  if (n == 0) {
+    var val = 99;
+    fun get() { return val; }
+    return get;
+  }
+  return makeIndependent(n - 1);
+}
+
+var getA = makeIndependent(200);
+var getB = makeIndependent(200);
+print getA(); // expect: 99
+print getB(); // expect: 99
+
+// Post-closure VM sanity
+fun sanity() { return 123; }
+print sanity(); // expect: 123

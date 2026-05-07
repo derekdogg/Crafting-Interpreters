@@ -1,0 +1,24 @@
+// Deep recursion to depth 200 with return value propagation.
+// Each frame returns its depth count back up the chain.
+// Verifies: frame initialization, OP_RETURN correctness, slots pointer integrity at depth,
+//           local slot pressure (multiple locals per frame), post-recursion VM sanity.
+
+fun countDown(n) {
+  var a = n;
+  var b = n + 1;
+  var c = n + 2;
+  if (n == 0) return 0;
+  var result = countDown(n - 1);
+  // Verify locals survived the recursive call
+  if (a != n) return -1;
+  if (b != n + 1) return -2;
+  if (c != n + 2) return -3;
+  return result + 1;
+}
+
+fun sanity() {
+  return 42;
+}
+
+print countDown(200); // expect: 200
+print sanity(); // expect: 42

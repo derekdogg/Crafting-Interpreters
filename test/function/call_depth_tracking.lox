@@ -1,0 +1,33 @@
+// Verify vmCallDepth() reports correct values during recursion.
+// Verifies: FrameCount increments correctly on call, decrements correctly on return.
+// Validates both descent AND ascent (unwind) frame accounting.
+
+var root = vmCallDepth(); // capture baseline (top-level frame)
+
+fun recurseAndCheck(n, expected) {
+  var actual = vmCallDepth();
+  if (actual != expected) {
+    print "FAIL descent at n=" + str(n) + ": expected " + str(expected) + " got " + str(actual);
+    return false;
+  }
+  if (n == 0) return true;
+
+  var result = recurseAndCheck(n - 1, expected + 1);
+
+  // Verify unwind restored this frame's depth correctly
+  var afterUnwind = vmCallDepth();
+  if (afterUnwind != expected) {
+    print "FAIL unwind at n=" + str(n) + ": expected " + str(expected) + " got " + str(afterUnwind);
+    return false;
+  }
+
+  return result;
+}
+
+// Recursive check through 50 levels: validates every frame on the way down AND up
+assert(recurseAndCheck(50, root + 1), "depth check through 50 levels");
+
+// Verify final depth restored to root
+assert(vmCallDepth() == root, "final depth not restored to root");
+
+print "ok"; // expect: ok

@@ -1,0 +1,63 @@
+// Deep recursion with closures capturing upvalues at every level.
+// Each frame creates a closure that captures its local, then the next frame
+// does the same. On the way back up, each closure is called to verify
+// the captured value is intact (open upvalue path).
+// Verifies: open upvalue chains across 150 simultaneous frames,
+//           upvalue correctness before AND after unwind,
+//           GC doesn't collect live upvalues during recursion.
+
+fun buildChain(n) {
+  var myVal = n;
+  var guard = n * 3; // second local to stress slot layout
+  fun getter() { return myVal; }
+  if (n == 0) return getter;
+  var inner = buildChain(n - 1);
+  // Verify our own getter still works after deep recursion (open upvalue path)
+  if (getter() != n) {
+    print "FAIL: getter at level " + str(n) + " returned " + str(getter()) + " expected " + str(n);
+  }
+  // Verify guard local wasn't clobbered by recursion
+  if (guard != n * 3) {
+    print "FAIL: guard at level " + str(n) + " corrupted: " + str(guard);
+  }
+  // Return the deepest getter (captures myVal = 0)
+  return inner;
+}
+
+var deepest = buildChain(150);
+print deepest(); // expect: 0
+
+// Now test retaining multiple closures simultaneously (closed upvalue coexistence).
+// Build an array of closures, each capturing a different value at a different depth.
+var closures = newArray();
+
+fun collectClosures(n) {
+  var local = n;
+  fun get() { return local; }
+  arrayPush(closures, get);
+  if (n > 0) collectClosures(n - 1);
+}
+
+collectClosures(100);
+
+// Verify each closure independently captured its own value
+// closures[0] captured 100, closures[1] captured 99, ..., closures[100] captured 0
+assert(arrayGet(closures, 0)() == 100, "closure[0] should be 100");
+assert(arrayGet(closures, 50)() == 50, "closure[50] should be 50");
+assert(arrayGet(closures, 100)() == 0, "closure[100] should be 0");
+
+// Verify ALL closures are independent (spot-check a range)
+var allOk = true;
+var i = 0;
+while (i < arrayLen(closures)) {
+  var expected = 100 - i;
+  var actual = arrayGet(closures, i)();
+  if (actual != expected) {
+    print "FAIL: closures[" + str(i) + "] returned " + str(actual) + " expected " + str(expected);
+    allOk = false;
+  }
+  i = i + 1;
+}
+assert(allOk, "all retained closures must return independent values");
+
+print "ok"; // expect: ok
