@@ -1,0 +1,144 @@
+// Dictionary edge case tests
+
+// Test 1: Empty string key
+fun testEmptyStringKey() {
+  var d = [:];
+  d.Set("", "empty");
+  print d.Get(""); // expect: empty
+  print d.Has(""); // expect: true
+  print d.Size(); // expect: 1
+  d.Delete("");
+  print d.Has(""); // expect: false
+}
+testEmptyStringKey();
+
+// Test 2: Keys and Values on empty dict
+fun testKeysValuesEmpty() {
+  var d = [:];
+  var keys = d.Keys();
+  var vals = d.Values();
+  print arrayLen(keys); // expect: 0
+  print arrayLen(vals); // expect: 0
+}
+testKeysValuesEmpty();
+
+// Test 3: Keys and Values after deletes
+fun testKeysValuesAfterDelete() {
+  var d = [:];
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Set("c", 3);
+  d.Delete("b");
+  var keys = d.Keys();
+  var vals = d.Values();
+  print arrayLen(keys); // expect: 2
+  print arrayLen(vals); // expect: 2
+}
+testKeysValuesAfterDelete();
+
+// Test 4: Same key different dicts are independent
+fun testIndependentDicts() {
+  var d1 = [:];
+  var d2 = [:];
+  d1.Set("key", "dict1");
+  d2.Set("key", "dict2");
+  print d1.Get("key"); // expect: dict1
+  print d2.Get("key"); // expect: dict2
+  d1.Delete("key");
+  print d1.Has("key"); // expect: false
+  print d2.Has("key"); // expect: true
+}
+testIndependentDicts();
+
+// Test 5: Dict survives being passed to function
+fun testDictPassedToFun() {
+  fun addEntry(d) {
+    d.Set("added", 99);
+  }
+  var d = ["existing": 1];
+  addEntry(d);
+  print d.Get("existing"); // expect: 1
+  print d.Get("added"); // expect: 99
+  print d.Size(); // expect: 2
+}
+testDictPassedToFun();
+
+// Test 6: Dict returned from function
+fun testDictReturnedFromFun() {
+  fun makeDict() {
+    var d = ["x": 10, "y": 20];
+    return d;
+  }
+  var d = makeDict();
+  print d.Get("x"); // expect: 10
+  print d.Get("y"); // expect: 20
+}
+testDictReturnedFromFun();
+
+// Test 7: Dict in closure
+fun testDictInClosure() {
+  fun makeCounter() {
+    var state = ["count": 0];
+    fun increment() {
+      var c = state.Get("count");
+      state.Set("count", c + 1);
+      return state.Get("count");
+    }
+    return increment;
+  }
+  var counter = makeCounter();
+  print counter(); // expect: 1
+  print counter(); // expect: 2
+  print counter(); // expect: 3
+}
+testDictInClosure();
+
+// Test 8: Large dict with string keys
+fun testLargeStringKeys() {
+  var d = [:];
+  var i = 0;
+  for (i = 0; i < 100; i = i + 1) {
+    d.Set("key" + str(i), i);
+  }
+  print d.Size(); // expect: 100
+  print d.Get("key0"); // expect: 0
+  print d.Get("key50"); // expect: 50
+  print d.Get("key99"); // expect: 99
+}
+testLargeStringKeys();
+
+// Test 9: Delete half, verify other half via Keys
+fun testDeleteHalfCheckKeys() {
+  var d = [:];
+  var i = 0;
+  for (i = 0; i < 20; i = i + 1) {
+    d.Set(i, i * 5);
+  }
+  // Delete even keys
+  for (i = 0; i < 20; i = i + 2) {
+    d.Delete(i);
+  }
+  print d.Size(); // expect: 10
+  // Odd keys survive
+  print d.Get(1); // expect: 5
+  print d.Get(3); // expect: 15
+  print d.Get(19); // expect: 95
+  // Even keys gone
+  print d.Has(0); // expect: false
+  print d.Has(2); // expect: false
+  print d.Has(18); // expect: false
+}
+testDeleteHalfCheckKeys();
+
+// Test 10: Repeated overwrite doesn't grow size
+fun testRepeatedOverwrite() {
+  var d = [:];
+  d.Set("x", 1);
+  var i = 0;
+  for (i = 0; i < 50; i = i + 1) {
+    d.Set("x", i);
+  }
+  print d.Size(); // expect: 1
+  print d.Get("x"); // expect: 49
+}
+testRepeatedOverwrite();

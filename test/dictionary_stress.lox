@@ -1,0 +1,211 @@
+// Dictionary Stress Test — high-volume insert, delete, overwrite, and resize
+//
+// Purpose: Push the dictionary hash table hard with large entry counts,
+// heavy tombstone churn, rapid overwrites, and multi-round torture.
+// Designed to expose:
+// - Corruption during resize under high load
+// - Tombstone accumulation degrading lookup performance
+// - Incorrect count tracking under rapid insert/delete cycles
+// - Hash collision handling at near-capacity load factors
+// - Memory issues from thousands of short-lived string keys
+
+// ---------------------------------------------------------------------------
+// Test 1: Bulk insert 1000 entries, verify all, then bulk delete all
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 1000; i = i + 1) {
+    d.Set(str(i), i);
+  }
+  assert(d.Size() == 1000);
+
+  // Verify every single entry
+  for (var i = 0; i < 1000; i = i + 1) {
+    assert(d.Get(str(i)) == i);
+  }
+
+  // Delete everything
+  for (var i = 0; i < 1000; i = i + 1) {
+    assert(d.Delete(str(i)) == true);
+  }
+  assert(d.Size() == 0);
+
+  // Verify all gone
+  for (var i = 0; i < 1000; i = i + 1) {
+    assert(d.Has(str(i)) == false);
+  }
+}
+print "pass: bulk 1000"; // expect: pass: bulk 1000
+
+// ---------------------------------------------------------------------------
+// Test 2: Overwrite storm — same 100 keys overwritten 50 times each
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var round = 0; round < 50; round = round + 1) {
+    for (var i = 0; i < 100; i = i + 1) {
+      d.Set(str(i), round * 100 + i);
+    }
+  }
+  assert(d.Size() == 100);
+
+  // Only the last round's values should survive
+  for (var i = 0; i < 100; i = i + 1) {
+    assert(d.Get(str(i)) == 4900 + i);
+  }
+}
+print "pass: overwrite storm"; // expect: pass: overwrite storm
+
+// ---------------------------------------------------------------------------
+// Test 3: Insert-delete sawtooth — grow then shrink repeatedly
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var round = 0; round < 10; round = round + 1) {
+    // Insert 200 keys
+    for (var i = 0; i < 200; i = i + 1) {
+      d.Set("r" + str(round) + "k" + str(i), i);
+    }
+    // Delete 180, leaving 20 per round
+    for (var i = 0; i < 180; i = i + 1) {
+      d.Delete("r" + str(round) + "k" + str(i));
+    }
+  }
+  // 10 rounds * 20 survivors = 200
+  assert(d.Size() == 200);
+
+  // Verify survivors
+  for (var round = 0; round < 10; round = round + 1) {
+    for (var i = 180; i < 200; i = i + 1) {
+      assert(d.Get("r" + str(round) + "k" + str(i)) == i);
+    }
+    // Verify deleted keys are gone
+    for (var i = 0; i < 180; i = i + 1) {
+      assert(d.Has("r" + str(round) + "k" + str(i)) == false);
+    }
+  }
+}
+print "pass: sawtooth"; // expect: pass: sawtooth
+
+// ---------------------------------------------------------------------------
+// Test 4: Tombstone flood — fill, delete all, refill, repeat 5 times
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var cycle = 0; cycle < 5; cycle = cycle + 1) {
+    for (var i = 0; i < 500; i = i + 1) {
+      d.Set(str(i), cycle * 1000 + i);
+    }
+    assert(d.Size() == 500);
+
+    for (var i = 0; i < 500; i = i + 1) {
+      d.Delete(str(i));
+    }
+    assert(d.Size() == 0);
+  }
+  // Final refill
+  for (var i = 0; i < 500; i = i + 1) {
+    d.Set(str(i), i * 7);
+  }
+  assert(d.Size() == 500);
+  for (var i = 0; i < 500; i = i + 1) {
+    assert(d.Get(str(i)) == i * 7);
+  }
+}
+print "pass: tombstone flood"; // expect: pass: tombstone flood
+
+// ---------------------------------------------------------------------------
+// Test 5: Interleaved insert-delete (every other key deleted immediately)
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 1000; i = i + 1) {
+    d.Set(str(i), i);
+    if (i > 0 and i % 2 == 0) {
+      d.Delete(str(i - 1));
+    }
+  }
+  // Odd keys 1,3,5,...,997 were deleted; even keys and 999 survive
+  for (var i = 0; i < 1000; i = i + 1) {
+    if (i > 0 and i < 999 and i % 2 == 1) {
+      assert(d.Has(str(i)) == false);
+    } else {
+      assert(d.Get(str(i)) == i);
+    }
+  }
+}
+print "pass: interleaved"; // expect: pass: interleaved
+
+// ---------------------------------------------------------------------------
+// Test 6: Mixed key types at scale
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 500; i = i + 1) {
+    d.Set(i, "num" + str(i));              // number keys
+    d.Set("s" + str(i), "str" + str(i));   // string keys
+  }
+  assert(d.Size() == 1000);
+
+  // Verify every entry of both key types
+  for (var i = 0; i < 500; i = i + 1) {
+    assert(d.Get(i) == "num" + str(i));
+    assert(d.Get("s" + str(i)) == "str" + str(i));
+  }
+
+  // Delete all number keys
+  for (var i = 0; i < 500; i = i + 1) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 500);
+
+  // Verify all string keys survive and all number keys gone
+  for (var i = 0; i < 500; i = i + 1) {
+    assert(d.Get("s" + str(i)) == "str" + str(i));
+    assert(d.Has(i) == false);
+  }
+}
+print "pass: mixed keys"; // expect: pass: mixed keys
+
+// ---------------------------------------------------------------------------
+// Test 7: Keys/Values correctness after heavy churn
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Insert 300
+  for (var i = 0; i < 300; i = i + 1) {
+    d.Set("k" + str(i), i);
+  }
+  // Delete first 200
+  for (var i = 0; i < 200; i = i + 1) {
+    d.Delete("k" + str(i));
+  }
+  assert(d.Size() == 100);
+  var keys = d.Keys();
+  var vals = d.Values();
+  assert(arrayLen(keys) == 100);
+  assert(arrayLen(vals) == 100);
+}
+print "pass: keys/values after churn"; // expect: pass: keys/values after churn
+
+// ---------------------------------------------------------------------------
+// Test 8: Rapid create-and-discard dicts (GC pressure)
+// ---------------------------------------------------------------------------
+{
+  var last = [:];
+  for (var round = 0; round < 100; round = round + 1) {
+    var d = [:];
+    for (var i = 0; i < 50; i = i + 1) {
+      d.Set(str(i), round);
+    }
+    last = d;
+  }
+  // Only the last dict matters
+  assert(last.Size() == 50);
+  for (var i = 0; i < 50; i = i + 1) {
+    assert(last.Get(str(i)) == 99);
+  }
+}
+print "pass: rapid create-discard"; // expect: pass: rapid create-discard
+
+print "ALL DICT STRESS TESTS PASSED"; // expect: ALL DICT STRESS TESTS PASSED
