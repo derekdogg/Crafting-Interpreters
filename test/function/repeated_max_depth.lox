@@ -1,0 +1,30 @@
+// Near-max-depth stability test.
+// Verifies: repeated recursion at depth 254 (one below FRAMES_MAX) does not
+// corrupt the frame array, value stack, or globals. Multiple calls at max
+// depth followed by trivial calls must all succeed.
+//
+// This does NOT trigger an actual overflow — see boundary_overflow.lox for that.
+// This tests that operating at the boundary repeatedly is safe.
+
+fun recurse(n) {
+  if (n == 0) return "ok";
+  return recurse(n - 1);
+}
+
+fun sanity() {
+  return 42;
+}
+
+// Normal depth works
+print recurse(200); // expect: ok
+
+// Max depth works
+print recurse(254); // expect: ok
+
+// VM is functional after max-depth
+print sanity(); // expect: 42
+
+// Multiple max-depth calls in sequence
+print recurse(254); // expect: ok
+print recurse(254); // expect: ok
+print sanity(); // expect: 42
