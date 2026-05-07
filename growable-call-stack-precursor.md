@@ -113,7 +113,7 @@ var
 
 ---
 
-## 4. Assert `frame` consistency at dispatch entry (DEBUG only)
+## 4. Assert `frame` consistency at dispatch entry
 
 ### Problem
 
@@ -124,20 +124,20 @@ If `frame` ever becomes stale, bugs will be silent corruption. A cheap assertion
 Add at the start of the `while True` loop body:
 
 ```pascal
-{$IFDEF DEBUG}
 Assert(VM.FrameCount > 0,
   'Run dispatch: FrameCount <= 0');
-Assert(frame = @VM.Frames[VM.FrameCount - 1],
+Assert(frame = CurrentFrame,
   'Run dispatch: frame is out of sync with FrameCount');
-{$ENDIF}
 ```
+
+These are unconditional — assertions are always enabled in this project.
 
 The `FrameCount > 0` guard catches underflow before it becomes a `[-1]` index. The sync check is the canary for any stale-pointer bug.
 
 ### Verification
 
-- All tests pass with assertion enabled
-- Zero perf cost in release builds
+- All tests pass with assertions enabled
+- Assertions remain on in all builds (project policy)
 
 ---
 
