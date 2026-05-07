@@ -1,0 +1,63 @@
+// Higher-order function calls at depth: pass closures as arguments
+// through a deep recursive chain.
+// Verifies: closure objects (with captured environments) survive being
+//           passed as arguments across many frame boundaries,
+//           argument slot isolation across evolving values,
+//           indirect dispatch correctness after deep recursion.
+
+fun apply(f, x) {
+  return f(x);
+}
+
+// Plain function references (no upvalues — tests callable transport)
+fun double(x) { return x * 2; }
+fun addOne(x) { return x + 1; }
+
+fun deepApply(n, f, x) {
+  if (n == 0) return apply(f, x);
+  return deepApply(n - 1, f, x);
+}
+
+print deepApply(200, double, 21); // expect: 42
+print deepApply(200, addOne, 99); // expect: 100
+
+// Real closures with captured environments — tests upvalue survival through deep passing
+fun makeAdder(amount) {
+  fun add(x) {
+    return x + amount;
+  }
+  return add;
+}
+
+var add10 = makeAdder(10);
+var add99 = makeAdder(99);
+
+print deepApply(200, add10, 5);  // expect: 15
+print deepApply(200, add99, 1);  // expect: 100
+
+// Evolving arguments — stresses slot isolation across frames
+fun deepEvolve(n, f, x) {
+  var localF = f;
+  var localX = x;
+  if (n == 0) return localF(localX);
+  return deepEvolve(n - 1, localF, localX + 1);
+}
+
+// double(x) where x starts at 0 and increments 200 times → double(200) = 400
+print deepEvolve(200, double, 0); // expect: 400
+
+// Closure with mutation — verify captured state isn't corrupted by deep transport
+fun makeCounter() {
+  var count = 0;
+  fun increment(x) {
+    count = count + 1;
+    return count + x;
+  }
+  return increment;
+}
+
+var counter = makeCounter();
+// Pass counter through 100 frames, then call it — count becomes 1
+print deepApply(100, counter, 5); // expect: 6
+// Call again directly — count is now 2 (state persisted)
+print counter(0); // expect: 2

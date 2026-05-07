@@ -1,0 +1,15 @@
+// Native function calls at deep recursion depth.
+// Calls clock() and str() at depth 200 to verify natives work
+// when the frame stack is heavily used.
+// Verifies: native dispatch doesn't corrupt frame state at depth.
+
+fun deepNative(n) {
+  if (n == 0) {
+    var t = clock();
+    var s = str(t);
+    return type(s);
+  }
+  return deepNative(n - 1);
+}
+
+print deepNative(200); // expect: string
