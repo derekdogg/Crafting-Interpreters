@@ -2,7 +2,8 @@
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
 {$DEFINE DEBUG_LOG_GC}
-{$DEFINE DEBUG_STRESS_GC}
+{..$DEFINE DEBUG_STRESS_GC}
+{..$DEFINE DEBUG_STRESS_TABLE}
 interface
 
 uses
@@ -16,6 +17,7 @@ const
   GC_HEAP_GROW_FACTOR = 2;
 
   //Table
+  TABLE_START_CAPACITY = 8;
   TABLE_MAX_LOAD = 0.75;
 
   //scanner
@@ -127,7 +129,7 @@ const
     'OP_RECORD_LONG');
 
   UINT8_COUNT = 256;
-  FRAMES_MAX = 64;
+  FRAMES_MAX = 256;
   STACK_MAX = FRAMES_MAX * UINT8_COUNT;
 
 
@@ -383,6 +385,7 @@ type
     GrayCapacity    : integer;
     GrayStack       : ^pObj;
     Roots           : TRoots;
+    GCCollections   : integer;
   end;
 
   TCallFrame = record
@@ -878,13 +881,13 @@ begin
 end;
 
 procedure AssertTableConsistency(Table : pTable);
-{$IFDEF DEBUG_STRESS_GC}
+{$IFDEF DEBUG_STRESS_TABLE}
 var
   i, liveCount, tombstoneCount: integer;
   entry: pEntry;
 {$ENDIF}
 begin
-  {$IFDEF DEBUG_STRESS_GC}
+  {$IFDEF DEBUG_STRESS_TABLE}
   AssertTable(Table);
   if Table.CurrentCapacity = 0 then
   begin
@@ -894,7 +897,7 @@ begin
   end;
 
   Assert(Table.Entries <> nil, 'AssertTableConsistency: capacity>0 but entries=nil');
-  Assert(Table.CurrentCapacity >= 8, 'AssertTableConsistency: capacity below minimum (8)');
+  Assert(Table.CurrentCapacity >= TABLE_START_CAPACITY, 'AssertTableConsistency: capacity below minimum');
   Assert(Table.Count >= 0, 'AssertTableConsistency: negative count');
   Assert(Table.Count <= Table.CurrentCapacity,
     'AssertTableConsistency: count exceeds capacity');
@@ -1862,8 +1865,11 @@ var
 begin
   case value.ValueKind of
     vkNumber: begin
-      // Hash the raw bits of the double
-      Move(value.NumberValue, bits, SizeOf(Double));
+      // Canonicalize -0.0 to +0.0 so they hash identically (both compare equal via =)
+      if value.NumberValue = 0.0 then
+        bits := 0
+      else
+        Move(value.NumberValue, bits, SizeOf(Double));
       Result := UInt32(bits xor (bits shr 32));
     end;
     vkBoolean: begin
@@ -1947,8 +1953,8 @@ begin
 
   oldCount := dict^.Count;
 
-  if dict^.Capacity < 8 then
-    newCapacity := 8
+  if dict^.Capacity < TABLE_START_CAPACITY then
+    newCapacity := TABLE_START_CAPACITY
   else
     newCapacity := dict^.Capacity * GROWTH_FACTOR;
 
@@ -2968,7 +2974,8 @@ var
       end;
       if VM.FrameCount = FRAMES_MAX then
       begin
-        runtimeError('Stack overflow.');
+        runtimeError('Stack overflow (max ' + IntToStr(FRAMES_MAX) +
+          ' frames). Last call: ' + String(ObjStringToAnsiString(pObjClosure(callee.ObjValue)^.func^.name)));
         Exit(false);
       end;
       frame := @VM.Frames[VM.FrameCount];
@@ -4472,6 +4479,8 @@ begin
   Inc(GCLogCycles);
   {$ENDIF}
 
+  Inc(VM.MemTracker.GCCollections);
+
   MarkRoots;
   TraceReferences;
   Assert(VM.MemTracker.GrayCount = 0, 'CollectGarbage: gray stack not drained after TraceReferences');
@@ -4554,6 +4563,7 @@ begin
   MemTracker.GrayCount := 0;
   MemTracker.GrayCapacity := 0;
   MemTracker.GrayStack := nil;
+  MemTracker.GCCollections := 0;
   
   // ---- Exit assertions ----
   AssertMemTrackerIsNotNil(MemTracker);
@@ -4643,6 +4653,79 @@ begin
     obj := obj.Next;
   end;
   Result := CreateNumber(count);
+end;
+
+function vmStackDepthNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber( (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue) );
+end;
+
+function vmStackCapacityNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.Stack.CurrentCapacity);
+end;
+
+function vmCallDepthNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.FrameCount);
+end;
+
+function vmOpenUpvaluesNative(argCount: integer; args: pValue): TValue;
+var
+  upval: pObjUpvalue;
+  count: integer;
+begin
+  count := 0;
+  upval := VM.OpenUpvalues;
+  while upval <> nil do
+  begin
+    count := count + 1;
+    upval := upval^.next;
+  end;
+  Result := CreateNumber(count);
+end;
+
+function gcNextThresholdNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.MemTracker.NextGC);
+end;
+
+function gcCollectionCountNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(VM.MemTracker.GCCollections);
+end;
+
+function internTableStatsNative(argCount: integer; args: pValue): TValue;
+var
+  dict: pObjDictionary;
+  liveCount, capacity, tombstones, i: integer;
+  keyStr: pObjString;
+  dictVal: TValue;
+begin
+  capacity := VM.Strings.CurrentCapacity;
+  // Count live entries and tombstones separately
+  liveCount := 0;
+  tombstones := 0;
+  if (VM.Strings.Entries <> nil) and (capacity > 0) then
+    for i := 0 to capacity - 1 do
+      if VM.Strings.Entries[i].key <> nil then
+        Inc(liveCount)
+      else if VM.Strings.Entries[i].value.ValueKind <> vkNull then
+        Inc(tombstones);
+  // Create dictionary and push onto stack to protect from GC during allocations
+  dict := newDictionary(VM.MemTracker);
+  dictVal := CreateObject(pObj(dict));
+  pushStack(VM.Stack, dictVal, VM.MemTracker);
+  // Now safe to allocate key strings — dict is rooted via stack
+  keyStr := CreateString('liveStrings', VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(liveCount), VM.MemTracker);
+  keyStr := CreateString('slots', VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(capacity), VM.MemTracker);
+  keyStr := CreateString('tombstones', VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(tombstones), VM.MemTracker);
+  // Pop the protection slot — caller will push result onto stack
+  popStack(VM.Stack);
+  Result := dictVal;
 end;
 
 function envNative(argCount: integer; args: pValue): TValue;
@@ -6329,6 +6412,13 @@ begin
   defineNative('assert', assertNative);
   defineNative('bytesAllocated', bytesAllocatedNative);
   defineNative('objectsAllocated', objectsAllocatedNative);
+  defineNative('vmStackDepth', vmStackDepthNative);
+  defineNative('vmStackCapacity', vmStackCapacityNative);
+  defineNative('vmCallDepth', vmCallDepthNative);
+  defineNative('vmOpenUpvalues', vmOpenUpvaluesNative);
+  defineNative('gcNextThreshold', gcNextThresholdNative);
+  defineNative('gcCollectionCount', gcCollectionCountNative);
+  defineNative('internTableStats', internTableStatsNative);
   defineNative('env', envNative);
   defineNative('loadEnv', loadEnvNative);
 
@@ -8157,14 +8247,18 @@ var
   index: uint32;
   tombstone: pEntry;
   entry: pEntry;
+  probeCount: integer;
 begin
+  // ---- Entry assertions ----
   Assert(Assigned(Entries), 'FindEntry: entries not assigned');
   Assert(Capacity > 0, 'FindEntry: capacity must be > 0');
   AssertObjStringIsAssigned(key);
 
   index := Key.hash mod uint32(Capacity);
   tombstone := nil;
-  while true do
+  Result := nil;
+
+  for probeCount := 0 to Capacity - 1 do
   begin
     entry := @Entries[index];
     if entry.key = nil then
@@ -8176,7 +8270,7 @@ begin
           Result := tombstone
         else
           Result := entry;
-        Exit;
+        Break;
       end
       else
       begin
@@ -8187,15 +8281,15 @@ begin
     end
     else if entry.key = key then
     begin
-      // Found the key
+      // Found the key (pointer identity — strings are interned)
       Result := entry;
-      Exit;
+      Break;
     end;
     index := (index + 1) mod uint32(Capacity);
   end;
 
   // ---- Exit assertions ----
-  Assert(Result <> nil, 'FindEntry exit: result should not be nil');
+  Assert(Result <> nil, 'FindEntry: probed entire table without finding slot');
 end;
 
 
@@ -8205,9 +8299,11 @@ var
   OldCapacity, i: integer;
   dest: pEntry;
 begin
+  // ---- Entry assertions ----
   AssertMemTrackerIsNotNil(MemTracker);
   AssertTable(Table);
   Assert(NewCapacity > 0, 'AdjustCapacity: new capacity must be > 0');
+  Assert(NewCapacity >= Table.Count, 'AdjustCapacity: new capacity smaller than live count');
 
   // Allocate fresh array
   NewEntries := nil;
@@ -8261,8 +8357,8 @@ begin
 
   if (Table.Count + 1 > Table.CurrentCapacity * TABLE_MAX_LOAD) then
   begin
-    if Table.CurrentCapacity < 8 then
-      NewCapacity := 8
+    if Table.CurrentCapacity < TABLE_START_CAPACITY then
+      NewCapacity := TABLE_START_CAPACITY
     else
       NewCapacity := Table.CurrentCapacity * GROWTH_FACTOR;
     AdjustCapacity(Table, NewCapacity, MemTracker);
@@ -8296,7 +8392,9 @@ begin
   if Entry.key = nil then
     Exit(false);
 
-  // Place a tombstone
+  // Place a tombstone. Setting key to nil does not leak: the ObjString
+  // remains on the VM's object linked list and will be freed by Sweep
+  // if no other roots reference it. TableRemoveWhite handles the intern table.
   Entry.key := nil;
   Entry.value := CreateBoolean(true);
   Result := true;

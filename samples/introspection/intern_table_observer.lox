@@ -1,0 +1,97 @@
+// Intern Table Observer — watch strings enter and leave the intern table
+//
+// Uses internTableStats() to show how the intern table reacts to:
+// - Creating many unique strings
+// - Dropping them and collecting garbage (TableRemoveWhite)
+// - Repeated churn creating tombstones
+// - Whether AdjustCapacity cleans up tombstones on resize
+
+fun printInternStats(label) {
+  var stats = internTableStats();
+  print label + ":";
+  print "  liveStrings=" + str(dictGet(stats, "liveStrings")) +
+        "  slots=" + str(dictGet(stats, "slots")) +
+        "  tombstones=" + str(dictGet(stats, "tombstones"));
+}
+
+// Baseline — includes strings from this script's source + native names
+collectGarbage();
+printInternStats("Baseline");
+var baselineStats = internTableStats();
+var baselineStrings = dictGet(baselineStats, "liveStrings");
+
+// Phase 1: Create 200 unique strings, hold them alive
+print "";
+print "--- Phase 1: Create 200 unique strings ---";
+var strings = newArray();
+for (var i = 0; i < 200; i = i + 1) {
+  arrayPush(strings, "intern_test_" + str(i) + "_xyz");
+}
+printInternStats("After creating 200 strings");
+var afterCreate = internTableStats();
+var newStrings = dictGet(afterCreate, "liveStrings") - baselineStrings;
+print "  -> new strings interned: " + str(newStrings);
+assert(newStrings >= 200, "Should have at least 200 new interned strings");
+
+// Phase 2: Drop all references and collect — strings become dead
+print "";
+print "--- Phase 2: Drop strings and collect ---";
+strings = nil;
+collectGarbage();
+printInternStats("After drop + GC");
+var afterDrop = internTableStats();
+var tombstonesNow = dictGet(afterDrop, "tombstones");
+print "  -> TableRemoveWhite removed dead strings";
+print "  -> tombstones left behind: " + str(tombstonesNow);
+
+// Phase 3: Churn — repeated create/drop cycles
+print "";
+print "--- Phase 3: 5 rounds of 100-string churn ---";
+for (var round = 0; round < 5; round = round + 1) {
+  var batch = newArray();
+  for (var i = 0; i < 100; i = i + 1) {
+    arrayPush(batch, "churn_r" + str(round) + "_i" + str(i));
+  }
+  batch = nil;
+  collectGarbage();
+}
+printInternStats("After 5 churn rounds");
+
+// Phase 4: Force resize by creating enough strings to exceed 75% load
+print "";
+print "--- Phase 4: Force table resize ---";
+var preResize = internTableStats();
+var preSlots = dictGet(preResize, "slots");
+var preTombstones = dictGet(preResize, "tombstones");
+
+// Fill to >75% load to trigger AdjustCapacity
+var fillers = newArray();
+var target = floor(preSlots * 80 / 100);  // aim for 80% occupancy
+var needed = target - dictGet(preResize, "liveStrings");
+if (needed > 0) {
+  for (var i = 0; i < needed; i = i + 1) {
+    arrayPush(fillers, "filler_resize_" + str(i) + "_pad");
+  }
+}
+var postResize = internTableStats();
+var postSlots = dictGet(postResize, "slots");
+var postTombstones = dictGet(postResize, "tombstones");
+printInternStats("After filling to trigger resize");
+
+if (postSlots > preSlots) {
+  print "  -> TABLE RESIZED: " + str(preSlots) + " -> " + str(postSlots) + " slots";
+  print "  -> tombstones before: " + str(preTombstones) + "  after: " + str(postTombstones);
+  if (postTombstones < preTombstones) {
+    print "  -> AdjustCapacity cleaned up tombstones!";
+  }
+} else {
+  print "  -> no resize triggered (table had enough room)";
+}
+
+// Cleanup
+fillers = nil;
+collectGarbage();
+printInternStats("Final (after cleanup)");
+
+print "";
+print "Intern table observer complete.";

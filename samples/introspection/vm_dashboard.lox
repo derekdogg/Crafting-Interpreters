@@ -1,0 +1,54 @@
+// VM Dashboard — snapshot of all introspection metrics
+//
+// Prints a complete picture of the VM's internal state at a single point
+// in time. Run this after doing some work to see where things stand.
+
+fun printDivider() {
+  print "────────────────────────────────────────";
+}
+
+fun printHeader(title) {
+  printDivider();
+  print "  " + title;
+  printDivider();
+}
+
+// Do a bit of setup so the numbers are interesting
+record Node(value, next);
+var list = nil;
+for (var i = 0; i < 50; i = i + 1) {
+  list = Node("item_" + str(i), list);
+}
+var arr = newArray();
+for (var i = 0; i < 30; i = i + 1) arrayPush(arr, i);
+
+// Take the snapshot
+printHeader("VM STATE DASHBOARD");
+
+print "  Stack depth (slots in use):  " + str(vmStackDepth());
+print "  Stack capacity (allocated):  " + str(vmStackCapacity());
+print "  Call depth (active frames):  " + str(vmCallDepth());
+print "  Open upvalues:               " + str(vmOpenUpvalues());
+
+printHeader("GARBAGE COLLECTOR");
+
+print "  Bytes allocated:             " + str(bytesAllocated());
+print "  Live objects:                " + str(objectsAllocated());
+print "  GC collections so far:       " + str(gcCollectionCount());
+print "  Next GC threshold:           " + str(gcNextThreshold());
+
+printHeader("INTERN TABLE");
+
+var stats = internTableStats();
+print "  Live strings:                " + str(dictGet(stats, "liveStrings"));
+print "  Table slots (capacity):      " + str(dictGet(stats, "slots"));
+print "  Tombstones:                  " + str(dictGet(stats, "tombstones"));
+
+var liveStrings = dictGet(stats, "liveStrings");
+var slots = dictGet(stats, "slots");
+if (slots > 0) {
+  print "  Load factor:                 " + str(floor((liveStrings * 100) / slots)) + "%";
+}
+
+printDivider();
+print "  Dashboard complete.";

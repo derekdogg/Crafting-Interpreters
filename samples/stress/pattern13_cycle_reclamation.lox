@@ -36,20 +36,27 @@ fun buildFatCycle(size) {
 // Force a clean baseline
 collectGarbage();
 var baseline = bytesAllocated();
+var baselineObjects = objectsAllocated();
 
 // Create the cycle
 var fatCycle = buildFatCycle(200);
 collectGarbage();
 var withCycle = bytesAllocated();
+var withCycleObjects = objectsAllocated();
 assert(withCycle > baseline); // cycle is using memory
+assert(withCycleObjects > baselineObjects); // cycle added objects
 
 // Drop all references to the cycle
 fatCycle = nil;
 collectGarbage();
 var afterDrop = bytesAllocated();
+var afterDropObjects = objectsAllocated();
 
 // Memory should have decreased — the cycle was reclaimed
 assert(afterDrop < withCycle);
+// Object count should have decreased too
+assert(afterDropObjects < withCycleObjects, "Object count should drop after cycle freed");
+print "pattern 13: cycle objects freed: " + str(withCycleObjects - afterDropObjects);
 
 // Repeat with dict-based cycle
 collectGarbage();

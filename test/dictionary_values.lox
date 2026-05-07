@@ -1,0 +1,125 @@
+// Dictionary value type tests
+
+// Test 1: Store and retrieve nil values
+fun testNilValue() {
+  var d = [:];
+  d.Set("key", nil);
+  print d.Has("key"); // expect: true
+  print d.Get("key"); // expect: nil
+  print d.Size(); // expect: 1
+}
+testNilValue();
+
+// Test 2: Store and retrieve boolean values
+fun testBooleanValues() {
+  var d = [:];
+  d.Set("yes", true);
+  d.Set("no", false);
+  print d.Get("yes"); // expect: true
+  print d.Get("no"); // expect: false
+}
+testBooleanValues();
+
+// Test 3: Overwrite with different value type
+fun testOverwriteType() {
+  var d = [:];
+  d.Set("x", 42);
+  print d.Get("x"); // expect: 42
+  d.Set("x", "hello");
+  print d.Get("x"); // expect: hello
+  d.Set("x", true);
+  print d.Get("x"); // expect: true
+  d.Set("x", nil);
+  print d.Get("x"); // expect: nil
+  print d.Size(); // expect: 1
+}
+testOverwriteType();
+
+// Test 4: All value types in one dict
+fun testMixedValues() {
+  var d = [:];
+  d.Set("num", 3.14);
+  d.Set("str", "text");
+  d.Set("bool", false);
+  d.Set("nil", nil);
+  print d.Get("num"); // expect: 3.14
+  print d.Get("str"); // expect: text
+  print d.Get("bool"); // expect: false
+  print d.Get("nil"); // expect: nil
+  print d.Size(); // expect: 4
+}
+testMixedValues();
+
+// Test 5: Dict as value in another dict
+fun testNestedDict() {
+  var inner = ["a": 1, "b": 2];
+  var outer = [:];
+  outer.Set("nested", inner);
+  var got = outer.Get("nested");
+  print got.Get("a"); // expect: 1
+  print got.Get("b"); // expect: 2
+}
+testNestedDict();
+
+// Test 6: Array as value in dict
+fun testArrayValue() {
+  var d = [:];
+  var arr = newArray();
+  arrayPush(arr, 10);
+  arrayPush(arr, 20);
+  arrayPush(arr, 30);
+  d.Set("arr", arr);
+  var got = d.Get("arr");
+  print got[0]; // expect: 10
+  print got[1]; // expect: 20
+  print got[2]; // expect: 30
+}
+testArrayValue();
+
+// Test 7: Function as value in dict
+fun testFunctionValue() {
+  fun greet() {
+    print "hello";
+  }
+  var d = [:];
+  d.Set("fn", greet);
+  var f = d.Get("fn");
+  f(); // expect: hello
+}
+testFunctionValue();
+
+// Test 8: Dict literal with mixed value types
+fun testLiteralMixedValues() {
+  var d = ["n": 99, "s": "abc", "b": true, "z": nil];
+  print d.Get("n"); // expect: 99
+  print d.Get("s"); // expect: abc
+  print d.Get("b"); // expect: true
+  print d.Get("z"); // expect: nil
+}
+testLiteralMixedValues();
+
+// Test 9: Subscript with all value types
+fun testSubscriptValues() {
+  var d = [:];
+  d["num"] = 7;
+  d["str"] = "world";
+  d["bool"] = false;
+  d["nil"] = nil;
+  print d["num"]; // expect: 7
+  print d["str"]; // expect: world
+  print d["bool"]; // expect: false
+  print d["nil"]; // expect: nil
+}
+testSubscriptValues();
+
+// Test 10: Delete key with nil value vs non-existent key
+fun testDeleteNilValue() {
+  var d = [:];
+  d.Set("present", nil);
+  print d.Has("present"); // expect: true
+  print d.Has("absent"); // expect: false
+  print d.Delete("present"); // expect: true
+  print d.Delete("absent"); // expect: false
+  print d.Size(); // expect: 0
+}
+testDeleteNilValue();

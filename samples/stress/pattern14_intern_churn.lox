@@ -44,10 +44,20 @@ var held = buildStrings(2000);
 collectGarbage(); // clean any garbage from buildStrings intermediates
 var withStrings = bytesAllocated();
 
+// Introspection: verify intern table shows the strings
+var statsWithStrings = internTableStats();
+var liveWithStrings = dictGet(statsWithStrings, "liveStrings");
+
 // Drop all references — strings become unreachable
 held = nil;
 collectGarbage();
 var afterDrop = bytesAllocated();
+
+// Introspection: verify intern table live count dropped
+var statsAfterDrop = internTableStats();
+var liveAfterDrop = dictGet(statsAfterDrop, "liveStrings");
+print "pattern 14: internTable liveStrings with=" + str(liveWithStrings) + " after=" + str(liveAfterDrop);
+assert(liveAfterDrop < liveWithStrings, "Intern table liveStrings should drop after freeing strings");
 
 // Strings should have been reclaimed — memory went down
 print "pattern 14: withStrings=" + str(withStrings) + " afterDrop=" + str(afterDrop) + " freed=" + str(withStrings - afterDrop);
