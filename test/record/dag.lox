@@ -52,7 +52,7 @@ print a.children[1].children[1].children[0].value; // expect: I
 fun id(x) { return x; }
 
 print id(a.children[0]).children[0].children[0].children[0].value; // expect: J
-print id(id(a).children[1]).children[0].children[0].value; // expect: J
+print id(id(a).children[1]).children[0].children[0].children[0].value; // expect: J
 print id(a.children[0].children[1]).children[0].children[0].children[0].value; // expect: K
 
 // ---- Shared node identity ----
@@ -175,8 +175,8 @@ dfs2(k);
 // expect: D
 // expect: G
 // expect: J*
-// expect: I
 // expect: E
 // expect: H
+// expect: I
 // expect: C
 // expect: F
