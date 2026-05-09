@@ -387,6 +387,13 @@ begin
         Continue;
       end;
 
+      // Skip tests that require Delphi-side injection (run separately)
+      if Pos('inject', LowerCase(RelPath)) > 0 then
+      begin
+        Inc(Skipped);
+        Continue;
+      end;
+
       Memo2.Lines.Add('Running: ' + RelPath);
       Application.ProcessMessages;
 

@@ -873,7 +873,7 @@ var
 implementation
 
 uses
-  sysutils, Math, strUtils, Windows,
+  sysutils, Math, strUtils, Windows, System.AnsiStrings,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
 
@@ -2423,6 +2423,17 @@ begin
   if rt = nil then Exit;
 
   mName := String(methodName);
+
+  // Denylist: prevent scripts from invoking lifecycle/dangerous TObject methods
+  if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
+     SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
+     SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
+     SameText(mName, 'BeforeDestruction') then
+  begin
+    runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
+    Exit;
+  end;
+
   methods := rt.GetMethods(mName);
 
   try
@@ -3740,7 +3751,8 @@ begin
             rttiPropName := ObjStringToAnsiString(ValueToString(value));
             if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
             begin
-              runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -3789,7 +3801,8 @@ begin
             rttiPropName := ObjStringToAnsiString(ValueToString(value));
             if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
             begin
-              runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -3853,7 +3866,8 @@ begin
             end
             else
             begin
-              runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -3917,7 +3931,8 @@ begin
             end
             else
             begin
-              runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -3969,7 +3984,8 @@ begin
             rttiPropName := ObjStringToAnsiString(ValueToString(value));
             if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
             begin
-              runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -4024,7 +4040,8 @@ begin
             rttiPropName := ObjStringToAnsiString(ValueToString(value));
             if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
             begin
-              runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -6863,6 +6880,8 @@ begin
   VM.OpenUpvalues := nil;
   VM.RuntimeErrorStr := '';
   VM.PrintOutput := '';
+
+  RttiCtx := TRttiContext.Create;
   InitMemTracker(VM.MemTracker);
   InitTable(VM.Strings, VM.MemTracker);
   InitTable(VM.Globals, VM.MemTracker);
@@ -6990,6 +7009,7 @@ begin
   SetLength(NativeClassRegistry, 0);
   NativeClassCount := 0;
 
+  RttiCtx.Free;
   {$IFDEF DEBUG_LOG_GC}
   finally
   try
@@ -7061,7 +7081,7 @@ begin
   Assert(Assigned(msg), 'ErrorToken: msg is nil');
   result.Tokentype := TOKEN_ERROR;
   result.start := msg;
-  result.length := Length(msg);
+  result.length := System.AnsiStrings.StrLen(msg);
   result.line := scanner.line;
 end;
 
