@@ -1,0 +1,38 @@
+// ============================================================
+// inject_rtti_edge.lox — Edge-case property values via RTTI
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//   Initial state: Name="Alice", Age=30, Balance=1500.50, Active=true.
+//
+// What this tests:
+//   - Empty string round-trip (set "" then verify)
+//   - Zero integer value
+//   - Negative floating-point value
+//   - Boolean toggle (true → false)
+//   - Large floating-point number
+//   - String containing spaces and punctuation
+
+// Empty string round-trip
+cust.Name = "";
+print cust.Name == ""; // expect: true
+
+// Zero
+cust.Age = 0;
+print cust.Age; // expect: 0
+
+// Negative number
+cust.Balance = -99.5;
+print cust.Balance; // expect: -99.5
+
+// Boolean toggle
+print cust.Active; // expect: true
+cust.Active = false;
+print cust.Active; // expect: false
+
+// Large number
+cust.Balance = 999999999.99;
+print cust.Balance; // expect: 999999999.99
+
+// String with spaces and punctuation
+cust.Name = "Hello, World! 123";
+print cust.Name; // expect: Hello, World! 123

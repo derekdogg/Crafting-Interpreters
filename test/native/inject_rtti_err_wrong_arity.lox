@@ -1,0 +1,11 @@
+// ============================================================
+// inject_rtti_err_wrong_arity.lox — Wrong argument count
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Calling SetInfo with 1 arg when it expects 2 (string, integer)
+//   - RTTI overload resolution matches by name + param count, so no
+//     overload matches — falls through to "Undefined method" error
+print cust.Name; // expect: Alice
+cust.SetInfo("Bob"); // expect runtime error: Undefined method 'SetInfo'.

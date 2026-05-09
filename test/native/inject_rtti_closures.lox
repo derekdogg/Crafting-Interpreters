@@ -1,0 +1,71 @@
+// ============================================================
+// inject_rtti_closures.lox — Native objects captured in closures
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//   Initial state: Name="Alice", Age=30, Balance=1500.50, Active=true,
+//   Address=TAddress("123 Main St", "Springfield", "62704").
+//
+// What this tests:
+//   - Native object passed to a function and captured as an upvalue
+//   - Calling RTTI methods on the captured object after the outer function returns
+//   - Mutating properties through a closure
+//   - Mutation visibility: a separate closure sees changes made by another
+//   - Nested closure: native object captured two levels deep
+//   - Captured nested object (cust.Address) reflecting external mutations
+//   - GC safety: with DEBUG_STRESS_GC on, every allocation triggers a full
+//     collection — if the upvalue trace misses the native wrapper, this crashes
+
+// Capture in a closure and call later
+fun makeGreeter(obj) {
+  fun greet() {
+    return obj.Greet();
+  }
+  return greet;
+}
+
+var greeter = makeGreeter(cust);
+print greeter(); // expect: Hello, Alice!
+
+// Mutate through closure
+fun makeRenamer(obj) {
+  fun rename(newName) {
+    obj.Name = newName;
+  }
+  return rename;
+}
+
+var renamer = makeRenamer(cust);
+renamer("Closure Bob");
+print cust.Name; // expect: Closure Bob
+
+// Verify the greeter sees the mutation
+print greeter(); // expect: Hello, Closure Bob!
+
+// Nested closure capturing native object
+fun outer(obj) {
+  var prefix = "Result: ";
+  fun inner() {
+    return prefix + obj.Describe(">> ");
+  }
+  return inner;
+}
+
+var fn = outer(cust);
+print fn(); // expect: Result: >> Closure Bob, age 30
+
+// Closure over nested native object
+fun captureAddress(obj) {
+  var addr = obj.Address;
+  fun getCity() {
+    return addr.City;
+  }
+  return getCity;
+}
+
+var cityGetter = captureAddress(cust);
+print cityGetter(); // expect: Springfield
+
+// Mutate the address after closure was created — should see the change
+// since addr and cust.Address point to the same Delphi object
+cust.Address.City = "Closureville";
+print cityGetter(); // expect: Closureville

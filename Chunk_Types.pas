@@ -2280,7 +2280,11 @@ begin
       Result := CreateObject(pObj(childNative));
     end;
   else
+  begin
+    runtimeError(Format('Cannot marshal Delphi type ''%s'' (kind %s) to Lox.',
+      [String(V.TypeInfo.Name), GetEnumName(TypeInfo(TTypeKind), Ord(V.Kind))]));
     Result := CreateNilValue;
+  end;
   end;
 end;
 
@@ -2318,7 +2322,11 @@ begin
       else if isNativeObject(V) then
         Result := System.Rtti.TValue.From<TObject>(TObject(pObjNativeObject(V.ObjValue)^.instance))
       else
+      begin
+        runtimeError(Format('Cannot marshal Lox %s to Delphi.',
+          [GetEnumName(TypeInfo(TObjectKind), Ord(pObj(V.ObjValue)^.ObjectKind))]));
         Result := System.Rtti.TValue.Empty;
+      end;
     end;
   else
     Result := System.Rtti.TValue.Empty;
@@ -2383,6 +2391,7 @@ begin
     if (prop <> nil) and (prop.IsWritable) then
     begin
       dv := LoxValueToDelphi(loxVal, prop.PropertyType.Handle);
+      if VM.RuntimeErrorStr <> '' then Exit;
       prop.SetValue(TObject(instance), dv);
       Exit(True);
     end;
@@ -2391,6 +2400,7 @@ begin
     if field <> nil then
     begin
       dv := LoxValueToDelphi(loxVal, field.FieldType.Handle);
+      if VM.RuntimeErrorStr <> '' then Exit;
       field.SetValue(TObject(instance), dv);
       Exit(True);
     end;
@@ -2445,6 +2455,10 @@ begin
         SetLength(delphiArgs, argCount);
         for i := 0 to argCount - 1 do
           delphiArgs[i] := LoxValueToDelphi(args[i], params[i].ParamType.Handle);
+
+        // Bail out if marshaling set a runtime error
+        if VM.RuntimeErrorStr <> '' then
+          Exit;
 
         dv := method.Invoke(TObject(instance), delphiArgs);
 
@@ -2776,7 +2790,17 @@ begin
                   AssertPointerIsNotNil(b.ObjValue, 'B value in ValuesEqual');
                   case a.ObjValue.ObjectKind of
                     okString : begin
-                       result := StringsEqual(ValueToString(a),ValueToString(b));
+                      if b.ObjValue.ObjectKind = okString then
+                        result := StringsEqual(ValueToString(a),ValueToString(b))
+                      else
+                        result := false;
+                    end;
+                    okNativeObject : begin
+                      if b.ObjValue.ObjectKind = okNativeObject then
+                        result := pObjNativeObject(a.ObjValue)^.instance =
+                                  pObjNativeObject(b.ObjValue)^.instance
+                      else
+                        result := false;
                     end
                     else
                     begin
@@ -6231,6 +6255,7 @@ var
   i : integer;
   info : pNativeClassInfo;
 begin
+  if findNativeClass(AName) <> nil then Exit; // already registered
   New(info);
   info^.name := AName;
   SetLength(info^.methods, Length(AMethods));
@@ -6248,6 +6273,7 @@ procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADe
 var
   info : pNativeClassInfo;
 begin
+  if findNativeClass(AName) <> nil then Exit; // already registered
   New(info);
   info^.name := AName;
   SetLength(info^.methods, 0);

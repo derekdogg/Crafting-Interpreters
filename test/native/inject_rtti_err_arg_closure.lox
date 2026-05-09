@@ -1,0 +1,11 @@
+// ============================================================
+// inject_rtti_err_arg_closure.lox — Closure arg to Delphi method
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Passing a Lox function/closure where a Delphi string is expected
+//   - LoxValueToDelphi should detect the unmarshalable type and raise
+//     a runtime error before the RTTI invoke proceeds
+fun dummy() { return "hi"; }
+cust.SetInfo(dummy, 10); // expect runtime error: Cannot marshal Lox okClosure to Delphi.

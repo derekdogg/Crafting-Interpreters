@@ -1,0 +1,10 @@
+// ============================================================
+// inject_rtti_err_bad_property.lox — GET undefined property
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Reading a property that doesn't exist on TCustomer via RTTI
+//   - VM should produce runtime error: "Undefined property 'Bogus'."
+print cust.Name; // expect: Alice
+print cust.Bogus; // expect runtime error: Undefined property 'Bogus'.
