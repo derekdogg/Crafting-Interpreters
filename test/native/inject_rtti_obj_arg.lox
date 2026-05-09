@@ -1,0 +1,36 @@
+// ====================================================================
+// inject_rtti_obj_arg.lox — Pass native object as method argument
+// ====================================================================
+// Setup: cust = TCustomer("Alice", 30, 1500.50, True)
+//   Address=TAddress("123 Main St", "Springfield", "62704").
+//   addr2 = TAddress("456 Oak Ave", "Shelbyville", "62705").
+//
+// What this tests:
+//   - Passing an injected native object as an argument to a Delphi method
+//   - LoxValueToDelphi marshaling of okNativeObject → TObject
+//   - Verifying the object is correctly received on the Delphi side
+//   - Property access on the reassigned nested object
+// ====================================================================
+
+// Verify original address
+print cust.Address.City; // expect: Springfield
+
+// Verify standalone addr2
+print addr2.Street; // expect: 456 Oak Ave
+print addr2.City;   // expect: Shelbyville
+print addr2.Zip;    // expect: 62705
+
+// Pass addr2 as argument to SetAddress
+cust.SetAddress(addr2);
+
+// Verify cust.Address now points to addr2
+print cust.Address.Street; // expect: 456 Oak Ave
+print cust.Address.City;   // expect: Shelbyville
+print cust.Address.Zip;    // expect: 62705
+
+// Mutate via addr2, confirm visible through cust.Address
+addr2.City = "New City";
+print cust.Address.City; // expect: New City
+
+// Confirm identity — same object
+print cust.Address == addr2; // expect: true

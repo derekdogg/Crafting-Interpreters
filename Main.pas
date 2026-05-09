@@ -164,6 +164,7 @@ type
     procedure AddBalance(Amount: Double);
     procedure SetInfo(const NewName: string; NewAge: Integer);
     function Describe(const Prefix: string): string;
+    procedure SetAddress(NewAddr: TAddress);
   end;
 
 constructor TAddress.Create(const AStreet, ACity, AZip: string);
@@ -209,6 +210,13 @@ end;
 function TCustomer.Describe(const Prefix: string): string;
 begin
   Result := Prefix + FName + ', age ' + IntToStr(FAge);
+end;
+
+procedure TCustomer.SetAddress(NewAddr: TAddress);
+begin
+  if FAddress <> NewAddr then
+    FAddress.Free;
+  FAddress := NewAddr;
 end;
 
 procedure TForm4.Button1Click(Sender: TObject);
@@ -704,6 +712,7 @@ var
   AllFiles: TStringDynArray;
   F: string;
   cust: TCustomer;
+  addr2: TAddress;
   IR: TInterpretResult;
   Passed, Failed: Integer;
 begin
@@ -729,10 +738,12 @@ begin
     cust := TCustomer.Create('Alice', 30, 1500.50, True);
     try
       cust.Address := TAddress.Create('123 Main St', 'Springfield', '62704');
+      addr2 := TAddress.Create('456 Oak Ave', 'Shelbyville', '62705');
 
       InitVM;
       try
         InjectObject('cust', cust);
+        InjectObject('addr2', addr2);
         IR := CompileAndRun(PAnsiChar(AnsiString(Content)));
       finally
         FreeVM;
@@ -748,6 +759,8 @@ begin
         Memo2.Lines.Add('FAIL: ' + RelPath);
       end;
     finally
+      if cust.Address <> addr2 then
+        addr2.Free;
       cust.Free;
     end;
   end;

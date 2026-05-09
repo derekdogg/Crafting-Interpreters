@@ -1,0 +1,88 @@
+// ====================================================================
+// inject_rtti_gc_functions.lox — Native object survives GC across
+//   function calls, closures, and returns
+// ====================================================================
+// Setup: cust = TCustomer("Alice", 30, 1500.50, True)
+//   Address=TAddress("123 Main St", "Springfield", "62704").
+//   addr2 = TAddress("456 Oak Ave", "Shelbyville", "62705").
+//
+// What this tests:
+//   - Passing native object as Lox function argument (stack slot)
+//   - Returning native object from Lox function
+//   - Closure capturing native object — object survives after outer returns
+//   - Nested function calls with native objects on the stack
+//   - GC triggered during function body with native obj on stack
+// ====================================================================
+
+// --- Pass through a Lox function and return ---
+fun identity(obj) {
+  var garbage = "alloc" + " inside" + " function";
+  return obj;
+}
+
+var returned = identity(cust);
+print returned.Name;    // expect: Alice
+print returned.Balance; // expect: 1500.5
+
+// --- Closure captures native object, outer function returns ---
+fun makeGetter(obj) {
+  var garbage = "alloc" + " in" + " closure" + " factory";
+  fun getter() {
+    return obj.Name;
+  }
+  return getter;
+}
+
+var getName = makeGetter(cust);
+
+// Force GC between closure creation and invocation
+var garbage1 = "force" + " gc" + " between" + " calls";
+var garbage2 = "force" + " gc" + " between" + " calls" + " 2";
+
+print getName(); // expect: Alice
+
+// --- Mutate after closure capture, closure sees change ---
+cust.Name = "Bob";
+print getName(); // expect: Bob
+
+// --- Nested calls: native object deep on the stack ---
+fun outer(obj) {
+  var garbage3 = "alloc" + " in" + " outer";
+  fun middle(o) {
+    var garbage4 = "alloc" + " in" + " middle";
+    fun inner(x) {
+      var garbage5 = "alloc" + " in" + " inner";
+      return x.Age;
+    }
+    return inner(o);
+  }
+  return middle(obj);
+}
+
+print outer(cust); // expect: 30
+
+// --- Return native object from deeply nested call ---
+fun deepReturn(obj) {
+  fun wrap(o) {
+    var garbage6 = "alloc" + " in" + " wrap";
+    return o;
+  }
+  return wrap(obj);
+}
+
+var deep = deepReturn(addr2);
+var garbage7 = "force" + " gc" + " after" + " deep" + " return";
+print deep.City; // expect: Shelbyville
+
+// --- Multiple closures sharing same captured native object ---
+fun makePair(obj) {
+  fun getAge() { return obj.Age; }
+  fun getName() { return obj.Name; }
+  var result = [getAge, getName];
+  return result;
+}
+
+var pair = makePair(cust);
+var garbage8 = "gc" + " after" + " pair";
+print pair[0](); // expect: 30
+print pair[1](); // expect: Bob

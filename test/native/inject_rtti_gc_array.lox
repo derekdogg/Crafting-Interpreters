@@ -1,0 +1,46 @@
+// ====================================================================
+// inject_rtti_gc_array.lox — Native object survives GC in Lox array
+// ====================================================================
+// Setup: cust = TCustomer("Alice", 30, 1500.50, True)
+//   Address=TAddress("123 Main St", "Springfield", "62704").
+//   addr2 = TAddress("456 Oak Ave", "Shelbyville", "62705").
+//
+// What this tests:
+//   - Storing a native object in a Lox array
+//   - Native object wrapper survives GC (DEBUG_STRESS_GC triggers
+//     collection on every allocation)
+//   - Properties remain accessible after intervening allocations
+//   - Multiple native objects in the same array
+// ====================================================================
+
+// Store native objects in an array
+var items = [cust, addr2];
+
+// Force allocations to trigger GC cycles
+var garbage1 = "force" + " gc" + " cycle" + " 1";
+var garbage2 = "force" + " gc" + " cycle" + " 2";
+var garbage3 = "force" + " gc" + " cycle" + " 3";
+
+// Verify both objects survived
+print items[0].Name;    // expect: Alice
+print items[0].Age;     // expect: 30
+print items[0].Balance; // expect: 1500.5
+print items[1].Street;  // expect: 456 Oak Ave
+print items[1].City;    // expect: Shelbyville
+
+// Mutate through the array reference
+items[0].Age = 31;
+print cust.Age; // expect: 31
+
+// More allocations
+var garbage4 = "force" + " gc" + " cycle" + " 4";
+var garbage5 = "force" + " gc" + " cycle" + " 5";
+
+// Still alive
+print items[0].Name; // expect: Alice
+print items[1].Zip;  // expect: 62705
+
+// Nested native object via array element
+var addr = items[0].Address;
+var garbage6 = "force" + " gc" + " cycle" + " 6";
+print addr.City; // expect: Springfield

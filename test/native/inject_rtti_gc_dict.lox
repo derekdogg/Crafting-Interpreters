@@ -1,0 +1,60 @@
+// ====================================================================
+// inject_rtti_gc_dict.lox — Native object survives GC in Lox dict
+// ====================================================================
+// Setup: cust = TCustomer("Alice", 30, 1500.50, True)
+//   Address=TAddress("123 Main St", "Springfield", "62704").
+//   addr2 = TAddress("456 Oak Ave", "Shelbyville", "62705").
+//
+// What this tests:
+//   - Storing a native object as a dict value
+//   - Native object wrapper survives GC through dict marking path
+//   - Dict grows (rehash) with native object values — objects survive
+//   - Accessing native object properties after retrieval from dict
+// ====================================================================
+
+// Store native objects as dict values
+var db = [:];
+db.Set("customer", cust);
+db.Set("shipping", addr2);
+
+// Force allocations (GC triggers on every alloc with DEBUG_STRESS_GC)
+var garbage1 = "force" + " gc" + " cycle" + " 1";
+var garbage2 = "force" + " gc" + " cycle" + " 2";
+var garbage3 = "force" + " gc" + " cycle" + " 3";
+
+// Retrieve and verify
+var c = db.Get("customer");
+print c.Name;    // expect: Alice
+print c.Balance; // expect: 1500.5
+
+var a = db.Get("shipping");
+print a.Street; // expect: 456 Oak Ave
+print a.City;   // expect: Shelbyville
+
+// Mutate via dict reference, confirm reflected on original
+c.Age = 99;
+print cust.Age; // expect: 99
+
+// Add more entries to force dict rehash
+db.Set("key1", "val1");
+db.Set("key2", "val2");
+db.Set("key3", "val3");
+db.Set("key4", "val4");
+db.Set("key5", "val5");
+db.Set("key6", "val6");
+db.Set("key7", "val7");
+db.Set("key8", "val8");
+
+// More allocations after rehash
+var garbage4 = "force" + " gc" + " cycle" + " 4";
+var garbage5 = "force" + " gc" + " cycle" + " 5";
+
+// Native objects survived rehash + GC
+var c2 = db.Get("customer");
+print c2.Name;    // expect: Alice
+print c2.Age;     // expect: 99
+var a2 = db.Get("shipping");
+print a2.Zip;     // expect: 62705
+
+// Nested object through dict
+print db.Get("customer").Address.City; // expect: Springfield
