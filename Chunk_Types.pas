@@ -4750,14 +4750,23 @@ begin
   dict := newDictionary(VM.MemTracker);
   dictVal := CreateObject(pObj(dict));
   pushStack(VM.Stack, dictVal, VM.MemTracker);
-  // Now safe to allocate key strings — dict is rooted via stack
+  // Root each key string before DictSet — DictGrow can trigger GC
   keyStr := CreateString('liveStrings', VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(liveCount), VM.MemTracker);
+  popStack(VM.Stack);
+
   keyStr := CreateString('slots', VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(capacity), VM.MemTracker);
+  popStack(VM.Stack);
+
   keyStr := CreateString('tombstones', VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(tombstones), VM.MemTracker);
-  // Pop the protection slot — caller will push result onto stack
+  popStack(VM.Stack);
+
+  // Pop the dict protection slot — caller will push result onto stack
   popStack(VM.Stack);
   Result := dictVal;
 end;
