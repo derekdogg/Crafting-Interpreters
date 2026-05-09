@@ -1,4 +1,4 @@
-unit Main;
+﻿unit Main;
 
 interface
 
@@ -26,6 +26,8 @@ type
     procedure RunSampleFiles;
     procedure RunOfficialTests;
     procedure RunStressTests;
+    procedure RunInjectionTest;
+    procedure RunRttiTest;
   public
     { Public declarations }
   end;
@@ -39,6 +41,66 @@ uses
 
 {$R *.dfm}
 
+type
+  TAddress = class
+  private
+    FStreet: string;
+    FCity: string;
+    FZip: string;
+  public
+    constructor Create(const AStreet, ACity, AZip: string);
+    property Street: string read FStreet write FStreet;
+    property City: string read FCity write FCity;
+    property Zip: string read FZip write FZip;
+  end;
+
+  TCustomer = class
+  private
+    FName: string;
+    FAge: Integer;
+    FBalance: Double;
+    FActive: Boolean;
+    FAddress: TAddress;
+  public
+    constructor Create(const AName: string; AAge: Integer; ABalance: Double; AActive: Boolean);
+    destructor Destroy; override;
+    property Name: string read FName write FName;
+    property Age: Integer read FAge write FAge;
+    property Balance: Double read FBalance write FBalance;
+    property Active: Boolean read FActive write FActive;
+    property Address: TAddress read FAddress write FAddress;
+    function Greet: string;
+  end;
+
+constructor TAddress.Create(const AStreet, ACity, AZip: string);
+begin
+  inherited Create;
+  FStreet := AStreet;
+  FCity := ACity;
+  FZip := AZip;
+end;
+
+constructor TCustomer.Create(const AName: string; AAge: Integer; ABalance: Double; AActive: Boolean);
+begin
+  inherited Create;
+  FName := AName;
+  FAge := AAge;
+  FBalance := ABalance;
+  FActive := AActive;
+  FAddress := nil;
+end;
+
+destructor TCustomer.Destroy;
+begin
+  FAddress.Free;
+  inherited;
+end;
+
+function TCustomer.Greet: string;
+begin
+  Result := 'Hello, ' + FName + '!';
+end;
+
 
 
 procedure TForm4.Button1Click(Sender: TObject);
@@ -47,7 +109,7 @@ var
   txt : ansiString;
 begin
 
-    txt := Memo1.Lines.Text;
+    txt := AnsiString(Memo1.Lines.Text);
     IR := interpretResult(PAnsiChar(txt));
 
     case Ir.code of
@@ -99,6 +161,8 @@ procedure TForm4.Button3Click(Sender: TObject);
 begin
   Memo2.Lines.Clear;
   RunNativeObjectTest(Memo2.Lines);
+  RunInjectionTest;
+  RunRttiTest;
 end;
 
 procedure TForm4.Button4Click(Sender: TObject);
@@ -327,6 +391,7 @@ begin
       Application.ProcessMessages;
 
       // --- Run the test ---
+      TestOK := False;
       try
         IR := InterpretResult(PAnsiChar(AnsiString(Content)));
         TestOK := True;
@@ -458,6 +523,154 @@ begin
     Memo2.Lines.Add('Official tests: ' + IntToStr(Failed) + ' of ' +
       IntToStr(Passed + Failed) + ' FAILED.' +
       IfThen(Skipped > 0, ' (' + IntToStr(Skipped) + ' skipped)'));
+end;
+
+procedure TForm4.RunInjectionTest;
+var
+  ScriptPath, Content: string;
+  sl: TStringList;
+  IR: TInterpretResult;
+begin
+  Memo2.Lines.Add('');
+  Memo2.Lines.Add('=== Injection Test ===');
+
+  ScriptPath := TPath.Combine(ExtractFilePath(ParamStr(0)),
+    '..\..\test\record\inject_stringlist.lox');
+  if not TFile.Exists(ScriptPath) then
+  begin
+    Memo2.Lines.Add('SKIP: inject_stringlist.lox not found');
+    Exit;
+  end;
+
+  Content := TFile.ReadAllText(ScriptPath);
+
+  // Create and populate a TStringList on the Delphi side
+  sl := TStringList.Create;
+  try
+    sl.Add('Alice');
+    sl.Add('Bob');
+    sl.Add('Charlie');
+
+    // Use the split pipeline: InitVM → Inject → CompileAndRun → FreeVM
+    InitVM;
+    try
+      InjectNativeObject('items', Pointer(sl), 'StringList');
+      IR := CompileAndRun(PAnsiChar(AnsiString(Content)));
+    finally
+      FreeVM;
+    end;
+
+    // Verify VM result
+    if IR.code <> INTERPRET_OK then
+    begin
+      Memo2.Lines.Add('FAIL: ' + IR.ErrorStr);
+      Exit;
+    end;
+
+    // Verify Delphi-side mutations survived
+    if sl.Count <> 3 then
+    begin
+      Memo2.Lines.Add('FAIL: expected 3 items after script, got ' + IntToStr(sl.Count));
+      Exit;
+    end;
+    if sl[0] <> 'Alice' then
+    begin
+      Memo2.Lines.Add('FAIL: expected items[0]="Alice", got "' + sl[0] + '"');
+      Exit;
+    end;
+    if sl[1] <> 'Charlie' then
+    begin
+      Memo2.Lines.Add('FAIL: expected items[1]="Charlie", got "' + sl[1] + '"');
+      Exit;
+    end;
+    if sl[2] <> 'Diana' then
+    begin
+      Memo2.Lines.Add('FAIL: expected items[2]="Diana", got "' + sl[2] + '"');
+      Exit;
+    end;
+
+    Memo2.Lines.Add('PASS: Injected StringList survived round-trip');
+    Memo2.Lines.Add('  Delphi sees: ' + sl.CommaText);
+  finally
+    sl.Free;
+  end;
+end;
+
+procedure TForm4.RunRttiTest;
+var
+  cust: TCustomer;
+  IR: TInterpretResult;
+  Script: AnsiString;
+begin
+  Memo2.Lines.Add('');
+  Memo2.Lines.Add('=== RTTI Injection Test ===');
+
+  cust := TCustomer.Create('Alice', 30, 1500.50, True);
+  try
+    cust.Address := TAddress.Create('123 Main St', 'Springfield', '62704');
+
+    Script :=
+      'print cust.Name;' + #10 +
+      'print cust.Age;' + #10 +
+      'print cust.Balance;' + #10 +
+      'print cust.Active;' + #10 +
+      'cust.Name = "Bob";' + #10 +
+      'cust.Age = 25;' + #10 +
+      'print cust.Name;' + #10 +
+      'print cust.Age;' + #10 +
+      'print cust.Greet();' + #10 +
+      '// Nested object access' + #10 +
+      'var addr = cust.Address;' + #10 +
+      'print addr.Street;' + #10 +
+      'print addr.City;' + #10 +
+      'print addr.Zip;' + #10 +
+      '// Direct chained access' + #10 +
+      'print cust.Address.City;' + #10 +
+      '// Mutate via RTTI' + #10 +
+      'addr.City = "Shelbyville";' + #10 +
+      'print cust.Address.City;' + #10;
+
+    InitVM;
+    try
+      InjectObject('cust', cust);
+      IR := CompileAndRun(PAnsiChar(Script));
+    finally
+      FreeVM;
+    end;
+
+    if IR.code <> INTERPRET_OK then
+    begin
+      Memo2.Lines.Add('FAIL: ' + IR.ErrorStr);
+      Exit;
+    end;
+
+    // Show script output
+    if IR.OutputStr <> '' then
+      Memo2.Lines.Add(IR.OutputStr);
+
+    // Verify Delphi-side mutations
+    if cust.Name <> 'Bob' then
+    begin
+      Memo2.Lines.Add('FAIL: expected Name="Bob", got "' + cust.Name + '"');
+      Exit;
+    end;
+    if cust.Age <> 25 then
+    begin
+      Memo2.Lines.Add('FAIL: expected Age=25, got ' + IntToStr(cust.Age));
+      Exit;
+    end;
+    if cust.Address.City <> 'Shelbyville' then
+    begin
+      Memo2.Lines.Add('FAIL: expected City="Shelbyville", got "' + cust.Address.City + '"');
+      Exit;
+    end;
+
+    Memo2.Lines.Add('PASS: RTTI injection round-trip');
+    Memo2.Lines.Add('  Delphi sees: Name=' + cust.Name + ', Age=' + IntToStr(cust.Age) +
+      ', City=' + cust.Address.City);
+  finally
+    cust.Free;
+  end;
 end;
 
 end.

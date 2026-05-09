@@ -7,7 +7,7 @@
 interface
  
 uses
-  Classes, dialogs;
+  Classes, dialogs, System.Rtti, System.TypInfo;
 
 const
 
@@ -331,12 +331,15 @@ type
     name       : AnsiString;
     methods    : array of TNativeMethod;
     destructor_: TNativeDestructor;
+    rttiEnabled: Boolean;
+    rttiClass  : TClass;
   end;
 
   TObjNativeObject = record
-    Obj       : TObj;
-    instance  : Pointer;
-    classInfo : pNativeClassInfo;
+    Obj          : TObj;
+    instance     : Pointer;
+    classInfo    : pNativeClassInfo;
+    ownsInstance : Boolean;  // if true, destructor_ is called on sweep
   end;
 
   TDictEntry = record
@@ -616,7 +619,9 @@ procedure CollectGarbage;
 
 //Virtual Machine
 procedure InitVM();
+function CompileAndRun(source : pAnsiChar) : TInterpretResult;
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
+procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
 function Run : TInterpretResult;
 procedure FreeObjects(objects: pObj);
 procedure FreeVM();
@@ -689,6 +694,8 @@ function findNativeMethod(classInfo : pNativeClassInfo; const methodName : AnsiS
 procedure recordDeclaration();
 procedure defineNative(const name : AnsiString; func : TNativeFn);
 procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
+procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
+procedure InjectObject(const name : AnsiString; instance : TObject);
 
 //Hash
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
@@ -866,7 +873,7 @@ var
 implementation
 
 uses
-  sysutils, Math, strUtils, typinfo, Windows,
+  sysutils, Math, strUtils, Windows,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
 
@@ -2195,6 +2202,7 @@ begin
   Result^.Obj.Next := nil;
   Result^.instance := instance;
   Result^.classInfo := classInfo;
+  Result^.ownsInstance := true;  // VM-created objects are owned by default
   AddToCreatedObjects(pObj(Result), MemTracker);
   Assert(Result <> nil, 'newNativeObject exit: Result is nil');
 end;
@@ -2211,6 +2219,238 @@ begin
     end;
   found := nil;
   Result := False;
+end;
+
+// ---- RTTI value marshaling ----
+
+var
+  RttiCtx : TRttiContext;
+
+function findNativeClass(const name : AnsiString) : pNativeClassInfo; forward;
+procedure RunTimeError(const msg : string); forward;
+
+function DelphiValueToLox(const V: System.Rtti.TValue; MemTracker: pMemTracker): TValue;
+var
+  s: AnsiString;
+  childObj: TObject;
+  childClassName: AnsiString;
+  childClassInfo: pNativeClassInfo;
+  childNative: pObjNativeObject;
+begin
+  if V.IsEmpty then
+    Exit(CreateNilValue);
+
+  case V.Kind of
+    tkInteger, tkInt64:
+      Result := CreateNumber(V.AsExtended);
+    tkFloat:
+      Result := CreateNumber(V.AsExtended);
+    tkEnumeration:
+    begin
+      if V.TypeInfo = TypeInfo(Boolean) then
+        Result := CreateBoolean(V.AsBoolean)
+      else
+        Result := CreateNumber(V.AsOrdinal);
+    end;
+    tkString, tkLString, tkWString, tkUString:
+    begin
+      s := AnsiString(V.AsString);
+      Result := StringToValue(CreateString(s, MemTracker));
+    end;
+    tkChar, tkWChar:
+    begin
+      s := AnsiString(V.AsString);
+      Result := StringToValue(CreateString(s, MemTracker));
+    end;
+    tkClass:
+    begin
+      childObj := V.AsObject;
+      if childObj = nil then
+        Exit(CreateNilValue);
+      // Auto-register the class if not already known
+      childClassName := AnsiString(childObj.ClassName);
+      childClassInfo := findNativeClass(childClassName);
+      if childClassInfo = nil then
+      begin
+        registerNativeClassRTTI(childClassName, childObj.ClassType);
+        childClassInfo := findNativeClass(childClassName);
+      end;
+      childNative := newNativeObject(Pointer(childObj), childClassInfo, MemTracker);
+      childNative^.ownsInstance := false;  // parent object owns the child
+      Result := CreateObject(pObj(childNative));
+    end;
+  else
+    Result := CreateNilValue;
+  end;
+end;
+
+function LoxValueToDelphi(const V: TValue; TargetType: PTypeInfo): System.Rtti.TValue;
+var
+  s: string;
+begin
+  case V.ValueKind of
+    vkNumber:
+    begin
+      if TargetType = nil then
+        Exit(System.Rtti.TValue.From<Double>(V.NumberValue));
+      case TargetType^.Kind of
+        tkInteger:
+          Result := System.Rtti.TValue.From<Integer>(Trunc(V.NumberValue));
+        tkInt64:
+          Result := System.Rtti.TValue.From<Int64>(Trunc(V.NumberValue));
+        tkFloat:
+          Result := System.Rtti.TValue.From<Double>(V.NumberValue);
+      else
+        Result := System.Rtti.TValue.From<Double>(V.NumberValue);
+      end;
+    end;
+    vkBoolean:
+      Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue);
+    vkNull:
+      Result := System.Rtti.TValue.Empty;
+    vkObject:
+    begin
+      if isString(V) then
+      begin
+        s := String(ObjStringToAnsiString(pObjString(V.ObjValue)));
+        Result := System.Rtti.TValue.From<string>(s);
+      end
+      else if isNativeObject(V) then
+        Result := System.Rtti.TValue.From<TObject>(TObject(pObjNativeObject(V.ObjValue)^.instance))
+      else
+        Result := System.Rtti.TValue.Empty;
+    end;
+  else
+    Result := System.Rtti.TValue.Empty;
+  end;
+end;
+
+function RttiGetProperty(instance: Pointer; classInfo: pNativeClassInfo;
+  const propName: AnsiString; MemTracker: pMemTracker; out loxVal: TValue): Boolean;
+var
+  rt: TRttiType;
+  prop: TRttiProperty;
+  field: TRttiField;
+  dv: System.Rtti.TValue;
+begin
+  Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+
+  rt := RttiCtx.GetType(classInfo^.rttiClass);
+  if rt = nil then Exit;
+
+  try
+    prop := rt.GetProperty(String(propName));
+    if (prop <> nil) and (prop.IsReadable) then
+    begin
+      dv := prop.GetValue(TObject(instance));
+      loxVal := DelphiValueToLox(dv, MemTracker);
+      Exit(True);
+    end;
+
+    field := rt.GetField(String(propName));
+    if field <> nil then
+    begin
+      dv := field.GetValue(TObject(instance));
+      loxVal := DelphiValueToLox(dv, MemTracker);
+      Exit(True);
+    end;
+  except
+    on E: Exception do
+    begin
+      runtimeError(Format('RTTI get ''%s'' failed: %s', [String(propName), E.Message]));
+      Result := False;
+    end;
+  end;
+end;
+
+function RttiSetProperty(instance: Pointer; classInfo: pNativeClassInfo;
+  const propName: AnsiString; const loxVal: TValue): Boolean;
+var
+  rt: TRttiType;
+  prop: TRttiProperty;
+  field: TRttiField;
+  dv: System.Rtti.TValue;
+begin
+  Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+
+  rt := RttiCtx.GetType(classInfo^.rttiClass);
+  if rt = nil then Exit;
+
+  try
+    prop := rt.GetProperty(String(propName));
+    if (prop <> nil) and (prop.IsWritable) then
+    begin
+      dv := LoxValueToDelphi(loxVal, prop.PropertyType.Handle);
+      prop.SetValue(TObject(instance), dv);
+      Exit(True);
+    end;
+
+    field := rt.GetField(String(propName));
+    if field <> nil then
+    begin
+      dv := LoxValueToDelphi(loxVal, field.FieldType.Handle);
+      field.SetValue(TObject(instance), dv);
+      Exit(True);
+    end;
+  except
+    on E: Exception do
+    begin
+      runtimeError(Format('RTTI set ''%s'' failed: %s', [String(propName), E.Message]));
+      Result := False;
+    end;
+  end;
+end;
+
+function RttiInvokeMethod(instance: Pointer; classInfo: pNativeClassInfo;
+  const methodName: AnsiString; argCount: integer; args: pValue;
+  MemTracker: pMemTracker; out loxResult: TValue): Boolean;
+var
+  rt: TRttiType;
+  method: TRttiMethod;
+  methods: TArray<TRttiMethod>;
+  params: TArray<TRttiParameter>;
+  delphiArgs: array of System.Rtti.TValue;
+  dv: System.Rtti.TValue;
+  i: integer;
+  mName: string;
+begin
+  Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+
+  rt := RttiCtx.GetType(classInfo^.rttiClass);
+  if rt = nil then Exit;
+
+  mName := String(methodName);
+  methods := rt.GetMethods(mName);
+
+  try
+    for method in methods do
+    begin
+      params := method.GetParameters;
+      if Length(params) = argCount then
+      begin
+        SetLength(delphiArgs, argCount);
+        for i := 0 to argCount - 1 do
+          delphiArgs[i] := LoxValueToDelphi(args[i], params[i].ParamType.Handle);
+
+        dv := method.Invoke(TObject(instance), delphiArgs);
+
+        if method.ReturnType <> nil then
+          loxResult := DelphiValueToLox(dv, MemTracker)
+        else
+          loxResult := CreateNilValue;
+        Exit(True);
+      end;
+    end;
+  except
+    on E: Exception do
+    begin
+      runtimeError(Format('RTTI invoke ''%s'' failed: %s', [String(methodName), E.Message]));
+      Result := False;
+    end;
+  end;
 end;
 
 function ObjStringToAnsiString(S: PObjString): AnsiString;
@@ -2889,6 +3129,9 @@ var
   invokeNameIdx : integer;
   invokeArgCount : byte;
   invokeMethodName : AnsiString;
+  // RTTI property support
+  rttiPropName : AnsiString;
+  rttiResult : TValue;
 
   function CurrentFrame: pCallFrame;
   begin
@@ -3467,58 +3710,100 @@ begin
         end;
 
         OP_GET_PROPERTY: begin
-          if not isRecord(peekStack(vm.Stack)) then
+          if isRecord(peekStack(vm.Stack)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
+            AssertFrameValues('OP_GET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
+            AssertFrameValues('OP_GET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
+            begin
+              runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rttiResult, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr; // consume operand
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack).ObjValue);
-          recNameIdx := ReadByteFr;
-          AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
-          AssertFrameValues('OP_GET_PROPERTY');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          // Replace the record on the stack with the field value
-          popStack(vm.Stack);
-          pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
         end;
 
         OP_SET_PROPERTY: begin
-          if not isRecord(peekStack(vm.Stack, 1)) then
+          if isRecord(peekStack(vm.Stack, 1)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
+            AssertFrameValues('OP_SET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            rec^.fields[fieldIdx] := peekStack(vm.Stack);
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack, 1)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
+            AssertFrameValues('OP_SET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
+            begin
+              runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr; // consume operand
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
-          recNameIdx := ReadByteFr;
-          AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
-          AssertFrameValues('OP_SET_PROPERTY');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          // Set field value from top of stack
-          rec^.fields[fieldIdx] := peekStack(vm.Stack);
-          // Pop the value, pop the record, push the value back (assignment expression)
-          value := popStack(vm.Stack);
-          popStack(vm.Stack);
-          pushStack(vm.Stack, value, vm.MemTracker);
         end;
 
         OP_INVOKE: begin
@@ -3548,19 +3833,29 @@ begin
           else if isNativeObject(value) then
           begin
             nativeObj := pObjNativeObject(value.ObjValue);
-            if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            if findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            begin
+              // Call manual wrapper method
+              nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
+                pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+              if VM.RuntimeErrorStr <> '' then
+              begin
+                Result.code := INTERPRET_RUNTIME_ERROR;
+                Exit;
+              end;
+            end
+            else if RttiInvokeMethod(nativeObj^.instance, nativeObj^.classInfo,
+              invokeMethodName, invokeArgCount,
+              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
+              VM.MemTracker, nativeResult) then
+            begin
+              // RTTI method call succeeded
+            end
+            else
             begin
               runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
-            end;
-            // Call the method: args are on stack, receiver is below them
-            nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
-              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
-            if VM.RuntimeErrorStr <> '' then
-            begin
-              Result.code := INTERPRET_RUNTIME_ERROR;
-              Exit;
             end;
             // Pop args + receiver, push result
             Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE: stack underflow');
@@ -3603,18 +3898,28 @@ begin
           else if isNativeObject(value) then
           begin
             nativeObj := pObjNativeObject(value.ObjValue);
-            if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            if findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            begin
+              nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
+                pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+              if VM.RuntimeErrorStr <> '' then
+              begin
+                Result.code := INTERPRET_RUNTIME_ERROR;
+                Exit;
+              end;
+            end
+            else if RttiInvokeMethod(nativeObj^.instance, nativeObj^.classInfo,
+              invokeMethodName, invokeArgCount,
+              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
+              VM.MemTracker, nativeResult) then
+            begin
+              // RTTI method call succeeded
+            end
+            else
             begin
               runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
-            end;
-            nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
-              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
-            if VM.RuntimeErrorStr <> '' then
-            begin
-              Result.code := INTERPRET_RUNTIME_ERROR;
-              Exit;
             end;
             Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE_LONG: stack underflow');
             VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
@@ -3630,59 +3935,112 @@ begin
         end;
 
         OP_GET_PROPERTY_LONG: begin
-          if not isRecord(peekStack(vm.Stack)) then
+          if isRecord(peekStack(vm.Stack)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
+            AssertFrameValues('OP_GET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
+            AssertFrameValues('OP_GET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
+            begin
+              runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rttiResult, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack).ObjValue);
-          recNameIdx := ReadByteFr;
-          recNameIdx := recNameIdx or (ReadByteFr shl 8);
-          recNameIdx := recNameIdx or (ReadByteFr shl 16);
-          AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
-          AssertFrameValues('OP_GET_PROPERTY_LONG');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          popStack(vm.Stack);
-          pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
         end;
 
         OP_SET_PROPERTY_LONG: begin
-          if not isRecord(peekStack(vm.Stack, 1)) then
+          if isRecord(peekStack(vm.Stack, 1)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
+            AssertFrameValues('OP_SET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            rec^.fields[fieldIdx] := peekStack(vm.Stack);
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack, 1)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
+            AssertFrameValues('OP_SET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
+            begin
+              runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
-          recNameIdx := ReadByteFr;
-          recNameIdx := recNameIdx or (ReadByteFr shl 8);
-          recNameIdx := recNameIdx or (ReadByteFr shl 16);
-          AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
-          AssertFrameValues('OP_SET_PROPERTY_LONG');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          rec^.fields[fieldIdx] := peekStack(vm.Stack);
-          value := popStack(vm.Stack);
-          popStack(vm.Stack);
-          pushStack(vm.Stack, value, vm.MemTracker);
         end;
 
         OP_GET_SUBSCRIPT: begin
@@ -4068,36 +4426,44 @@ end;
 
 
 //entry point into vm
-function InterpretResult(source : pAnsiChar) : TInterpretResult;
+function CompileAndRun(source : pAnsiChar) : TInterpretResult;
 var
   closure : pObjClosure;
 begin
    AssertSourceCodeIsAssigned(source);
+   AssertVMIsAssigned;
+
+   closure := compile(source);
+   if closure = nil then
+   begin
+     Result.code :=  INTERPRET_COMPILE_ERROR;
+     Result.ErrorStr := Parser.ErrorStr;
+     Exit;
+   end;
+
+   // Push the script closure onto the stack
+   pushStack(VM.Stack, CreateObject(pObj(closure)), VM.MemTracker);
+
+   // Set up the first call frame
+   VM.Frames[0].closure := closure;
+   VM.Frames[0].ip := closure^.func^.chunk^.Code;
+   VM.Frames[0].slots := VM.Stack.Values;
+   VM.FrameCount := 1;
+
+   Result := Run;
+   if Result.code = INTERPRET_RUNTIME_ERROR then
+     Result.ErrorStr := VM.RuntimeErrorStr
+   else if (Result.code = INTERPRET_OK) and isString(Result.value) then
+     Result.ResultStr := String(ObjStringToAnsiString(ValueToString(Result.value)));
+   Result.OutputStr := VM.PrintOutput;
+end;
+
+function InterpretResult(source : pAnsiChar) : TInterpretResult;
+begin
+   AssertSourceCodeIsAssigned(source);
    initVM;
    try
-     closure := compile(source);
-     if closure = nil then
-     begin
-       Result.code :=  INTERPRET_COMPILE_ERROR;
-       Result.ErrorStr := Parser.ErrorStr;
-       Exit;
-     end;
-
-     // Push the script closure onto the stack
-     pushStack(VM.Stack, CreateObject(pObj(closure)), VM.MemTracker);
-
-     // Set up the first call frame
-     VM.Frames[0].closure := closure;
-     VM.Frames[0].ip := closure^.func^.chunk^.Code;
-     VM.Frames[0].slots := VM.Stack.Values;
-     VM.FrameCount := 1;
-
-     Result := Run;
-     if Result.code = INTERPRET_RUNTIME_ERROR then
-       Result.ErrorStr := VM.RuntimeErrorStr
-     else if (Result.code = INTERPRET_OK) and isString(Result.value) then
-       Result.ResultStr := ObjStringToAnsiString(ValueToString(Result.value));
-     Result.OutputStr := VM.PrintOutput;
+     Result := CompileAndRun(source);
    finally
      FreeVM;
    end;
@@ -4153,7 +4519,8 @@ begin
       Allocate(Pointer(obj), SizeOf(TObjRecord), 0, vm.MemTracker);
     end;
     okNativeObject : begin
-      if Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
+      if pObjNativeObject(obj)^.ownsInstance and
+         Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
         pObjNativeObject(obj)^.classInfo^.destructor_(pObjNativeObject(obj)^.instance);
       Allocate(Pointer(obj), SizeOf(TObjNativeObject), 0, vm.MemTracker);
     end;
@@ -4824,7 +5191,7 @@ begin
 
   if not FileExists(String(filePath)) then
   begin
-    RuntimeError('loadEnv() file not found: ' + filePath);
+    RuntimeError('loadEnv() file not found: ' + String(filePath));
     Exit(CreateNilValue);
   end;
 
@@ -5270,7 +5637,7 @@ begin
     Exit;
   end;
   s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
-  objStr := CreateString(AnsiUpperCase(s), VM.MemTracker);
+  objStr := CreateString(AnsiString(AnsiUpperCase(String(s))), VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
 
@@ -5292,7 +5659,7 @@ begin
     Exit;
   end;
   s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
-  objStr := CreateString(AnsiLowerCase(s), VM.MemTracker);
+  objStr := CreateString(AnsiString(AnsiLowerCase(String(s))), VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
 
@@ -5853,6 +6220,23 @@ begin
   for i := 0 to High(AMethods) do
     info^.methods[i] := AMethods[i];
   info^.destructor_ := ADestructor;
+  info^.rttiEnabled := False;
+  info^.rttiClass := nil;
+  Inc(NativeClassCount);
+  SetLength(NativeClassRegistry, NativeClassCount);
+  NativeClassRegistry[NativeClassCount - 1] := info;
+end;
+
+procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
+var
+  info : pNativeClassInfo;
+begin
+  New(info);
+  info^.name := AName;
+  SetLength(info^.methods, 0);
+  info^.destructor_ := ADestructor;
+  info^.rttiEnabled := True;
+  info^.rttiClass := AClass;
   Inc(NativeClassCount);
   SetLength(NativeClassRegistry, NativeClassCount);
   NativeClassRegistry[NativeClassCount - 1] := info;
@@ -5866,6 +6250,47 @@ begin
     if NativeClassRegistry[i]^.name = name then
       Exit(NativeClassRegistry[i]);
   Result := nil;
+end;
+
+procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
+var
+  classInfo : pNativeClassInfo;
+  obj : pObjNativeObject;
+  nameStr : pObjString;
+begin
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+  Assert(instance <> nil, 'InjectNativeObject: instance is nil');
+  Assert(Length(name) > 0, 'InjectNativeObject: name is empty');
+  Assert(Length(className) > 0, 'InjectNativeObject: className is empty');
+
+  classInfo := findNativeClass(className);
+  Assert(classInfo <> nil, 'InjectNativeObject: class not registered: ' + className);
+
+  // GC-safe order: create string first, push it, then create object and push it.
+  // This matches defineNative's pattern — each allocation is rooted before the next.
+  nameStr := CreateString(name, VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+  obj := newNativeObject(instance, classInfo, VM.MemTracker);
+  obj^.ownsInstance := false;  // Delphi owns this object
+  pushStack(VM.Stack, CreateObject(pObj(obj)), VM.MemTracker);
+  TableSet(VM.Globals, nameStr, CreateObject(pObj(obj)), VM.MemTracker);
+  popStack(VM.Stack);
+  popStack(VM.Stack);
+end;
+
+procedure InjectObject(const name : AnsiString; instance : TObject);
+var
+  className : AnsiString;
+  classInfo : pNativeClassInfo;
+begin
+  Assert(instance <> nil, 'InjectObject: instance is nil');
+  className := AnsiString(instance.ClassName);
+  classInfo := findNativeClass(className);
+  if classInfo = nil then
+    registerNativeClassRTTI(className, instance.ClassType);
+  InjectNativeObject(name, Pointer(instance), className);
 end;
 
 // ---- StringList wrapper ----
@@ -6049,7 +6474,7 @@ begin
   if DictGet(dict, authKey, authVal) then
   begin
     if isString(authVal) then
-      auth := LowerCase(ObjStringToAnsiString(pObjString(authVal.ObjValue)));
+      auth := AnsiString(LowerCase(String(ObjStringToAnsiString(pObjString(authVal.ObjValue)))));
   end;
 
   // Optional: user, password (for SQL auth)
@@ -6088,7 +6513,7 @@ begin
     on E: Exception do
     begin
       conn.Free;
-      RuntimeError('sqlConnect() failed: ' + AnsiString(E.Message));
+      RuntimeError('sqlConnect() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
   end;
@@ -6246,7 +6671,7 @@ begin
       // Unwind stack to saved depth
       while VM.Stack.Count > stackBase do
         popStack(VM.Stack);
-      RuntimeError('sqlQuery() failed: ' + AnsiString(E.Message));
+      RuntimeError('sqlQuery() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
   end;
@@ -6401,7 +6826,7 @@ begin
       // Unwind stack to saved depth
       while VM.Stack.Count > stackBase do
         popStack(VM.Stack);
-      RuntimeError('sqlQueryParams() failed: ' + AnsiString(E.Message));
+      RuntimeError('sqlQueryParams() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
   end;
@@ -6636,7 +7061,7 @@ begin
   Assert(Assigned(msg), 'ErrorToken: msg is nil');
   result.Tokentype := TOKEN_ERROR;
   result.start := msg;
-  result.length := strlen(msg);
+  result.length := Length(msg);
   result.line := scanner.line;
 end;
 
@@ -6961,7 +7386,7 @@ begin
     token := ScanToken();
 
     // Convert pointer+length to a proper Delphi string
-    lexeme := TokenToString(token);
+    lexeme := String(TokenToString(token));
 
     // Print line number only once per line
     if token.Line <> lastLine then
