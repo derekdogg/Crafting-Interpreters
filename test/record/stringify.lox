@@ -1,0 +1,12 @@
+// ============================================================
+// stringify.lox — Record print format
+// ============================================================
+
+record Point(x, y);
+print Point(1, 2); // expect: Point(x: 1, y: 2)
+
+record Person(name, age);
+print Person("Bob", 30); // expect: Person(name: Bob, age: 30)
+
+record Single(val);
+print Single(nil); // expect: Single(val: nil)

@@ -2,10 +2,10 @@
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
 {$DEFINE DEBUG_LOG_GC}
-{..$DEFINE DEBUG_STRESS_GC}
-{..$DEFINE DEBUG_STRESS_TABLE}
+{$DEFINE DEBUG_STRESS_GC}
+{$DEFINE DEBUG_STRESS_TABLE}
 interface
-
+ 
 uses
   Classes, dialogs;
 
@@ -15,6 +15,13 @@ const
   MAX_SIZE       =  MaxInt div 2;
   GROWTH_FACTOR  =  2;
   GC_HEAP_GROW_FACTOR = 2;
+  GC_NEXT_MIN = 1024;              // floor for NextGC after collection
+  GC_NEXT_INITIAL = 1024 * 1024;   // initial threshold before first GC
+  GRAY_STACK_INITIAL_CAPACITY = 8;
+  ARRAY_START_CAPACITY = 8;        // initial element capacity for ObjArray
+  MAX_BYTE_OPERAND = 255;          // max value encodable in a single byte operand
+  MAX_DICT_LITERAL_PAIRS = 127;    // max pairs in dict literal (pair * 2 must fit in byte)
+  MAX_JUMP_OFFSET = $FFFF;         // max 16-bit jump distance
 
   //Table
   TABLE_START_CAPACITY = 8;
@@ -210,6 +217,7 @@ type
   pEntry          = ^TEntry;
   pTable          = ^TTable;
   pLocal          = ^TLocal;
+  pCallFrame      = ^TCallFrame;
   //pRoots          = ^TRoots;
 
   //Arrays
@@ -392,7 +400,7 @@ type
     ip      : pByte;
     slots   : pValue; // points into VM stack
   end;
-  pCallFrame = ^TCallFrame;
+   
 
   //Virtual Machine
   TVirtualMachine = record
@@ -2867,7 +2875,7 @@ var
   index : byte;
   i : integer;
   // record support
-  recFieldNames : array[0..255] of pObjString;
+  recFieldNames : array[0..MAX_BYTE_OPERAND] of pObjString;
   recNameIdx : integer;
   recTypeName : pObjString;
   recType : pObjRecordType;
@@ -4201,8 +4209,8 @@ begin
   // Add to gray stack
   if VM.MemTracker.GrayCount + 1 > VM.MemTracker.GrayCapacity then
   begin
-    if VM.MemTracker.GrayCapacity < 8 then
-      newCapacity := 8
+    if VM.MemTracker.GrayCapacity < GRAY_STACK_INITIAL_CAPACITY then
+      newCapacity := GRAY_STACK_INITIAL_CAPACITY
     else
       newCapacity := VM.MemTracker.GrayCapacity * 2;
     VM.MemTracker.GrayCapacity := newCapacity;
@@ -4563,8 +4571,8 @@ begin
     VM.MemTracker.NextGC := VM.MemTracker.BytesAllocated * GC_HEAP_GROW_FACTOR
   else
     VM.MemTracker.NextGC := MaxInt;
-  if VM.MemTracker.NextGC < 1024 then
-    VM.MemTracker.NextGC := 1024;
+  if VM.MemTracker.NextGC < GC_NEXT_MIN then
+    VM.MemTracker.NextGC := GC_NEXT_MIN;
 
   {$IFDEF DEBUG_LOG_GC}
   GCLog(Format('-- gc end   collected %d bytes (from %d to %d) next at %d',
@@ -4584,7 +4592,7 @@ begin
   MemTracker.CreatedObjects := nil;
   MemTracker.Roots.Stack := nil;
   MemTracker.BytesAllocated := 0;
-  MemTracker.NextGC := 1024 * 1024;
+  MemTracker.NextGC := GC_NEXT_INITIAL;
   MemTracker.GrayCount := 0;
   MemTracker.GrayCapacity := 0;
   MemTracker.GrayStack := nil;
@@ -4600,6 +4608,7 @@ procedure FreeMemTracker(var MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
+  Assert(MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
   Assert(MemTracker.GrayStack = nil, 'FreeMemTracker: GrayStack not freed before dispose');
   dispose(MemTracker);
   MemTracker := nil;  // Note here we don't dispose of the roots.stack reference.
@@ -5318,7 +5327,7 @@ var
     pushStack(VM.Stack, val, VM.MemTracker);
     if arr^.Count >= arr^.Capacity then
     begin
-      if arr^.Capacity = 0 then newCap := 8 else newCap := arr^.Capacity * GROWTH_FACTOR;
+      if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
       oldSize := arr^.Capacity * SizeOf(TValue);
       newSize := newCap * SizeOf(TValue);
       Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
@@ -5442,7 +5451,7 @@ begin
   if arr^.Count >= arr^.Capacity then
   begin
     if arr^.Capacity = 0 then
-      newCap := 8
+      newCap := ARRAY_START_CAPACITY
     else
       newCap := arr^.Capacity * GROWTH_FACTOR;
     oldSize := arr^.Capacity * SizeOf(TValue);
@@ -6205,7 +6214,7 @@ begin
       // Append dict to array (GC-safe growth)
       if arr^.Count >= arr^.Capacity then
       begin
-        if arr^.Capacity = 0 then newCap := 8 else newCap := arr^.Capacity * GROWTH_FACTOR;
+        if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
         oldSize := arr^.Capacity * SizeOf(TValue);
         newSize := newCap * SizeOf(TValue);
         Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
@@ -6362,7 +6371,7 @@ begin
 
       if arr^.Count >= arr^.Capacity then
       begin
-        if arr^.Capacity = 0 then newCap := 8 else newCap := arr^.Capacity * GROWTH_FACTOR;
+        if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
         oldSize := arr^.Capacity * SizeOf(TValue);
         newSize := newCap * SizeOf(TValue);
         Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
@@ -7319,7 +7328,7 @@ begin
 
   // -2 to adjust for the two-byte jump operand itself
   jump := CurrentChunk.count - offset - 2;
-  if jump > $FFFF then
+  if jump > MAX_JUMP_OFFSET then
     Error('Too much code to jump over.');
   CurrentChunk.code[offset]     := (jump shr 8) and $FF;
   CurrentChunk.code[offset + 1] := jump and $FF;
@@ -7332,7 +7341,7 @@ begin
   Assert(loopStart >= 0, 'emitLoop: loopStart is negative');
   emitByte(OP_LOOP, CurrentChunk, parser.previous.line, vm.MemTracker);
   offset := CurrentChunk.count - loopStart + 2;
-  if offset > $FFFF then
+  if offset > MAX_JUMP_OFFSET then
     Error('Loop body too large.');
   emitByte((offset shr 8) and $FF, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte(offset and $FF, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -7588,7 +7597,7 @@ var
   upvalueCount : integer;
   i : integer;
 begin
-  upvalueCount := compiler^.func^.upvalueCount;
+  upvalueCount := compiler^.func^.upvalueCount; //TODO : missing asserts
 
   for i := 0 to upvalueCount - 1 do
   begin
@@ -7619,7 +7628,7 @@ begin
   if compiler^.enclosing = nil then
     Exit(-1);
 
-  local := resolveLocal(compiler^.enclosing, name);
+  local := resolveLocal(compiler^.enclosing, name); //TODO : why <> -1
   if local <> -1 then
   begin
     Assert((local >= 0) and (local < UINT8_COUNT), 'resolveUpvalue: locals index out of bounds');
@@ -7786,7 +7795,7 @@ begin
   begin
     repeat
       Expression();
-      if argCount = 255 then
+      if argCount = MAX_BYTE_OPERAND then
         Error('Can''t have more than 255 arguments.')
       else
         Inc(argCount);
@@ -7796,7 +7805,7 @@ begin
   Result := argCount;
 end;
 
-procedure call(canAssign: Boolean);
+procedure call(canAssign: Boolean); 
 var
   argCount : byte;
 begin
@@ -7904,7 +7913,7 @@ begin
       Expression();  // key
       consume(TOKEN_COLON, 'Expect '':'' after dictionary key.');
       Expression();  // value
-      if pairCount = 127 then
+      if pairCount = MAX_DICT_LITERAL_PAIRS then
         Error('Can''t have more than 127 entries in a dictionary literal.')
       else
         Inc(pairCount);
@@ -7920,7 +7929,7 @@ begin
     while matchToken(TOKEN_COMMA) do
     begin
       Expression();
-      if elemCount = 255 then
+      if elemCount = MAX_BYTE_OPERAND then
         Error('Can''t have more than 255 elements in an array literal.')
       else
         Inc(elemCount);
@@ -7973,7 +7982,7 @@ begin
   begin
     repeat
       Inc(Current^.func^.arity);
-      if Current^.func^.arity > 255 then
+      if Current^.func^.arity > MAX_BYTE_OPERAND then
         errorAtCurrent('Can''t have more than 255 parameters.');
       i := parseVariable('Expect parameter name.');
       defineVariable(i);
@@ -8035,7 +8044,7 @@ procedure recordDeclaration();
 var
   global : integer;
   fieldCount : integer;
-  fieldNameIndices : array[0..255] of integer;
+  fieldNameIndices : array[0..MAX_BYTE_OPERAND] of integer;
   i : integer;
   nameStr : pObjString;
   nameToken : TToken;
@@ -8051,7 +8060,7 @@ begin
   begin
     repeat
       consume(TOKEN_IDENTIFIER, 'Expect field name.');
-      if fieldCount >= 255 then
+      if fieldCount >= MAX_BYTE_OPERAND then
       begin
         Error('Can''t have more than 255 fields.');
         Break;

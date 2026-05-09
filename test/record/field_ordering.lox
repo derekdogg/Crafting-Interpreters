@@ -1,0 +1,11 @@
+// ============================================================
+// field_ordering.lox — Constructor args map to fields in order
+// ============================================================
+
+record Weird(c, a, b);
+
+var w = Weird(1, 2, 3);
+
+print w.c; // expect: 1
+print w.a; // expect: 2
+print w.b; // expect: 3

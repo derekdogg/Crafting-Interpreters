@@ -1,0 +1,19 @@
+// ============================================================
+// as_args_and_returns.lox — Records passed to/from functions
+// ============================================================
+
+record Point(x, y);
+
+fun movePoint(pt, dx, dy) {
+  pt.x = pt.x + dx;
+  pt.y = pt.y + dy;
+  return pt;
+}
+
+var p = Point(5, 10);
+var result = movePoint(p, 3, -2);
+
+// Reference semantics: original is mutated
+print p.x;          // expect: 8
+print p.y;          // expect: 8
+print result == p;  // expect: true

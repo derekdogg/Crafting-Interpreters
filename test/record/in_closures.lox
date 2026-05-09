@@ -1,0 +1,18 @@
+// ============================================================
+// in_closures.lox — Record captured by closure
+// ============================================================
+
+fun makeCounter() {
+  record State(count);
+  var s = State(0);
+  fun increment() {
+    s.count = s.count + 1;
+    return s.count;
+  }
+  return increment;
+}
+
+var counter = makeCounter();
+print counter(); // expect: 1
+print counter(); // expect: 2
+print counter(); // expect: 3

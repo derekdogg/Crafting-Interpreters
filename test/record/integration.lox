@@ -1,0 +1,25 @@
+// ============================================================
+// integration.lox — Combined nesting, aliasing, mutation
+// ============================================================
+
+record Point(x, y);
+record Rect(min, max);
+
+var p1 = Point(1, 2);
+var p2 = Point(10, 20);
+var r = Rect(p1, p2);
+
+print r.min.x; // expect: 1
+print r.max.y; // expect: 20
+
+// Mutating through the Rect mutates the original Point (reference semantics)
+r.min.x = 99;
+print p1.x;    // expect: 99
+print r.min.x; // expect: 99
+
+// Replace a field with a new instance
+r.max = Point(100, 200);
+print r.max.x; // expect: 100
+
+// Original p2 is unchanged
+print p2.x;    // expect: 10

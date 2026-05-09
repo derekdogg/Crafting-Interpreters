@@ -1,0 +1,18 @@
+// ============================================================
+// mutation_isolation.lox — Distinct instances don't share storage
+// ============================================================
+
+record Point(x, y);
+
+var a = Point(1, 2);
+var b = Point(3, 4);
+
+a.x = 100;
+
+print a.x; // expect: 100
+print b.x; // expect: 3
+
+b.y = 200;
+
+print a.y; // expect: 2
+print b.y; // expect: 200

@@ -1,0 +1,48 @@
+// ============================================================
+// object_fields.lox — Records holding heap objects (GC coverage)
+// ============================================================
+
+record Container(arr, dict, func);
+
+var a = [1, 2, 3];
+var d = ["key": "value"];
+fun greet() { return "hello"; }
+
+var c = Container(a, d, greet);
+
+// Array field
+print c.arr[0]; // expect: 1
+print c.arr[2]; // expect: 3
+
+// Dict field
+print c.dict["key"]; // expect: value
+
+// Function field (must extract — records don't support invoke)
+var f = c.func;
+print f(); // expect: hello
+
+// Mutate array through the record
+arrayPush(c.arr, 4);
+print c.arr[3]; // expect: 4
+print a[3];     // expect: 4
+
+// Reassign function field to a closure
+fun makeAdder(n) {
+  fun add(x) { return x + n; }
+  return add;
+}
+c.func = makeAdder(10);
+var g = c.func;
+print g(5); // expect: 15
+
+// Nested: record field holding array of records
+record Point(x, y);
+record Path(points);
+
+var p = Path([Point(1, 2), Point(3, 4), Point(5, 6)]);
+print p.points[0].x; // expect: 1
+print p.points[2].y; // expect: 6
+
+// Mutate through the chain
+p.points[1].x = 99;
+print p.points[1].x; // expect: 99
