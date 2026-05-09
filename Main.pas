@@ -41,6 +41,97 @@ uses
 
 {$R *.dfm}
 
+// Parses '// expect: ' and '// expect runtime error: ' comments from script content.
+// Validates IR output/error against expectations. Returns True if all match.
+function CheckExpectedOutput(const Content: string; const IR: TInterpretResult;
+  Memo: TMemo): Boolean;
+var
+  Lines, Expected, Actual: TStringList;
+  Line, ExpectedRuntimeError: string;
+  p, i: Integer;
+  HasOutput, HasRuntimeError: Boolean;
+begin
+  Result := True;
+  Lines := TStringList.Create;
+  Expected := TStringList.Create;
+  Actual := TStringList.Create;
+  try
+    Lines.Text := Content;
+    ExpectedRuntimeError := '';
+
+    for i := 0 to Lines.Count - 1 do
+    begin
+      Line := Lines[i];
+      p := Pos('// expect runtime error: ', Line);
+      if p > 0 then
+      begin
+        ExpectedRuntimeError := Copy(Line, p + 25, MaxInt);
+        Continue;
+      end;
+      p := Pos('// expect: ', Line);
+      if p > 0 then
+        Expected.Add(Copy(Line, p + 11, MaxInt));
+    end;
+
+    HasOutput := Expected.Count > 0;
+    HasRuntimeError := ExpectedRuntimeError <> '';
+
+    if HasRuntimeError then
+    begin
+      if IR.code <> INTERPRET_RUNTIME_ERROR then
+      begin
+        Memo.Lines.Add('  Expected runtime error but got ' +
+          IfThen(IR.code = INTERPRET_OK, 'OK', 'compile error'));
+        Result := False;
+      end
+      else if Trim(IR.ErrorStr) <> Trim(ExpectedRuntimeError) then
+      begin
+        Memo.Lines.Add('  Expected error "' + ExpectedRuntimeError +
+          '" but got "' + IR.ErrorStr + '"');
+        Result := False;
+      end;
+    end
+    else
+    begin
+      if IR.code <> INTERPRET_OK then
+      begin
+        Memo.Lines.Add('  Expected OK but got error: ' + IR.ErrorStr);
+        Exit(False);
+      end;
+    end;
+
+    // Check output lines (some runtime error tests also have expected output before the error)
+    if HasOutput then
+    begin
+      if IR.OutputStr <> '' then
+        Actual.Text := IR.OutputStr;
+      if (Actual.Count > 0) and (Actual[Actual.Count - 1] = '') then
+        Actual.Delete(Actual.Count - 1);
+
+      if Actual.Count <> Expected.Count then
+      begin
+        Memo.Lines.Add(Format('  Expected %d output lines but got %d',
+          [Expected.Count, Actual.Count]));
+        Result := False;
+      end
+      else
+      begin
+        for i := 0 to Expected.Count - 1 do
+          if Actual[i] <> Expected[i] then
+          begin
+            Memo.Lines.Add(Format('  Line %d: expected "%s" got "%s"',
+              [i + 1, Expected[i], Actual[i]]));
+            Result := False;
+          end;
+      end;
+    end;
+  finally
+    Lines.Free;
+    Expected.Free;
+    Actual.Free;
+  end;
+end;
+
 type
   TAddress = class
   private
@@ -70,6 +161,9 @@ type
     property Active: Boolean read FActive write FActive;
     property Address: TAddress read FAddress write FAddress;
     function Greet: string;
+    procedure AddBalance(Amount: Double);
+    procedure SetInfo(const NewName: string; NewAge: Integer);
+    function Describe(const Prefix: string): string;
   end;
 
 constructor TAddress.Create(const AStreet, ACity, AZip: string);
@@ -101,7 +195,21 @@ begin
   Result := 'Hello, ' + FName + '!';
 end;
 
+procedure TCustomer.AddBalance(Amount: Double);
+begin
+  FBalance := FBalance + Amount;
+end;
 
+procedure TCustomer.SetInfo(const NewName: string; NewAge: Integer);
+begin
+  FName := NewName;
+  FAge := NewAge;
+end;
+
+function TCustomer.Describe(const Prefix: string): string;
+begin
+  Result := Prefix + FName + ', age ' + IntToStr(FAge);
+end;
 
 procedure TForm4.Button1Click(Sender: TObject);
 var
@@ -542,7 +650,7 @@ begin
   Memo2.Lines.Add('=== Injection Test ===');
 
   ScriptPath := TPath.Combine(ExtractFilePath(ParamStr(0)),
-    '..\..\test\record\inject_stringlist.lox');
+    '..\..\test\native\inject_stringlist.lox');
   if not TFile.Exists(ScriptPath) then
   begin
     Memo2.Lines.Add('SKIP: inject_stringlist.lox not found');
@@ -551,14 +659,12 @@ begin
 
   Content := TFile.ReadAllText(ScriptPath);
 
-  // Create and populate a TStringList on the Delphi side
   sl := TStringList.Create;
   try
     sl.Add('Alice');
     sl.Add('Bob');
     sl.Add('Charlie');
 
-    // Use the split pipeline: InitVM → Inject → CompileAndRun → FreeVM
     InitVM;
     try
       InjectNativeObject('items', Pointer(sl), 'StringList');
@@ -567,37 +673,26 @@ begin
       FreeVM;
     end;
 
-    // Verify VM result
     if IR.code <> INTERPRET_OK then
     begin
       Memo2.Lines.Add('FAIL: ' + IR.ErrorStr);
       Exit;
     end;
 
-    // Verify Delphi-side mutations survived
-    if sl.Count <> 3 then
+    if not CheckExpectedOutput(Content, IR, Memo2) then
     begin
-      Memo2.Lines.Add('FAIL: expected 3 items after script, got ' + IntToStr(sl.Count));
-      Exit;
-    end;
-    if sl[0] <> 'Alice' then
-    begin
-      Memo2.Lines.Add('FAIL: expected items[0]="Alice", got "' + sl[0] + '"');
-      Exit;
-    end;
-    if sl[1] <> 'Charlie' then
-    begin
-      Memo2.Lines.Add('FAIL: expected items[1]="Charlie", got "' + sl[1] + '"');
-      Exit;
-    end;
-    if sl[2] <> 'Diana' then
-    begin
-      Memo2.Lines.Add('FAIL: expected items[2]="Diana", got "' + sl[2] + '"');
+      Memo2.Lines.Add('FAIL: output mismatch');
       Exit;
     end;
 
-    Memo2.Lines.Add('PASS: Injected StringList survived round-trip');
-    Memo2.Lines.Add('  Delphi sees: ' + sl.CommaText);
+    // Verify Delphi-side mutations
+    if (sl.Count <> 3) or (sl[0] <> 'Alice') or (sl[1] <> 'Charlie') or (sl[2] <> 'Diana') then
+    begin
+      Memo2.Lines.Add('FAIL: Delphi-side mutation check failed. Got: ' + sl.CommaText);
+      Exit;
+    end;
+
+    Memo2.Lines.Add('PASS: Injection test');
   finally
     sl.Free;
   end;
@@ -605,79 +700,64 @@ end;
 
 procedure TForm4.RunRttiTest;
 var
+  TestDir, Content, RelPath: string;
+  AllFiles: TStringDynArray;
+  F: string;
   cust: TCustomer;
   IR: TInterpretResult;
-  Script: AnsiString;
+  Passed, Failed: Integer;
 begin
   Memo2.Lines.Add('');
-  Memo2.Lines.Add('=== RTTI Injection Test ===');
+  Memo2.Lines.Add('=== RTTI Injection Tests ===');
 
-  cust := TCustomer.Create('Alice', 30, 1500.50, True);
-  try
-    cust.Address := TAddress.Create('123 Main St', 'Springfield', '62704');
-
-    Script :=
-      'print cust.Name;' + #10 +
-      'print cust.Age;' + #10 +
-      'print cust.Balance;' + #10 +
-      'print cust.Active;' + #10 +
-      'cust.Name = "Bob";' + #10 +
-      'cust.Age = 25;' + #10 +
-      'print cust.Name;' + #10 +
-      'print cust.Age;' + #10 +
-      'print cust.Greet();' + #10 +
-      '// Nested object access' + #10 +
-      'var addr = cust.Address;' + #10 +
-      'print addr.Street;' + #10 +
-      'print addr.City;' + #10 +
-      'print addr.Zip;' + #10 +
-      '// Direct chained access' + #10 +
-      'print cust.Address.City;' + #10 +
-      '// Mutate via RTTI' + #10 +
-      'addr.City = "Shelbyville";' + #10 +
-      'print cust.Address.City;' + #10;
-
-    InitVM;
-    try
-      InjectObject('cust', cust);
-      IR := CompileAndRun(PAnsiChar(Script));
-    finally
-      FreeVM;
-    end;
-
-    if IR.code <> INTERPRET_OK then
-    begin
-      Memo2.Lines.Add('FAIL: ' + IR.ErrorStr);
-      Exit;
-    end;
-
-    // Show script output
-    if IR.OutputStr <> '' then
-      Memo2.Lines.Add(IR.OutputStr);
-
-    // Verify Delphi-side mutations
-    if cust.Name <> 'Bob' then
-    begin
-      Memo2.Lines.Add('FAIL: expected Name="Bob", got "' + cust.Name + '"');
-      Exit;
-    end;
-    if cust.Age <> 25 then
-    begin
-      Memo2.Lines.Add('FAIL: expected Age=25, got ' + IntToStr(cust.Age));
-      Exit;
-    end;
-    if cust.Address.City <> 'Shelbyville' then
-    begin
-      Memo2.Lines.Add('FAIL: expected City="Shelbyville", got "' + cust.Address.City + '"');
-      Exit;
-    end;
-
-    Memo2.Lines.Add('PASS: RTTI injection round-trip');
-    Memo2.Lines.Add('  Delphi sees: Name=' + cust.Name + ', Age=' + IntToStr(cust.Age) +
-      ', City=' + cust.Address.City);
-  finally
-    cust.Free;
+  TestDir := TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\test\native');
+  if not TDirectory.Exists(TestDir) then
+  begin
+    Memo2.Lines.Add('SKIP: test/record/ directory not found');
+    Exit;
   end;
+
+  AllFiles := TDirectory.GetFiles(TestDir, 'inject_rtti*.lox', TSearchOption.soTopDirectoryOnly);
+  Passed := 0;
+  Failed := 0;
+
+  for F in AllFiles do
+  begin
+    RelPath := ExtractFileName(F);
+    Content := TFile.ReadAllText(F);
+
+    cust := TCustomer.Create('Alice', 30, 1500.50, True);
+    try
+      cust.Address := TAddress.Create('123 Main St', 'Springfield', '62704');
+
+      InitVM;
+      try
+        InjectObject('cust', cust);
+        IR := CompileAndRun(PAnsiChar(AnsiString(Content)));
+      finally
+        FreeVM;
+      end;
+
+      if CheckExpectedOutput(Content, IR, Memo2) then
+      begin
+        Inc(Passed);
+      end
+      else
+      begin
+        Inc(Failed);
+        Memo2.Lines.Add('FAIL: ' + RelPath);
+      end;
+    finally
+      cust.Free;
+    end;
+  end;
+
+  Memo2.Lines.Add('');
+  if Failed = 0 then
+    Memo2.Lines.Add('RTTI tests: All ' + IntToStr(Passed) + ' passed.')
+  else
+    Memo2.Lines.Add('RTTI tests: ' + IntToStr(Failed) + ' of ' +
+      IntToStr(Passed + Failed) + ' FAILED.');
 end;
 
 end.

@@ -1,0 +1,12 @@
+// ============================================================
+// inject_rtti_err_set_record.lox — Assign Lox record to property
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Assigning a Lox record instance to a Delphi string property
+//   - LoxValueToDelphi should detect the unmarshalable type and raise
+//     a runtime error before the RTTI SetValue proceeds
+record Point(x, y);
+var p = Point(10, 20);
+cust.Name = p; // expect runtime error: Cannot marshal Lox okRecord to Delphi.

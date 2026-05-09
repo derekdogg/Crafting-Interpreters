@@ -1,0 +1,12 @@
+// ============================================================
+// inject_rtti_err_bad_arg_type.lox — Array arg to Delphi method
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Passing a Lox array where a Delphi string parameter is expected
+//   - LoxValueToDelphi should detect the unmarshalable type and raise
+//     a runtime error before the RTTI invoke proceeds
+print cust.Name; // expect: Alice
+var arr = [1, 2, 3];
+cust.SetInfo(arr, 10); // expect runtime error: Cannot marshal Lox okArray to Delphi.

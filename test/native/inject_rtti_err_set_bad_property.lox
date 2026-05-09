@@ -1,0 +1,10 @@
+// ============================================================
+// inject_rtti_err_set_bad_property.lox — SET undefined property
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Writing to a property that doesn't exist on TCustomer via RTTI
+//   - VM should produce runtime error: "Undefined or read-only property 'Bogus'."
+print cust.Name; // expect: Alice
+cust.Bogus = "oops"; // expect runtime error: Undefined or read-only property 'Bogus'.
