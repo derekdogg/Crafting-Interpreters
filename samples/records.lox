@@ -1,31 +1,203 @@
-// Record type declaration
+// ============================================================
+// records.lox — Comprehensive record tests
+// ============================================================
+
+// --- Basic declaration, construction, access, mutation -------
+
 record Point(x, y);
 
-// Construction
 var p = Point(10, 20);
-print p;           // Point(x: 10, y: 20)
+assert(p.x == 10);
+assert(p.y == 20);
+print "PASS: construction and field access"; // expect: PASS: construction and field access
 
-// Field access
-print p.x;         // 10
-print p.y;         // 20
-
-// Field mutation
 p.x = 99;
-print p.x;         // 99
-print p;           // Point(x: 99, y: 20)
+assert(p.x == 99);
+assert(p.y == 20);
+print "PASS: field mutation"; // expect: PASS: field mutation
 
-// Multiple record types
-record Person(name, age);
-var bob = Person("Bob", 30);
-print bob;         // Person(name: Bob, age: 30)
-print bob.name;    // Bob
-print bob.age;     // 30
+// --- Single-field record ------------------------------------
 
-// Mutation
-bob.age = 31;
-print bob.age;     // 31
-
-// Record with single field
 record Wrapper(value);
 var w = Wrapper(42);
-print w.value;     // 42
+assert(w.value == 42);
+w.value = "hello";
+assert(w.value == "hello");
+print "PASS: single-field record"; // expect: PASS: single-field record
+
+// --- Multiple record types ----------------------------------
+
+record Person(name, age);
+var bob = Person("Bob", 30);
+assert(bob.name == "Bob");
+assert(bob.age == 30);
+print "PASS: multiple record types"; // expect: PASS: multiple record types
+
+// --- Type isolation -----------------------------------------
+// Records with the same field name must not share layouts.
+
+record A(x);
+record B(x);
+
+var a = A(1);
+var b = B(2);
+assert(a.x == 1);
+assert(b.x == 2);
+print "PASS: type isolation"; // expect: PASS: type isolation
+
+// --- Mutation isolation -------------------------------------
+// Distinct instances must not share storage.
+
+var p1 = Point(1, 2);
+var p2 = Point(3, 4);
+p1.x = 100;
+assert(p1.x == 100);
+assert(p2.x == 3);
+print "PASS: mutation isolation"; // expect: PASS: mutation isolation
+
+// --- Reference semantics ------------------------------------
+// var b = a produces an alias, not a copy.
+
+var orig = Point(1, 2);
+var alias = orig;
+alias.x = 99;
+assert(orig.x == 99);
+print "PASS: reference semantics (alias)"; // expect: PASS: reference semantics (alias)
+
+// --- Identity equality --------------------------------------
+// == is pointer identity for records, not structural.
+
+var eq1 = Point(1, 2);
+var eq2 = Point(1, 2);
+assert(eq1 == eq1);
+assert(!(eq1 == eq2));
+print "PASS: identity equality"; // expect: PASS: identity equality
+
+// Alias is the same identity.
+var eq3 = eq1;
+assert(eq3 == eq1);
+print "PASS: alias identity"; // expect: PASS: alias identity
+
+// --- Constructor field ordering -----------------------------
+
+record Weird(c, a, b);
+var wrd = Weird(1, 2, 3);
+assert(wrd.c == 1);
+assert(wrd.a == 2);
+assert(wrd.b == 3);
+print "PASS: field ordering"; // expect: PASS: field ordering
+
+// --- Nested records -----------------------------------------
+
+record Line(start, finish);
+
+var l = Line(Point(1, 2), Point(3, 4));
+assert(l.start.x == 1);
+assert(l.start.y == 2);
+assert(l.finish.x == 3);
+assert(l.finish.y == 4);
+print "PASS: nested records"; // expect: PASS: nested records
+
+// --- Nested mutation ----------------------------------------
+
+l.start.x = 50;
+assert(l.start.x == 50);
+print "PASS: nested mutation"; // expect: PASS: nested mutation
+
+// --- Records in collections ---------------------------------
+
+var items = [Point(10, 20), Point(30, 40)];
+assert(items[0].x == 10);
+assert(items[1].y == 40);
+items[0].x = 999;
+assert(items[0].x == 999);
+print "PASS: records in arrays"; // expect: PASS: records in arrays
+
+// --- Self-referential / cycle --------------------------------
+
+record Node(value, next);
+var n1 = Node(1, nil);
+var n2 = Node(2, n1);
+n1.next = n2;
+assert(n1.next == n2);
+assert(n2.next == n1);
+assert(n1.next.value == 2);
+assert(n2.next.value == 1);
+print "PASS: self-referential cycle"; // expect: PASS: self-referential cycle
+
+// --- Shadowing: fun over record name -------------------------
+// A function declaration can shadow a record type.
+
+record Shadow(x);
+var s = Shadow(10);
+assert(s.x == 10);
+
+fun Shadow() {
+  return 123;
+}
+assert(Shadow() == 123);
+print "PASS: function shadows record"; // expect: PASS: function shadows record
+
+// --- Mixed-type fields ---------------------------------------
+
+record Mixed(num, str, flag, child);
+var m = Mixed(42, "hello", true, Point(0, 0));
+assert(m.num == 42);
+assert(m.str == "hello");
+assert(m.flag == true);
+assert(m.child.x == 0);
+print "PASS: mixed-type fields"; // expect: PASS: mixed-type fields
+
+// --- Records as function arguments and returns ---------------
+
+fun movePoint(pt, dx, dy) {
+  pt.x = pt.x + dx;
+  pt.y = pt.y + dy;
+  return pt;
+}
+
+var mp = Point(5, 10);
+var result = movePoint(mp, 3, -2);
+assert(mp.x == 8);
+assert(mp.y == 8);
+assert(result == mp);
+print "PASS: records as args/returns"; // expect: PASS: records as args/returns
+
+// --- Records in closures ------------------------------------
+
+fun makeCounter() {
+  record State(count);
+  var s = State(0);
+  fun increment() {
+    s.count = s.count + 1;
+    return s.count;
+  }
+  return increment;
+}
+
+var counter = makeCounter();
+assert(counter() == 1);
+assert(counter() == 2);
+assert(counter() == 3);
+print "PASS: records in closures"; // expect: PASS: records in closures
+
+// --- Stringification ----------------------------------------
+
+record Stringy(a, b);
+var st = Stringy("x", 42);
+print st; // expect: Stringy(a: x, b: 42)
+
+// --- Integration stress: nesting + aliasing + mutation -------
+
+record Rect(min, max);
+var rp1 = Point(1, 2);
+var rp2 = Point(10, 20);
+var r = Rect(rp1, rp2);
+
+assert(r.min.x == 1);
+assert(r.max.y == 20);
+
+r.min.x = 99;
+assert(rp1.x == 99);
+assert(r.min.x == 99);
+print "PASS: integration stress"; // expect: PASS: integration stress

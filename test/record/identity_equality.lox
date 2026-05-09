@@ -1,0 +1,18 @@
+// ============================================================
+// identity_equality.lox — == is pointer identity, not structural
+// ============================================================
+
+record Point(x, y);
+
+var a = Point(1, 2);
+var b = Point(1, 2);
+
+// Same fields, different instances
+print a == b; // expect: false
+
+// Same instance
+print a == a; // expect: true
+
+// Alias
+var c = a;
+print c == a; // expect: true

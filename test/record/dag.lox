@@ -1,0 +1,182 @@
+// ============================================================
+// dag.lox — DAG torture test: deep graphs, shared nodes,
+//           cycles, GC pressure, topology mutation
+// ============================================================
+
+record Node(value, children);
+
+// Build a DAG (7 nodes deep, 3 shared nodes):
+//
+//              A
+//            /   \
+//           B     C
+//          / \   / \
+//         D   E E   F
+//        /   / \     \
+//       G   H   I     I
+//      /   /
+//     J   J             (J shared: G and H)
+//    /
+//   K
+//   |
+//   L
+//
+
+var l = Node("L", []);
+var k = Node("K", [l]);
+var j = Node("J", [k]);
+var i = Node("I", []);
+var h = Node("H", [j]);
+var g = Node("G", [j]);
+var f = Node("F", [i]);
+var e = Node("E", [h, i]);
+var d = Node("D", [g]);
+var c = Node("C", [e, f]);
+var b = Node("B", [d, e]);
+var a = Node("A", [b, c]);
+
+// ---- Deep chained access (7 nodes: A B D G J K L) ----
+// A -> B -> D -> G -> J -> K -> L
+print a.children[0].children[0].children[0].children[0].children[0].children[0].value; // expect: L
+
+// Same L via alternate path: A -> B -> E -> H -> J -> K -> L
+print a.children[0].children[1].children[0].children[0].children[0].children[0].value; // expect: L
+
+// A -> C -> E -> H -> J -> K
+print a.children[1].children[0].children[0].children[0].children[0].value; // expect: K
+
+// A -> C -> F -> I
+print a.children[1].children[1].children[0].value; // expect: I
+
+// ---- Call interleaving in chains (temporary lifetime stress) ----
+fun id(x) { return x; }
+
+print id(a.children[0]).children[0].children[0].children[0].value; // expect: J
+print id(id(a).children[1]).children[0].children[0].value; // expect: J
+print id(a.children[0].children[1]).children[0].children[0].children[0].value; // expect: K
+
+// ---- Shared node identity ----
+// J reachable from G and H — same object
+var j_via_g = a.children[0].children[0].children[0].children[0];
+var j_via_h = a.children[0].children[1].children[0].children[0];
+print j_via_g == j_via_h; // expect: true
+
+// E reachable from B and C — same object
+var e_via_b = a.children[0].children[1];
+var e_via_c = a.children[1].children[0];
+print e_via_b == e_via_c; // expect: true
+
+// I reachable from E and F — same object
+var i_via_e = a.children[0].children[1].children[1];
+var i_via_f = a.children[1].children[1].children[0];
+print i_via_e == i_via_f; // expect: true
+
+// ---- Leaf value mutation propagates through all paths ----
+l.value = "L*";
+print a.children[0].children[0].children[0].children[0].children[0].children[0].value; // expect: L*
+print a.children[0].children[1].children[0].children[0].children[0].children[0].value; // expect: L*
+
+j.value = "J*";
+print g.children[0].value; // expect: J*
+print h.children[0].value; // expect: J*
+
+// ---- Topology mutation: rewire shared node's children ----
+// J currently points to [K]. Rewire it to point to [I] instead.
+j.children[0] = i;
+
+// All aliases to J see the new child
+print g.children[0].children[0].value;  // expect: I
+print h.children[0].children[0].value;  // expect: I
+
+// K and L are now orphaned from the main graph (but still reachable via locals)
+print k.children[0].value; // expect: L*
+
+// ---- GC pressure: allocate during traversal ----
+// Create throwaway nodes to trigger collections mid-walk.
+// Even a small count is thorough under DEBUG_STRESS_GC (every alloc triggers GC).
+fun churn() {
+  var x = 0;
+  while (x < 20) {
+    Node("garbage", [Node("inner", [])]);
+    x = x + 1;
+  }
+}
+
+// ---- DFS traversal with visited set ----
+// This also implicitly tests: records as dict keys, identity hashing,
+// stable hash across GC cycles, identity-based equality
+var visited = ["_seed": true];
+visited.Delete("_seed");
+
+fun dfs(node) {
+  if (visited.Has(node)) return;
+  visited.Set(node, true);
+  churn(); // GC pressure between visits
+  print node.value;
+  var idx = 0;
+  while (idx < arrayLen(node.children)) {
+    dfs(node.children[idx]);
+    idx = idx + 1;
+  }
+}
+
+dfs(a);
+// After topology mutation: J->I instead of J->K
+// So the traversal is: A B D G J* I E H C F
+// (J* already visited when reached via H, E already visited via B,
+//  I already visited via J*, F's child I already visited)
+// expect: A
+// expect: B
+// expect: D
+// expect: G
+// expect: J*
+// expect: I
+// expect: E
+// expect: H
+// expect: C
+// expect: F
+
+// ---- Restore J->K to rebuild full depth before cycle ----
+// Undo the topology mutation so the path A->...->J->K->L exists again.
+j.children[0] = k;
+
+// Verify restoration
+print g.children[0].children[0].value;  // expect: K
+print g.children[0].children[0].children[0].value; // expect: L*
+
+// ---- Cycle: make L point back to A ----
+// Now we have: A->B->D->G->J->K->L->A  (true deep recursive cycle)
+// Without visited protection this would infinite-loop.
+l.children = [a];
+
+var visited2 = ["_seed": true];
+visited2.Delete("_seed");
+
+fun dfs2(node) {
+  if (visited2.Has(node)) return;
+  visited2.Set(node, true);
+  churn(); // GC pressure during cyclic traversal
+  print node.value;
+  var idx = 0;
+  while (idx < arrayLen(node.children)) {
+    dfs2(node.children[idx]);
+    idx = idx + 1;
+  }
+}
+
+// Walk from K: K->L->A->full graph->...->J->K (visited, stops)
+// The cycle K->L->A is real: A's subtree reaches J->K->L->A again.
+// Visited set must prevent infinite recursion.
+dfs2(k);
+// expect: K
+// expect: L*
+// expect: A
+// expect: B
+// expect: D
+// expect: G
+// expect: J*
+// expect: I
+// expect: E
+// expect: H
+// expect: C
+// expect: F

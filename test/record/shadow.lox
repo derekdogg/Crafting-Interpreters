@@ -1,0 +1,13 @@
+// ============================================================
+// shadow.lox — Function can shadow a record type name
+// ============================================================
+
+record Shadow(x);
+var s = Shadow(10);
+print s.x; // expect: 10
+
+fun Shadow() {
+  return 123;
+}
+
+print Shadow(); // expect: 123

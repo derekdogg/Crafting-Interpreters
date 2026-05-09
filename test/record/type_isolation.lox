@@ -1,0 +1,17 @@
+// ============================================================
+// type_isolation.lox — Different record types with same field names
+// ============================================================
+
+record A(x);
+record B(x);
+
+var a = A(1);
+var b = B(2);
+
+print a.x; // expect: 1
+print b.x; // expect: 2
+
+// Mutating one doesn't affect the other
+a.x = 100;
+print a.x; // expect: 100
+print b.x; // expect: 2

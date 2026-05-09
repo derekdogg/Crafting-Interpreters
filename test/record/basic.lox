@@ -1,0 +1,25 @@
+// ============================================================
+// basic.lox — Core record functionality
+// ============================================================
+
+// Declaration, construction, field access
+record Point(x, y);
+var p = Point(10, 20);
+print p.x; // expect: 10
+print p.y; // expect: 20
+
+// Mutation
+p.x = 99;
+print p.x; // expect: 99
+print p.y; // expect: 20
+
+// Single-field record
+record Wrapper(value);
+var w = Wrapper(42);
+print w.value; // expect: 42
+
+// Multiple record types
+record Person(name, age);
+var bob = Person("Bob", 30);
+print bob.name; // expect: Bob
+print bob.age;  // expect: 30

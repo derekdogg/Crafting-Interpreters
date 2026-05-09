@@ -1,0 +1,2 @@
+var x = 42;
+print x.foo; // expect runtime error: Only records have properties.

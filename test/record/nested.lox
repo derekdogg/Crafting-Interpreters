@@ -1,0 +1,23 @@
+// ============================================================
+// nested.lox — Records as fields of other records
+// ============================================================
+
+record Point(x, y);
+record Line(start, finish);
+
+var l = Line(Point(1, 2), Point(3, 4));
+
+// Chained field access
+print l.start.x;  // expect: 1
+print l.start.y;  // expect: 2
+print l.finish.x; // expect: 3
+print l.finish.y; // expect: 4
+
+// Nested mutation
+l.start.x = 50;
+print l.start.x;  // expect: 50
+
+// Deep nesting
+record Box(line);
+var b = Box(l);
+print b.line.finish.y; // expect: 4

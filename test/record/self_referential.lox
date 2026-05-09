@@ -1,0 +1,16 @@
+// ============================================================
+// self_referential.lox — Cyclic record references (GC stress)
+// ============================================================
+
+record Node(value, next);
+
+var a = Node(1, nil);
+var b = Node(2, a);
+
+// Create a cycle
+a.next = b;
+
+print a.next.value;       // expect: 2
+print b.next.value;       // expect: 1
+print a.next.next.value;  // expect: 1
+print b.next.next.value;  // expect: 2

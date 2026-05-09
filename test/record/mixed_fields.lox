@@ -1,0 +1,20 @@
+// ============================================================
+// mixed_fields.lox — Fields can hold any value type
+// ============================================================
+
+record Mixed(num, str, flag, child);
+record Point(x, y);
+
+var m = Mixed(42, "hello", true, Point(0, 0));
+
+print m.num;     // expect: 42
+print m.str;     // expect: hello
+print m.flag;    // expect: true
+print m.child.x; // expect: 0
+
+// Reassign with different types
+m.num = "now a string";
+print m.num; // expect: now a string
+
+m.flag = nil;
+print m.flag; // expect: nil

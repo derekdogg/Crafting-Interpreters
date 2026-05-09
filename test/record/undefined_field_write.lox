@@ -1,0 +1,3 @@
+record Point(x, y);
+var p = Point(1, 2);
+p.z = 10; // expect runtime error: Undefined property 'z'.

@@ -1,0 +1,16 @@
+// ============================================================
+// reference_semantics.lox — Records are reference types
+// ============================================================
+
+record Point(x, y);
+
+var a = Point(1, 2);
+var b = a;
+
+// b is an alias — mutating b changes a
+b.x = 99;
+print a.x; // expect: 99
+print b.x; // expect: 99
+
+// Same identity
+print a == b; // expect: true

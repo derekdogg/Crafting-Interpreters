@@ -1,0 +1,16 @@
+// ============================================================
+// in_collections.lox — Records stored in arrays
+// ============================================================
+
+record Point(x, y);
+
+var items = [Point(10, 20), Point(30, 40), Point(50, 60)];
+
+print items[0].x; // expect: 10
+print items[1].y; // expect: 40
+print items[2].x; // expect: 50
+
+// Mutate through array access
+items[0].x = 999;
+print items[0].x; // expect: 999
+print items[1].x; // expect: 30

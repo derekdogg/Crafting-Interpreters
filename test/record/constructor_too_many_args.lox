@@ -1,0 +1,2 @@
+record Point(x, y);
+Point(1, 2, 3); // expect runtime error: Expected 2 arguments but got 3.
