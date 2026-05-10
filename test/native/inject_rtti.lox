@@ -1,0 +1,60 @@
+// ============================================================
+// inject_rtti.lox — Happy-path RTTI property and method dispatch
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//   Initial state: Name="Alice", Age=30, Balance=1500.50, Active=true,
+//   Address=TAddress("123 Main St", "Springfield", "62704").
+//
+// What this tests:
+//   - Reading published properties of all four types (string, int, double, bool)
+//   - Writing string and integer properties via RTTI
+//   - Zero-arg method returning string (Greet)
+//   - Single-arg method with double param (AddBalance)
+//   - Multi-arg method with string+integer params (SetInfo)
+//   - Single-arg method returning string (Describe)
+//   - Nested object access (cust.Address → TAddress)
+//   - Chained property access (cust.Address.City)
+//   - Mutation of nested object via RTTI
+//   - Native object wrapper equality (two accesses → same pointer)
+
+// Read initial property values (string, int, double, bool)
+print cust.Name;    // expect: Alice
+print cust.Age;     // expect: 30
+print cust.Balance; // expect: 1500.5
+print cust.Active;  // expect: true
+
+var a = cust.Address;
+var b = cust.Address;
+print a == b;  // expect: true
+
+// Write properties via RTTI
+cust.Name = "Bob";
+cust.Age = 25;
+print cust.Name; // expect: Bob
+print cust.Age;  // expect: 25
+
+// Zero-arg method returning string
+print cust.Greet(); // expect: Hello, Bob!
+
+// Nested object access
+var addr = cust.Address;
+print addr.Street; // expect: 123 Main St
+print addr.City;   // expect: Springfield
+print addr.Zip;    // expect: 62704
+
+// Direct chained access
+print cust.Address.City; // expect: Springfield
+
+// Mutate nested object via RTTI
+addr.City = "Shelbyville";
+print cust.Address.City; // expect: Shelbyville
+
+// Methods with arguments
+cust.AddBalance(250.75);
+print cust.Balance; // expect: 1751.25
+
+cust.SetInfo("Charlie", 40);
+print cust.Name; // expect: Charlie
+print cust.Age;  // expect: 40
+
+print cust.Describe("Customer: "); // expect: Customer: Charlie, age 40

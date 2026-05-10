@@ -1,3 +1,2 @@
-// Error: Cannot multiply booleans
-// expect: runtime error
-print true * false;
+// Cannot multiply booleans
+print true * false; // expect runtime error: Operands must be numbers.

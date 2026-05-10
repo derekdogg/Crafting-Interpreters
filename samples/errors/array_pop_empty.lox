@@ -1,3 +1,3 @@
-// Error: arrayPop on empty array should produce runtime error
+// arrayPop on empty array should produce runtime error
 var a = newArray();
-arrayPop(a);
+arrayPop(a); // expect runtime error: Cannot pop from an empty array.

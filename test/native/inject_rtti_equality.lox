@@ -1,0 +1,33 @@
+// ============================================================
+// inject_rtti_equality.lox — Native object equality semantics
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//   Initial state: Name="Alice", Address=TAddress("123 Main St", "Springfield", "62704").
+//
+// What this tests:
+//   - Two wrappers around the same Delphi instance compare equal (pointer identity)
+//   - Self-equality (cust == cust)
+//   - Cross-type comparisons return false (native vs nil, number, string, bool)
+//   - Different Delphi instances compare not-equal (cust vs cust.Address)
+//   - Nested access consistency (cust.Address == previously captured addr)
+
+// Same underlying Delphi object via two accesses
+var a = cust.Address;
+var b = cust.Address;
+print a == b; // expect: true
+
+// Self-equality
+print cust == cust; // expect: true
+
+// Native object vs other types
+print cust == nil;   // expect: false
+print cust == 42;    // expect: false
+print cust == "str"; // expect: false
+print cust == true;  // expect: false
+
+// Different objects are not equal
+// (cust and cust.Address are different Delphi instances)
+print cust == cust.Address; // expect: false
+
+// Nested access consistency
+print cust.Address == a; // expect: true

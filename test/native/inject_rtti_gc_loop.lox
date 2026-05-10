@@ -1,0 +1,64 @@
+// ====================================================================
+// inject_rtti_gc_loop.lox — Native object survives GC under loop
+//   allocation pressure
+// ====================================================================
+// Setup: cust = TCustomer("Alice", 30, 1500.50, True)
+//   Address=TAddress("123 Main St", "Springfield", "62704").
+//   addr2 = TAddress("456 Oak Ave", "Shelbyville", "62705").
+//
+// What this tests:
+//   - Native object accessed repeatedly in a loop while allocations
+//     trigger GC on every iteration (DEBUG_STRESS_GC)
+//   - Building an array of values read from native object properties
+//   - String concatenation in a loop (heavy allocation) with native
+//     object references interleaved
+//   - Native object in local variable across loop iterations
+// ====================================================================
+
+// --- Read native object property in a loop with allocations ---
+var total = 0;
+var i = 0;
+while (i < 10) {
+  // Each concatenation allocates a new string, triggering GC
+  var label = "iteration" + " " + str(i);
+  total = total + cust.Balance;
+  i = i + 1;
+}
+print total; // expect: 15005
+
+// --- Build array from native object, heavy allocation ---
+var names = [];
+i = 0;
+while (i < 5) {
+  arrayPush(names, cust.Name);
+  arrayPush(names, addr2.City);
+  var garbage = "loop" + " alloc" + " " + str(i);
+  i = i + 1;
+}
+print arrayLen(names); // expect: 10
+print names[0];        // expect: Alice
+print names[1];        // expect: Shelbyville
+print names[8];        // expect: Alice
+print names[9];        // expect: Shelbyville
+
+// --- Mutate native object each iteration, read back ---
+i = 0;
+while (i < 5) {
+  cust.Age = i * 10;
+  var garbage = "mutate" + " loop" + " " + str(i);
+  i = i + 1;
+}
+print cust.Age; // expect: 40
+
+// --- Nested object access in loop ---
+i = 0;
+var cities = "";
+while (i < 3) {
+  if (i > 0) {
+    cities = cities + ",";
+  }
+  cities = cities + cust.Address.City;
+  var garbage = "nested" + " loop" + " " + str(i);
+  i = i + 1;
+}
+print cities; // expect: Springfield,Springfield,Springfield

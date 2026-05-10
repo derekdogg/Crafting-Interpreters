@@ -1,0 +1,11 @@
+// ============================================================
+// inject_rtti_err_set_array.lox — Assign Lox array to property
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Assigning a Lox array to a Delphi string property via RTTI
+//   - LoxValueToDelphi should detect the unmarshalable type and raise
+//     a runtime error before the RTTI SetValue proceeds
+var arr = [1, 2, 3];
+cust.Name = arr; // expect runtime error: Cannot marshal Lox okArray to Delphi.

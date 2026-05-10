@@ -1,0 +1,10 @@
+// ============================================================
+// inject_rtti_err_bad_method.lox — INVOKE undefined method
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Calling a method that doesn't exist on TCustomer via RTTI
+//   - VM should produce runtime error: "Undefined method 'DoSomething'."
+print cust.Name; // expect: Alice
+cust.DoSomething(); // expect runtime error: Undefined method 'DoSomething'.

@@ -1,0 +1,45 @@
+// ============================================================
+// inject_rtti_set.lox — Set property marshaling via RTTI
+// ============================================================
+// Setup: cust = TCustomer, Flags initially [cfNewsletter, cfVIP].
+//
+// What this tests:
+//   - Reading a set property returns a Lox array of enum-name strings
+//   - Array length matches number of set elements
+//   - Individual elements are accessible by index
+//   - Writing a set property from a Lox array of enum-name strings
+//   - Writing a set property from a single string (one-element set)
+//   - Writing an empty array clears the set
+
+// Read set property — should be array of two enum names
+var flags = cust.Flags;
+print type(flags); // expect: array
+print arrayLen(flags); // expect: 2
+print flags[0]; // expect: cfNewsletter
+print flags[1]; // expect: cfVIP
+
+// Write set from array of strings
+cust.Flags = ["cfTaxExempt", "cfWholesale"];
+var f2 = cust.Flags;
+print arrayLen(f2); // expect: 2
+print f2[0]; // expect: cfTaxExempt
+print f2[1]; // expect: cfWholesale
+
+// Write set from single string (one element)
+cust.Flags = "cfVIP";
+var f3 = cust.Flags;
+print arrayLen(f3); // expect: 1
+print f3[0]; // expect: cfVIP
+
+// Write empty array to clear the set
+cust.Flags = [];
+var f4 = cust.Flags;
+print arrayLen(f4); // expect: 0
+
+// Restore and re-read to confirm round-trip
+cust.Flags = ["cfNewsletter", "cfVIP", "cfWholesale"];
+var f5 = cust.Flags;
+print arrayLen(f5); // expect: 3
+print f5[0]; // expect: cfNewsletter
+print f5[1]; // expect: cfVIP
+print f5[2]; // expect: cfWholesale

@@ -11,7 +11,8 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Arrays** — Dynamic arrays via native functions (`newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove`)
 - **Dictionaries** — Hash-table dictionaries with generalized keys (any hashable TValue), Swift-style literal syntax (`[:]`, `["key": val]`), subscript get/set, PascalCase method API (Set, Get, Has, Delete, Keys, Values, Size), linear probing with tombstones, 75% load factor, bounded probing, GC-integrated
 - **Records** — Immutable-structure value types via `record Name(field1, field2);` syntax with dot access and field mutation
-- **Native Objects** *(work in progress)* — Wrap Delphi classes as GC-tracked Lox objects with method dispatch via `OP_INVOKE`; ships with `StringList()` (add, get, count, remove)
+- **Native Objects** — Inject Delphi classes as GC-tracked Lox objects with automatic RTTI-based property and method dispatch; ships with `StringList()` (add, get, count, remove)
+- **RTTI Injection** — Any Delphi `TObject` descendant can be injected into a Lox script via `InjectObject()`; published properties and methods are automatically accessible without wrapper code. Supports nested objects, object-typed method arguments, property mutation, method invocation with marshaling between Lox and Delphi types. Denylist prevents scripts from calling `Free`/`Destroy` and other lifecycle methods.
 - **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
 - **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor, dictionary functions (`dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize`)
 - **Conversion Functions** — `str()`, `num()`, `bool()`, `type()` for runtime type conversion and introspection
@@ -37,6 +38,7 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | — | Arrays (native function API, GC-integrated) |
 | — | Records (`record Name(fields);`, dot access, field mutation, GC-integrated) |
 | — | Native objects (Delphi class wrapping, `StringList()`, `OP_INVOKE`, GC-integrated) |
+| — | RTTI injection (`InjectObject()`, auto-registration, property/method dispatch, nested objects, denylist) |
 | — | Dictionaries (`[:]`/`["k":v]` literals, subscript, method dispatch, GC-integrated) |
 | — | Modulo operator (`%`) |
 | — | Conversion functions (`str`, `num`, `bool`, `type`) |
@@ -54,6 +56,7 @@ samples/             — Custom Lox test programs (auto-run on startup)
 samples/errors/      — Expected-error test programs (auto-run on startup)
 samples/stress/      — GC stress patterns (run via Button2)
 test/                — Official Crafting Interpreters test suite (auto-run on startup)
+test/native/         — RTTI injection tests (native object property/method/GC tests)
 ```
 
 ## Testing
@@ -149,6 +152,35 @@ Tests for built-in conversion, string, and math functions in `test/conversion/`,
 | conversion | 8 | `str()`, `num()`, `bool()`, `type()` — all value types, edge cases, arity errors |
 | string | 11 | `strlen()`, `substr()`, `indexOf()`, `charAt()`, `upper()`, `lower()`, `trim()`, `split()` — bounds, empty strings, arity/type errors |
 | math | 9 | `abs()`, `floor()`, `ceil()`, `round()` (banker's), `min()`, `max()`, `sqrt()`, `pow()`, `random()` — negatives, edge cases, type errors |
+
+### RTTI Injection Test Suite
+
+**21 tests** in `test/native/` — RTTI-based native object injection, run via the **Run RTTI Tests** button:
+
+| File | Coverage |
+|------|----------|
+| inject_stringlist.lox | StringList manual wrapper: add, get, count, remove |
+| inject_rtti.lox | Happy path: all property types, methods, nesting, chaining, equality |
+| inject_rtti_closures.lox | Closures capturing native objects, mutation visibility, GC safety |
+| inject_rtti_edge.lox | Empty string, zero, negatives, bool toggle, large numbers, punctuation |
+| inject_rtti_equality.lox | Pointer identity, self-equality, cross-type comparison, nested consistency |
+| inject_rtti_obj_arg.lox | Pass native object as method argument, identity after reassignment |
+| inject_rtti_gc_array.lox | Native objects in Lox arrays, survive GC, mutation via array reference |
+| inject_rtti_gc_dict.lox | Native objects as dict values, survive rehash + GC, nested access |
+| inject_rtti_gc_functions.lox | Pass/return through functions, closure capture, nested calls, shared closures |
+| inject_rtti_gc_loop.lox | Loop allocation pressure, repeated access, building arrays from properties |
+| inject_rtti_err_bad_property.lox | GET undefined property |
+| inject_rtti_err_set_bad_property.lox | SET undefined property |
+| inject_rtti_err_bad_method.lox | INVOKE undefined method |
+| inject_rtti_err_denylist_free.lox | Denylist blocks `Free()` |
+| inject_rtti_err_denylist_destroy.lox | Denylist blocks `Destroy()` |
+| inject_rtti_err_bad_arg_type.lox | Array arg to Delphi method |
+| inject_rtti_err_wrong_arity.lox | Wrong argument count |
+| inject_rtti_err_set_array.lox | Assign Lox array to property |
+| inject_rtti_err_set_closure.lox | Assign Lox closure to property |
+| inject_rtti_err_set_record.lox | Assign Lox record to property |
+| inject_rtti_err_arg_closure.lox | Closure arg to Delphi method |
+| inject_rtti_err_arg_dict.lox | Dict arg to Delphi method |
 
 **11 error tests** in `samples/errors/` — expected to produce errors:
 

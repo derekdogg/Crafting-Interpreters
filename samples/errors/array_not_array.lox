@@ -1,2 +1,2 @@
-// Error: arrayGet on non-array should produce runtime error
-arrayGet(42, 0);
+// arrayGet on non-array should produce runtime error
+arrayGet(42, 0); // expect runtime error: First argument to arrayGet() must be an array.

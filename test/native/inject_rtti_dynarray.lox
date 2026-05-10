@@ -1,0 +1,44 @@
+// ============================================================
+// inject_rtti_dynarray.lox — Dynamic array marshaling via RTTI
+// ============================================================
+// Setup: cust = TCustomer, Tags initially ["loyal", "premium", "early-adopter"].
+//
+// What this tests:
+//   - Reading a TArray<string> property returns a Lox array of strings
+//   - Array length and element access
+//   - Writing a TArray<string> property from a Lox array
+//   - Round-trip via GetTags() method (returns TArray<string>)
+//   - Round-trip via SetTags() method (accepts TArray<string>)
+//   - Empty array handling
+
+// Read dynamic array property
+var tags = cust.Tags;
+print type(tags); // expect: array
+print arrayLen(tags); // expect: 3
+print tags[0]; // expect: loyal
+print tags[1]; // expect: premium
+print tags[2]; // expect: early-adopter
+
+// Read via method that returns TArray<string>
+var tags2 = cust.GetTags();
+print arrayLen(tags2); // expect: 3
+print tags2[0]; // expect: loyal
+
+// Write dynamic array property from Lox array
+cust.Tags = ["new-tag", "another"];
+var tags3 = cust.Tags;
+print arrayLen(tags3); // expect: 2
+print tags3[0]; // expect: new-tag
+print tags3[1]; // expect: another
+
+// Write via method that accepts TArray<string>
+cust.SetTags(["alpha", "beta", "gamma", "delta"]);
+var tags4 = cust.GetTags();
+print arrayLen(tags4); // expect: 4
+print tags4[0]; // expect: alpha
+print tags4[3]; // expect: delta
+
+// Empty array
+cust.Tags = [];
+var tags5 = cust.Tags;
+print arrayLen(tags5); // expect: 0

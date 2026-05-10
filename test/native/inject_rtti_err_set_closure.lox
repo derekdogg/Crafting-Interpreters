@@ -1,0 +1,11 @@
+// ============================================================
+// inject_rtti_err_set_closure.lox — Assign Lox closure to property
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Assigning a Lox function/closure to a Delphi string property
+//   - LoxValueToDelphi should detect the unmarshalable type and raise
+//     a runtime error before the RTTI SetValue proceeds
+fun dummy() { return "hi"; }
+cust.Name = dummy; // expect runtime error: Cannot marshal Lox okClosure to Delphi.

@@ -1,0 +1,11 @@
+// ============================================================
+// inject_rtti_err_bad_set_elem.lox — Invalid set element error
+// ============================================================
+// Setup: cust = TCustomer with Flags property (TCustomerFlags set).
+//
+// What this tests:
+//   - Writing a set with an invalid enum name produces a runtime error
+
+var flags = cust.Flags;
+print arrayLen(flags); // expect: 2
+cust.Flags = ["cfVIP", "cfInvalid"]; // expect runtime error: Invalid set element 'cfInvalid' for type 'TCustomerFlags'.

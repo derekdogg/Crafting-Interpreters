@@ -2,12 +2,12 @@
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
 {$DEFINE DEBUG_LOG_GC}
-{$DEFINE DEBUG_STRESS_GC}
-{$DEFINE DEBUG_STRESS_TABLE}
+{..$DEFINE DEBUG_STRESS_GC}
+{..$DEFINE DEBUG_STRESS_TABLE}
 interface
  
 uses
-  Classes, dialogs;
+  Classes, dialogs, System.Rtti, System.TypInfo;
 
 const
 
@@ -331,12 +331,15 @@ type
     name       : AnsiString;
     methods    : array of TNativeMethod;
     destructor_: TNativeDestructor;
+    rttiEnabled: Boolean;
+    rttiClass  : TClass;
   end;
 
   TObjNativeObject = record
-    Obj       : TObj;
-    instance  : Pointer;
-    classInfo : pNativeClassInfo;
+    Obj          : TObj;
+    instance     : Pointer;
+    classInfo    : pNativeClassInfo;
+    ownsInstance : Boolean;  // if true, destructor_ is called on sweep
   end;
 
   TDictEntry = record
@@ -488,9 +491,17 @@ procedure AssertNewStringIsNillBeforeAllocation(ObjString : pObjString);
 //Stack assertions
 procedure AssertStackIsAssigned(Stack : pStack);
 procedure AssertStackValuesIsAssigned(Stack : pStack);
+procedure AssertStackCountIsZero(Stack : pStack);
+procedure AssertStackCapacityIsGreaterThanZero(Stack : pStack);
+procedure AssertStackTopEqualsValues(Stack : pStack);
+procedure AssertStackCapacityCanGrow(Stack : pStack);
+procedure AssertStackByteSizeIsSafe(NewCapacity : integer);
 procedure AssertStackIsNotEmpty(Stack : pStack);
 procedure AssertStackTopIsNotNil(Stack : pStack);
 procedure AssertStackIsNilBeforeInit(Stack : pStack);
+procedure AssertStackTopCountConsistent(Stack : pStack);
+procedure AssertRebaseOffsetIsNonZero(Offset : NativeInt);
+procedure AssertFrameCountInBounds(FrameCount : integer);
 
 //Chunk assertions
 procedure AssertChunkIsAssigned(Chunk : pChunk);
@@ -616,7 +627,9 @@ procedure CollectGarbage;
 
 //Virtual Machine
 procedure InitVM();
+function CompileAndRun(source : pAnsiChar) : TInterpretResult;
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
+procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
 function Run : TInterpretResult;
 procedure FreeObjects(objects: pObj);
 procedure FreeVM();
@@ -689,6 +702,8 @@ function findNativeMethod(classInfo : pNativeClassInfo; const methodName : AnsiS
 procedure recordDeclaration();
 procedure defineNative(const name : AnsiString; func : TNativeFn);
 procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
+procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
+procedure InjectObject(const name : AnsiString; instance : TObject);
 
 //Hash
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
@@ -866,7 +881,7 @@ var
 implementation
 
 uses
-  sysutils, Math, strUtils, typinfo, Windows,
+  sysutils, Math, strUtils, Windows, System.AnsiStrings,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
 
@@ -977,9 +992,51 @@ begin
   Assert(Assigned(Stack.Values), 'Stack values is not assigned');
 end;
 
+procedure AssertStackCountIsZero(Stack : pStack);
+begin
+  Assert(Stack.Count = 0, 'Stack count should be 0');
+end;
+
+procedure AssertStackCapacityIsGreaterThanZero(Stack : pStack);
+begin
+  Assert(Stack.CurrentCapacity > 0, 'Stack CurrentCapacity is zero, cannot grow');
+end;
+
+procedure AssertStackTopEqualsValues(Stack : pStack);
+begin
+  Assert(Stack.StackTop = Stack.Values, 'StackTop should equal Values');
+end;
+
+procedure AssertStackCapacityCanGrow(Stack : pStack);
+begin
+  Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'Stack capacity multiplication would overflow');
+end;
+
+procedure AssertStackByteSizeIsSafe(NewCapacity : integer);
+begin
+  Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'Stack byte size would overflow');
+end;
+
 procedure AssertStackIsNotEmpty(Stack : pStack);
 begin
   Assert(Stack.Count > 0, 'Stack underflow - count is zero');
+end;
+
+procedure AssertStackTopCountConsistent(Stack : pStack);
+begin
+  Assert(Stack.StackTop = Stack.Values + Stack.Count,
+    'StackTop/Count mismatch');
+end;
+
+procedure AssertRebaseOffsetIsNonZero(Offset : NativeInt);
+begin
+  Assert(Offset <> 0, 'pushStack rebase: offset is zero but pointers differ');
+end;
+
+procedure AssertFrameCountInBounds(FrameCount : integer);
+begin
+  Assert((FrameCount >= 0) and (FrameCount <= FRAMES_MAX),
+    'pushStack rebase: FrameCount out of bounds');
 end;
 
 procedure AssertStackTopIsNotNil(Stack : pStack);
@@ -1602,10 +1659,10 @@ begin
   
   // ---- Exit assertions ----
   AssertStackIsAssigned(Stack);
-  Assert(Stack.Count = 0, 'InitStack exit: count should be 0');
-  Assert(Stack.CurrentCapacity > 0, 'InitStack exit: capacity should be > 0');
+  AssertStackCountIsZero(Stack);
+  AssertStackCapacityIsGreaterThanZero(Stack);
   AssertStackValuesIsAssigned(Stack);
-  Assert(Stack.StackTop = Stack.Values, 'InitStack exit: StackTop should equal Values');
+  AssertStackTopEqualsValues(Stack);
 end;
 
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);
@@ -1637,15 +1694,19 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
+  AssertStackCapacityIsGreaterThanZero(Stack);
+  AssertStackTopCountConsistent(Stack);
   // Grow using raw ReallocMem — must never trigger GC so push/pop
   // can safely protect unrooted objects (same pattern as book's fixed stack)
   if Stack.Count >= Stack.CurrentCapacity then
   begin
-    Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'pushStack: capacity overflow');
+    AssertStackCapacityCanGrow(Stack);
     NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
-    Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'pushStack: byte size overflow');
+    AssertStackByteSizeIsSafe(NewCapacity);
     OldValues := Stack.Values;
     ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
+    AssertStackValuesIsAssigned(Stack);
+    AssertStackCapacityIsGreaterThanZero(Stack);
     // Zero new portion
     FillChar(Stack.Values[Stack.CurrentCapacity],
       (NewCapacity - Stack.CurrentCapacity) * SizeOf(TValue), 0);
@@ -1656,13 +1717,15 @@ begin
     if Stack.Values <> OldValues then
     begin
       Offset := NativeInt(Stack.Values) - NativeInt(OldValues);
+      AssertRebaseOffsetIsNonZero(Offset);
       // Rebase call frame slot pointers
       if (VM <> nil) and (Stack = VM.Stack) then
       begin
+        AssertFrameCountInBounds(VM.FrameCount);
         for i := 0 to VM.FrameCount - 1 do
           Inc(PByte(VM.Frames[i].slots), Offset);
         // Rebase open upvalue location pointers
-        upval := VM.OpenUpvalues;
+        upval := VM.OpenUpvalues; //this global has sneaked in, just debating whether to inject it
         while upval <> nil do
         begin
           Inc(PByte(upval^.location), Offset);
@@ -1677,8 +1740,9 @@ begin
   
   // ---- Exit assertions ----
   AssertStackIsAssigned(Stack);
-  Assert(Stack.Count > 0, 'pushStack exit: count should be > 0');
+  AssertStackIsNotEmpty(Stack);
   AssertStackTopIsNotNil(Stack);
+  AssertStackTopCountConsistent(Stack);
 end;
 
 
@@ -2142,22 +2206,26 @@ end;
 function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
 var
   i : integer;
+  fields : pValue;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
   Assert(recType <> nil, 'newRecord: recType is nil');
+  // Allocate the fields array first (like newClosure allocates upvals first)
+  // so the second Allocate cannot trigger GC with an untracked parent object
+  fields := nil;
+  if recType^.fieldCount > 0 then
+  begin
+    Allocate(Pointer(fields), 0, recType^.fieldCount * SizeOf(TValue), MemTracker);
+    for i := 0 to recType^.fieldCount - 1 do
+      fields[i] := CreateNilValue;
+  end;
   Result := nil;
   Allocate(Pointer(Result), 0, SizeOf(TObjRecord), MemTracker);
   Result^.Obj.ObjectKind := okRecord;
   Result^.Obj.IsMarked := false;
   Result^.Obj.Next := nil;
   Result^.recordType := recType;
-  Result^.fields := nil;
-  if recType^.fieldCount > 0 then
-  begin
-    Allocate(Pointer(Result^.fields), 0, recType^.fieldCount * SizeOf(TValue), MemTracker);
-    for i := 0 to recType^.fieldCount - 1 do
-      Result^.fields[i] := CreateNilValue;
-  end;
+  Result^.fields := fields;
   AddToCreatedObjects(pObj(Result), MemTracker);
 
   Assert(Result <> nil, 'newRecord exit: Result is nil');
@@ -2195,6 +2263,7 @@ begin
   Result^.Obj.Next := nil;
   Result^.instance := instance;
   Result^.classInfo := classInfo;
+  Result^.ownsInstance := true;  // VM-created objects are owned by default
   AddToCreatedObjects(pObj(Result), MemTracker);
   Assert(Result <> nil, 'newNativeObject exit: Result is nil');
 end;
@@ -2211,6 +2280,461 @@ begin
     end;
   found := nil;
   Result := False;
+end;
+
+// ---- RTTI value marshaling ----
+
+var
+  RttiCtx : TRttiContext;
+
+function findNativeClass(const name : AnsiString) : pNativeClassInfo; forward;
+procedure RunTimeError(const msg : string); forward;
+
+function DelphiValueToLox(const V: System.Rtti.TValue; MemTracker: pMemTracker): TValue;
+var
+  s: AnsiString;
+  childObj: TObject;
+  childClassName: AnsiString;
+  childClassInfo: pNativeClassInfo;
+  childNative: pObjNativeObject;
+  // Set marshaling
+  setInt: Integer;
+  baseTypeInfo: PTypeInfo;
+  baseTypeData: PTypeData;
+  bit: Integer;
+  arr: pObjArray;
+  elemStr: pObjString;
+  newCap, oldSize, newSize: Integer;
+  // Dynamic array marshaling
+  dynLen: Integer;
+  dynArr: pObjArray;
+  dynElem: System.Rtti.TValue;
+  dynNewCap, dynOldSize, dynNewSize: Integer;
+  dynI: Integer;
+begin
+  if V.IsEmpty then
+  begin
+    // A nil dynamic array has valid TypeInfo but nil data — return empty Lox array
+    if (V.TypeInfo <> nil) and (V.Kind = tkDynArray) then
+    begin
+      Result := CreateObject(pObj(newArray(MemTracker)));
+      Exit;
+    end;
+    Exit(CreateNilValue);
+  end;
+
+  case V.Kind of
+    tkInteger, tkInt64:
+      Result := CreateNumber(V.AsExtended);
+    tkFloat:
+      Result := CreateNumber(V.AsExtended);
+    tkEnumeration:
+    begin
+      if V.TypeInfo = TypeInfo(Boolean) then
+        Result := CreateBoolean(V.AsBoolean)
+      else
+      begin
+        // Return the symbolic enum name as a string (e.g. 'bsSizeable')
+        s := AnsiString(GetEnumName(V.TypeInfo, V.AsOrdinal));
+        Result := StringToValue(CreateString(s, MemTracker));
+      end;
+    end;
+    tkSet:
+    begin
+      // Marshal a Delphi set to a Lox array of enum-name strings.
+      // We iterate over all possible ordinal values of the set's
+      // underlying type and include names whose bits are set.
+      setInt := 0;
+      case GetTypeData(V.TypeInfo)^.OrdType of
+        otSByte, otUByte: setInt := PByte(V.GetReferenceToRawData)^;
+        otSWord, otUWord: setInt := PWord(V.GetReferenceToRawData)^;
+        otSLong, otULong: setInt := PInteger(V.GetReferenceToRawData)^;
+      end;
+
+      baseTypeInfo := GetTypeData(V.TypeInfo)^.CompType^;
+      baseTypeData := GetTypeData(baseTypeInfo);
+
+      arr := newArray(MemTracker);
+      // Protect array from GC during element allocation
+      pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+
+      for bit := baseTypeData^.MinValue to baseTypeData^.MaxValue do
+      begin
+        if (setInt and (1 shl bit)) <> 0 then
+        begin
+          s := AnsiString(GetEnumName(baseTypeInfo, bit));
+          elemStr := CreateString(s, MemTracker);
+          // Grow elements array if needed
+          if arr^.Count >= arr^.Capacity then
+          begin
+            if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
+            oldSize := arr^.Capacity * SizeOf(TValue);
+            newSize := newCap * SizeOf(TValue);
+            Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+            arr^.Capacity := newCap;
+          end;
+          arr^.Elements[arr^.Count] := StringToValue(elemStr);
+          Inc(arr^.Count);
+        end;
+      end;
+
+      popStack(VM.Stack); // pop GC protection
+      Result := CreateObject(pObj(arr));
+    end;
+    tkDynArray:
+    begin
+      // Marshal a Delphi dynamic array to a Lox array.
+      dynLen := V.GetArrayLength;
+      dynArr := newArray(MemTracker);
+      // Protect array from GC during element allocation
+      pushStack(VM.Stack, CreateObject(pObj(dynArr)), VM.MemTracker);
+
+      for dynI := 0 to dynLen - 1 do
+      begin
+        dynElem := V.GetArrayElement(dynI);
+        // Grow elements array if needed
+        if dynArr^.Count >= dynArr^.Capacity then
+        begin
+          if dynArr^.Capacity = 0 then dynNewCap := ARRAY_START_CAPACITY else dynNewCap := dynArr^.Capacity * GROWTH_FACTOR;
+          dynOldSize := dynArr^.Capacity * SizeOf(TValue);
+          dynNewSize := dynNewCap * SizeOf(TValue);
+          Allocate(Pointer(dynArr^.Elements), dynOldSize, dynNewSize, VM.MemTracker);
+          dynArr^.Capacity := dynNewCap;
+        end;
+        dynArr^.Elements[dynArr^.Count] := DelphiValueToLox(dynElem, MemTracker);
+        Inc(dynArr^.Count);
+      end;
+
+      popStack(VM.Stack); // pop GC protection
+      Result := CreateObject(pObj(dynArr));
+    end;
+    tkString, tkLString, tkWString, tkUString:
+    begin
+      s := AnsiString(V.AsString);
+      Result := StringToValue(CreateString(s, MemTracker));
+    end;
+    tkChar, tkWChar:
+    begin
+      s := AnsiString(V.AsString);
+      Result := StringToValue(CreateString(s, MemTracker));
+    end;
+    tkClass:
+    begin
+      childObj := V.AsObject;
+      if childObj = nil then
+        Exit(CreateNilValue);
+      // Auto-register the class if not already known
+      childClassName := AnsiString(childObj.ClassName);
+      childClassInfo := findNativeClass(childClassName);
+      if childClassInfo = nil then
+      begin
+        registerNativeClassRTTI(childClassName, childObj.ClassType);
+        childClassInfo := findNativeClass(childClassName);
+      end;
+      childNative := newNativeObject(Pointer(childObj), childClassInfo, MemTracker);
+      childNative^.ownsInstance := false;  // parent object owns the child
+      Result := CreateObject(pObj(childNative));
+    end;
+  else
+  begin
+    runtimeError(Format('Cannot marshal Delphi type ''%s'' (kind %s) to Lox.',
+      [String(V.TypeInfo.Name), GetEnumName(TypeInfo(TTypeKind), Ord(V.Kind))]));
+    Result := CreateNilValue;
+  end;
+  end;
+end;
+
+function LoxValueToDelphi(const V: TValue; TargetType: PTypeInfo): System.Rtti.TValue;
+var
+  s: string;
+  // Enum marshaling
+  enumOrd: Integer;
+  // Set marshaling (single string)
+  singleOrd: Integer;
+  singleSetInt: Integer;
+  setBaseInfo: PTypeInfo;
+  // Set marshaling (array of strings)
+  setArr: pObjArray;
+  setBaseInfo2: PTypeInfo;
+  setInt2: Integer;
+  setI: Integer;
+  setElemOrd: Integer;
+  setElemName: string;
+  // Dynamic array marshaling
+  srcArr: pObjArray;
+  dynArrLen: Integer;
+  dynResult: System.Rtti.TValue;
+  dynElemType: PTypeInfo;
+  dynJ: Integer;
+begin
+  case V.ValueKind of
+    vkNumber:
+    begin
+      if TargetType = nil then
+        Exit(System.Rtti.TValue.From<Double>(V.NumberValue));
+      case TargetType^.Kind of
+        tkInteger:
+          Result := System.Rtti.TValue.From<Integer>(Trunc(V.NumberValue));
+        tkInt64:
+          Result := System.Rtti.TValue.From<Int64>(Trunc(V.NumberValue));
+        tkFloat:
+          Result := System.Rtti.TValue.From<Double>(V.NumberValue);
+        tkEnumeration:
+          // Number -> enum ordinal (e.g. 2 -> TBorderStyle(2))
+          System.Rtti.TValue.Make(Trunc(V.NumberValue), TargetType, Result);
+      else
+        Result := System.Rtti.TValue.From<Double>(V.NumberValue);
+      end;
+    end;
+    vkBoolean:
+    begin
+      if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) and
+         (TargetType = TypeInfo(Boolean)) then
+        Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue)
+      else
+        Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue);
+    end;
+    vkNull:
+      Result := System.Rtti.TValue.Empty;
+    vkObject:
+    begin
+      if isString(V) then
+      begin
+        s := String(ObjStringToAnsiString(pObjString(V.ObjValue)));
+        // String -> enum by name (e.g. 'bsSizeable' -> TBorderStyle)
+        if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) then
+        begin
+          enumOrd := GetEnumValue(TargetType, s);
+          if enumOrd < 0 then
+          begin
+            runtimeError(Format('Invalid enum value ''%s'' for type ''%s''.',
+              [s, String(TargetType^.Name)]));
+            Result := System.Rtti.TValue.Empty;
+          end
+          else
+            System.Rtti.TValue.Make(enumOrd, TargetType, Result);
+        end
+        else if (TargetType <> nil) and (TargetType^.Kind = tkSet) then
+        begin
+          // Single string -> set with one element
+          setBaseInfo := GetTypeData(TargetType)^.CompType^;
+          singleOrd := GetEnumValue(setBaseInfo, s);
+          if singleOrd < 0 then
+          begin
+            runtimeError(Format('Invalid set element ''%s'' for type ''%s''.',
+              [s, String(TargetType^.Name)]));
+            Result := System.Rtti.TValue.Empty;
+          end
+          else
+          begin
+            singleSetInt := 1 shl singleOrd;
+            System.Rtti.TValue.Make(@singleSetInt, TargetType, Result);
+          end;
+        end
+        else
+          Result := System.Rtti.TValue.From<string>(s);
+      end
+      else if isArray(V) and (TargetType <> nil) and (TargetType^.Kind = tkSet) then
+      begin
+        // Lox array of enum-name strings -> Delphi set
+        setArr := pObjArray(V.ObjValue);
+        setBaseInfo2 := GetTypeData(TargetType)^.CompType^;
+        setInt2 := 0;
+
+        for setI := 0 to setArr^.Count - 1 do
+        begin
+          if not isString(setArr^.Elements[setI]) then
+          begin
+            runtimeError('Set elements must be strings (enum names).');
+            Exit(System.Rtti.TValue.Empty);
+          end;
+          setElemName := String(ObjStringToAnsiString(pObjString(setArr^.Elements[setI].ObjValue)));
+          setElemOrd := GetEnumValue(setBaseInfo2, setElemName);
+          if setElemOrd < 0 then
+          begin
+            runtimeError(Format('Invalid set element ''%s'' for type ''%s''.',
+              [setElemName, String(TargetType^.Name)]));
+            Exit(System.Rtti.TValue.Empty);
+          end;
+          setInt2 := setInt2 or (1 shl setElemOrd);
+        end;
+        System.Rtti.TValue.Make(@setInt2, TargetType, Result);
+      end
+      else if isArray(V) and (TargetType <> nil) and (TargetType^.Kind = tkDynArray) then
+      begin
+        // Lox array -> Delphi dynamic array
+        srcArr := pObjArray(V.ObjValue);
+        dynArrLen := srcArr^.Count;
+        dynElemType := GetTypeData(TargetType)^.DynArrElType^;
+
+        dynResult := System.Rtti.TValue.Empty;
+        System.Rtti.TValue.Make(nil, TargetType, dynResult);
+        DynArraySetLength(PPointer(dynResult.GetReferenceToRawData)^,
+          TargetType, 1, @dynArrLen);
+
+        for dynJ := 0 to dynArrLen - 1 do
+          dynResult.SetArrayElement(dynJ,
+            LoxValueToDelphi(srcArr^.Elements[dynJ], dynElemType));
+
+        Result := dynResult;
+      end
+      else if isNativeObject(V) then
+        Result := System.Rtti.TValue.From<TObject>(TObject(pObjNativeObject(V.ObjValue)^.instance))
+      else
+      begin
+        runtimeError(Format('Cannot marshal Lox %s to Delphi.',
+          [GetEnumName(TypeInfo(TObjectKind), Ord(pObj(V.ObjValue)^.ObjectKind))]));
+        Result := System.Rtti.TValue.Empty;
+      end;
+    end;
+  else
+    Result := System.Rtti.TValue.Empty;
+  end;
+end;
+
+function RttiGetProperty(instance: Pointer; classInfo: pNativeClassInfo;
+  const propName: AnsiString; MemTracker: pMemTracker; out loxVal: TValue): Boolean;
+var
+  rt: TRttiType;
+  prop: TRttiProperty;
+  field: TRttiField;
+  dv: System.Rtti.TValue;
+begin
+  Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+
+  rt := RttiCtx.GetType(classInfo^.rttiClass);
+  if rt = nil then Exit;
+
+  try
+    prop := rt.GetProperty(String(propName));
+    if (prop <> nil) and (prop.IsReadable) then
+    begin
+      dv := prop.GetValue(TObject(instance));
+      loxVal := DelphiValueToLox(dv, MemTracker);
+      Exit(True);
+    end;
+
+    field := rt.GetField(String(propName));
+    if field <> nil then
+    begin
+      dv := field.GetValue(TObject(instance));
+      loxVal := DelphiValueToLox(dv, MemTracker);
+      Exit(True);
+    end;
+  except
+    on E: Exception do
+    begin
+      runtimeError(Format('RTTI get ''%s'' failed: %s', [String(propName), E.Message]));
+      Result := False;
+    end;
+  end;
+end;
+
+function RttiSetProperty(instance: Pointer; classInfo: pNativeClassInfo;
+  const propName: AnsiString; const loxVal: TValue): Boolean;
+var
+  rt: TRttiType;
+  prop: TRttiProperty;
+  field: TRttiField;
+  dv: System.Rtti.TValue;
+begin
+  Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+
+  rt := RttiCtx.GetType(classInfo^.rttiClass);
+  if rt = nil then Exit;
+
+  try
+    prop := rt.GetProperty(String(propName));
+    if (prop <> nil) and (prop.IsWritable) then
+    begin
+      dv := LoxValueToDelphi(loxVal, prop.PropertyType.Handle);
+      if VM.RuntimeErrorStr <> '' then Exit;
+      prop.SetValue(TObject(instance), dv);
+      Exit(True);
+    end;
+
+    field := rt.GetField(String(propName));
+    if field <> nil then
+    begin
+      dv := LoxValueToDelphi(loxVal, field.FieldType.Handle);
+      if VM.RuntimeErrorStr <> '' then Exit;
+      field.SetValue(TObject(instance), dv);
+      Exit(True);
+    end;
+  except
+    on E: Exception do
+    begin
+      runtimeError(Format('RTTI set ''%s'' failed: %s', [String(propName), E.Message]));
+      Result := False;
+    end;
+  end;
+end;
+
+function RttiInvokeMethod(instance: Pointer; classInfo: pNativeClassInfo;
+  const methodName: AnsiString; argCount: integer; args: pValue;
+  MemTracker: pMemTracker; out loxResult: TValue): Boolean;
+var
+  rt: TRttiType;
+  method: TRttiMethod;
+  methods: TArray<TRttiMethod>;
+  params: TArray<TRttiParameter>;
+  delphiArgs: array of System.Rtti.TValue;
+  dv: System.Rtti.TValue;
+  i: integer;
+  mName: string;
+begin
+  Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+
+  rt := RttiCtx.GetType(classInfo^.rttiClass);
+  if rt = nil then Exit;
+
+  mName := String(methodName);
+
+  // Denylist: prevent scripts from invoking lifecycle/dangerous TObject methods
+  if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
+     SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
+     SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
+     SameText(mName, 'BeforeDestruction') then
+  begin
+    runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
+    Exit;
+  end;
+
+  methods := rt.GetMethods(mName);
+
+  try
+    for method in methods do
+    begin
+      params := method.GetParameters;
+      if Length(params) = argCount then
+      begin
+        SetLength(delphiArgs, argCount);
+        for i := 0 to argCount - 1 do
+          delphiArgs[i] := LoxValueToDelphi(args[i], params[i].ParamType.Handle);
+
+        // Bail out if marshaling set a runtime error
+        if VM.RuntimeErrorStr <> '' then
+          Exit;
+
+        dv := method.Invoke(TObject(instance), delphiArgs);
+
+        if method.ReturnType <> nil then
+          loxResult := DelphiValueToLox(dv, MemTracker)
+        else
+          loxResult := CreateNilValue;
+        Exit(True);
+      end;
+    end;
+  except
+    on E: Exception do
+    begin
+      runtimeError(Format('RTTI invoke ''%s'' failed: %s', [String(methodName), E.Message]));
+      Result := False;
+    end;
+  end;
 end;
 
 function ObjStringToAnsiString(S: PObjString): AnsiString;
@@ -2525,7 +3049,17 @@ begin
                   AssertPointerIsNotNil(b.ObjValue, 'B value in ValuesEqual');
                   case a.ObjValue.ObjectKind of
                     okString : begin
-                       result := StringsEqual(ValueToString(a),ValueToString(b));
+                      if b.ObjValue.ObjectKind = okString then
+                        result := StringsEqual(ValueToString(a),ValueToString(b))
+                      else
+                        result := false;
+                    end;
+                    okNativeObject : begin
+                      if b.ObjValue.ObjectKind = okNativeObject then
+                        result := pObjNativeObject(a.ObjValue)^.instance =
+                                  pObjNativeObject(b.ObjValue)^.instance
+                      else
+                        result := false;
                     end
                     else
                     begin
@@ -2889,6 +3423,9 @@ var
   invokeNameIdx : integer;
   invokeArgCount : byte;
   invokeMethodName : AnsiString;
+  // RTTI property support
+  rttiPropName : AnsiString;
+  rttiResult : TValue;
 
   function CurrentFrame: pCallFrame;
   begin
@@ -3343,6 +3880,7 @@ begin
           VM.Stack.StackTop := frame^.slots;
           Assert(NativeUInt(VM.Stack.StackTop) >= NativeUInt(VM.Stack.Values), 'OP_RETURN: StackTop before Values');
           VM.Stack.Count := (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue);
+          AssertStackTopCountConsistent(VM.Stack);
           pushStack(vm.Stack, value, vm.MemTracker);
 
           frame := CurrentFrame;
@@ -3467,58 +4005,102 @@ begin
         end;
 
         OP_GET_PROPERTY: begin
-          if not isRecord(peekStack(vm.Stack)) then
+          if isRecord(peekStack(vm.Stack)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
+            AssertFrameValues('OP_GET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
+            AssertFrameValues('OP_GET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
+            begin
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rttiResult, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr; // consume operand
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack).ObjValue);
-          recNameIdx := ReadByteFr;
-          AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
-          AssertFrameValues('OP_GET_PROPERTY');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          // Replace the record on the stack with the field value
-          popStack(vm.Stack);
-          pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
         end;
 
         OP_SET_PROPERTY: begin
-          if not isRecord(peekStack(vm.Stack, 1)) then
+          if isRecord(peekStack(vm.Stack, 1)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
+            AssertFrameValues('OP_SET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            rec^.fields[fieldIdx] := peekStack(vm.Stack);
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack, 1)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
+            AssertFrameValues('OP_SET_PROPERTY');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
+            begin
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr; // consume operand
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
-          recNameIdx := ReadByteFr;
-          AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
-          AssertFrameValues('OP_SET_PROPERTY');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          // Set field value from top of stack
-          rec^.fields[fieldIdx] := peekStack(vm.Stack);
-          // Pop the value, pop the record, push the value back (assignment expression)
-          value := popStack(vm.Stack);
-          popStack(vm.Stack);
-          pushStack(vm.Stack, value, vm.MemTracker);
         end;
 
         OP_INVOKE: begin
@@ -3548,19 +4130,30 @@ begin
           else if isNativeObject(value) then
           begin
             nativeObj := pObjNativeObject(value.ObjValue);
-            if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            if findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
             begin
-              runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
+              // Call manual wrapper method
+              nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
+                pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+              if VM.RuntimeErrorStr <> '' then
+              begin
+                Result.code := INTERPRET_RUNTIME_ERROR;
+                Exit;
+              end;
+            end
+            else if RttiInvokeMethod(nativeObj^.instance, nativeObj^.classInfo,
+              invokeMethodName, invokeArgCount,
+              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
+              VM.MemTracker, nativeResult) then
+            begin
+              // RTTI method call succeeded
+            end
+            else
+            begin
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
-            end;
-            // Call the method: args are on stack, receiver is below them
-            nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
-              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
-            if VM.RuntimeErrorStr <> '' then
-            begin
-              Result.code := INTERPRET_RUNTIME_ERROR;
-              Exit;
             end;
             // Pop args + receiver, push result
             Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE: stack underflow');
@@ -3603,18 +4196,29 @@ begin
           else if isNativeObject(value) then
           begin
             nativeObj := pObjNativeObject(value.ObjValue);
-            if not findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
+            if findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
             begin
-              runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
+              nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
+                pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+              if VM.RuntimeErrorStr <> '' then
+              begin
+                Result.code := INTERPRET_RUNTIME_ERROR;
+                Exit;
+              end;
+            end
+            else if RttiInvokeMethod(nativeObj^.instance, nativeObj^.classInfo,
+              invokeMethodName, invokeArgCount,
+              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
+              VM.MemTracker, nativeResult) then
+            begin
+              // RTTI method call succeeded
+            end
+            else
+            begin
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined method ''' + String(invokeMethodName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
-            end;
-            nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
-              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
-            if VM.RuntimeErrorStr <> '' then
-            begin
-              Result.code := INTERPRET_RUNTIME_ERROR;
-              Exit;
             end;
             Assert(VM.Stack.Count >= invokeArgCount + 1, 'OP_INVOKE_LONG: stack underflow');
             VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
@@ -3630,59 +4234,114 @@ begin
         end;
 
         OP_GET_PROPERTY_LONG: begin
-          if not isRecord(peekStack(vm.Stack)) then
+          if isRecord(peekStack(vm.Stack)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
+            AssertFrameValues('OP_GET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
+            AssertFrameValues('OP_GET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
+            begin
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            popStack(vm.Stack);
+            pushStack(vm.Stack, rttiResult, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack).ObjValue);
-          recNameIdx := ReadByteFr;
-          recNameIdx := recNameIdx or (ReadByteFr shl 8);
-          recNameIdx := recNameIdx or (ReadByteFr shl 16);
-          AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
-          AssertFrameValues('OP_GET_PROPERTY_LONG');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          popStack(vm.Stack);
-          pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
         end;
 
         OP_SET_PROPERTY_LONG: begin
-          if not isRecord(peekStack(vm.Stack, 1)) then
+          if isRecord(peekStack(vm.Stack, 1)) then
           begin
-            runtimeError('Only records have properties.');
+            rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
+            AssertFrameValues('OP_SET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
+            fieldName := ValueToString(value);
+            fieldIdx := findFieldIndex(rec^.recordType, fieldName);
+            if fieldIdx < 0 then
+            begin
+              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            rec^.fields[fieldIdx] := peekStack(vm.Stack);
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack, 1)) then
+          begin
+            nativeObj := pObjNativeObject(peekStack(vm.Stack, 1).ObjValue);
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
+            AssertFrameValues('OP_SET_PROPERTY_LONG');
+            value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
+            rttiPropName := ObjStringToAnsiString(ValueToString(value));
+            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
+            begin
+              if VM.RuntimeErrorStr = '' then
+                runtimeError('Undefined or read-only property ''' + String(rttiPropName) + '''.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            value := popStack(vm.Stack);
+            popStack(vm.Stack);
+            pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else
+          begin
+            recNameIdx := ReadByteFr;
+            recNameIdx := recNameIdx or (ReadByteFr shl 8);
+            recNameIdx := recNameIdx or (ReadByteFr shl 16);
+            runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
-          recNameIdx := ReadByteFr;
-          recNameIdx := recNameIdx or (ReadByteFr shl 8);
-          recNameIdx := recNameIdx or (ReadByteFr shl 16);
-          AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
-          AssertFrameValues('OP_SET_PROPERTY_LONG');
-          value := frame^.closure^.func^.chunk^.Constants^.Values[recNameIdx];
-          Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
-          fieldName := ValueToString(value);
-          fieldIdx := findFieldIndex(rec^.recordType, fieldName);
-          if fieldIdx < 0 then
-          begin
-            runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          rec^.fields[fieldIdx] := peekStack(vm.Stack);
-          value := popStack(vm.Stack);
-          popStack(vm.Stack);
-          pushStack(vm.Stack, value, vm.MemTracker);
         end;
 
         OP_GET_SUBSCRIPT: begin
@@ -3870,6 +4529,7 @@ begin
    AssertStackTopIsNotNil(Stack);
    AssertStackValuesIsAssigned(Stack);
    AssertStackIsNotEmpty(Stack);
+   AssertStackTopCountConsistent(Stack);
    
    oldCount := Stack.Count;
    
@@ -3880,6 +4540,7 @@ begin
    // ---- Exit assertions ----
    Assert(Stack.Count = oldCount - 1, 'popStack exit: count should decrease by 1');
    Assert(Stack.Count >= 0, 'popStack exit: count should not be negative');
+   AssertStackTopCountConsistent(Stack);
 end;
 
 function CheckBinaryNumbers: Boolean;
@@ -4068,36 +4729,44 @@ end;
 
 
 //entry point into vm
-function InterpretResult(source : pAnsiChar) : TInterpretResult;
+function CompileAndRun(source : pAnsiChar) : TInterpretResult;
 var
   closure : pObjClosure;
 begin
    AssertSourceCodeIsAssigned(source);
+   AssertVMIsAssigned;
+
+   closure := compile(source);
+   if closure = nil then
+   begin
+     Result.code :=  INTERPRET_COMPILE_ERROR;
+     Result.ErrorStr := Parser.ErrorStr;
+     Exit;
+   end;
+
+   // Push the script closure onto the stack
+   pushStack(VM.Stack, CreateObject(pObj(closure)), VM.MemTracker);
+
+   // Set up the first call frame
+   VM.Frames[0].closure := closure;
+   VM.Frames[0].ip := closure^.func^.chunk^.Code;
+   VM.Frames[0].slots := VM.Stack.Values;
+   VM.FrameCount := 1;
+
+   Result := Run;
+   if Result.code = INTERPRET_RUNTIME_ERROR then
+     Result.ErrorStr := VM.RuntimeErrorStr
+   else if (Result.code = INTERPRET_OK) and isString(Result.value) then
+     Result.ResultStr := String(ObjStringToAnsiString(ValueToString(Result.value)));
+   Result.OutputStr := VM.PrintOutput;
+end;
+
+function InterpretResult(source : pAnsiChar) : TInterpretResult;
+begin
+   AssertSourceCodeIsAssigned(source);
    initVM;
    try
-     closure := compile(source);
-     if closure = nil then
-     begin
-       Result.code :=  INTERPRET_COMPILE_ERROR;
-       Result.ErrorStr := Parser.ErrorStr;
-       Exit;
-     end;
-
-     // Push the script closure onto the stack
-     pushStack(VM.Stack, CreateObject(pObj(closure)), VM.MemTracker);
-
-     // Set up the first call frame
-     VM.Frames[0].closure := closure;
-     VM.Frames[0].ip := closure^.func^.chunk^.Code;
-     VM.Frames[0].slots := VM.Stack.Values;
-     VM.FrameCount := 1;
-
-     Result := Run;
-     if Result.code = INTERPRET_RUNTIME_ERROR then
-       Result.ErrorStr := VM.RuntimeErrorStr
-     else if (Result.code = INTERPRET_OK) and isString(Result.value) then
-       Result.ResultStr := ObjStringToAnsiString(ValueToString(Result.value));
-     Result.OutputStr := VM.PrintOutput;
+     Result := CompileAndRun(source);
    finally
      FreeVM;
    end;
@@ -4153,7 +4822,8 @@ begin
       Allocate(Pointer(obj), SizeOf(TObjRecord), 0, vm.MemTracker);
     end;
     okNativeObject : begin
-      if Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
+      if pObjNativeObject(obj)^.ownsInstance and
+         Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
         pObjNativeObject(obj)^.classInfo^.destructor_(pObjNativeObject(obj)^.instance);
       Allocate(Pointer(obj), SizeOf(TObjNativeObject), 0, vm.MemTracker);
     end;
@@ -4824,7 +5494,7 @@ begin
 
   if not FileExists(String(filePath)) then
   begin
-    RuntimeError('loadEnv() file not found: ' + filePath);
+    RuntimeError('loadEnv() file not found: ' + String(filePath));
     Exit(CreateNilValue);
   end;
 
@@ -5270,7 +5940,7 @@ begin
     Exit;
   end;
   s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
-  objStr := CreateString(AnsiUpperCase(s), VM.MemTracker);
+  objStr := CreateString(AnsiString(AnsiUpperCase(String(s))), VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
 
@@ -5292,7 +5962,7 @@ begin
     Exit;
   end;
   s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
-  objStr := CreateString(AnsiLowerCase(s), VM.MemTracker);
+  objStr := CreateString(AnsiString(AnsiLowerCase(String(s))), VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
 
@@ -5847,12 +6517,31 @@ var
   i : integer;
   info : pNativeClassInfo;
 begin
+  if findNativeClass(AName) <> nil then Exit; // already registered
   New(info);
   info^.name := AName;
   SetLength(info^.methods, Length(AMethods));
   for i := 0 to High(AMethods) do
     info^.methods[i] := AMethods[i];
   info^.destructor_ := ADestructor;
+  info^.rttiEnabled := False;
+  info^.rttiClass := nil;
+  Inc(NativeClassCount);
+  SetLength(NativeClassRegistry, NativeClassCount);
+  NativeClassRegistry[NativeClassCount - 1] := info;
+end;
+
+procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
+var
+  info : pNativeClassInfo;
+begin
+  if findNativeClass(AName) <> nil then Exit; // already registered
+  New(info);
+  info^.name := AName;
+  SetLength(info^.methods, 0);
+  info^.destructor_ := ADestructor;
+  info^.rttiEnabled := True;
+  info^.rttiClass := AClass;
   Inc(NativeClassCount);
   SetLength(NativeClassRegistry, NativeClassCount);
   NativeClassRegistry[NativeClassCount - 1] := info;
@@ -5866,6 +6555,47 @@ begin
     if NativeClassRegistry[i]^.name = name then
       Exit(NativeClassRegistry[i]);
   Result := nil;
+end;
+
+procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
+var
+  classInfo : pNativeClassInfo;
+  obj : pObjNativeObject;
+  nameStr : pObjString;
+begin
+  // ---- Entry assertions ----
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+  Assert(instance <> nil, 'InjectNativeObject: instance is nil');
+  Assert(Length(name) > 0, 'InjectNativeObject: name is empty');
+  Assert(Length(className) > 0, 'InjectNativeObject: className is empty');
+
+  classInfo := findNativeClass(className);
+  Assert(classInfo <> nil, 'InjectNativeObject: class not registered: ' + className);
+
+  // GC-safe order: create string first, push it, then create object and push it.
+  // This matches defineNative's pattern — each allocation is rooted before the next.
+  nameStr := CreateString(name, VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+  obj := newNativeObject(instance, classInfo, VM.MemTracker);
+  obj^.ownsInstance := false;  // Delphi owns this object
+  pushStack(VM.Stack, CreateObject(pObj(obj)), VM.MemTracker);
+  TableSet(VM.Globals, nameStr, CreateObject(pObj(obj)), VM.MemTracker);
+  popStack(VM.Stack);
+  popStack(VM.Stack);
+end;
+
+procedure InjectObject(const name : AnsiString; instance : TObject);
+var
+  className : AnsiString;
+  classInfo : pNativeClassInfo;
+begin
+  Assert(instance <> nil, 'InjectObject: instance is nil');
+  className := AnsiString(instance.ClassName);
+  classInfo := findNativeClass(className);
+  if classInfo = nil then
+    registerNativeClassRTTI(className, instance.ClassType);
+  InjectNativeObject(name, Pointer(instance), className);
 end;
 
 // ---- StringList wrapper ----
@@ -6049,7 +6779,7 @@ begin
   if DictGet(dict, authKey, authVal) then
   begin
     if isString(authVal) then
-      auth := LowerCase(ObjStringToAnsiString(pObjString(authVal.ObjValue)));
+      auth := AnsiString(LowerCase(String(ObjStringToAnsiString(pObjString(authVal.ObjValue)))));
   end;
 
   // Optional: user, password (for SQL auth)
@@ -6088,7 +6818,7 @@ begin
     on E: Exception do
     begin
       conn.Free;
-      RuntimeError('sqlConnect() failed: ' + AnsiString(E.Message));
+      RuntimeError('sqlConnect() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
   end;
@@ -6246,7 +6976,7 @@ begin
       // Unwind stack to saved depth
       while VM.Stack.Count > stackBase do
         popStack(VM.Stack);
-      RuntimeError('sqlQuery() failed: ' + AnsiString(E.Message));
+      RuntimeError('sqlQuery() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
   end;
@@ -6401,7 +7131,7 @@ begin
       // Unwind stack to saved depth
       while VM.Stack.Count > stackBase do
         popStack(VM.Stack);
-      RuntimeError('sqlQueryParams() failed: ' + AnsiString(E.Message));
+      RuntimeError('sqlQueryParams() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
   end;
@@ -6438,6 +7168,8 @@ begin
   VM.OpenUpvalues := nil;
   VM.RuntimeErrorStr := '';
   VM.PrintOutput := '';
+
+  RttiCtx := TRttiContext.Create;
   InitMemTracker(VM.MemTracker);
   InitTable(VM.Strings, VM.MemTracker);
   InitTable(VM.Globals, VM.MemTracker);
@@ -6565,6 +7297,7 @@ begin
   SetLength(NativeClassRegistry, 0);
   NativeClassCount := 0;
 
+  RttiCtx.Free;
   {$IFDEF DEBUG_LOG_GC}
   finally
   try
@@ -6636,7 +7369,7 @@ begin
   Assert(Assigned(msg), 'ErrorToken: msg is nil');
   result.Tokentype := TOKEN_ERROR;
   result.start := msg;
-  result.length := strlen(msg);
+  result.length := System.AnsiStrings.StrLen(msg);
   result.line := scanner.line;
 end;
 
@@ -6961,7 +7694,7 @@ begin
     token := ScanToken();
 
     // Convert pointer+length to a proper Delphi string
-    lexeme := TokenToString(token);
+    lexeme := String(TokenToString(token));
 
     // Print line number only once per line
     if token.Line <> lastLine then
@@ -7337,6 +8070,7 @@ begin
 
   // -2 to adjust for the two-byte jump operand itself
   jump := CurrentChunk.count - offset - 2;
+  Assert(jump > 0, 'patchJump: jump distance is zero or negative');
   if jump > MAX_JUMP_OFFSET then
     Error('Too much code to jump over.');
   CurrentChunk.code[offset]     := (jump shr 8) and $FF;
@@ -7606,7 +8340,10 @@ var
   upvalueCount : integer;
   i : integer;
 begin
-  upvalueCount := compiler^.func^.upvalueCount; //TODO : missing asserts
+  Assert(compiler <> nil, 'addUpvalue: compiler is nil');
+  Assert(compiler^.func <> nil, 'addUpvalue: compiler func is nil');
+  upvalueCount := compiler^.func^.upvalueCount;
+  Assert(upvalueCount >= 0, 'addUpvalue: upvalueCount is negative');
 
   for i := 0 to upvalueCount - 1 do
   begin
@@ -7637,7 +8374,7 @@ begin
   if compiler^.enclosing = nil then
     Exit(-1);
 
-  local := resolveLocal(compiler^.enclosing, name); //TODO : why <> -1
+  local := resolveLocal(compiler^.enclosing, name); // -1 means not found locally, so we try the next enclosing scope
   if local <> -1 then
   begin
     Assert((local >= 0) and (local < UINT8_COUNT), 'resolveUpvalue: locals index out of bounds');

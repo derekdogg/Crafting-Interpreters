@@ -1,0 +1,11 @@
+// ============================================================
+// inject_rtti_err_denylist_destroy.lox — Denylist blocks Destroy()
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Attempting to call Destroy() on an injected object from Lox
+//   - The RTTI method denylist should block this with a runtime error
+//   - Prevents scripts from calling the destructor on host-owned objects
+print cust.Name; // expect: Alice
+cust.Destroy(); // expect runtime error: Method 'Destroy' is not callable from script.

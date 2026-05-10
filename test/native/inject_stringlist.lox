@@ -1,0 +1,22 @@
+// ============================================================
+// inject_stringlist.lox — Test externally injected StringList
+// ============================================================
+// 'items' is a TStringList injected by Delphi before execution.
+// It already contains: "Alice", "Bob", "Charlie"
+
+// Read what Delphi put in
+print items.count(); // expect: 3
+print items.get(0);  // expect: Alice
+print items.get(1);  // expect: Bob
+print items.get(2);  // expect: Charlie
+
+// Modify it from Lox
+items.add("Diana");
+print items.count(); // expect: 4
+
+// Remove an entry
+items.remove(1);
+print items.count(); // expect: 3
+print items.get(0);  // expect: Alice
+print items.get(1);  // expect: Charlie
+print items.get(2);  // expect: Diana

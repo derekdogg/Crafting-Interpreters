@@ -1,0 +1,11 @@
+// ============================================================
+// inject_rtti_err_denylist_free.lox — Denylist blocks Free()
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//
+// What this tests:
+//   - Attempting to call Free() on an injected object from Lox
+//   - The RTTI method denylist should block this with a runtime error
+//   - Prevents scripts from destroying objects owned by the host
+print cust.Name; // expect: Alice
+cust.Free(); // expect runtime error: Method 'Free' is not callable from script.

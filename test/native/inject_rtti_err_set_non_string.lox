@@ -1,0 +1,10 @@
+// ============================================================
+// inject_rtti_err_set_non_string.lox — Non-string set element error
+// ============================================================
+// Setup: cust = TCustomer with Flags property (TCustomerFlags set).
+//
+// What this tests:
+//   - Writing a set array with a non-string element produces a runtime error
+
+print cust.Name; // expect: Alice
+cust.Flags = ["cfVIP", 42]; // expect runtime error: Set elements must be strings (enum names).

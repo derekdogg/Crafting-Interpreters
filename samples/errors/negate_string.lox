@@ -1,3 +1,2 @@
-// Error: Cannot negate a string
-// expect: runtime error
-print -"hello";
+// Cannot negate a string
+print -"hello"; // expect runtime error: Operand must be a number.
