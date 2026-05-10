@@ -491,9 +491,17 @@ procedure AssertNewStringIsNillBeforeAllocation(ObjString : pObjString);
 //Stack assertions
 procedure AssertStackIsAssigned(Stack : pStack);
 procedure AssertStackValuesIsAssigned(Stack : pStack);
+procedure AssertStackCountIsZero(Stack : pStack);
+procedure AssertStackCapacityIsGreaterThanZero(Stack : pStack);
+procedure AssertStackTopEqualsValues(Stack : pStack);
+procedure AssertStackCapacityCanGrow(Stack : pStack);
+procedure AssertStackByteSizeIsSafe(NewCapacity : integer);
 procedure AssertStackIsNotEmpty(Stack : pStack);
 procedure AssertStackTopIsNotNil(Stack : pStack);
 procedure AssertStackIsNilBeforeInit(Stack : pStack);
+procedure AssertStackTopCountConsistent(Stack : pStack);
+procedure AssertRebaseOffsetIsNonZero(Offset : NativeInt);
+procedure AssertFrameCountInBounds(FrameCount : integer);
 
 //Chunk assertions
 procedure AssertChunkIsAssigned(Chunk : pChunk);
@@ -984,9 +992,51 @@ begin
   Assert(Assigned(Stack.Values), 'Stack values is not assigned');
 end;
 
+procedure AssertStackCountIsZero(Stack : pStack);
+begin
+  Assert(Stack.Count = 0, 'Stack count should be 0');
+end;
+
+procedure AssertStackCapacityIsGreaterThanZero(Stack : pStack);
+begin
+  Assert(Stack.CurrentCapacity > 0, 'Stack CurrentCapacity is zero, cannot grow');
+end;
+
+procedure AssertStackTopEqualsValues(Stack : pStack);
+begin
+  Assert(Stack.StackTop = Stack.Values, 'StackTop should equal Values');
+end;
+
+procedure AssertStackCapacityCanGrow(Stack : pStack);
+begin
+  Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'Stack capacity multiplication would overflow');
+end;
+
+procedure AssertStackByteSizeIsSafe(NewCapacity : integer);
+begin
+  Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'Stack byte size would overflow');
+end;
+
 procedure AssertStackIsNotEmpty(Stack : pStack);
 begin
   Assert(Stack.Count > 0, 'Stack underflow - count is zero');
+end;
+
+procedure AssertStackTopCountConsistent(Stack : pStack);
+begin
+  Assert(Stack.StackTop = Stack.Values + Stack.Count,
+    'StackTop/Count mismatch');
+end;
+
+procedure AssertRebaseOffsetIsNonZero(Offset : NativeInt);
+begin
+  Assert(Offset <> 0, 'pushStack rebase: offset is zero but pointers differ');
+end;
+
+procedure AssertFrameCountInBounds(FrameCount : integer);
+begin
+  Assert((FrameCount >= 0) and (FrameCount <= FRAMES_MAX),
+    'pushStack rebase: FrameCount out of bounds');
 end;
 
 procedure AssertStackTopIsNotNil(Stack : pStack);
@@ -1609,10 +1659,10 @@ begin
   
   // ---- Exit assertions ----
   AssertStackIsAssigned(Stack);
-  Assert(Stack.Count = 0, 'InitStack exit: count should be 0');
-  Assert(Stack.CurrentCapacity > 0, 'InitStack exit: capacity should be > 0');
+  AssertStackCountIsZero(Stack);
+  AssertStackCapacityIsGreaterThanZero(Stack);
   AssertStackValuesIsAssigned(Stack);
-  Assert(Stack.StackTop = Stack.Values, 'InitStack exit: StackTop should equal Values');
+  AssertStackTopEqualsValues(Stack);
 end;
 
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);
@@ -1644,15 +1694,19 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
+  AssertStackCapacityIsGreaterThanZero(Stack);
+  AssertStackTopCountConsistent(Stack);
   // Grow using raw ReallocMem — must never trigger GC so push/pop
   // can safely protect unrooted objects (same pattern as book's fixed stack)
   if Stack.Count >= Stack.CurrentCapacity then
   begin
-    Assert(Stack.CurrentCapacity <= MaxInt div GROWTH_FACTOR, 'pushStack: capacity overflow');
+    AssertStackCapacityCanGrow(Stack);
     NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
-    Assert(NewCapacity <= MaxInt div SizeOf(TValue), 'pushStack: byte size overflow');
+    AssertStackByteSizeIsSafe(NewCapacity);
     OldValues := Stack.Values;
     ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
+    AssertStackValuesIsAssigned(Stack);
+    AssertStackCapacityIsGreaterThanZero(Stack);
     // Zero new portion
     FillChar(Stack.Values[Stack.CurrentCapacity],
       (NewCapacity - Stack.CurrentCapacity) * SizeOf(TValue), 0);
@@ -1663,13 +1717,15 @@ begin
     if Stack.Values <> OldValues then
     begin
       Offset := NativeInt(Stack.Values) - NativeInt(OldValues);
+      AssertRebaseOffsetIsNonZero(Offset);
       // Rebase call frame slot pointers
       if (VM <> nil) and (Stack = VM.Stack) then
       begin
+        AssertFrameCountInBounds(VM.FrameCount);
         for i := 0 to VM.FrameCount - 1 do
           Inc(PByte(VM.Frames[i].slots), Offset);
         // Rebase open upvalue location pointers
-        upval := VM.OpenUpvalues;
+        upval := VM.OpenUpvalues; //this global has sneaked in, just debating whether to inject it
         while upval <> nil do
         begin
           Inc(PByte(upval^.location), Offset);
@@ -1684,8 +1740,9 @@ begin
   
   // ---- Exit assertions ----
   AssertStackIsAssigned(Stack);
-  Assert(Stack.Count > 0, 'pushStack exit: count should be > 0');
+  AssertStackIsNotEmpty(Stack);
   AssertStackTopIsNotNil(Stack);
+  AssertStackTopCountConsistent(Stack);
 end;
 
 
@@ -2149,22 +2206,26 @@ end;
 function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
 var
   i : integer;
+  fields : pValue;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
   Assert(recType <> nil, 'newRecord: recType is nil');
+  // Allocate the fields array first (like newClosure allocates upvals first)
+  // so the second Allocate cannot trigger GC with an untracked parent object
+  fields := nil;
+  if recType^.fieldCount > 0 then
+  begin
+    Allocate(Pointer(fields), 0, recType^.fieldCount * SizeOf(TValue), MemTracker);
+    for i := 0 to recType^.fieldCount - 1 do
+      fields[i] := CreateNilValue;
+  end;
   Result := nil;
   Allocate(Pointer(Result), 0, SizeOf(TObjRecord), MemTracker);
   Result^.Obj.ObjectKind := okRecord;
   Result^.Obj.IsMarked := false;
   Result^.Obj.Next := nil;
   Result^.recordType := recType;
-  Result^.fields := nil;
-  if recType^.fieldCount > 0 then
-  begin
-    Allocate(Pointer(Result^.fields), 0, recType^.fieldCount * SizeOf(TValue), MemTracker);
-    for i := 0 to recType^.fieldCount - 1 do
-      Result^.fields[i] := CreateNilValue;
-  end;
+  Result^.fields := fields;
   AddToCreatedObjects(pObj(Result), MemTracker);
 
   Assert(Result <> nil, 'newRecord exit: Result is nil');
@@ -2236,9 +2297,31 @@ var
   childClassName: AnsiString;
   childClassInfo: pNativeClassInfo;
   childNative: pObjNativeObject;
+  // Set marshaling
+  setInt: Integer;
+  baseTypeInfo: PTypeInfo;
+  baseTypeData: PTypeData;
+  bit: Integer;
+  arr: pObjArray;
+  elemStr: pObjString;
+  newCap, oldSize, newSize: Integer;
+  // Dynamic array marshaling
+  dynLen: Integer;
+  dynArr: pObjArray;
+  dynElem: System.Rtti.TValue;
+  dynNewCap, dynOldSize, dynNewSize: Integer;
+  dynI: Integer;
 begin
   if V.IsEmpty then
+  begin
+    // A nil dynamic array has valid TypeInfo but nil data — return empty Lox array
+    if (V.TypeInfo <> nil) and (V.Kind = tkDynArray) then
+    begin
+      Result := CreateObject(pObj(newArray(MemTracker)));
+      Exit;
+    end;
     Exit(CreateNilValue);
+  end;
 
   case V.Kind of
     tkInteger, tkInt64:
@@ -2250,7 +2333,80 @@ begin
       if V.TypeInfo = TypeInfo(Boolean) then
         Result := CreateBoolean(V.AsBoolean)
       else
-        Result := CreateNumber(V.AsOrdinal);
+      begin
+        // Return the symbolic enum name as a string (e.g. 'bsSizeable')
+        s := AnsiString(GetEnumName(V.TypeInfo, V.AsOrdinal));
+        Result := StringToValue(CreateString(s, MemTracker));
+      end;
+    end;
+    tkSet:
+    begin
+      // Marshal a Delphi set to a Lox array of enum-name strings.
+      // We iterate over all possible ordinal values of the set's
+      // underlying type and include names whose bits are set.
+      setInt := 0;
+      case GetTypeData(V.TypeInfo)^.OrdType of
+        otSByte, otUByte: setInt := PByte(V.GetReferenceToRawData)^;
+        otSWord, otUWord: setInt := PWord(V.GetReferenceToRawData)^;
+        otSLong, otULong: setInt := PInteger(V.GetReferenceToRawData)^;
+      end;
+
+      baseTypeInfo := GetTypeData(V.TypeInfo)^.CompType^;
+      baseTypeData := GetTypeData(baseTypeInfo);
+
+      arr := newArray(MemTracker);
+      // Protect array from GC during element allocation
+      pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+
+      for bit := baseTypeData^.MinValue to baseTypeData^.MaxValue do
+      begin
+        if (setInt and (1 shl bit)) <> 0 then
+        begin
+          s := AnsiString(GetEnumName(baseTypeInfo, bit));
+          elemStr := CreateString(s, MemTracker);
+          // Grow elements array if needed
+          if arr^.Count >= arr^.Capacity then
+          begin
+            if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
+            oldSize := arr^.Capacity * SizeOf(TValue);
+            newSize := newCap * SizeOf(TValue);
+            Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
+            arr^.Capacity := newCap;
+          end;
+          arr^.Elements[arr^.Count] := StringToValue(elemStr);
+          Inc(arr^.Count);
+        end;
+      end;
+
+      popStack(VM.Stack); // pop GC protection
+      Result := CreateObject(pObj(arr));
+    end;
+    tkDynArray:
+    begin
+      // Marshal a Delphi dynamic array to a Lox array.
+      dynLen := V.GetArrayLength;
+      dynArr := newArray(MemTracker);
+      // Protect array from GC during element allocation
+      pushStack(VM.Stack, CreateObject(pObj(dynArr)), VM.MemTracker);
+
+      for dynI := 0 to dynLen - 1 do
+      begin
+        dynElem := V.GetArrayElement(dynI);
+        // Grow elements array if needed
+        if dynArr^.Count >= dynArr^.Capacity then
+        begin
+          if dynArr^.Capacity = 0 then dynNewCap := ARRAY_START_CAPACITY else dynNewCap := dynArr^.Capacity * GROWTH_FACTOR;
+          dynOldSize := dynArr^.Capacity * SizeOf(TValue);
+          dynNewSize := dynNewCap * SizeOf(TValue);
+          Allocate(Pointer(dynArr^.Elements), dynOldSize, dynNewSize, VM.MemTracker);
+          dynArr^.Capacity := dynNewCap;
+        end;
+        dynArr^.Elements[dynArr^.Count] := DelphiValueToLox(dynElem, MemTracker);
+        Inc(dynArr^.Count);
+      end;
+
+      popStack(VM.Stack); // pop GC protection
+      Result := CreateObject(pObj(dynArr));
     end;
     tkString, tkLString, tkWString, tkUString:
     begin
@@ -2291,6 +2447,25 @@ end;
 function LoxValueToDelphi(const V: TValue; TargetType: PTypeInfo): System.Rtti.TValue;
 var
   s: string;
+  // Enum marshaling
+  enumOrd: Integer;
+  // Set marshaling (single string)
+  singleOrd: Integer;
+  singleSetInt: Integer;
+  setBaseInfo: PTypeInfo;
+  // Set marshaling (array of strings)
+  setArr: pObjArray;
+  setBaseInfo2: PTypeInfo;
+  setInt2: Integer;
+  setI: Integer;
+  setElemOrd: Integer;
+  setElemName: string;
+  // Dynamic array marshaling
+  srcArr: pObjArray;
+  dynArrLen: Integer;
+  dynResult: System.Rtti.TValue;
+  dynElemType: PTypeInfo;
+  dynJ: Integer;
 begin
   case V.ValueKind of
     vkNumber:
@@ -2304,12 +2479,21 @@ begin
           Result := System.Rtti.TValue.From<Int64>(Trunc(V.NumberValue));
         tkFloat:
           Result := System.Rtti.TValue.From<Double>(V.NumberValue);
+        tkEnumeration:
+          // Number -> enum ordinal (e.g. 2 -> TBorderStyle(2))
+          System.Rtti.TValue.Make(Trunc(V.NumberValue), TargetType, Result);
       else
         Result := System.Rtti.TValue.From<Double>(V.NumberValue);
       end;
     end;
     vkBoolean:
-      Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue);
+    begin
+      if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) and
+         (TargetType = TypeInfo(Boolean)) then
+        Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue)
+      else
+        Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue);
+    end;
     vkNull:
       Result := System.Rtti.TValue.Empty;
     vkObject:
@@ -2317,7 +2501,82 @@ begin
       if isString(V) then
       begin
         s := String(ObjStringToAnsiString(pObjString(V.ObjValue)));
-        Result := System.Rtti.TValue.From<string>(s);
+        // String -> enum by name (e.g. 'bsSizeable' -> TBorderStyle)
+        if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) then
+        begin
+          enumOrd := GetEnumValue(TargetType, s);
+          if enumOrd < 0 then
+          begin
+            runtimeError(Format('Invalid enum value ''%s'' for type ''%s''.',
+              [s, String(TargetType^.Name)]));
+            Result := System.Rtti.TValue.Empty;
+          end
+          else
+            System.Rtti.TValue.Make(enumOrd, TargetType, Result);
+        end
+        else if (TargetType <> nil) and (TargetType^.Kind = tkSet) then
+        begin
+          // Single string -> set with one element
+          setBaseInfo := GetTypeData(TargetType)^.CompType^;
+          singleOrd := GetEnumValue(setBaseInfo, s);
+          if singleOrd < 0 then
+          begin
+            runtimeError(Format('Invalid set element ''%s'' for type ''%s''.',
+              [s, String(TargetType^.Name)]));
+            Result := System.Rtti.TValue.Empty;
+          end
+          else
+          begin
+            singleSetInt := 1 shl singleOrd;
+            System.Rtti.TValue.Make(@singleSetInt, TargetType, Result);
+          end;
+        end
+        else
+          Result := System.Rtti.TValue.From<string>(s);
+      end
+      else if isArray(V) and (TargetType <> nil) and (TargetType^.Kind = tkSet) then
+      begin
+        // Lox array of enum-name strings -> Delphi set
+        setArr := pObjArray(V.ObjValue);
+        setBaseInfo2 := GetTypeData(TargetType)^.CompType^;
+        setInt2 := 0;
+
+        for setI := 0 to setArr^.Count - 1 do
+        begin
+          if not isString(setArr^.Elements[setI]) then
+          begin
+            runtimeError('Set elements must be strings (enum names).');
+            Exit(System.Rtti.TValue.Empty);
+          end;
+          setElemName := String(ObjStringToAnsiString(pObjString(setArr^.Elements[setI].ObjValue)));
+          setElemOrd := GetEnumValue(setBaseInfo2, setElemName);
+          if setElemOrd < 0 then
+          begin
+            runtimeError(Format('Invalid set element ''%s'' for type ''%s''.',
+              [setElemName, String(TargetType^.Name)]));
+            Exit(System.Rtti.TValue.Empty);
+          end;
+          setInt2 := setInt2 or (1 shl setElemOrd);
+        end;
+        System.Rtti.TValue.Make(@setInt2, TargetType, Result);
+      end
+      else if isArray(V) and (TargetType <> nil) and (TargetType^.Kind = tkDynArray) then
+      begin
+        // Lox array -> Delphi dynamic array
+        srcArr := pObjArray(V.ObjValue);
+        dynArrLen := srcArr^.Count;
+        dynElemType := GetTypeData(TargetType)^.DynArrElType^;
+
+        dynResult := System.Rtti.TValue.Empty;
+        System.Rtti.TValue.Make(nil, TargetType, dynResult);
+        DynArraySetLength(PPointer(dynResult.GetReferenceToRawData)^,
+          TargetType, 1, @dynArrLen);
+
+        for dynJ := 0 to dynArrLen - 1 do
+          dynResult.SetArrayElement(dynJ,
+            LoxValueToDelphi(srcArr^.Elements[dynJ], dynElemType));
+
+        Result := dynResult;
       end
       else if isNativeObject(V) then
         Result := System.Rtti.TValue.From<TObject>(TObject(pObjNativeObject(V.ObjValue)^.instance))
@@ -3621,6 +3880,7 @@ begin
           VM.Stack.StackTop := frame^.slots;
           Assert(NativeUInt(VM.Stack.StackTop) >= NativeUInt(VM.Stack.Values), 'OP_RETURN: StackTop before Values');
           VM.Stack.Count := (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue);
+          AssertStackTopCountConsistent(VM.Stack);
           pushStack(vm.Stack, value, vm.MemTracker);
 
           frame := CurrentFrame;
@@ -4269,6 +4529,7 @@ begin
    AssertStackTopIsNotNil(Stack);
    AssertStackValuesIsAssigned(Stack);
    AssertStackIsNotEmpty(Stack);
+   AssertStackTopCountConsistent(Stack);
    
    oldCount := Stack.Count;
    
@@ -4279,6 +4540,7 @@ begin
    // ---- Exit assertions ----
    Assert(Stack.Count = oldCount - 1, 'popStack exit: count should decrease by 1');
    Assert(Stack.Count >= 0, 'popStack exit: count should not be negative');
+   AssertStackTopCountConsistent(Stack);
 end;
 
 function CheckBinaryNumbers: Boolean;
@@ -7808,6 +8070,7 @@ begin
 
   // -2 to adjust for the two-byte jump operand itself
   jump := CurrentChunk.count - offset - 2;
+  Assert(jump > 0, 'patchJump: jump distance is zero or negative');
   if jump > MAX_JUMP_OFFSET then
     Error('Too much code to jump over.');
   CurrentChunk.code[offset]     := (jump shr 8) and $FF;
@@ -8077,7 +8340,10 @@ var
   upvalueCount : integer;
   i : integer;
 begin
-  upvalueCount := compiler^.func^.upvalueCount; //TODO : missing asserts
+  Assert(compiler <> nil, 'addUpvalue: compiler is nil');
+  Assert(compiler^.func <> nil, 'addUpvalue: compiler func is nil');
+  upvalueCount := compiler^.func^.upvalueCount;
+  Assert(upvalueCount >= 0, 'addUpvalue: upvalueCount is negative');
 
   for i := 0 to upvalueCount - 1 do
   begin
@@ -8108,7 +8374,7 @@ begin
   if compiler^.enclosing = nil then
     Exit(-1);
 
-  local := resolveLocal(compiler^.enclosing, name); //TODO : why <> -1
+  local := resolveLocal(compiler^.enclosing, name); // -1 means not found locally, so we try the next enclosing scope
   if local <> -1 then
   begin
     Assert((local >= 0) and (local < UINT8_COUNT), 'resolveUpvalue: locals index out of bounds');

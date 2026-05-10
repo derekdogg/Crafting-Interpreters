@@ -1,3 +1,2 @@
-// Error: Undefined variable
-// expect: runtime error
-print x;
+// Undefined variable
+print x; // expect runtime error: Undefined variable 'x'.

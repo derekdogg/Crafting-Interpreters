@@ -15,4 +15,4 @@ print list.count();    // expect: 2
 
 print list;            // expect: <StringList>
 
-print "Native object test passed.";
+print "Native object test passed."; // expect: Native object test passed.

@@ -1,4 +1,3 @@
-// Error: Calling a non-function value
-// expect: runtime error
+// Calling a non-function value
 var x = 1;
-x();
+x(); // expect runtime error: Can only call functions and classes.

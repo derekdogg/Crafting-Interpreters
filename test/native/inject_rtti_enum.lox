@@ -1,0 +1,30 @@
+// ============================================================
+// inject_rtti_enum.lox — Enum property marshaling via RTTI
+// ============================================================
+// Setup: cust = TCustomer, Tier initially set to ctGold.
+//
+// What this tests:
+//   - Reading an enum property returns the symbolic name string
+//   - Writing an enum property from a string name
+//   - Writing an enum property from a numeric ordinal
+//   - Round-trip: read -> write -> read
+//   - Invalid enum name produces a runtime error (separate test)
+
+// Read enum property — should return symbolic name
+print cust.Tier; // expect: ctGold
+
+// Write enum property via string name
+cust.Tier = "ctPlatinum";
+print cust.Tier; // expect: ctPlatinum
+
+// Write enum property via numeric ordinal
+cust.Tier = 0;
+print cust.Tier; // expect: ctBronze
+
+// Write back to Silver by name
+cust.Tier = "ctSilver";
+print cust.Tier; // expect: ctSilver
+
+// Verify the string is a real string we can concatenate
+var t = cust.Tier;
+print "Tier is: " + t; // expect: Tier is: ctSilver

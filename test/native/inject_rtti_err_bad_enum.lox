@@ -1,0 +1,10 @@
+// ============================================================
+// inject_rtti_err_bad_enum.lox — Invalid enum name error
+// ============================================================
+// Setup: cust = TCustomer with Tier property (TCustomerTier enum).
+//
+// What this tests:
+//   - Writing an invalid enum string produces a runtime error
+
+print cust.Tier; // expect: ctGold
+cust.Tier = "ctDiamond"; // expect runtime error: Invalid enum value 'ctDiamond' for type 'TCustomerTier'.

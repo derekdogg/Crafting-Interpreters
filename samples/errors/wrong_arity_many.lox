@@ -1,4 +1,3 @@
-// Error: Wrong number of arguments (too many)
-// expect: runtime error
+// Wrong number of arguments (too many)
 fun f(a) { return a; }
-f(1, 2);
+f(1, 2); // expect runtime error: Expected 1 arguments but got 2.
