@@ -47,3 +47,6 @@ samples/sql_*
 # Previous plans
 assertion-hardening-plan.md
 samples/# Code Citations.md
+
+# Reference docs
+RTTI Reference.txt
