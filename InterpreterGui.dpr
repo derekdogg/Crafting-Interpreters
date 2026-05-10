@@ -2,7 +2,8 @@ program InterpreterGui;
 uses
 
   Vcl.Forms,
-  Main in 'Main.pas' {Form4};
+  Main in 'Main.pas' {Form4},
+  SynHighlighterLox in 'SynHighlighterLox.pas';
 
 {$R *.res}
 
