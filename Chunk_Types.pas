@@ -282,6 +282,8 @@ type
   TObjNative = record
     Obj      : TObj;
     func     : TNativeFn;
+    arity    : Integer;
+    name     : PAnsiChar;  // points to static string literal — no alloc, no leak
   end;
 
   TObjUpvalue = record
@@ -679,7 +681,7 @@ procedure or_(canAssign: Boolean);
 procedure beginScope();
 procedure endScope();
 function newFunction(MemTracker : pMemTracker) : pObjFunction;
-function newNative(func : TNativeFn; MemTracker : pMemTracker) : pObjNative;
+function newNative(func : TNativeFn; arity: Integer; aName: PAnsiChar; MemTracker : pMemTracker) : pObjNative;
 function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure;
 function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
 function newArray(MemTracker : pMemTracker) : pObjArray;
@@ -700,7 +702,7 @@ function isNativeObject(value : TValue) : boolean;
 function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeObject;
 function findNativeMethod(classInfo : pNativeClassInfo; const methodName : AnsiString; out found : TNativeMethodFn) : boolean;
 procedure recordDeclaration();
-procedure defineNative(const name : AnsiString; func : TNativeFn);
+procedure defineNative(const name : AnsiString; func : TNativeFn; arity: Integer = -1);
 procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
 procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
 procedure InjectObject(const name : AnsiString; instance : TObject);
@@ -1817,7 +1819,7 @@ begin
   Assert(Result^.arity = 0, 'newFunction exit: arity should be 0');
 end;
 
-function newNative(func : TNativeFn; MemTracker : pMemTracker) : pObjNative;
+function newNative(func : TNativeFn; arity: Integer; aName: PAnsiChar; MemTracker : pMemTracker) : pObjNative;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
   Assert(Assigned(func), 'newNative: func is not assigned');
@@ -1827,6 +1829,8 @@ begin
   Result^.Obj.IsMarked := false;
   Result^.Obj.Next := nil;
   Result^.func := func;
+  Result^.arity := arity;
+  Result^.name := aName;
   AddToCreatedObjects(pObj(Result), MemTracker);
 
   // ---- Exit assertions ----
@@ -3547,6 +3551,19 @@ var
     end
     else if isNative(callee) then
     begin
+      // Arity check (-1 means variadic, skip check)
+      if (pObjNative(callee.ObjValue)^.arity >= 0) and
+         (argCnt <> pObjNative(callee.ObjValue)^.arity) then
+      begin
+        if pObjNative(callee.ObjValue)^.arity = 1 then
+          runtimeError(String(AnsiString(pObjNative(callee.ObjValue)^.name)) +
+            '() takes exactly 1 argument.')
+        else
+          runtimeError(String(AnsiString(pObjNative(callee.ObjValue)^.name)) +
+            '() takes exactly ' +
+            IntToStr(pObjNative(callee.ObjValue)^.arity) + ' arguments.');
+        Exit(false);
+      end;
       native := pObjNative(callee.ObjValue)^.func;
       nativeResult := native(argCnt, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt) * SizeOf(TValue)));
       // Check if native signalled a runtime error
@@ -5287,7 +5304,7 @@ begin
   AssertPointerIsNil(MemTracker, 'FreeMemTracker exit: MemTracker should be nil');
 end;
 
-procedure defineNative(const name : AnsiString; func : TNativeFn);
+procedure defineNative(const name : AnsiString; func : TNativeFn; arity: Integer = -1);
 var
   native : pObjNative;
   nameStr : pObjString;
@@ -5301,7 +5318,7 @@ begin
   // Push nameStr and native onto stack to protect from GC (book pattern).
   nameStr := CreateString(name, VM.MemTracker);
   pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-  native := newNative(func, VM.MemTracker);
+  native := newNative(func, arity, PAnsiChar(name), VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(native)), VM.MemTracker);
   TableSet(VM.Globals, nameStr, CreateObject(pObj(native)), VM.MemTracker);
   popStack(VM.Stack);
@@ -7182,66 +7199,66 @@ begin
   Randomize;
 
   // Define native functions
-  defineNative('clock', clockNative);
-  defineNative('collectGarbage', collectGarbageNative);
-  defineNative('assert', assertNative);
-  defineNative('bytesAllocated', bytesAllocatedNative);
-  defineNative('objectsAllocated', objectsAllocatedNative);
-  defineNative('vmStackDepth', vmStackDepthNative);
-  defineNative('vmStackCapacity', vmStackCapacityNative);
-  defineNative('vmCallDepth', vmCallDepthNative);
-  defineNative('vmOpenUpvalues', vmOpenUpvaluesNative);
-  defineNative('gcNextThreshold', gcNextThresholdNative);
-  defineNative('gcCollectionCount', gcCollectionCountNative);
-  defineNative('internTableStats', internTableStatsNative);
-  defineNative('env', envNative);
-  defineNative('loadEnv', loadEnvNative);
+  defineNative('clock', clockNative, 0);
+  defineNative('collectGarbage', collectGarbageNative, 0);
+  defineNative('assert', assertNative);           // 1-2 args, self-validates
+  defineNative('bytesAllocated', bytesAllocatedNative, 0);
+  defineNative('objectsAllocated', objectsAllocatedNative, 0);
+  defineNative('vmStackDepth', vmStackDepthNative, 0);
+  defineNative('vmStackCapacity', vmStackCapacityNative, 0);
+  defineNative('vmCallDepth', vmCallDepthNative, 0);
+  defineNative('vmOpenUpvalues', vmOpenUpvaluesNative, 0);
+  defineNative('gcNextThreshold', gcNextThresholdNative, 0);
+  defineNative('gcCollectionCount', gcCollectionCountNative, 0);
+  defineNative('internTableStats', internTableStatsNative, 0);
+  defineNative('env', envNative, 1);
+  defineNative('loadEnv', loadEnvNative, -1);
 
   // Conversion native functions
-  defineNative('str', strNative);
-  defineNative('num', numNative);
-  defineNative('bool', boolNative);
-  defineNative('type', typeNative);
+  defineNative('str', strNative, 1);
+  defineNative('num', numNative, 1);
+  defineNative('bool', boolNative, 1);
+  defineNative('type', typeNative, 1);
 
   // Math native functions
-  defineNative('abs', absNative);
-  defineNative('floor', floorNative);
-  defineNative('ceil', ceilNative);
-  defineNative('round', roundNative);
-  defineNative('min', minNative);
-  defineNative('max', maxNative);
-  defineNative('sqrt', sqrtNative);
-  defineNative('pow', powNative);
-  defineNative('random', randomNative);
+  defineNative('abs', absNative, 1);
+  defineNative('floor', floorNative, 1);
+  defineNative('ceil', ceilNative, 1);
+  defineNative('round', roundNative, 1);
+  defineNative('min', minNative, 2);
+  defineNative('max', maxNative, 2);
+  defineNative('sqrt', sqrtNative, 1);
+  defineNative('pow', powNative, 2);
+  defineNative('random', randomNative, 0);
 
   // String manipulation native functions
-  defineNative('strlen', strlenNative);
-  defineNative('substr', substrNative);
-  defineNative('indexOf', indexOfNative);
-  defineNative('charAt', charAtNative);
-  defineNative('upper', upperNative);
-  defineNative('lower', lowerNative);
-  defineNative('trim', trimNative);
-  defineNative('split', splitNative);
+  defineNative('strlen', strlenNative, 1);
+  defineNative('substr', substrNative, 3);
+  defineNative('indexOf', indexOfNative, 2);
+  defineNative('charAt', charAtNative, 2);
+  defineNative('upper', upperNative, 1);
+  defineNative('lower', lowerNative, 1);
+  defineNative('trim', trimNative, 1);
+  defineNative('split', splitNative, 2);
 
   // Array native functions
-  defineNative('newArray', arrayNewNative);
-  defineNative('arrayPush', arrayPushNative);
-  defineNative('arrayPop', arrayPopNative);
-  defineNative('arrayGet', arrayGetNative);
-  defineNative('arraySet', arraySetNative);
-  defineNative('arrayLen', arrayLenNative);
-  defineNative('arrayRemove', arrayRemoveNative);
+  defineNative('newArray', arrayNewNative, 0);
+  defineNative('arrayPush', arrayPushNative, 2);
+  defineNative('arrayPop', arrayPopNative, 1);
+  defineNative('arrayGet', arrayGetNative, 2);
+  defineNative('arraySet', arraySetNative, 3);
+  defineNative('arrayLen', arrayLenNative, 1);
+  defineNative('arrayRemove', arrayRemoveNative, 2);
 
   // Dictionary natives
-  defineNative('dictNew', dictNewNative);
-  defineNative('dictSet', dictSetNative);
-  defineNative('dictGet', dictGetNative);
-  defineNative('dictHas', dictHasNative);
-  defineNative('dictDelete', dictDeleteNative);
-  defineNative('dictKeys', dictKeysNative);
-  defineNative('dictSize', dictSizeNative);
-  defineNative('dictValues', dictValuesNative);
+  defineNative('dictNew', dictNewNative, 0);
+  defineNative('dictSet', dictSetNative, 3);
+  defineNative('dictGet', dictGetNative, 2);
+  defineNative('dictHas', dictHasNative, 2);
+  defineNative('dictDelete', dictDeleteNative, 2);
+  defineNative('dictKeys', dictKeysNative, 1);
+  defineNative('dictSize', dictSizeNative, 1);
+  defineNative('dictValues', dictValuesNative, 1);
 
   // Native object classes
   slMethods[0].name := 'add';    slMethods[0].fn := SL_Add;
@@ -7249,14 +7266,14 @@ begin
   slMethods[2].name := 'count';  slMethods[2].fn := SL_Count;
   slMethods[3].name := 'remove'; slMethods[3].fn := SL_Remove;
   registerNativeClass('StringList', slMethods, SL_Destroy);
-  defineNative('StringList', stringListNative);
+  defineNative('StringList', stringListNative, 0);
 
   // SQL connection native object class
   registerNativeClass('SqlConnection', sqlMethods, SQL_Destroy);
-  defineNative('sqlConnect', sqlConnectNative);
-  defineNative('sqlQuery', sqlQueryNative);
-  defineNative('sqlQueryParams', sqlQueryParamsNative);
-  defineNative('sqlClose', sqlCloseNative);
+  defineNative('sqlConnect', sqlConnectNative, 1);
+  defineNative('sqlQuery', sqlQueryNative, 2);
+  defineNative('sqlQueryParams', sqlQueryParamsNative, 3);
+  defineNative('sqlClose', sqlCloseNative, 1);
 
   // ---- Exit assertions ----
   AssertVMIsAssigned;

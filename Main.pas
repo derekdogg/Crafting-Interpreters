@@ -5,6 +5,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.ImgList,
+  SynEdit, SynEditTypes, SynHighlighterLox,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
 
@@ -12,12 +13,13 @@ type
 
   TForm4 = class(TForm)
     Splitter1: TSplitter;
+    Splitter2: TSplitter;
     PanelLeft: TPanel;
     PanelRight: TPanel;
     Label1: TLabel;
     Label2: TLabel;
     Label3: TLabel;
-    Memo1: TMemo;
+    Memo1: TSynEdit;
     Memo2: TMemo;
     Button1: TButton;
     TestTree: TTreeView;
@@ -29,6 +31,7 @@ type
     ProgressBar1: TProgressBar;
     LblStatus: TLabel;
     StateImages: TImageList;
+    procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure Button1Click(Sender: TObject);
     procedure BtnPopulateClick(Sender: TObject);
@@ -49,6 +52,8 @@ type
     procedure RunTestFile(const FilePath: string; var Passed, Failed: Integer);
     procedure RunRttiTestFile(const FilePath: string; var Passed, Failed: Integer);
     procedure BuildStateImages;
+  private
+    FLoxSyn: TSynLoxSyn;
   public
     { Public declarations }
   end;
@@ -274,6 +279,53 @@ end;
 procedure TCustomer.SetTags(const NewTags: TArray<string>);
 begin
   FTags := NewTags;
+end;
+
+procedure TForm4.FormCreate(Sender: TObject);
+begin
+  FLoxSyn := TSynLoxSyn.Create(Self);
+  Memo1.Highlighter := FLoxSyn;
+
+  { Editor behaviour }
+  Memo1.Options := Memo1.Options + [
+    eoAutoIndent,          // maintain indentation on new lines
+    eoGroupUndo,           // undo whole words, not single chars
+    eoSmartTabDelete,      // backspace removes to previous tab stop
+    eoSmartTabs,           // tab aligns to previous non-blank line
+    eoTabsToSpaces,        // insert spaces instead of tab characters
+    eoTrimTrailingSpaces,  // remove trailing blanks on save/move
+    eoDragDropEditing,     // drag-and-drop selected text
+    eoShowScrollHint,      // show line number while scrolling
+    eoEnhanceEndKey        // End key toggles between EOL and last char
+  ];
+  Memo1.TabWidth := 2;
+  Memo1.WantTabs := True;
+
+  { Dark theme — editor surface }
+  Memo1.Color                := $001E1E1E;   // VS Code dark background
+  Memo1.Font.Color           := $00D4D4D4;   // light grey default text
+  Memo1.ActiveLineColor      := $002A2D2E;   // subtle current-line highlight
+  Memo1.RightEdge            := 80;
+  Memo1.RightEdgeColor       := $00404040;
+  Memo1.SelectedColor.Background := $00264F78;  // blue selection (like VS Code)
+  Memo1.SelectedColor.Foreground := $00FFFFFF;
+
+  { Dark theme — gutter }
+  Memo1.Gutter.Color         := $00252526;
+  Memo1.Gutter.BorderColor   := $00404040;
+  Memo1.Gutter.Font.Color    := $00858585;   // dim line numbers
+  Memo1.Gutter.DigitCount    := 4;
+
+  { Dark theme — syntax colors (override highlighter defaults) }
+  FLoxSyn.CommentAttri.Foreground    := $006A9955;  // muted green
+  FLoxSyn.CommentAttri.Style         := [fsItalic];
+  FLoxSyn.KeyAttri.Foreground        := $00C586C0;  // purple-pink (like VS Code keywords)
+  FLoxSyn.KeyAttri.Style             := [fsBold];
+  FLoxSyn.StringAttri.Foreground     := $00CE9178;  // warm orange-brown
+  FLoxSyn.NumberAttri.Foreground     := $00B5CEA8;  // soft green
+  FLoxSyn.BuiltInAttri.Foreground    := $00DCDCAA;  // golden-yellow (function calls)
+  FLoxSyn.IdentifierAttri.Foreground := $009CDCFE;  // light blue (variables)
+  FLoxSyn.SymbolAttri.Foreground     := $00D4D4D4;  // match default text
 end;
 
 procedure TForm4.FormDestroy(Sender: TObject);

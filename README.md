@@ -18,6 +18,8 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Conversion Functions** — `str()`, `num()`, `bool()`, `type()` for runtime type conversion and introspection
 - **String Functions** — `strlen()`, `substr()`, `indexOf()`, `charAt()`, `upper()`, `lower()`, `trim()`, `split()`
 - **Math Functions** — `abs()`, `floor()`, `ceil()`, `round()` (banker's rounding), `min()`, `max()`, `sqrt()`, `pow()`, `random()`
+- **Native Arity Checking** — All 55 native functions enforce correct argument count at the call site with descriptive error messages
+- **Syntax-Highlighted Editor** — SynEdit-based Script Pad with custom Lox highlighter (keywords, built-ins, strings, numbers, comments), dark theme, line numbers, auto-indent, group undo
 
 ## Chapters Implemented
 
@@ -213,4 +215,20 @@ The garbage collector has been hardened with:
 
 ## Build
 
-Built with Delphi (Win32 target). The project builds via the IDE or with the configured build task.
+### Prerequisites
+
+- **Delphi** (RAD Studio) — Win32 target, tested with RAD Studio 12+
+- **SynEdit** — Install via **GetIt Package Manager** (Tools → GetIt Package Manager → search "SynEdit"). This provides the `TSynEdit` editor component and highlighter framework used by the Script Pad.
+
+### Building
+
+1. Open `InterpreterGui.dproj` in the Delphi IDE
+2. Ensure the target platform is **Win32** and configuration is **Debug** or **Release**
+3. Build (Shift+F9) or Run (F9)
+
+
+### Notes
+
+- SynEdit is an IDE design-time package — it must be installed into the IDE, not just added to the search path
+- The custom Lox syntax highlighter (`SynHighlighterLox.pas`) is included in the project and requires no additional setup beyond having SynEdit installed
+- No other external dependencies are required
