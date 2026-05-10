@@ -433,25 +433,17 @@ begin
 
   BaseDir := TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..');
 
-  // Samples
+  // Samples (recursive — picks up errors, introspection, etc.)
   RootNode := TestTree.Items.Add(nil, 'Samples');
   RootNode.StateIndex := STATE_CHECKED;
   RootNode.Data := nil;
-  AddTestFiles(RootNode, TPath.Combine(BaseDir, 'samples'), '*.lox', False);
-  // Samples/errors subfolder
-  AddTestFiles(RootNode, TPath.Combine(BaseDir, 'samples\errors'), '*.lox', False);
+  AddTestFiles(RootNode, TPath.Combine(BaseDir, 'samples'), '*.lox', True);
 
   // Official Tests (with subdirectories)
   RootNode := TestTree.Items.Add(nil, 'Official Tests');
   RootNode.StateIndex := STATE_CHECKED;
   RootNode.Data := nil;
   AddTestFiles(RootNode, TPath.Combine(BaseDir, 'test'), '*.lox', True);
-
-  // Stress Tests
-  RootNode := TestTree.Items.Add(nil, 'Stress Tests');
-  RootNode.StateIndex := STATE_CHECKED;
-  RootNode.Data := nil;
-  AddTestFiles(RootNode, TPath.Combine(BaseDir, 'samples\stress'), '*.lox', False);
 
   TestTree.FullExpand;
   if TestTree.Items.Count > 0 then
