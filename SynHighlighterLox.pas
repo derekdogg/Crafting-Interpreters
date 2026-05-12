@@ -67,7 +67,7 @@ const
     'break', 'continue'
   );
 
-  LoxBuiltIns: array[0..54] of string = (
+  LoxBuiltIns: array[0..58] of string = (
     // Core
     'clock', 'collectGarbage', 'assert',
     // Conversion
@@ -89,7 +89,11 @@ const
     // Native objects
     'StringList',
     // SQL
-    'sqlConnect', 'sqlQuery', 'sqlQueryParams', 'sqlClose'
+    'sqlConnect', 'sqlQuery', 'sqlQueryParams', 'sqlClose',
+    // Class discovery
+    'loxClasses', 'loxClassInfo',
+    // Object introspection
+    'loxObjects', 'loxObjectInfo'
   );
 
 { TSynLoxSyn }
