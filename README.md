@@ -2,6 +2,8 @@
 
 A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting Interpreters](https://craftinginterpreters.com/) (Chapters 14–26), implemented in Delphi Pascal.
 
+![Lox Interpreter — Space Invaders](images/MainScreen.png)
+
 ## Features
 
 - **Scanner & Compiler** — Single-pass Pratt parser compiling to bytecode
