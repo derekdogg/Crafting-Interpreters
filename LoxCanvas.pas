@@ -54,7 +54,12 @@ procedure InitCanvas(APaintBox: TPaintBox);
 begin
   FPaintBox := APaintBox;
   FCurrentColor := clWhite;
-  FCanvasHelper := TCanvasHelper.Create;
+  // Clear sprites from previous run
+  if FSprites <> nil then
+    FSprites.Clear;
+  if FCanvasHelper = nil then
+    FCanvasHelper := TCanvasHelper.Create;
+  FreeAndNil(FBackBuffer);
   FBackBuffer := TBitmap.Create;
   FBackBuffer.PixelFormat := pf32bit;
   FBackBuffer.SetSize(FPaintBox.Width, FPaintBox.Height);

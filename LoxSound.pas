@@ -28,6 +28,7 @@ procedure InitAudio;
 var
   fmt: TWaveFormatEx;
   i: Integer;
+  anyOpen: Boolean;
 begin
   if FReady then Exit;
   FillChar(fmt, SizeOf(fmt), 0);
@@ -38,16 +39,18 @@ begin
   fmt.nBlockAlign := 2;
   fmt.nAvgBytesPerSec := SAMPLE_RATE * 2;
   fmt.cbSize := 0;
+  anyOpen := False;
   for i := 0 to NUM_CHANNELS - 1 do
   begin
     FWaveOut[i] := 0;
     FillChar(FWaveHdr[i], SizeOf(TWaveHdr), 0);
-    if waveOutOpen(@FWaveOut[i], WAVE_MAPPER, @fmt, 0, 0, CALLBACK_NULL) <> MMSYSERR_NOERROR then
+    if waveOutOpen(@FWaveOut[i], WAVE_MAPPER, @fmt, 0, 0, CALLBACK_NULL) = MMSYSERR_NOERROR then
+      anyOpen := True
+    else
       FWaveOut[i] := 0;
   end;
   FNextCh := 0;
-  FReady := True;
-  Randomize;
+  FReady := anyOpen;
 end;
 
 procedure FreeSound;
@@ -69,13 +72,24 @@ end;
 
 procedure PlayRaw(const samples: TArray<Byte>);
 var
-  ch: Integer;
+  ch, startCh, i: Integer;
 begin
   if Length(samples) = 0 then Exit;
   if not FReady then InitAudio;
-  ch := FNextCh;
-  FNextCh := (FNextCh + 1) mod NUM_CHANNELS;
-  if FWaveOut[ch] = 0 then Exit;
+  if not FReady then Exit; // no audio device available
+  // Find next valid channel, skipping dead ones
+  startCh := FNextCh;
+  ch := -1;
+  for i := 0 to NUM_CHANNELS - 1 do
+  begin
+    if FWaveOut[(startCh + i) mod NUM_CHANNELS] <> 0 then
+    begin
+      ch := (startCh + i) mod NUM_CHANNELS;
+      FNextCh := (ch + 1) mod NUM_CHANNELS;
+      Break;
+    end;
+  end;
+  if ch < 0 then Exit; // all channels dead
   // Stop current sound on this channel
   waveOutReset(FWaveOut[ch]);
   if FWaveHdr[ch].dwFlags and WHDR_PREPARED <> 0 then
