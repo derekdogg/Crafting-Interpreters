@@ -79,7 +79,7 @@ var
 
 implementation
 uses
-  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math;
+  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, LoxSound;
 
 {$R *.dfm}
 
@@ -335,6 +335,7 @@ begin
   try
     defineNative('processMessages', processMessagesNative, 0);
     RegisterCanvasNatives;
+    RegisterSoundNatives;
     registerNativeClassRTTI('LoxQueue', TLoxQueue);
     InjectNativeObject('events', Pointer(FEventQueue), 'LoxQueue');
     IR := CompileAndRun(PAnsiChar(txt));

@@ -12,7 +12,7 @@ procedure RegisterCanvasNatives;
 implementation
 
 uses
-  SysUtils, Types, Classes;
+  SysUtils, Types, Classes, Generics.Collections;
 
 type
   TCanvasHelper = class
@@ -24,6 +24,7 @@ var
   FBackBuffer: TBitmap;
   FCurrentColor: TColor;
   FCanvasHelper: TCanvasHelper;
+  FSprites: TObjectList<TBitmap>;
 
 procedure EnsureBackBuffer;
 begin
@@ -64,6 +65,9 @@ end;
 
 procedure FreeCanvas;
 begin
+  if FPaintBox <> nil then
+    FPaintBox.OnPaint := nil;
+  FreeAndNil(FSprites);
   FreeAndNil(FBackBuffer);
   FreeAndNil(FCanvasHelper);
   FPaintBox := nil;
@@ -73,11 +77,21 @@ end;
 
 function canvasWidthNative(argCount: integer; args: pValue): TValue;
 begin
+  if FPaintBox = nil then
+  begin
+    RuntimeError('Canvas not initialized.');
+    Exit(CreateNilValue);
+  end;
   Result := CreateNumber(FPaintBox.Width);
 end;
 
 function canvasHeightNative(argCount: integer; args: pValue): TValue;
 begin
+  if FPaintBox = nil then
+  begin
+    RuntimeError('Canvas not initialized.');
+    Exit(CreateNilValue);
+  end;
   Result := CreateNumber(FPaintBox.Height);
 end;
 
@@ -104,9 +118,14 @@ begin
     RuntimeError('setColor() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  r := Trunc(args[0].NumberValue) and $FF;
-  g := Trunc(args[1].NumberValue) and $FF;
-  b := Trunc(args[2].NumberValue) and $FF;
+  r := Trunc(args[0].NumberValue);
+  g := Trunc(args[1].NumberValue);
+  b := Trunc(args[2].NumberValue);
+  if (r < 0) or (r > 255) or (g < 0) or (g > 255) or (b < 0) or (b > 255) then
+  begin
+    RuntimeError('setColor() values must be in the range 0..255.');
+    Exit(CreateNilValue);
+  end;
   FCurrentColor := TColor(r or (g shl 8) or (b shl 16));
   Result := CreateNilValue;
 end;
@@ -132,14 +151,13 @@ begin
   w := Trunc(args[2].NumberValue);
   h := Trunc(args[3].NumberValue);
   FBackBuffer.Canvas.Brush.Color := FCurrentColor;
-  FBackBuffer.Canvas.Pen.Style := psClear;
   FBackBuffer.Canvas.FillRect(Rect(x, y, x + w, y + h));
-  FBackBuffer.Canvas.Pen.Style := psSolid;
   Result := CreateNilValue;
 end;
 
 function drawTextNative(argCount: integer; args: pValue): TValue;
 var
+  oldBrushStyle: TBrushStyle;
   x, y: Integer;
   s: AnsiString;
 begin
@@ -162,11 +180,15 @@ begin
   x := Trunc(args[0].NumberValue);
   y := Trunc(args[1].NumberValue);
   s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
-  FBackBuffer.Canvas.Brush.Style := bsClear;
-  FBackBuffer.Canvas.Font.Color := FCurrentColor;
-  FBackBuffer.Canvas.Font.Size := 14;
-  FBackBuffer.Canvas.TextOut(x, y, String(s));
-  FBackBuffer.Canvas.Brush.Style := bsSolid;
+  oldBrushStyle := FBackBuffer.Canvas.Brush.Style;
+  try
+    FBackBuffer.Canvas.Brush.Style := bsClear;
+    FBackBuffer.Canvas.Font.Color := FCurrentColor;
+    FBackBuffer.Canvas.Font.Size := 14;
+    FBackBuffer.Canvas.TextOut(x, y, String(s));
+  finally
+    FBackBuffer.Canvas.Brush.Style := oldBrushStyle;
+  end;
   Result := CreateNilValue;
 end;
 
@@ -205,6 +227,7 @@ end;
 
 function fillCircleNative(argCount: integer; args: pValue): TValue;
 var
+  oldPenStyle: TPenStyle;
   cx, cy, r: Integer;
 begin
   if argCount <> 3 then
@@ -222,10 +245,145 @@ begin
   cx := Trunc(args[0].NumberValue);
   cy := Trunc(args[1].NumberValue);
   r  := Trunc(args[2].NumberValue);
-  FBackBuffer.Canvas.Brush.Color := FCurrentColor;
-  FBackBuffer.Canvas.Pen.Style := psClear;
-  FBackBuffer.Canvas.Ellipse(cx - r, cy - r, cx + r, cy + r);
-  FBackBuffer.Canvas.Pen.Style := psSolid;
+  oldPenStyle := FBackBuffer.Canvas.Pen.Style;
+  try
+    FBackBuffer.Canvas.Brush.Color := FCurrentColor;
+    FBackBuffer.Canvas.Pen.Style := psClear;
+    FBackBuffer.Canvas.Ellipse(cx - r, cy - r, cx + r, cy + r);
+  finally
+    FBackBuffer.Canvas.Pen.Style := oldPenStyle;
+  end;
+  Result := CreateNilValue;
+end;
+
+// -- Sprite functions --
+
+function createSpriteNative(argCount: integer; args: pValue): TValue;
+var
+  w, h, x, y, i: Integer;
+  s: AnsiString;
+  bmp: TBitmap;
+  transColor: TColor;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('createSprite() takes 3 arguments (width, height, pixels).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('createSprite() width and height must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[2]) then
+  begin
+    RuntimeError('createSprite() third argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+  w := Trunc(args[0].NumberValue);
+  h := Trunc(args[1].NumberValue);
+  if (w <= 0) or (h <= 0) then
+  begin
+    RuntimeError('createSprite() width and height must be positive.');
+    Exit(CreateNilValue);
+  end;
+  s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
+  if Length(s) <> w * h then
+  begin
+    RuntimeError('createSprite() pixel string length must equal width * height.');
+    Exit(CreateNilValue);
+  end;
+
+  transColor := TColor($FF00FF); // magenta transparency key
+  bmp := TBitmap.Create;
+  try
+    bmp.PixelFormat := pf32bit;
+    bmp.SetSize(w, h);
+    bmp.Canvas.Brush.Color := transColor;
+    bmp.Canvas.FillRect(Rect(0, 0, w, h));
+    i := 1;
+    for y := 0 to h - 1 do
+      for x := 0 to w - 1 do
+      begin
+        if s[i] <> '.' then
+          bmp.Canvas.Pixels[x, y] := FCurrentColor;
+        Inc(i);
+      end;
+    bmp.Transparent := True;
+    bmp.TransparentColor := transColor;
+  except
+    bmp.Free;
+    raise;
+  end;
+
+  if FSprites = nil then
+    FSprites := TObjectList<TBitmap>.Create(True);
+  Result := CreateNumber(FSprites.Add(bmp));
+end;
+
+function drawSpriteNative(argCount: integer; args: pValue): TValue;
+var
+  id, x, y: Integer;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('drawSprite() takes 3 arguments (id, x, y).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
+     (args[2].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('drawSprite() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  id := Trunc(args[0].NumberValue);
+  if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
+  begin
+    RuntimeError('drawSprite() invalid sprite id.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x := Trunc(args[1].NumberValue);
+  y := Trunc(args[2].NumberValue);
+  FBackBuffer.Canvas.Draw(x, y, FSprites[id]);
+  Result := CreateNilValue;
+end;
+
+function drawSpriteScaledNative(argCount: integer; args: pValue): TValue;
+var
+  id, x, y, scale, sw, sh: Integer;
+  destRect: TRect;
+begin
+  if argCount <> 4 then
+  begin
+    RuntimeError('drawSpriteScaled() takes 4 arguments (id, x, y, scale).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
+     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('drawSpriteScaled() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  id := Trunc(args[0].NumberValue);
+  if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
+  begin
+    RuntimeError('drawSpriteScaled() invalid sprite id.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x := Trunc(args[1].NumberValue);
+  y := Trunc(args[2].NumberValue);
+  scale := Trunc(args[3].NumberValue);
+  if scale < 1 then
+  begin
+    RuntimeError('drawSpriteScaled() scale must be >= 1.');
+    Exit(CreateNilValue);
+  end;
+  sw := FSprites[id].Width * scale;
+  sh := FSprites[id].Height * scale;
+  destRect := Rect(x, y, x + sw, y + sh);
+  FBackBuffer.Canvas.StretchDraw(destRect, FSprites[id]);
   Result := CreateNilValue;
 end;
 
@@ -240,6 +398,9 @@ begin
   defineNative('present', presentNative, 0);
   defineNative('drawLine', drawLineNative, 4);
   defineNative('fillCircle', fillCircleNative, 3);
+  defineNative('createSprite', createSpriteNative, 3);
+  defineNative('drawSprite', drawSpriteNative, 3);
+  defineNative('drawSpriteScaled', drawSpriteScaledNative, 4);
 end;
 
 end.

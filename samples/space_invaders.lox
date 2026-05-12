@@ -118,6 +118,120 @@ fun resetPlayer() {
   bulletActive = false;
 }
 
+// --- Sprites ---
+var invSprites = newArray();
+var invFrame = 0;
+var marchStep = 0;
+
+setColor(255, 50, 50);
+arrayPush(invSprites, createSprite(10, 5,
+  "..XXXXXX.." +
+  ".XXXXXXXX." +
+  "XXX.XX.XXX" +
+  ".X.X..X.X." +
+  "X........X"
+));
+arrayPush(invSprites, createSprite(10, 5,
+  "..XXXXXX.." +
+  ".XXXXXXXX." +
+  "XXX.XX.XXX" +
+  "X.X.XX.X.X" +
+  ".X......X."
+));
+
+setColor(255, 150, 50);
+arrayPush(invSprites, createSprite(10, 5,
+  ".X......X." +
+  "..XXXXXX.." +
+  ".XX.XX.XX." +
+  "XXXXXXXXXX" +
+  ".X.X..X.X."
+));
+arrayPush(invSprites, createSprite(10, 5,
+  "X........X" +
+  "..XXXXXX.." +
+  ".XX.XX.XX." +
+  "XXXXXXXXXX" +
+  "..X.XX.X.."
+));
+
+setColor(255, 255, 50);
+arrayPush(invSprites, createSprite(10, 5,
+  "...XXXX..." +
+  ".XXXXXXXX." +
+  "XX.XXXX.XX" +
+  "XXXXXXXXXX" +
+  "..X....X.."
+));
+arrayPush(invSprites, createSprite(10, 5,
+  "...XXXX..." +
+  ".XXXXXXXX." +
+  "XX.XXXX.XX" +
+  "XXXXXXXXXX" +
+  ".X..XX..X."
+));
+
+setColor(50, 255, 50);
+arrayPush(invSprites, createSprite(10, 5,
+  "..XXXXXX.." +
+  "XXXXXXXXXX" +
+  "XX.X..X.XX" +
+  ".XXXXXXXX." +
+  "X..X..X..X"
+));
+arrayPush(invSprites, createSprite(10, 5,
+  "..XXXXXX.." +
+  "XXXXXXXXXX" +
+  "XX.X..X.XX" +
+  ".XXXXXXXX." +
+  ".X.X..X.X."
+));
+
+setColor(0, 200, 255);
+var playerSprite = createSprite(13, 7,
+  "......X......" +
+  ".....XXX....." +
+  "...XXXXXXX..." +
+  "..XXXXXXXXX.." +
+  ".XXXXXXXXXXX." +
+  "XXXXXXXXXXXXX" +
+  "XXXXXXXXXXXXX"
+);
+
+// --- Explosion sprites ---
+setColor(255, 200, 50);
+var explSprite1 = createSprite(10, 5,
+  "X..X..X..X" +
+  ".X.XXXX.X." +
+  "..XXXXXX.." +
+  ".X.XXXX.X." +
+  "X..X..X..X"
+);
+setColor(255, 100, 0);
+var explSprite2 = createSprite(10, 5,
+  ".X......X." +
+  "...X..X..." +
+  "..X.XX.X.." +
+  "...X..X..." +
+  ".X......X."
+);
+
+// --- Explosion tracking ---
+var maxExplosions = 8;
+var explX = newArray();
+var explY = newArray();
+var explTimer = newArray();
+var explActive = newArray();
+i = 0;
+while (i < maxExplosions) {
+  arrayPush(explX, 0);
+  arrayPush(explY, 0);
+  arrayPush(explTimer, 0);
+  arrayPush(explActive, false);
+  i = i + 1;
+}
+var explDuration = 0.3;
+
 // ============================================================
 // Game loop
 // ============================================================
@@ -142,6 +256,7 @@ while (running) {
         bulletActive = true;
         bulletX = playerX + playerW / 2 - bulletW / 2;
         bulletY = playerY;
+        playSweep(1200, 400, 80);
       }
     }
     if (e == "keydown:enter") {
@@ -162,6 +277,7 @@ while (running) {
         invSpeedX = 40;
         invMoveInterval = 0.6;
         invMoveTimer = 0;
+        marchStep = 0;
         resetPlayer();
       }
     }
@@ -185,6 +301,13 @@ while (running) {
     if (invMoveTimer >= invMoveInterval) {
       invMoveTimer = invMoveTimer - invMoveInterval;
       invOffsetX = invOffsetX + invSpeedX * invDirX;
+      invFrame = 1 - invFrame;
+      // 4-step mechanical march
+      if (marchStep == 0) playTone(60, 30);
+      if (marchStep == 1) playTone(70, 30);
+      if (marchStep == 2) playTone(80, 30);
+      if (marchStep == 3) playTone(70, 30);
+      marchStep = (marchStep + 1) - floor((marchStep + 1) / 4) * 4;
 
       // Check edges
       var hitEdge = false;
@@ -222,6 +345,19 @@ while (running) {
               bulletActive = false;
               aliveCount = aliveCount - 1;
               score = score + 10;
+              playNoise(180);
+              // Spawn explosion
+              var eSlot = 0;
+              while (eSlot < maxExplosions) {
+                if (!arrayGet(explActive, eSlot)) {
+                  arraySet(explX, eSlot, ix);
+                  arraySet(explY, eSlot, iy);
+                  arraySet(explTimer, eSlot, explDuration);
+                  arraySet(explActive, eSlot, true);
+                  eSlot = maxExplosions; // break
+                }
+                eSlot = eSlot + 1;
+              }
               // Speed up as invaders die
               if (aliveCount > 0) {
                 invMoveInterval = 0.6 * aliveCount / invCount;
@@ -257,6 +393,7 @@ while (running) {
           arraySet(eBulletX, slot, invaderX(sc) + invW / 2);
           arraySet(eBulletY, slot, invaderY(sr) + invH);
           arraySet(eBulletActive, slot, true);
+          playSweep(600, 900, 50);
         }
       }
     }
@@ -271,14 +408,27 @@ while (running) {
           arraySet(eBulletActive, i, false);
         }
         // Hit player
-        if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 3, 10, playerX, playerY, playerW, playerH)) {
+        if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 3, 10, playerX, playerY - 6, playerW, playerH + 6)) {
           arraySet(eBulletActive, i, false);
           lives = lives - 1;
+          playNoise(400);
           if (lives <= 0) {
             gameOver = true;
           } else {
             resetPlayer();
           }
+        }
+      }
+      i = i + 1;
+    }
+
+    // --- Update explosions ---
+    i = 0;
+    while (i < maxExplosions) {
+      if (arrayGet(explActive, i)) {
+        arraySet(explTimer, i, arrayGet(explTimer, i) - dt);
+        if (arrayGet(explTimer, i) <= 0) {
+          arraySet(explActive, i, false);
         }
       }
       i = i + 1;
@@ -313,6 +463,7 @@ while (running) {
       invDirX = 1;
       invMoveInterval = 0.6;
       invMoveTimer = 0;
+      marchStep = 0;
       // Clear enemy bullets
       i = 0;
       while (i < maxEnemyBullets) {
@@ -333,23 +484,29 @@ while (running) {
     var c = 0;
     while (c < cols) {
       if (arrayGet(invAlive, r * cols + c)) {
-        // Alternate row colors
-        if (r == 0) { setColor(255, 50, 50); }
-        else if (r == 1) { setColor(255, 150, 50); }
-        else if (r == 2) { setColor(255, 255, 50); }
-        else { setColor(50, 255, 50); }
-        fillRect(invaderX(c), invaderY(r), invW, invH);
+        drawSpriteScaled(arrayGet(invSprites, r * 2 + invFrame), invaderX(c), invaderY(r), 3);
       }
       c = c + 1;
     }
     r = r + 1;
   }
 
+  // --- Draw explosions ---
+  i = 0;
+  while (i < maxExplosions) {
+    if (arrayGet(explActive, i)) {
+      var t = arrayGet(explTimer, i);
+      if (t > explDuration / 2) {
+        drawSpriteScaled(explSprite1, arrayGet(explX, i), arrayGet(explY, i), 3);
+      } else {
+        drawSpriteScaled(explSprite2, arrayGet(explX, i), arrayGet(explY, i), 3);
+      }
+    }
+    i = i + 1;
+  }
+
   // --- Draw player ---
-  setColor(0, 200, 255);
-  fillRect(playerX, playerY, playerW, playerH);
-  // Gun turret
-  fillRect(playerX + playerW / 2 - 2, playerY - 6, 4, 6);
+  drawSpriteScaled(playerSprite, playerX, playerY - 6, 3);
 
   // --- Draw player bullet ---
   if (bulletActive) {
