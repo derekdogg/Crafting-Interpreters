@@ -2790,6 +2790,7 @@ var
   i: integer;
   mName: string;
   useLoxAttrs: Boolean;
+  rejectedByAttr: Boolean;
 begin
   Result := False;
   if instance = nil then
@@ -2805,18 +2806,7 @@ begin
   mName := String(methodName);
   useLoxAttrs := ClassHasLoxClassAttr(rt);
 
-  if useLoxAttrs then
-  begin
-    // Attribute mode: only allow methods with [LoxMethod]
-    // Check any overload for the attribute
-    methods := rt.GetMethods(mName);
-    if (Length(methods) > 0) and not HasAttribute(methods[0].GetAttributes, LoxMethodAttribute) then
-    begin
-      runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
-      Exit;
-    end;
-  end
-  else
+  if not useLoxAttrs then
   begin
     // Legacy denylist: prevent scripts from invoking lifecycle/dangerous TObject methods
     if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
@@ -2830,6 +2820,7 @@ begin
   end;
 
   methods := rt.GetMethods(mName);
+  rejectedByAttr := False;
 
   try
     for method in methods do
@@ -2837,6 +2828,12 @@ begin
       params := method.GetParameters;
       if Length(params) = argCount then
       begin
+        // Attribute mode: gate the matched overload, not methods[0]
+        if useLoxAttrs and not HasAttribute(method.GetAttributes, LoxMethodAttribute) then
+        begin
+          rejectedByAttr := True;
+          Continue;
+        end;
         SetLength(delphiArgs, argCount);
         for i := 0 to argCount - 1 do
           delphiArgs[i] := LoxValueToDelphi(args[i], params[i].ParamType.Handle);
@@ -2861,6 +2858,9 @@ begin
       Result := False;
     end;
   end;
+
+  if (not Result) and rejectedByAttr then
+    runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
 end;
 
 function ObjStringToAnsiString(S: PObjString): AnsiString;
@@ -6915,27 +6915,34 @@ var
   attr: TCustomAttribute;
   arr: pObjArray;
   nameStr: pObjString;
-  newCap, oldSize, newSize: Integer;
+  names: TStringList;
+  i: Integer;
 begin
   ctx := TRttiContext.Create;
+  names := TStringList.Create;
   try
-    arr := newArray(VM.MemTracker);
-    pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
     for t in ctx.GetTypes do
       if t is TRttiInstanceType then
         for attr in t.GetAttributes do
           if attr is LoxClassAttribute then
-          begin
-            nameStr := CreateString(AnsiString(LoxClassAttribute(attr).Name), VM.MemTracker);
-            pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-            EnsureArrayCapacity(arr, VM.MemTracker);
-            arr^.Elements[arr^.Count] := StringToValue(nameStr);
-            Inc(arr^.Count);
-            popStack(VM.Stack);
-          end;
+            names.Add(LoxClassAttribute(attr).Name);
+    names.Sort;
+
+    arr := newArray(VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+    for i := 0 to names.Count - 1 do
+    begin
+      nameStr := CreateString(AnsiString(names[i]), VM.MemTracker);
+      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+      EnsureArrayCapacity(arr, VM.MemTracker);
+      arr^.Elements[arr^.Count] := StringToValue(nameStr);
+      Inc(arr^.Count);
+      popStack(VM.Stack);
+    end;
     popStack(VM.Stack); // pop the array guard
     Result := CreateObject(pObj(arr));
   finally
+    names.Free;
     ctx.Free;
   end;
 end;
@@ -6955,7 +6962,7 @@ var
   propsArr, methodsArr: pObjArray;
   nameStr: pObjString;
   keyStr: pObjString;
-  newCap, oldSize, newSize: Integer;
+  i: Integer;
   seen: TStringList;
   mName: string;
 begin
@@ -6992,18 +6999,31 @@ begin
     dictVal := CreateObject(pObj(dict));
     pushStack(VM.Stack, dictVal, VM.MemTracker);
 
-    // --- Properties array ---
+    // --- Properties array (sorted for deterministic output) ---
     propsArr := newArray(VM.MemTracker);
     pushStack(VM.Stack, CreateObject(pObj(propsArr)), VM.MemTracker);
-    for prop in rt.GetProperties do
-    begin
-      if not prop.IsReadable then Continue;
-      nameStr := CreateString(AnsiString(prop.Name), VM.MemTracker);
-      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-      EnsureArrayCapacity(propsArr, VM.MemTracker);
-      propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
-      Inc(propsArr^.Count);
-      popStack(VM.Stack);
+    seen := TStringList.Create;
+    try
+      seen.CaseSensitive := False;
+      seen.Sorted := True;
+      seen.Duplicates := dupIgnore;
+      for prop in rt.GetProperties do
+      begin
+        if not prop.IsReadable then Continue;
+        if not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Continue;
+        seen.Add(prop.Name);
+      end;
+      for i := 0 to seen.Count - 1 do
+      begin
+        nameStr := CreateString(AnsiString(seen[i]), VM.MemTracker);
+        pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+        EnsureArrayCapacity(propsArr, VM.MemTracker);
+        propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
+        Inc(propsArr^.Count);
+        popStack(VM.Stack);
+      end;
+    finally
+      seen.Free;
     end;
     // Set "properties" key
     keyStr := CreateString('properties', VM.MemTracker);
@@ -7012,7 +7032,7 @@ begin
     popStack(VM.Stack);
     popStack(VM.Stack); // pop propsArr guard
 
-    // --- Methods array (deduplicated, denylist filtered) ---
+    // --- Methods array (attribute-filtered, deduplicated, sorted) ---
     methodsArr := newArray(VM.MemTracker);
     pushStack(VM.Stack, CreateObject(pObj(methodsArr)), VM.MemTracker);
     seen := TStringList.Create;
@@ -7023,27 +7043,14 @@ begin
       for method in rt.GetMethods do
       begin
         mName := method.Name;
-        // Skip denylisted lifecycle methods
-        if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
-           SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
-           SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
-           SameText(mName, 'BeforeDestruction') then
+        if not HasAttribute(method.GetAttributes, LoxMethodAttribute) then
           Continue;
-        // Skip TObject infrastructure
-        if SameText(mName, 'Create') or SameText(mName, 'GetHashCode') or
-           SameText(mName, 'Equals') or SameText(mName, 'ToString') or
-           SameText(mName, 'ClassName') or SameText(mName, 'ClassType') or
-           SameText(mName, 'ClassParent') or SameText(mName, 'ClassInfo') or
-           SameText(mName, 'InstanceSize') or SameText(mName, 'InheritsFrom') or
-           SameText(mName, 'DefaultHandler') or SameText(mName, 'SafeCallException') or
-           SameText(mName, 'NewInstance') or SameText(mName, 'UnitName') or
-           SameText(mName, 'QualifiedClassName') then
-          Continue;
-        // Deduplicate overloads
         if seen.IndexOf(mName) >= 0 then Continue;
         seen.Add(mName);
-
-        nameStr := CreateString(AnsiString(mName), VM.MemTracker);
+      end;
+      for i := 0 to seen.Count - 1 do
+      begin
+        nameStr := CreateString(AnsiString(seen[i]), VM.MemTracker);
         pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
         EnsureArrayCapacity(methodsArr, VM.MemTracker);
         methodsArr^.Elements[methodsArr^.Count] := StringToValue(nameStr);
@@ -7073,28 +7080,36 @@ var
   entry: pEntry;
   arr: pObjArray;
   nameStr: pObjString;
-  newCap, oldSize, newSize: Integer;
+  names: TStringList;
 begin
-  arr := newArray(VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+  names := TStringList.Create;
+  try
+    // Walk VM.Globals, find entries whose value is a native object
+    for i := 0 to VM.Globals.CurrentCapacity - 1 do
+    begin
+      entry := @VM.Globals.Entries[i];
+      if (entry^.key = nil) then Continue;
+      if not isNativeObject(entry^.value) then Continue;
+      names.Add(String(ObjStringToAnsiString(entry^.key)));
+    end;
+    names.Sort;
 
-  // Walk VM.Globals, find entries whose value is a native object
-  for i := 0 to VM.Globals.CurrentCapacity - 1 do
-  begin
-    entry := @VM.Globals.Entries[i];
-    if (entry^.key = nil) then Continue;
-    if not isNativeObject(entry^.value) then Continue;
-
-    nameStr := CreateString(ObjStringToAnsiString(entry^.key), VM.MemTracker);
-    pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-    EnsureArrayCapacity(arr, VM.MemTracker);
-    arr^.Elements[arr^.Count] := StringToValue(nameStr);
-    Inc(arr^.Count);
-    popStack(VM.Stack);
+    arr := newArray(VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+    for i := 0 to names.Count - 1 do
+    begin
+      nameStr := CreateString(AnsiString(names[i]), VM.MemTracker);
+      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+      EnsureArrayCapacity(arr, VM.MemTracker);
+      arr^.Elements[arr^.Count] := StringToValue(nameStr);
+      Inc(arr^.Count);
+      popStack(VM.Stack);
+    end;
+    popStack(VM.Stack); // pop arr guard
+    Result := CreateObject(pObj(arr));
+  finally
+    names.Free;
   end;
-
-  popStack(VM.Stack); // pop arr guard
-  Result := CreateObject(pObj(arr));
 end;
 
 function loxObjectInfoNative(argCount: integer; args: pValue): TValue;

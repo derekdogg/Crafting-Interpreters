@@ -1,5 +1,5 @@
 // ============================================================
-// inject_rtti_indexed.lox — Test indexed property access
+// inject_stringlist_indexed.lox — Test indexed property access
 // ============================================================
 // 'items' is a TStringList injected by Delphi before execution.
 // It already contains: "Alice", "Bob", "Charlie"

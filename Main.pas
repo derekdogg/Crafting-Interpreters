@@ -9,7 +9,7 @@ uses
   Chunk_Types,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait,
-  System.ImageList,NativeObjects;
+  System.ImageList,NativeObjects, LoxCanvas;
 
 type
 
@@ -35,9 +35,14 @@ type
     StateImages: TImageList;
     Button2: TButton;
     Button3: TButton;
+    Panel1: TPanel;
+    Panel2: TPanel;
+    PaintBox1: TPaintBox;
+    Panel3: TPanel;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+    procedure FormKeyUp(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure Button1Click(Sender: TObject);
     procedure BtnPopulateClick(Sender: TObject);
     procedure BtnRunSelectedClick(Sender: TObject);
@@ -206,6 +211,28 @@ begin
     FEventQueue.Enqueue('keydown:' + KeyName);
 end;
 
+procedure TForm4.FormKeyUp(Sender: TObject; var Key: Word; Shift: TShiftState);
+var
+  KeyName: string;
+begin
+  case Key of
+    VK_LEFT:   KeyName := 'left';
+    VK_RIGHT:  KeyName := 'right';
+    VK_UP:     KeyName := 'up';
+    VK_DOWN:   KeyName := 'down';
+    VK_SPACE:  KeyName := 'space';
+    VK_RETURN: KeyName := 'enter';
+    VK_ESCAPE: KeyName := 'escape';
+  else
+    if (Key >= Ord('A')) and (Key <= Ord('Z')) then
+      KeyName := LowerCase(Char(Key))
+    else
+      KeyName := '';
+  end;
+  if KeyName <> '' then
+    FEventQueue.Enqueue('keyup:' + KeyName);
+end;
+
 procedure TForm4.FormCreate(Sender: TObject);
 begin
   FEventQueue := TLoxQueue.Create;
@@ -252,12 +279,15 @@ begin
   FLoxSyn.BuiltInAttri.Foreground    := $00DCDCAA;  // golden-yellow (function calls)
   FLoxSyn.IdentifierAttri.Foreground := $009CDCFE;  // light blue (variables)
   FLoxSyn.SymbolAttri.Foreground     := $00D4D4D4;  // match default text
+
+  InitCanvas(PaintBox1);
 end;
 
 procedure TForm4.FormDestroy(Sender: TObject);
 var
   N: TTreeNode;
 begin
+  FreeCanvas;
   FEventQueue.Free;
   N := TestTree.Items.GetFirstNode;
   while N <> nil do
@@ -304,6 +334,7 @@ begin
   InitVM;
   try
     defineNative('processMessages', processMessagesNative, 0);
+    RegisterCanvasNatives;
     registerNativeClassRTTI('LoxQueue', TLoxQueue);
     InjectNativeObject('events', Pointer(FEventQueue), 'LoxQueue');
     IR := CompileAndRun(PAnsiChar(txt));

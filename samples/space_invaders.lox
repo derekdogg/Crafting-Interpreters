@@ -1,0 +1,386 @@
+// ============================================================
+// Space Invaders — written in Lox
+// ============================================================
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+// --- Player ---
+var playerW = 40;
+var playerH = 16;
+var playerX = w / 2 - playerW / 2;
+var playerY = h - 40;
+var playerSpeed = 250;
+var leftHeld = false;
+var rightHeld = false;
+
+// --- Player bullet ---
+var bulletActive = false;
+var bulletX = 0;
+var bulletY = 0;
+var bulletW = 3;
+var bulletH = 10;
+var bulletSpeed = 400;
+
+// --- Invaders grid ---
+var cols = 8;
+var rows = 4;
+var invW = 30;
+var invH = 16;
+var invPadX = 12;
+var invPadY = 10;
+var invGridW = cols * (invW + invPadX) - invPadX;
+
+// Invader alive flags stored in a flat array: row * cols + col
+var invCount = cols * rows;
+var invAlive = newArray();
+var i = 0;
+while (i < invCount) {
+  arrayPush(invAlive, true);
+  i = i + 1;
+}
+var aliveCount = invCount;
+
+// Invader movement
+var invOffsetX = (w - invGridW) / 2;
+var invOffsetY = 40;
+var invDirX = 1;
+var invSpeedX = 40;
+var invDropAmount = 14;
+var invMoveTimer = 0;
+var invMoveInterval = 0.6;  // seconds between steps
+
+// --- Enemy bullets ---
+var maxEnemyBullets = 4;
+var eBulletX = newArray();
+var eBulletY = newArray();
+var eBulletActive = newArray();
+var eBulletSpeed = 180;
+var enemyShootTimer = 0;
+var enemyShootInterval = 1.2;
+
+i = 0;
+while (i < maxEnemyBullets) {
+  arrayPush(eBulletX, 0);
+  arrayPush(eBulletY, 0);
+  arrayPush(eBulletActive, false);
+  i = i + 1;
+}
+
+// --- Game state ---
+var score = 0;
+var lives = 3;
+var running = true;
+var gameOver = false;
+var lastTime = clock();
+
+// --- Helpers ---
+fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  if (ax + aw <= bx) return false;
+  if (bx + bw <= ax) return false;
+  if (ay + ah <= by) return false;
+  if (by + bh <= ay) return false;
+  return true;
+}
+
+fun invaderX(col) {
+  return invOffsetX + col * (invW + invPadX);
+}
+
+fun invaderY(row) {
+  return invOffsetY + row * (invH + invPadY);
+}
+
+fun pickShooterColumn() {
+  // Pick a random alive invader from the bottom-most row that has one
+  var r = rows - 1;
+  while (r >= 0) {
+    // Collect alive columns in this row
+    var aliveCols = newArray();
+    var c = 0;
+    while (c < cols) {
+      if (arrayGet(invAlive, r * cols + c)) {
+        arrayPush(aliveCols, c);
+      }
+      c = c + 1;
+    }
+    if (arrayLen(aliveCols) > 0) {
+      var pick = floor(random() * arrayLen(aliveCols));
+      return r * cols + arrayGet(aliveCols, pick);
+    }
+    r = r - 1;
+  }
+  return -1;
+}
+
+fun resetPlayer() {
+  playerX = w / 2 - playerW / 2;
+  bulletActive = false;
+}
+
+// ============================================================
+// Game loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  // Cap dt to avoid huge jumps
+  if (dt > 0.1) dt = 0.1;
+
+  // --- Input ---
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:left") leftHeld = true;
+    if (e == "keyup:left") leftHeld = false;
+    if (e == "keydown:right") rightHeld = true;
+    if (e == "keyup:right") rightHeld = false;
+    if (e == "keydown:escape") running = false;
+    if (e == "keydown:space") {
+      if (!bulletActive and !gameOver) {
+        bulletActive = true;
+        bulletX = playerX + playerW / 2 - bulletW / 2;
+        bulletY = playerY;
+      }
+    }
+    if (e == "keydown:enter") {
+      if (gameOver) {
+        // Restart
+        gameOver = false;
+        score = 0;
+        lives = 3;
+        aliveCount = invCount;
+        i = 0;
+        while (i < invCount) {
+          arraySet(invAlive, i, true);
+          i = i + 1;
+        }
+        invOffsetX = (w - invGridW) / 2;
+        invOffsetY = 40;
+        invDirX = 1;
+        invSpeedX = 40;
+        invMoveInterval = 0.6;
+        invMoveTimer = 0;
+        resetPlayer();
+      }
+    }
+  }
+
+  if (!gameOver) {
+    // --- Update player ---
+    if (leftHeld) playerX = playerX - playerSpeed * dt;
+    if (rightHeld) playerX = playerX + playerSpeed * dt;
+    if (playerX < 0) playerX = 0;
+    if (playerX > w - playerW) playerX = w - playerW;
+
+    // --- Update player bullet ---
+    if (bulletActive) {
+      bulletY = bulletY - bulletSpeed * dt;
+      if (bulletY + bulletH < 0) bulletActive = false;
+    }
+
+    // --- Invader movement ---
+    invMoveTimer = invMoveTimer + dt;
+    if (invMoveTimer >= invMoveInterval) {
+      invMoveTimer = invMoveTimer - invMoveInterval;
+      invOffsetX = invOffsetX + invSpeedX * invDirX;
+
+      // Check edges
+      var hitEdge = false;
+      var c = 0;
+      while (c < cols) {
+        var r = 0;
+        while (r < rows) {
+          if (arrayGet(invAlive, r * cols + c)) {
+            var ix = invaderX(c);
+            if (ix < 0 or ix + invW > w) hitEdge = true;
+          }
+          r = r + 1;
+        }
+        c = c + 1;
+      }
+      if (hitEdge) {
+        invDirX = -invDirX;
+        invOffsetX = invOffsetX + invSpeedX * invDirX * 2;
+        invOffsetY = invOffsetY + invDropAmount;
+      }
+    }
+
+    // --- Bullet vs invaders collision ---
+    if (bulletActive) {
+      var r = 0;
+      while (r < rows) {
+        var c = 0;
+        while (c < cols) {
+          var idx = r * cols + c;
+          if (arrayGet(invAlive, idx)) {
+            var ix = invaderX(c);
+            var iy = invaderY(r);
+            if (rectsOverlap(bulletX, bulletY, bulletW, bulletH, ix, iy, invW, invH)) {
+              arraySet(invAlive, idx, false);
+              bulletActive = false;
+              aliveCount = aliveCount - 1;
+              score = score + 10;
+              // Speed up as invaders die
+              if (aliveCount > 0) {
+                invMoveInterval = 0.6 * aliveCount / invCount;
+                if (invMoveInterval < 0.05) invMoveInterval = 0.05;
+              }
+            }
+          }
+          c = c + 1;
+        }
+        r = r + 1;
+      }
+    }
+
+    // --- Enemy shooting ---
+    enemyShootTimer = enemyShootTimer + dt;
+    if (enemyShootTimer >= enemyShootInterval and aliveCount > 0) {
+      enemyShootTimer = 0;
+      // Find a free bullet slot
+      var slot = -1;
+      var s = 0;
+      while (s < maxEnemyBullets) {
+        if (!arrayGet(eBulletActive, s)) {
+          slot = s;
+          s = maxEnemyBullets; // break
+        }
+        s = s + 1;
+      }
+      if (slot >= 0) {
+        var shooter = pickShooterColumn();
+        if (shooter >= 0) {
+          var sc = shooter - floor(shooter / cols) * cols;
+          var sr = floor(shooter / cols);
+          arraySet(eBulletX, slot, invaderX(sc) + invW / 2);
+          arraySet(eBulletY, slot, invaderY(sr) + invH);
+          arraySet(eBulletActive, slot, true);
+        }
+      }
+    }
+
+    // --- Update enemy bullets ---
+    i = 0;
+    while (i < maxEnemyBullets) {
+      if (arrayGet(eBulletActive, i)) {
+        arraySet(eBulletY, i, arrayGet(eBulletY, i) + eBulletSpeed * dt);
+        // Off screen
+        if (arrayGet(eBulletY, i) > h) {
+          arraySet(eBulletActive, i, false);
+        }
+        // Hit player
+        if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 3, 10, playerX, playerY, playerW, playerH)) {
+          arraySet(eBulletActive, i, false);
+          lives = lives - 1;
+          if (lives <= 0) {
+            gameOver = true;
+          } else {
+            resetPlayer();
+          }
+        }
+      }
+      i = i + 1;
+    }
+
+    // --- Invaders reach player row = game over ---
+    var r = 0;
+    while (r < rows) {
+      var c = 0;
+      while (c < cols) {
+        if (arrayGet(invAlive, r * cols + c)) {
+          if (invaderY(r) + invH >= playerY) {
+            gameOver = true;
+          }
+        }
+        c = c + 1;
+      }
+      r = r + 1;
+    }
+
+    // --- All dead = win / new wave ---
+    if (aliveCount <= 0) {
+      // Reset invaders for a new wave
+      aliveCount = invCount;
+      i = 0;
+      while (i < invCount) {
+        arraySet(invAlive, i, true);
+        i = i + 1;
+      }
+      invOffsetX = (w - invGridW) / 2;
+      invOffsetY = 40;
+      invDirX = 1;
+      invMoveInterval = 0.6;
+      invMoveTimer = 0;
+      // Clear enemy bullets
+      i = 0;
+      while (i < maxEnemyBullets) {
+        arraySet(eBulletActive, i, false);
+        i = i + 1;
+      }
+    }
+  }
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas();
+
+  // --- Draw invaders ---
+  var r = 0;
+  while (r < rows) {
+    var c = 0;
+    while (c < cols) {
+      if (arrayGet(invAlive, r * cols + c)) {
+        // Alternate row colors
+        if (r == 0) { setColor(255, 50, 50); }
+        else if (r == 1) { setColor(255, 150, 50); }
+        else if (r == 2) { setColor(255, 255, 50); }
+        else { setColor(50, 255, 50); }
+        fillRect(invaderX(c), invaderY(r), invW, invH);
+      }
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+
+  // --- Draw player ---
+  setColor(0, 200, 255);
+  fillRect(playerX, playerY, playerW, playerH);
+  // Gun turret
+  fillRect(playerX + playerW / 2 - 2, playerY - 6, 4, 6);
+
+  // --- Draw player bullet ---
+  if (bulletActive) {
+    setColor(255, 255, 255);
+    fillRect(bulletX, bulletY, bulletW, bulletH);
+  }
+
+  // --- Draw enemy bullets ---
+  setColor(255, 80, 80);
+  i = 0;
+  while (i < maxEnemyBullets) {
+    if (arrayGet(eBulletActive, i)) {
+      fillRect(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 3, 10);
+    }
+    i = i + 1;
+  }
+
+  // --- HUD ---
+  setColor(255, 255, 255);
+  drawText(10, 8, "SCORE: " + str(score));
+  drawText(w - 120, 8, "LIVES: " + str(lives));
+
+  // --- Game over overlay ---
+  if (gameOver) {
+    setColor(255, 0, 0);
+    drawText(w / 2 - 80, h / 2 - 20, "GAME OVER");
+    setColor(255, 255, 255);
+    drawText(w / 2 - 100, h / 2 + 10, "ENTER to restart, ESC to quit");
+  }
+
+  present();
+}
+
+print "Final score: " + str(score);
