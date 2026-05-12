@@ -213,6 +213,36 @@ type
   pStack          = ^TStack;
   pVirtualMachine = ^TVirtualMachine;
   pMemTracker     = ^TMemTracker;
+
+  { Attribute to mark a Delphi class as visible to Lox scripts.
+    Usage: [LoxClass('MyName')] on a class declaration.
+    The name is what appears in Lox — e.g. [LoxClass('StringList')]. }
+  LoxClassAttribute = class(TCustomAttribute)
+  private
+    FName: string;
+  public
+    constructor Create(const AName: string);
+    property Name: string read FName;
+  end;
+
+  { Marks a published/public property as accessible from Lox scripts.
+    Usage: [LoxProperty] or [LoxProperty('readonly')] }
+  LoxPropertyAttribute = class(TCustomAttribute)
+  private
+    FReadOnly: Boolean;
+  public
+    constructor Create; overload;
+    constructor Create(const AMode: string); overload;
+    property IsReadOnly: Boolean read FReadOnly;
+  end;
+
+  { Marks a public method as callable from Lox scripts.
+    Usage: [LoxMethod] }
+  LoxMethodAttribute = class(TCustomAttribute)
+  public
+    constructor Create;
+  end;
+
   pLogs           = ^TLogs; //Note : Don't think we need this (https://www.danieleteti.it/loggerpro/) maybe add later? We use a stupidly simple approach for now
   pEntry          = ^TEntry;
   pTable          = ^TTable;
@@ -484,6 +514,8 @@ type
     Entries         : pEntry;
   end;
 
+function findNativeClass(const name : AnsiString) : pNativeClassInfo;
+procedure RunTimeError(const msg : string);
 
 //Assertions
 procedure AssertMemTrackerIsNotNil(MemTracker : pMemTracker);
@@ -686,6 +718,7 @@ function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure
 function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
 function newArray(MemTracker : pMemTracker) : pObjArray;
 function isArray(value : TValue) : boolean;
+procedure EnsureArrayCapacity(arr : pObjArray; MemTracker : pMemTracker);
 function newDictionary(MemTracker : pMemTracker) : pObjDictionary;
 function isDictionary(value : TValue) : boolean;
 function HashValue(const value : TValue) : UInt32;
@@ -703,6 +736,7 @@ function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTr
 function findNativeMethod(classInfo : pNativeClassInfo; const methodName : AnsiString; out found : TNativeMethodFn) : boolean;
 procedure recordDeclaration();
 procedure defineNative(const name : AnsiString; func : TNativeFn; arity: Integer = -1);
+
 procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
 procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
 procedure InjectObject(const name : AnsiString; instance : TObject);
@@ -886,6 +920,35 @@ uses
   sysutils, Math, strUtils, Windows, System.AnsiStrings,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
+
+{ LoxClassAttribute }
+
+constructor LoxClassAttribute.Create(const AName: string);
+begin
+  inherited Create;
+  FName := AName;
+end;
+
+{ LoxPropertyAttribute }
+
+constructor LoxPropertyAttribute.Create;
+begin
+  inherited Create;
+  FReadOnly := False;
+end;
+
+constructor LoxPropertyAttribute.Create(const AMode: string);
+begin
+  inherited Create;
+  FReadOnly := SameText(AMode, 'readonly');
+end;
+
+{ LoxMethodAttribute }
+
+constructor LoxMethodAttribute.Create;
+begin
+  inherited Create;
+end;
 
 {$IFDEF DEBUG_LOG_GC}
 function ObjectKindStr(kind : TObjectKind) : string;
@@ -1914,6 +1977,18 @@ begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okArray);
 end;
 
+procedure EnsureArrayCapacity(arr : pObjArray; MemTracker : pMemTracker);
+var
+  newCap, oldSize, newSize: Integer;
+begin
+  if arr^.Count < arr^.Capacity then Exit;
+  if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
+  oldSize := arr^.Capacity * SizeOf(TValue);
+  newSize := newCap * SizeOf(TValue);
+  Allocate(Pointer(arr^.Elements), oldSize, newSize, MemTracker);
+  arr^.Capacity := newCap;
+end;
+
 function newDictionary(MemTracker : pMemTracker) : pObjDictionary;
 begin
   AssertMemTrackerIsNotNil(MemTracker);
@@ -2291,8 +2366,7 @@ end;
 var
   RttiCtx : TRttiContext;
 
-function findNativeClass(const name : AnsiString) : pNativeClassInfo; forward;
-procedure RunTimeError(const msg : string); forward;
+
 
 function DelphiValueToLox(const V: System.Rtti.TValue; MemTracker: pMemTracker): TValue;
 var
@@ -2302,18 +2376,17 @@ var
   childClassInfo: pNativeClassInfo;
   childNative: pObjNativeObject;
   // Set marshaling
-  setInt: Integer;
+  setData: PByte;
+  setByteIndex, setBitIndex: Integer;
   baseTypeInfo: PTypeInfo;
   baseTypeData: PTypeData;
   bit: Integer;
   arr: pObjArray;
   elemStr: pObjString;
-  newCap, oldSize, newSize: Integer;
   // Dynamic array marshaling
   dynLen: Integer;
   dynArr: pObjArray;
   dynElem: System.Rtti.TValue;
-  dynNewCap, dynOldSize, dynNewSize: Integer;
   dynI: Integer;
 begin
   if V.IsEmpty then
@@ -2346,14 +2419,8 @@ begin
     tkSet:
     begin
       // Marshal a Delphi set to a Lox array of enum-name strings.
-      // We iterate over all possible ordinal values of the set's
-      // underlying type and include names whose bits are set.
-      setInt := 0;
-      case GetTypeData(V.TypeInfo)^.OrdType of
-        otSByte, otUByte: setInt := PByte(V.GetReferenceToRawData)^;
-        otSWord, otUWord: setInt := PWord(V.GetReferenceToRawData)^;
-        otSLong, otULong: setInt := PInteger(V.GetReferenceToRawData)^;
-      end;
+      // We read raw bytes to handle sets of any size (up to 256 bits / 32 bytes).
+      setData := V.GetReferenceToRawData;
 
       baseTypeInfo := GetTypeData(V.TypeInfo)^.CompType^;
       baseTypeData := GetTypeData(baseTypeInfo);
@@ -2364,19 +2431,13 @@ begin
 
       for bit := baseTypeData^.MinValue to baseTypeData^.MaxValue do
       begin
-        if (setInt and (1 shl bit)) <> 0 then
+        setByteIndex := bit div 8;
+        setBitIndex  := bit mod 8;
+        if (setData[setByteIndex] and (1 shl setBitIndex)) <> 0 then
         begin
           s := AnsiString(GetEnumName(baseTypeInfo, bit));
           elemStr := CreateString(s, MemTracker);
-          // Grow elements array if needed
-          if arr^.Count >= arr^.Capacity then
-          begin
-            if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
-            oldSize := arr^.Capacity * SizeOf(TValue);
-            newSize := newCap * SizeOf(TValue);
-            Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
-            arr^.Capacity := newCap;
-          end;
+          EnsureArrayCapacity(arr, VM.MemTracker);
           arr^.Elements[arr^.Count] := StringToValue(elemStr);
           Inc(arr^.Count);
         end;
@@ -2396,15 +2457,7 @@ begin
       for dynI := 0 to dynLen - 1 do
       begin
         dynElem := V.GetArrayElement(dynI);
-        // Grow elements array if needed
-        if dynArr^.Count >= dynArr^.Capacity then
-        begin
-          if dynArr^.Capacity = 0 then dynNewCap := ARRAY_START_CAPACITY else dynNewCap := dynArr^.Capacity * GROWTH_FACTOR;
-          dynOldSize := dynArr^.Capacity * SizeOf(TValue);
-          dynNewSize := dynNewCap * SizeOf(TValue);
-          Allocate(Pointer(dynArr^.Elements), dynOldSize, dynNewSize, VM.MemTracker);
-          dynArr^.Capacity := dynNewCap;
-        end;
+        EnsureArrayCapacity(dynArr, VM.MemTracker);
         dynArr^.Elements[dynArr^.Count] := DelphiValueToLox(dynElem, MemTracker);
         Inc(dynArr^.Count);
       end;
@@ -2455,15 +2508,15 @@ var
   enumOrd: Integer;
   // Set marshaling (single string)
   singleOrd: Integer;
-  singleSetInt: Integer;
   setBaseInfo: PTypeInfo;
   // Set marshaling (array of strings)
   setArr: pObjArray;
   setBaseInfo2: PTypeInfo;
-  setInt2: Integer;
   setI: Integer;
   setElemOrd: Integer;
   setElemName: string;
+  // Set marshaling (shared byte buffer for arbitrary-size sets)
+  setBuf: array[0..31] of Byte;  // 256 bits max
   // Dynamic array marshaling
   srcArr: pObjArray;
   dynArrLen: Integer;
@@ -2531,8 +2584,9 @@ begin
           end
           else
           begin
-            singleSetInt := 1 shl singleOrd;
-            System.Rtti.TValue.Make(@singleSetInt, TargetType, Result);
+            FillChar(setBuf, SizeOf(setBuf), 0);
+            setBuf[singleOrd div 8] := setBuf[singleOrd div 8] or (1 shl (singleOrd mod 8));
+            System.Rtti.TValue.Make(@setBuf, TargetType, Result);
           end;
         end
         else
@@ -2543,7 +2597,7 @@ begin
         // Lox array of enum-name strings -> Delphi set
         setArr := pObjArray(V.ObjValue);
         setBaseInfo2 := GetTypeData(TargetType)^.CompType^;
-        setInt2 := 0;
+        FillChar(setBuf, SizeOf(setBuf), 0);
 
         for setI := 0 to setArr^.Count - 1 do
         begin
@@ -2560,9 +2614,9 @@ begin
               [setElemName, String(TargetType^.Name)]));
             Exit(System.Rtti.TValue.Empty);
           end;
-          setInt2 := setInt2 or (1 shl setElemOrd);
+          setBuf[setElemOrd div 8] := setBuf[setElemOrd div 8] or (1 shl (setElemOrd mod 8));
         end;
-        System.Rtti.TValue.Make(@setInt2, TargetType, Result);
+        System.Rtti.TValue.Make(@setBuf, TargetType, Result);
       end
       else if isArray(V) and (TargetType <> nil) and (TargetType^.Kind = tkDynArray) then
       begin
@@ -2596,6 +2650,24 @@ begin
   end;
 end;
 
+function ClassHasLoxClassAttr(rt: TRttiType): Boolean;
+var
+  a: TCustomAttribute;
+begin
+  for a in rt.GetAttributes do
+    if a is LoxClassAttribute then Exit(True);
+  Result := False;
+end;
+
+function HasAttribute(const attrs: TArray<TCustomAttribute>; attrClass: TClass): Boolean;
+var
+  a: TCustomAttribute;
+begin
+  for a in attrs do
+    if a is attrClass then Exit(True);
+  Result := False;
+end;
+
 function RttiGetProperty(instance: Pointer; classInfo: pNativeClassInfo;
   const propName: AnsiString; MemTracker: pMemTracker; out loxVal: TValue): Boolean;
 var
@@ -2603,17 +2675,26 @@ var
   prop: TRttiProperty;
   field: TRttiField;
   dv: System.Rtti.TValue;
+  useLoxAttrs: Boolean;
 begin
   Result := False;
+  if instance = nil then
+  begin
+    runtimeError('Cannot access property of a destroyed native object.');
+    Exit;
+  end;
   if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
 
   rt := RttiCtx.GetType(classInfo^.rttiClass);
   if rt = nil then Exit;
 
+  useLoxAttrs := ClassHasLoxClassAttr(rt);
+
   try
     prop := rt.GetProperty(String(propName));
     if (prop <> nil) and (prop.IsReadable) then
     begin
+      if useLoxAttrs and not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Exit;
       dv := prop.GetValue(TObject(instance));
       loxVal := DelphiValueToLox(dv, MemTracker);
       Exit(True);
@@ -2642,17 +2723,37 @@ var
   prop: TRttiProperty;
   field: TRttiField;
   dv: System.Rtti.TValue;
+  useLoxAttrs: Boolean;
+  lpAttr: TCustomAttribute;
 begin
   Result := False;
+  if instance = nil then
+  begin
+    runtimeError('Cannot set property on a destroyed native object.');
+    Exit;
+  end;
   if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
 
   rt := RttiCtx.GetType(classInfo^.rttiClass);
   if rt = nil then Exit;
 
+  useLoxAttrs := ClassHasLoxClassAttr(rt);
+
   try
     prop := rt.GetProperty(String(propName));
     if (prop <> nil) and (prop.IsWritable) then
     begin
+      if useLoxAttrs then
+      begin
+        if not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Exit;
+        // Check for readonly
+        for lpAttr in prop.GetAttributes do
+          if (lpAttr is LoxPropertyAttribute) and LoxPropertyAttribute(lpAttr).IsReadOnly then
+          begin
+            runtimeError(Format('Property ''%s'' is read-only.', [String(propName)]));
+            Exit;
+          end;
+      end;
       dv := LoxValueToDelphi(loxVal, prop.PropertyType.Handle);
       if VM.RuntimeErrorStr <> '' then Exit;
       prop.SetValue(TObject(instance), dv);
@@ -2688,23 +2789,44 @@ var
   dv: System.Rtti.TValue;
   i: integer;
   mName: string;
+  useLoxAttrs: Boolean;
 begin
   Result := False;
+  if instance = nil then
+  begin
+    runtimeError('Cannot invoke method on a destroyed native object.');
+    Exit;
+  end;
   if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
 
   rt := RttiCtx.GetType(classInfo^.rttiClass);
   if rt = nil then Exit;
 
   mName := String(methodName);
+  useLoxAttrs := ClassHasLoxClassAttr(rt);
 
-  // Denylist: prevent scripts from invoking lifecycle/dangerous TObject methods
-  if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
-     SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
-     SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
-     SameText(mName, 'BeforeDestruction') then
+  if useLoxAttrs then
   begin
-    runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
-    Exit;
+    // Attribute mode: only allow methods with [LoxMethod]
+    // Check any overload for the attribute
+    methods := rt.GetMethods(mName);
+    if (Length(methods) > 0) and not HasAttribute(methods[0].GetAttributes, LoxMethodAttribute) then
+    begin
+      runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
+      Exit;
+    end;
+  end
+  else
+  begin
+    // Legacy denylist: prevent scripts from invoking lifecycle/dangerous TObject methods
+    if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
+       SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
+       SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
+       SameText(mName, 'BeforeDestruction') then
+    begin
+      runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
+      Exit;
+    end;
   end;
 
   methods := rt.GetMethods(mName);
@@ -3430,6 +3552,11 @@ var
   // RTTI property support
   rttiPropName : AnsiString;
   rttiResult : TValue;
+  // RTTI indexed property support
+  idxProp : TRttiIndexedProperty;
+  idxParams : TArray<TRttiParameter>;
+  idxDelphiArgs : array[0..0] of System.Rtti.TValue;
+  idxDelphiVal  : System.Rtti.TValue;
 
   function CurrentFrame: pCallFrame;
   begin
@@ -4392,6 +4519,52 @@ begin
             end;
             pushStack(vm.Stack, ValueC, vm.MemTracker);
           end
+          else if isNativeObject(ValueB) then
+          begin
+            nativeObj := pObjNativeObject(ValueB.ObjValue);
+            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled then
+            begin
+              idxProp := nil;
+              for idxProp in RttiCtx.GetType(nativeObj^.classInfo^.rttiClass).GetIndexedProperties do
+                if idxProp.IsDefault and idxProp.IsReadable then
+                  Break;
+              if (idxProp <> nil) and idxProp.IsDefault and idxProp.IsReadable then
+              begin
+                idxParams := idxProp.ReadMethod.GetParameters;
+                if Length(idxParams) <> 1 then
+                begin
+                  runtimeError('Default indexed property requires exactly 1 index parameter.');
+                  result.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+                try
+                  idxDelphiArgs[0] := LoxValueToDelphi(value, idxParams[0].ParamType.Handle);
+                  if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
+                  idxDelphiVal := idxProp.GetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]]);
+                  pushStack(vm.Stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker), vm.MemTracker);
+                except
+                  on E: Exception do
+                  begin
+                    runtimeError('Indexed property get failed: ' + E.Message);
+                    result.code := INTERPRET_RUNTIME_ERROR;
+                    exit;
+                  end;
+                end;
+              end
+              else
+              begin
+                runtimeError('Native object has no default indexed property.');
+                result.code := INTERPRET_RUNTIME_ERROR;
+                exit;
+              end;
+            end
+            else
+            begin
+              runtimeError('Native object does not support subscript access.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+          end
           else
           begin
             runtimeError('Only arrays and dictionaries support subscript access.');
@@ -4436,6 +4609,59 @@ begin
             popStack(vm.Stack);
             popStack(vm.Stack);
             pushStack(vm.Stack, value, vm.MemTracker);
+          end
+          else if isNativeObject(peekStack(vm.Stack, 2)) then
+          begin
+            // Stack: [... nativeObj, index, value]
+            value := popStack(vm.Stack);     // value to assign
+            ValueB := popStack(vm.Stack);    // index
+            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
+            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled then
+            begin
+              idxProp := nil;
+              for idxProp in RttiCtx.GetType(nativeObj^.classInfo^.rttiClass).GetIndexedProperties do
+                if idxProp.IsDefault and idxProp.IsWritable then
+                  Break;
+              if (idxProp <> nil) and idxProp.IsDefault and idxProp.IsWritable then
+              begin
+                idxParams := idxProp.WriteMethod.GetParameters;
+                // WriteMethod params: index + value — we only marshal the index here
+                if Length(idxParams) < 1 then
+                begin
+                  runtimeError('Default indexed property has no index parameter.');
+                  result.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+                try
+                  idxDelphiArgs[0] := LoxValueToDelphi(ValueB, idxParams[0].ParamType.Handle);
+                  if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
+                  idxDelphiVal := LoxValueToDelphi(value, idxProp.PropertyType.Handle);
+                  if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
+                  idxProp.SetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]], idxDelphiVal);
+                  popStack(vm.Stack); // pop the native object
+                  pushStack(vm.Stack, value, vm.MemTracker); // leave the assigned value
+                except
+                  on E: Exception do
+                  begin
+                    runtimeError('Indexed property set failed: ' + E.Message);
+                    result.code := INTERPRET_RUNTIME_ERROR;
+                    exit;
+                  end;
+                end;
+              end
+              else
+              begin
+                runtimeError('Native object has no writable default indexed property.');
+                result.code := INTERPRET_RUNTIME_ERROR;
+                exit;
+              end;
+            end
+            else
+            begin
+              runtimeError('Native object does not support subscript assignment.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
           end
           else
           begin
@@ -4841,7 +5067,10 @@ begin
     okNativeObject : begin
       if pObjNativeObject(obj)^.ownsInstance and
          Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
+      begin
         pObjNativeObject(obj)^.classInfo^.destructor_(pObjNativeObject(obj)^.instance);
+        pObjNativeObject(obj)^.instance := nil;
+      end;
       Allocate(Pointer(obj), SizeOf(TObjNativeObject), 0, vm.MemTracker);
     end;
     okDictionary : begin
@@ -6021,14 +6250,7 @@ var
     // Push string onto stack to protect from GC during potential array growth
     val := CreateObject(pObj(str));
     pushStack(VM.Stack, val, VM.MemTracker);
-    if arr^.Count >= arr^.Capacity then
-    begin
-      if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
-      oldSize := arr^.Capacity * SizeOf(TValue);
-      newSize := newCap * SizeOf(TValue);
-      Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
-      arr^.Capacity := newCap;
-    end;
+    EnsureArrayCapacity(arr, VM.MemTracker);
     arr^.Elements[arr^.Count] := val;
     Inc(arr^.Count);
     popStack(VM.Stack);
@@ -6143,18 +6365,7 @@ begin
     Exit;
   end;
   arr := pObjArray(args[0].ObjValue);
-  // Grow elements array if needed
-  if arr^.Count >= arr^.Capacity then
-  begin
-    if arr^.Capacity = 0 then
-      newCap := ARRAY_START_CAPACITY
-    else
-      newCap := arr^.Capacity * GROWTH_FACTOR;
-    oldSize := arr^.Capacity * SizeOf(TValue);
-    newSize := newCap * SizeOf(TValue);
-    Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
-    arr^.Capacity := newCap;
-  end;
+  EnsureArrayCapacity(arr, VM.MemTracker);
   arr^.Elements[arr^.Count] := args[1];
   Inc(arr^.Count);
   Result := args[0]; // return the array for chaining
@@ -6697,6 +6908,357 @@ begin
   TStringList(instance).Free;
 end;
 
+function loxClassesNative(argCount: integer; args: pValue): TValue;
+var
+  ctx: TRttiContext;
+  t: TRttiType;
+  attr: TCustomAttribute;
+  arr: pObjArray;
+  nameStr: pObjString;
+  newCap, oldSize, newSize: Integer;
+begin
+  ctx := TRttiContext.Create;
+  try
+    arr := newArray(VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+    for t in ctx.GetTypes do
+      if t is TRttiInstanceType then
+        for attr in t.GetAttributes do
+          if attr is LoxClassAttribute then
+          begin
+            nameStr := CreateString(AnsiString(LoxClassAttribute(attr).Name), VM.MemTracker);
+            pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+            EnsureArrayCapacity(arr, VM.MemTracker);
+            arr^.Elements[arr^.Count] := StringToValue(nameStr);
+            Inc(arr^.Count);
+            popStack(VM.Stack);
+          end;
+    popStack(VM.Stack); // pop the array guard
+    Result := CreateObject(pObj(arr));
+  finally
+    ctx.Free;
+  end;
+end;
+
+function loxClassInfoNative(argCount: integer; args: pValue): TValue;
+var
+  ctx: TRttiContext;
+  t: TRttiType;
+  attr: TCustomAttribute;
+  className: string;
+  foundClass: TClass;
+  rt: TRttiType;
+  prop: TRttiProperty;
+  method: TRttiMethod;
+  dict: pObjDictionary;
+  dictVal: TValue;
+  propsArr, methodsArr: pObjArray;
+  nameStr: pObjString;
+  keyStr: pObjString;
+  newCap, oldSize, newSize: Integer;
+  seen: TStringList;
+  mName: string;
+begin
+  if not isString(args[0]) then
+  begin
+    RuntimeError('loxClassInfo() argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+  className := String(ObjStringToAnsiString(pObjString(args[0].ObjValue)));
+
+  // Find the attributed class
+  foundClass := nil;
+  ctx := TRttiContext.Create;
+  try
+    for t in ctx.GetTypes do
+      if t is TRttiInstanceType then
+        for attr in t.GetAttributes do
+          if (attr is LoxClassAttribute) and SameText(LoxClassAttribute(attr).Name, className) then
+          begin
+            foundClass := TRttiInstanceType(t).MetaclassType;
+            Break;
+          end;
+
+    if foundClass = nil then
+    begin
+      RuntimeError('loxClassInfo(): class "' + className + '" not found.');
+      Exit(CreateNilValue);
+    end;
+
+    rt := ctx.GetType(foundClass);
+
+    // Build result dict — push everything for GC safety
+    dict := newDictionary(VM.MemTracker);
+    dictVal := CreateObject(pObj(dict));
+    pushStack(VM.Stack, dictVal, VM.MemTracker);
+
+    // --- Properties array ---
+    propsArr := newArray(VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(propsArr)), VM.MemTracker);
+    for prop in rt.GetProperties do
+    begin
+      if not prop.IsReadable then Continue;
+      nameStr := CreateString(AnsiString(prop.Name), VM.MemTracker);
+      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+      EnsureArrayCapacity(propsArr, VM.MemTracker);
+      propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
+      Inc(propsArr^.Count);
+      popStack(VM.Stack);
+    end;
+    // Set "properties" key
+    keyStr := CreateString('properties', VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
+    DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(propsArr)), VM.MemTracker);
+    popStack(VM.Stack);
+    popStack(VM.Stack); // pop propsArr guard
+
+    // --- Methods array (deduplicated, denylist filtered) ---
+    methodsArr := newArray(VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(methodsArr)), VM.MemTracker);
+    seen := TStringList.Create;
+    try
+      seen.CaseSensitive := False;
+      seen.Sorted := True;
+      seen.Duplicates := dupIgnore;
+      for method in rt.GetMethods do
+      begin
+        mName := method.Name;
+        // Skip denylisted lifecycle methods
+        if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
+           SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
+           SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
+           SameText(mName, 'BeforeDestruction') then
+          Continue;
+        // Skip TObject infrastructure
+        if SameText(mName, 'Create') or SameText(mName, 'GetHashCode') or
+           SameText(mName, 'Equals') or SameText(mName, 'ToString') or
+           SameText(mName, 'ClassName') or SameText(mName, 'ClassType') or
+           SameText(mName, 'ClassParent') or SameText(mName, 'ClassInfo') or
+           SameText(mName, 'InstanceSize') or SameText(mName, 'InheritsFrom') or
+           SameText(mName, 'DefaultHandler') or SameText(mName, 'SafeCallException') or
+           SameText(mName, 'NewInstance') or SameText(mName, 'UnitName') or
+           SameText(mName, 'QualifiedClassName') then
+          Continue;
+        // Deduplicate overloads
+        if seen.IndexOf(mName) >= 0 then Continue;
+        seen.Add(mName);
+
+        nameStr := CreateString(AnsiString(mName), VM.MemTracker);
+        pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+        EnsureArrayCapacity(methodsArr, VM.MemTracker);
+        methodsArr^.Elements[methodsArr^.Count] := StringToValue(nameStr);
+        Inc(methodsArr^.Count);
+        popStack(VM.Stack);
+      end;
+    finally
+      seen.Free;
+    end;
+    // Set "methods" key
+    keyStr := CreateString('methods', VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
+    DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(methodsArr)), VM.MemTracker);
+    popStack(VM.Stack);
+    popStack(VM.Stack); // pop methodsArr guard
+
+    popStack(VM.Stack); // pop dict guard
+    Result := dictVal;
+  finally
+    ctx.Free;
+  end;
+end;
+
+function loxObjectsNative(argCount: integer; args: pValue): TValue;
+var
+  i: Integer;
+  entry: pEntry;
+  arr: pObjArray;
+  nameStr: pObjString;
+  newCap, oldSize, newSize: Integer;
+begin
+  arr := newArray(VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+
+  // Walk VM.Globals, find entries whose value is a native object
+  for i := 0 to VM.Globals.CurrentCapacity - 1 do
+  begin
+    entry := @VM.Globals.Entries[i];
+    if (entry^.key = nil) then Continue;
+    if not isNativeObject(entry^.value) then Continue;
+
+    nameStr := CreateString(ObjStringToAnsiString(entry^.key), VM.MemTracker);
+    pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+    EnsureArrayCapacity(arr, VM.MemTracker);
+    arr^.Elements[arr^.Count] := StringToValue(nameStr);
+    Inc(arr^.Count);
+    popStack(VM.Stack);
+  end;
+
+  popStack(VM.Stack); // pop arr guard
+  Result := CreateObject(pObj(arr));
+end;
+
+function loxObjectInfoNative(argCount: integer; args: pValue): TValue;
+var
+  objName: AnsiString;
+  i: Integer;
+  entry: pEntry;
+  nativeObj: pObjNativeObject;
+  rt: TRttiType;
+  prop: TRttiProperty;
+  method: TRttiMethod;
+  attr: TCustomAttribute;
+  hasLoxClass: Boolean;
+  dict: pObjDictionary;
+  dictVal: TValue;
+  propsArr, methodsArr: pObjArray;
+  nameStr, keyStr: pObjString;
+  classNameStr: pObjString;
+  newCap, oldSize, newSize: Integer;
+  seen: TStringList;
+  mName: string;
+begin
+  if not isString(args[0]) then
+  begin
+    RuntimeError('loxObjectInfo() argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+  objName := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+
+  // Find the named native object in globals
+  nativeObj := nil;
+  for i := 0 to VM.Globals.CurrentCapacity - 1 do
+  begin
+    entry := @VM.Globals.Entries[i];
+    if (entry^.key = nil) then Continue;
+    if not isNativeObject(entry^.value) then Continue;
+    if ObjStringToAnsiString(entry^.key) = objName then
+    begin
+      nativeObj := pObjNativeObject(entry^.value.ObjValue);
+      Break;
+    end;
+  end;
+
+  if nativeObj = nil then
+  begin
+    RuntimeError('loxObjectInfo(): object "' + String(objName) + '" not found.');
+    Exit(CreateNilValue);
+  end;
+
+  if (nativeObj^.classInfo = nil) or (not nativeObj^.classInfo^.rttiEnabled) then
+  begin
+    RuntimeError('loxObjectInfo(): object "' + String(objName) + '" has no RTTI.');
+    Exit(CreateNilValue);
+  end;
+
+  rt := RttiCtx.GetType(nativeObj^.classInfo^.rttiClass);
+  if rt = nil then
+  begin
+    RuntimeError('loxObjectInfo(): RTTI not available for "' + String(objName) + '".');
+    Exit(CreateNilValue);
+  end;
+
+  // Check if this class has [LoxClass] — if so, only show attributed members
+  hasLoxClass := False;
+  for attr in rt.GetAttributes do
+    if attr is LoxClassAttribute then
+    begin
+      hasLoxClass := True;
+      Break;
+    end;
+
+  // Build result dict
+  dict := newDictionary(VM.MemTracker);
+  dictVal := CreateObject(pObj(dict));
+  pushStack(VM.Stack, dictVal, VM.MemTracker);
+
+  // --- "class" key ---
+  classNameStr := CreateString(nativeObj^.classInfo^.name, VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(classNameStr), VM.MemTracker);
+  keyStr := CreateString('class', VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(keyStr), VM.MemTracker);
+  DictSet(dict, StringToValue(keyStr), StringToValue(classNameStr), VM.MemTracker);
+  popStack(VM.Stack);
+  popStack(VM.Stack);
+
+  // --- Properties array ---
+  propsArr := newArray(VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(propsArr)), VM.MemTracker);
+  for prop in rt.GetProperties do
+  begin
+    if not prop.IsReadable then Continue;
+    if hasLoxClass then
+    begin
+      // Only include properties with [LoxProperty]
+      if not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Continue;
+    end;
+    nameStr := CreateString(AnsiString(prop.Name), VM.MemTracker);
+    pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+    EnsureArrayCapacity(propsArr, VM.MemTracker);
+    propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
+    Inc(propsArr^.Count);
+    popStack(VM.Stack);
+  end;
+  keyStr := CreateString('properties', VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(propsArr)), VM.MemTracker);
+  popStack(VM.Stack);
+  popStack(VM.Stack); // pop propsArr guard
+
+  // --- Methods array ---
+  methodsArr := newArray(VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(methodsArr)), VM.MemTracker);
+  seen := TStringList.Create;
+  try
+    seen.CaseSensitive := False;
+    seen.Sorted := True;
+    seen.Duplicates := dupIgnore;
+    for method in rt.GetMethods do
+    begin
+      mName := method.Name;
+      if hasLoxClass then
+      begin
+        // Only include methods with [LoxMethod]
+        if not HasAttribute(method.GetAttributes, LoxMethodAttribute) then Continue;
+      end
+      else
+      begin
+        // No [LoxClass] — use denylist (legacy behavior)
+        if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
+           SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
+           SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
+           SameText(mName, 'BeforeDestruction') or SameText(mName, 'Create') or
+           SameText(mName, 'GetHashCode') or SameText(mName, 'Equals') or
+           SameText(mName, 'ToString') or SameText(mName, 'ClassName') or
+           SameText(mName, 'ClassType') or SameText(mName, 'ClassParent') or
+           SameText(mName, 'ClassInfo') or SameText(mName, 'InstanceSize') or
+           SameText(mName, 'InheritsFrom') or SameText(mName, 'DefaultHandler') or
+           SameText(mName, 'SafeCallException') or SameText(mName, 'NewInstance') or
+           SameText(mName, 'UnitName') or SameText(mName, 'QualifiedClassName') then
+          Continue;
+      end;
+      if seen.IndexOf(mName) >= 0 then Continue;
+      seen.Add(mName);
+
+      nameStr := CreateString(AnsiString(mName), VM.MemTracker);
+      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+      EnsureArrayCapacity(methodsArr, VM.MemTracker);
+      methodsArr^.Elements[methodsArr^.Count] := StringToValue(nameStr);
+      Inc(methodsArr^.Count);
+      popStack(VM.Stack);
+    end;
+  finally
+    seen.Free;
+  end;
+  keyStr := CreateString('methods', VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
+  DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(methodsArr)), VM.MemTracker);
+  popStack(VM.Stack);
+  popStack(VM.Stack); // pop methodsArr guard
+
+  popStack(VM.Stack); // pop dict guard
+  Result := dictVal;
+end;
+
 function stringListNative(argCount: integer; args: pValue): TValue;
 var
   classInfo : pNativeClassInfo;
@@ -6968,14 +7530,7 @@ begin
       end;
 
       // Append dict to array (GC-safe growth)
-      if arr^.Count >= arr^.Capacity then
-      begin
-        if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
-        oldSize := arr^.Capacity * SizeOf(TValue);
-        newSize := newCap * SizeOf(TValue);
-        Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
-        arr^.Capacity := newCap;
-      end;
+      EnsureArrayCapacity(arr, VM.MemTracker);
       arr^.Elements[arr^.Count] := CreateObject(pObj(dict));
       Inc(arr^.Count);
 
@@ -7125,14 +7680,7 @@ begin
         popStack(VM.Stack); // pop keyVal
       end;
 
-      if arr^.Count >= arr^.Capacity then
-      begin
-        if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
-        oldSize := arr^.Capacity * SizeOf(TValue);
-        newSize := newCap * SizeOf(TValue);
-        Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
-        arr^.Capacity := newCap;
-      end;
+      EnsureArrayCapacity(arr, VM.MemTracker);
       arr^.Elements[arr^.Count] := CreateObject(pObj(dict));
       Inc(arr^.Count);
 
@@ -7266,6 +7814,9 @@ begin
   slMethods[2].name := 'count';  slMethods[2].fn := SL_Count;
   slMethods[3].name := 'remove'; slMethods[3].fn := SL_Remove;
   registerNativeClass('StringList', slMethods, SL_Destroy);
+  // Enable RTTI on StringList for indexed property support (sl[i])
+  findNativeClass('StringList')^.rttiEnabled := True;
+  findNativeClass('StringList')^.rttiClass := TStringList;
   defineNative('StringList', stringListNative, 0);
 
   // SQL connection native object class
@@ -7274,6 +7825,14 @@ begin
   defineNative('sqlQuery', sqlQueryNative, 2);
   defineNative('sqlQueryParams', sqlQueryParamsNative, 3);
   defineNative('sqlClose', sqlCloseNative, 1);
+
+  // Class discovery
+  defineNative('loxClasses', loxClassesNative, 0);
+  defineNative('loxClassInfo', loxClassInfoNative, 1);
+
+  // Object introspection
+  defineNative('loxObjects', loxObjectsNative, 0);
+  defineNative('loxObjectInfo', loxObjectInfoNative, 1);
 
   // ---- Exit assertions ----
   AssertVMIsAssigned;

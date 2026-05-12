@@ -13,8 +13,11 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Records** — Immutable-structure value types via `record Name(field1, field2);` syntax with dot access and field mutation
 - **Native Objects** — Inject Delphi classes as GC-tracked Lox objects with automatic RTTI-based property and method dispatch; ships with `StringList()` (add, get, count, remove)
 - **RTTI Injection** — Any Delphi `TObject` descendant can be injected into a Lox script via `InjectObject()`; published properties and methods are automatically accessible without wrapper code. Supports nested objects, object-typed method arguments, property mutation, method invocation with marshaling between Lox and Delphi types. Denylist prevents scripts from calling `Free`/`Destroy` and other lifecycle methods.
+- **Event Queue** — `TLoxQueue` native object enables Delphi-to-Lox event passing; Delphi code enqueues string events from form handlers, Lox scripts poll and consume them via `events.hasItems()` / `events.dequeue()`
+- **Interactive Script Execution** — `processMessages()` native function pumps the Windows message queue mid-script, enabling interactive scripts that respond to UI events in real-time; automatic print output flushing to the output memo; script abort on form close
+- **Script Runtime Safety** — Run button, test buttons, and editor are disabled while a script is running to prevent concurrent VM access and editor corruption
 - **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
-- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor, dictionary functions (`dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize`)
+- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor, dictionary functions (`dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize`), `processMessages()` for UI event loop integration
 - **Conversion Functions** — `str()`, `num()`, `bool()`, `type()` for runtime type conversion and introspection
 - **String Functions** — `strlen()`, `substr()`, `indexOf()`, `charAt()`, `upper()`, `lower()`, `trim()`, `split()`
 - **Math Functions** — `abs()`, `floor()`, `ceil()`, `round()` (banker's rounding), `min()`, `max()`, `sqrt()`, `pow()`, `random()`
@@ -47,11 +50,14 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | — | String manipulation (`strlen`, `substr`, `indexOf`, `charAt`, `upper`, `lower`, `trim`, `split`) |
 | — | Math library (`abs`, `floor`, `ceil`, `round`, `min`, `max`, `sqrt`, `pow`, `random`) |
 | — | Long-operand opcodes (`OP_*_LONG`) for >255 constants per chunk |
+| — | Event queue (`TLoxQueue`) for Delphi-to-Lox event passing |
+| — | Interactive script execution (`processMessages()`, print flushing, abort handling) |
 
 ## Project Structure
 
 ```
 Chunk_Types.pas      — Core unit: scanner, parser, compiler, VM, GC, hash table
+NativeObjects.pas    — Native Delphi classes exposed to Lox (TLoxQueue, TCustomer, TAddress)
 Main.pas / Main.dfm  — GUI form with interpreter REPL and auto-run test suite
 InterpreterGui.dpr   — Delphi project file
 samples/             — Custom Lox test programs (auto-run on startup)

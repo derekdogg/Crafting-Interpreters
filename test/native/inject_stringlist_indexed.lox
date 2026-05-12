@@ -1,0 +1,22 @@
+// ============================================================
+// inject_rtti_indexed.lox — Test indexed property access
+// ============================================================
+// 'items' is a TStringList injected by Delphi before execution.
+// It already contains: "Alice", "Bob", "Charlie"
+// TStringList has a default indexed property: Strings[Index: Integer]
+
+// Read via subscript
+print items[0]; // expect: Alice
+print items[1]; // expect: Bob
+print items[2]; // expect: Charlie
+
+// Write via subscript
+items[1] = "Bobby";
+print items[1]; // expect: Bobby
+
+// Verify other elements unchanged
+print items[0]; // expect: Alice
+print items[2]; // expect: Charlie
+
+// Read Count via RTTI property
+print items.Count; // expect: 3

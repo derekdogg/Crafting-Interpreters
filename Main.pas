@@ -6,8 +6,10 @@ uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.ImgList,
   SynEdit, SynEditTypes, SynHighlighterLox,
+  Chunk_Types,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
-  FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
+  FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait,
+  System.ImageList,NativeObjects;
 
 type
 
@@ -31,8 +33,11 @@ type
     ProgressBar1: TProgressBar;
     LblStatus: TLabel;
     StateImages: TImageList;
+    Button2: TButton;
+    Button3: TButton;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
+    procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure Button1Click(Sender: TObject);
     procedure BtnPopulateClick(Sender: TObject);
     procedure BtnRunSelectedClick(Sender: TObject);
@@ -40,6 +45,9 @@ type
     procedure BtnUncheckAllClick(Sender: TObject);
     procedure BtnRunAllClick(Sender: TObject);
     procedure TestTreeClick(Sender: TObject);
+    procedure Button2Click(Sender: TObject);
+    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+    procedure Button3Click(Sender: TObject);
   private
     procedure PopulateTestTree;
     procedure AddTestFiles(ParentNode: TTreeNode; const Dir, Pattern: string;
@@ -54,6 +62,9 @@ type
     procedure BuildStateImages;
   private
     FLoxSyn: TSynLoxSyn;
+    FEventQueue: TLoxQueue;
+    FScriptRunning: Boolean;
+    FClosing: Boolean;
   public
     { Public declarations }
   end;
@@ -63,7 +74,7 @@ var
 
 implementation
 uses
-  NativeObjectTestUnit, Chunk_Types, IOUtils, Types, StrUtils, Math;
+  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math;
 
 {$R *.dfm}
 
@@ -166,123 +177,38 @@ begin
   end;
 end;
 
-type
-  // Enum type for RTTI marshaling tests
-  TCustomerTier = (ctBronze, ctSilver, ctGold, ctPlatinum);
-
-  // Set type for RTTI marshaling tests
-  TCustomerFlag = (cfNewsletter, cfVIP, cfTaxExempt, cfWholesale);
-  TCustomerFlags = set of TCustomerFlag;
-
-  TAddress = class
-  private
-    FStreet: string;
-    FCity: string;
-    FZip: string;
-  public
-    constructor Create(const AStreet, ACity, AZip: string);
-    property Street: string read FStreet write FStreet;
-    property City: string read FCity write FCity;
-    property Zip: string read FZip write FZip;
+procedure TForm4.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+var
+  KeyName: string;
+begin
+  if Key = VK_F5 then
+  begin
+    Key := 0;
+    Button1Click(nil);
+    Exit;
   end;
-
-  TCustomer = class
-  private
-    FName: string;
-    FAge: Integer;
-    FBalance: Double;
-    FActive: Boolean;
-    FAddress: TAddress;
-    FTier: TCustomerTier;
-    FFlags: TCustomerFlags;
-    FTags: TArray<string>;
-  public
-    constructor Create(const AName: string; AAge: Integer; ABalance: Double; AActive: Boolean);
-    destructor Destroy; override;
-    property Name: string read FName write FName;
-    property Age: Integer read FAge write FAge;
-    property Balance: Double read FBalance write FBalance;
-    property Active: Boolean read FActive write FActive;
-    property Address: TAddress read FAddress write FAddress;
-    property Tier: TCustomerTier read FTier write FTier;
-    property Flags: TCustomerFlags read FFlags write FFlags;
-    property Tags: TArray<string> read FTags write FTags;
-    function Greet: string;
-    procedure AddBalance(Amount: Double);
-    procedure SetInfo(const NewName: string; NewAge: Integer);
-    function Describe(const Prefix: string): string;
-    procedure SetAddress(NewAddr: TAddress);
-    function GetTags: TArray<string>;
-    procedure SetTags(const NewTags: TArray<string>);
+  // Enqueue key events for Lox scripts
+  case Key of
+    VK_LEFT:   KeyName := 'left';
+    VK_RIGHT:  KeyName := 'right';
+    VK_UP:     KeyName := 'up';
+    VK_DOWN:   KeyName := 'down';
+    VK_SPACE:  KeyName := 'space';
+    VK_RETURN: KeyName := 'enter';
+    VK_ESCAPE: KeyName := 'escape';
+  else
+    if (Key >= Ord('A')) and (Key <= Ord('Z')) then
+      KeyName := LowerCase(Char(Key))
+    else
+      KeyName := '';
   end;
-
-constructor TAddress.Create(const AStreet, ACity, AZip: string);
-begin
-  inherited Create;
-  FStreet := AStreet;
-  FCity := ACity;
-  FZip := AZip;
-end;
-
-constructor TCustomer.Create(const AName: string; AAge: Integer; ABalance: Double; AActive: Boolean);
-begin
-  inherited Create;
-  FName := AName;
-  FAge := AAge;
-  FBalance := ABalance;
-  FActive := AActive;
-  FAddress := nil;
-  FTier := ctBronze;
-  FFlags := [];
-  FTags := nil;
-end;
-
-destructor TCustomer.Destroy;
-begin
-  FAddress.Free;
-  inherited;
-end;
-
-function TCustomer.Greet: string;
-begin
-  Result := 'Hello, ' + FName + '!';
-end;
-
-procedure TCustomer.AddBalance(Amount: Double);
-begin
-  FBalance := FBalance + Amount;
-end;
-
-procedure TCustomer.SetInfo(const NewName: string; NewAge: Integer);
-begin
-  FName := NewName;
-  FAge := NewAge;
-end;
-
-function TCustomer.Describe(const Prefix: string): string;
-begin
-  Result := Prefix + FName + ', age ' + IntToStr(FAge);
-end;
-
-procedure TCustomer.SetAddress(NewAddr: TAddress);
-begin
-  if FAddress <> NewAddr then
-    FAddress.Free;
-  FAddress := NewAddr;
-end;
-
-function TCustomer.GetTags: TArray<string>;
-begin
-  Result := FTags;
-end;
-
-procedure TCustomer.SetTags(const NewTags: TArray<string>);
-begin
-  FTags := NewTags;
+  if KeyName <> '' then
+    FEventQueue.Enqueue('keydown:' + KeyName);
 end;
 
 procedure TForm4.FormCreate(Sender: TObject);
 begin
+  FEventQueue := TLoxQueue.Create;
   FLoxSyn := TSynLoxSyn.Create(Self);
   Memo1.Highlighter := FLoxSyn;
 
@@ -332,6 +258,7 @@ procedure TForm4.FormDestroy(Sender: TObject);
 var
   N: TTreeNode;
 begin
+  FEventQueue.Free;
   N := TestTree.Items.GetFirstNode;
   while N <> nil do
   begin
@@ -344,6 +271,23 @@ begin
   end;
 end;
 
+function processMessagesNative(argCount: integer; args: pValue): TValue;
+begin
+  // Flush any pending print output to the output memo
+  if VM.PrintOutput <> '' then
+  begin
+    Form4.Memo2.Lines.Add(VM.PrintOutput);
+    VM.PrintOutput := '';
+  end;
+  Application.ProcessMessages;
+  if Form4.FClosing then
+  begin
+    RuntimeError('Script aborted: application closing.');
+    Exit(CreateNilValue);
+  end;
+  Result := CreateNilValue;
+end;
+
 procedure TForm4.Button1Click(Sender: TObject);
 var
   IR : TInterpretResult;
@@ -351,7 +295,26 @@ var
 begin
   Memo2.Lines.Clear;
   txt := AnsiString(Memo1.Lines.Text);
-  IR := interpretResult(PAnsiChar(txt));
+  FEventQueue.clear;
+  FScriptRunning := True;
+  Button1.Enabled := False;
+  BtnRunSelected.Enabled := False;
+  BtnRunAll.Enabled := False;
+  Memo1.ReadOnly := True;
+  InitVM;
+  try
+    defineNative('processMessages', processMessagesNative, 0);
+    registerNativeClassRTTI('LoxQueue', TLoxQueue);
+    InjectNativeObject('events', Pointer(FEventQueue), 'LoxQueue');
+    IR := CompileAndRun(PAnsiChar(txt));
+  finally
+    FreeVM;
+    FScriptRunning := False;
+    Button1.Enabled := True;
+    BtnRunSelected.Enabled := True;
+    BtnRunAll.Enabled := True;
+    Memo1.ReadOnly := False;
+  end;
 
   case IR.code of
     INTERPRET_OK:
@@ -359,15 +322,42 @@ begin
       if IR.OutputStr <> '' then
         Memo2.Lines.Add(IR.OutputStr);
       case IR.value.ValueKind of
-        vkNumber:  Memo2.Lines.Add(IR.value.NumberValue.ToString);
-        vkBoolean: Memo2.Lines.Add(BoolToStr(IR.value.BooleanValue, True));
-        vkNull:    ; // suppress
-        vkObject:  Memo2.Lines.Add(IR.ResultStr);
+        Chunk_Types.vkNumber:  Memo2.Lines.Add(IR.value.NumberValue.ToString);
+        Chunk_Types.vkBoolean: Memo2.Lines.Add(BoolToStr(IR.value.BooleanValue, True));
+        Chunk_Types.vkNull:    ; // suppress
+        Chunk_Types.vkObject:  Memo2.Lines.Add(IR.ResultStr);
       end;
     end;
     INTERPRET_COMPILE_ERROR: Memo2.Lines.Add(IR.ErrorStr);
     INTERPRET_RUNTIME_ERROR: Memo2.Lines.Add(IR.ErrorStr);
   end;
+
+  // If closing was requested while the script was running, now close for real
+  if FClosing then
+    Close;
+end;
+
+procedure TForm4.Button2Click(Sender: TObject);
+begin
+  FEventQueue.Enqueue('click:TestButton');
+
+
+end;
+
+procedure TForm4.Button3Click(Sender: TObject);
+begin
+ FEventQueue.Enqueue('keydown:escape');
+end;
+
+procedure TForm4.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+begin
+  if FScriptRunning then
+  begin
+    FClosing := True;
+    CanClose := False;  // let the script abort first, then close
+  end
+  else
+    CanClose := True;
 end;
 
 // ---- State image construction (checkbox + result icons) ----
@@ -556,11 +546,23 @@ procedure TForm4.TestTreeClick(Sender: TObject);
 var
   P: TPoint;
   HT: THitTests;
+  Node: TTreeNode;
+  FilePath: string;
 begin
   P := TestTree.ScreenToClient(Mouse.CursorPos);
   HT := TestTree.GetHitTestInfoAt(P.X, P.Y);
   if htOnStateIcon in HT then
-    ToggleCheck(TestTree.Selected);
+    ToggleCheck(TestTree.Selected)
+  else
+  begin
+    Node := TestTree.Selected;
+    if (Node <> nil) and (Node.Data <> nil) then
+    begin
+      FilePath := String(PChar(Node.Data));
+      if FileExists(FilePath) then
+        Memo1.Lines.LoadFromFile(FilePath);
+    end;
+  end;
 end;
 
 procedure TForm4.CollectCheckedFiles(Node: TTreeNode; Files: TStringList);
@@ -849,7 +851,7 @@ begin
       Memo2.Lines.Add('  output mismatch');
     end;
   finally
-    if cust.Address <> addr2 then
+    if cust.Address <> addr2 then  //cust now owns the address-- not ideal but simple enough for testing
       addr2.Free;
     cust.Free;
   end;
