@@ -429,6 +429,23 @@ object Form4: TForm4
           '}'
           'var explDuration = 0.3;'
           ''
+          '// --- Starfield ---'
+          'var numStars = 60;'
+          'var starX = newArray();'
+          'var starY = newArray();'
+          'var starSpeed = newArray();'
+          'var starBright = newArray();'
+          'i = 0;'
+          'while (i < numStars) {'
+          '  arrayPush(starX, floor(random() * w));'
+          '  arrayPush(starY, floor(random() * h));'
+          '  var spd = 20 + random() * 60;'
+          '  arrayPush(starSpeed, spd);'
+          '  // Dimmer stars move slower, brighter stars move faster'
+          '  arrayPush(starBright, floor(80 + spd * 2));'
+          '  i = i + 1;'
+          '}'
+          ''
           '// ============================================================'
           '// Game loop'
           '// ============================================================'
@@ -691,6 +708,23 @@ object Form4: TForm4
             '='
           '  clearCanvas();'
           ''
+          '  // --- Draw starfield ---'
+          '  i = 0;'
+          '  while (i < numStars) {'
+          
+            '    arraySet(starY, i, arrayGet(starY, i) + arrayGet(starSpeed, ' +
+            'i) * dt);'
+          '    if (arrayGet(starY, i) >= h) {'
+          '      arraySet(starY, i, 0);'
+          '      arraySet(starX, i, floor(random() * w));'
+          '    }'
+          '    var b = arrayGet(starBright, i);'
+          '    if (b > 255) b = 255;'
+          '    setColor(b, b, b);'
+          '    drawPixel(arrayGet(starX, i), floor(arrayGet(starY, i)));'
+          '    i = i + 1;'
+          '  }'
+          ''
           '  // --- Draw invaders ---'
           '  var r = 0;'
           '  while (r < rows) {'
@@ -765,7 +799,6 @@ object Form4: TForm4
           ''
           'print "Final score: " + str(score);')
         SelectedColor.Alpha = 0.400000005960464500
-        ExplicitHeight = 437
       end
     end
     object Panel2: TPanel
