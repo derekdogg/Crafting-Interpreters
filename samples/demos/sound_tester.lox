@@ -1,0 +1,96 @@
+// ============================================================
+// Sound Tester — experiment with sound parameters
+// ============================================================
+// Press keys to hear different sounds. Tweak the values below!
+
+var running = true;
+
+// --- Sound presets (edit these!) ---
+
+// Tones (frequency, duration)
+var toneFreq = 440;
+var toneDur = 200;
+
+// Sweeps (startFreq, endFreq, duration)
+var sweepStart = 1200;
+var sweepEnd = 400;
+var sweepDur = 80;
+
+// Noise (duration)
+var noiseDur = 180;
+
+// --- HUD ---
+fun draw() {
+  clearCanvas();
+  setColor(255, 255, 255);
+  drawText(10, 10, "=== SOUND TESTER ===");
+
+  setColor(200, 200, 200);
+  drawText(10, 50,  "[1] Tone:  " + str(toneFreq) + " Hz, " + str(toneDur) + " ms");
+  drawText(10, 80,  "[2] Sweep: " + str(sweepStart) + " -> " + str(sweepEnd) + " Hz, " + str(sweepDur) + " ms");
+  drawText(10, 110, "[3] Noise: " + str(noiseDur) + " ms");
+
+  setColor(100, 200, 255);
+  drawText(10, 160, "--- Common Game Sounds ---");
+  setColor(200, 200, 200);
+  drawText(10, 190, "[Q] Laser pew       [W] Deep explosion");
+  drawText(10, 220, "[E] Enemy zap        [R] Player death");
+  drawText(10, 250, "[A] Invader step     [S] Pickup/coin");
+  drawText(10, 280, "[D] Alarm siren      [F] Bomb drop");
+  drawText(10, 310, "[Z] Menu blip        [X] Error buzz");
+
+  setColor(255, 255, 100);
+  drawText(10, 360, "Press ESC to quit");
+  present();
+}
+
+draw();
+
+while (running) {
+  processMessages();
+
+  while (events.hasItems()) {
+    var e = events.dequeue();
+
+    // Basic sounds with your parameters
+    if (e == "keydown:1") { playTone(toneFreq, toneDur); draw(); }
+    if (e == "keydown:2") { playSweep(sweepStart, sweepEnd, sweepDur); draw(); }
+    if (e == "keydown:3") { playNoise(noiseDur); draw(); }
+
+    // --- Preset game sounds ---
+
+    // Laser pew (high to low, short)
+    if (e == "keydown:q") playSweep(1200, 400, 80);
+
+    // Deep explosion (noise, long)
+    if (e == "keydown:w") playNoise(350);
+
+    // Enemy zap (low to high, short)
+    if (e == "keydown:e") playSweep(600, 900, 50);
+
+    // Player death (noise, very long)
+    if (e == "keydown:r") playNoise(500);
+
+    // Invader step (deep sweep)
+    if (e == "keydown:a") playSweep(65, 45, 40);
+
+    // Pickup / coin (rising bright tone)
+    if (e == "keydown:s") playSweep(800, 1600, 100);
+
+    // Alarm siren (sweep up)
+    if (e == "keydown:d") playSweep(400, 1200, 300);
+
+    // Bomb drop (long descending)
+    if (e == "keydown:f") playSweep(1000, 60, 500);
+
+    // Menu blip (short high tone)
+    if (e == "keydown:z") playTone(1000, 30);
+
+    // Error buzz (low short tone)
+    if (e == "keydown:x") playTone(80, 150);
+
+    if (e == "keydown:escape") running = false;
+  }
+}
+
+print "Done!";
