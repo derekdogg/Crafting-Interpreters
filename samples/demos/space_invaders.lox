@@ -358,25 +358,33 @@ var bgMoon = createPaletteSprite(6, 6,
   "..GGG."
 );
 
+// Create flipped variants for visual variety
+var bgMoonFlipped = flipSprite(bgMoon, "h");
+var bgPlanetFlipped = flipSprite(bgPlanet, "h");
+
 // Background element positions (fixed, scattered)
-var bgCount = 6;
+var bgCount = 8;
 var bgSprite = newArray();
 var bgX_pos = newArray();
 var bgY_pos = newArray();
 var bgScale = newArray();
 
-// Planet — upper right area
-arrayPush(bgSprite, bgPlanet);  arrayPush(bgX_pos, floor(w * 0.78)); arrayPush(bgY_pos, 55);  arrayPush(bgScale, 3);
+// Planet — upper right area (flipped so ring faces other way)
+arrayPush(bgSprite, bgPlanetFlipped);  arrayPush(bgX_pos, floor(w * 0.78)); arrayPush(bgY_pos, 55);  arrayPush(bgScale, 3);
 // Galaxy — left mid
 arrayPush(bgSprite, bgGalaxy);  arrayPush(bgX_pos, 35);  arrayPush(bgY_pos, 130); arrayPush(bgScale, 3);
 // Star cluster — center low
 arrayPush(bgSprite, bgCluster);  arrayPush(bgX_pos, floor(w * 0.45)); arrayPush(bgY_pos, floor(h * 0.72)); arrayPush(bgScale, 3);
-// Moon — upper left
+// Moon — upper left (original, crescent faces right)
 arrayPush(bgSprite, bgMoon);  arrayPush(bgX_pos, floor(w * 0.18)); arrayPush(bgY_pos, 40);  arrayPush(bgScale, 3);
 // Another galaxy — right mid
 arrayPush(bgSprite, bgGalaxy);  arrayPush(bgX_pos, floor(w * 0.88)); arrayPush(bgY_pos, floor(h * 0.48)); arrayPush(bgScale, 2);
 // Cluster — lower left
 arrayPush(bgSprite, bgCluster);  arrayPush(bgX_pos, floor(w * 0.1)); arrayPush(bgY_pos, floor(h * 0.58)); arrayPush(bgScale, 4);
+// Flipped moon — lower right (crescent faces left)
+arrayPush(bgSprite, bgMoonFlipped);  arrayPush(bgX_pos, floor(w * 0.85)); arrayPush(bgY_pos, floor(h * 0.65)); arrayPush(bgScale, 2);
+// Small planet — center-left area
+arrayPush(bgSprite, bgPlanet);  arrayPush(bgX_pos, floor(w * 0.35)); arrayPush(bgY_pos, floor(h * 0.38)); arrayPush(bgScale, 2);
 
 clearPalette();
 

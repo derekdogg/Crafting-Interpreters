@@ -1,0 +1,71 @@
+// Quick test of drawLine and fillCircle rendering
+var w = canvasWidth();
+var h = canvasHeight();
+
+clearCanvas();
+
+// --- Lines in various angles ---
+// Horizontal
+setColor(255, 255, 255);
+drawLine(20, 20, 200, 20);
+
+// Vertical
+setColor(255, 255, 0);
+drawLine(20, 30, 20, 200);
+
+// Diagonal 45°
+setColor(0, 255, 0);
+drawLine(30, 30, 200, 200);
+
+// Shallow angle
+setColor(0, 255, 255);
+drawLine(30, 220, 300, 250);
+
+// Steep angle
+setColor(255, 0, 255);
+drawLine(250, 30, 270, 250);
+
+// Reverse direction (right to left)
+setColor(255, 128, 0);
+drawLine(350, 50, 220, 150);
+
+// Near-horizontal
+setColor(128, 128, 255);
+drawLine(30, 270, 400, 280);
+
+// --- Circles at various sizes ---
+// Small
+setColor(255, 0, 0);
+fillCircle(350, 60, 10);
+
+// Medium
+setColor(0, 200, 0);
+fillCircle(350, 130, 25);
+
+// Large
+setColor(50, 100, 255);
+fillCircle(300, 250, 50);
+
+// Tiny (radius 3)
+setColor(255, 255, 255);
+fillCircle(420, 60, 3);
+
+// Edge of screen (partially clipped)
+setColor(255, 200, 0);
+fillCircle(w - 10, h / 2, 30);
+
+// --- Labels ---
+setColor(255, 255, 255);
+drawText(10, h - 30, "Lines + Circles test — press ESC to quit");
+
+present();
+
+// Wait for ESC
+var running = true;
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+}

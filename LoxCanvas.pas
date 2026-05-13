@@ -51,6 +51,8 @@ var
   FFrontBuffer: TBitmap;   // presented frame — never partially drawn
   FCurrentColor: TColor;
   FCurrentPixel: Cardinal;  // precomputed BGRA pixel for ScanLine writes
+  FCameraX: Integer;
+  FCameraY: Integer;
   FSprites: TObjectList<TBitmap>;
   FTilemaps: TObjectList<TTilemap>;
   FHasFrontFrame: Boolean;  // true once present() has been called at least once
@@ -211,6 +213,23 @@ begin
   Result := CreateNilValue;
 end;
 
+function setCameraNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('setCamera() takes 2 arguments (x, y).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('setCamera() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  FCameraX := Trunc(args[0].NumberValue);
+  FCameraY := Trunc(args[1].NumberValue);
+  Result := CreateNilValue;
+end;
+
 function fillRectNative(argCount: integer; args: pValue): TValue;
 var
   x, y, w, h: Integer;
@@ -227,8 +246,8 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[0].NumberValue);
-  y := Trunc(args[1].NumberValue);
+  x := Trunc(args[0].NumberValue) - FCameraX;
+  y := Trunc(args[1].NumberValue) - FCameraY;
   w := Trunc(args[2].NumberValue);
   h := Trunc(args[3].NumberValue);
   FBackBuffer.Canvas.Brush.Color := FCurrentColor;
@@ -258,8 +277,8 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[0].NumberValue);
-  y := Trunc(args[1].NumberValue);
+  x := Trunc(args[0].NumberValue) - FCameraX;
+  y := Trunc(args[1].NumberValue) - FCameraY;
   s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
   oldBrushStyle := FBackBuffer.Canvas.Brush.Style;
   try
@@ -303,6 +322,8 @@ end;
 function drawLineNative(argCount: integer; args: pValue): TValue;
 var
   x1, y1, x2, y2: Integer;
+  dx, dy, sx, sy, err, e2: Integer;
+  bw, bh: Integer;
 begin
   if argCount <> 4 then
   begin
@@ -316,20 +337,51 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x1 := Trunc(args[0].NumberValue);
-  y1 := Trunc(args[1].NumberValue);
-  x2 := Trunc(args[2].NumberValue);
-  y2 := Trunc(args[3].NumberValue);
-  FBackBuffer.Canvas.Pen.Color := FCurrentColor;
-  FBackBuffer.Canvas.MoveTo(x1, y1);
-  FBackBuffer.Canvas.LineTo(x2, y2);
+  x1 := Trunc(args[0].NumberValue) - FCameraX;
+  y1 := Trunc(args[1].NumberValue) - FCameraY;
+  x2 := Trunc(args[2].NumberValue) - FCameraX;
+  y2 := Trunc(args[3].NumberValue) - FCameraY;
+  bw := FBackBuffer.Width;
+  bh := FBackBuffer.Height;
+  // Bresenham's line algorithm — crisp single-pixel line
+  dx := Abs(x2 - x1);
+  dy := -Abs(y2 - y1);
+  if x1 < x2 then sx := 1 else sx := -1;
+  if y1 < y2 then sy := 1 else sy := -1;
+  err := dx + dy;
+  while True do
+  begin
+    if (x1 >= 0) and (x1 < bw) and (y1 >= 0) and (y1 < bh) then
+      PutPixelUnchecked(x1, y1, FCurrentPixel);
+    if (x1 = x2) and (y1 = y2) then Break;
+    e2 := 2 * err;
+    if e2 >= dy then begin err := err + dy; x1 := x1 + sx; end;
+    if e2 <= dx then begin err := err + dx; y1 := y1 + sy; end;
+  end;
   Result := CreateNilValue;
 end;
 
 function fillCircleNative(argCount: integer; args: pValue): TValue;
 var
-  oldPenStyle: TPenStyle;
   cx, cy, r: Integer;
+  bw, bh: Integer;
+  x, y, d: Integer;
+  x0, x1, yy: Integer;
+  row: PCardinal;
+
+  procedure HLine(hx0, hx1, hy: Integer);
+  var
+    px: Integer;
+  begin
+    if (hy < 0) or (hy >= bh) then Exit;
+    if hx0 < 0 then hx0 := 0;
+    if hx1 >= bw then hx1 := bw - 1;
+    if hx0 > hx1 then Exit;
+    row := FBackBuffer.ScanLine[hy];
+    for px := hx0 to hx1 do
+      row[px] := FCurrentPixel;
+  end;
+
 begin
   if argCount <> 3 then
   begin
@@ -343,16 +395,40 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  cx := Trunc(args[0].NumberValue);
-  cy := Trunc(args[1].NumberValue);
+  cx := Trunc(args[0].NumberValue) - FCameraX;
+  cy := Trunc(args[1].NumberValue) - FCameraY;
   r  := Trunc(args[2].NumberValue);
-  oldPenStyle := FBackBuffer.Canvas.Pen.Style;
-  try
-    FBackBuffer.Canvas.Brush.Color := FCurrentColor;
-    FBackBuffer.Canvas.Pen.Style := psClear;
-    FBackBuffer.Canvas.Ellipse(cx - r, cy - r, cx + r, cy + r);
-  finally
-    FBackBuffer.Canvas.Pen.Style := oldPenStyle;
+  if r < 0 then
+  begin
+    Result := CreateNilValue;
+    Exit;
+  end;
+  bw := FBackBuffer.Width;
+  bh := FBackBuffer.Height;
+  // Midpoint circle — fill with horizontal spans
+  x := 0;
+  y := r;
+  d := 1 - r;
+  // Draw initial horizontal line through center
+  HLine(cx - r, cx + r, cy);
+  while x < y do
+  begin
+    Inc(x);
+    if d < 0 then
+      d := d + 2 * x + 1
+    else
+    begin
+      // Fill the wider span pair before shrinking y
+      HLine(cx - x + 1, cx + x - 1, cy - y);
+      HLine(cx - x + 1, cx + x - 1, cy + y);
+      Dec(y);
+      d := d + 2 * (x - y) + 1;
+    end;
+    if x <= y then
+    begin
+      HLine(cx - y, cx + y, cy - x);
+      HLine(cx - y, cx + y, cy + x);
+    end;
   end;
   Result := CreateNilValue;
 end;
@@ -372,8 +448,8 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[0].NumberValue);
-  y := Trunc(args[1].NumberValue);
+  x := Trunc(args[0].NumberValue) - FCameraX;
+  y := Trunc(args[1].NumberValue) - FCameraY;
   if (x >= 0) and (x < FBackBuffer.Width) and
      (y >= 0) and (y < FBackBuffer.Height) then
     PCardinal(FBackBuffer.ScanLine[y])[x] := FCurrentPixel;
@@ -476,8 +552,8 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[1].NumberValue);
-  y := Trunc(args[2].NumberValue);
+  x := Trunc(args[1].NumberValue) - FCameraX;
+  y := Trunc(args[2].NumberValue) - FCameraY;
   bmp := FSprites[id];
   bw := FBackBuffer.Width;
   bh := FBackBuffer.Height;
@@ -524,8 +600,8 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[1].NumberValue);
-  y := Trunc(args[2].NumberValue);
+  x := Trunc(args[1].NumberValue) - FCameraX;
+  y := Trunc(args[2].NumberValue) - FCameraY;
   scale := Trunc(args[3].NumberValue);
   if scale < 1 then
   begin
@@ -587,8 +663,8 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[1].NumberValue);
-  y := Trunc(args[2].NumberValue);
+  x := Trunc(args[1].NumberValue) - FCameraX;
+  y := Trunc(args[2].NumberValue) - FCameraY;
   scale := Trunc(args[3].NumberValue);
   if scale < 1 then scale := 1;
   angle := args[4].NumberValue * Pi / 180.0; // degrees to radians
@@ -891,8 +967,8 @@ begin
   end;
   EnsureBackBuffer;
   tm := FTilemaps[mapId];
-  scrollX := Trunc(args[1].NumberValue);
-  scrollY := Trunc(args[2].NumberValue);
+  scrollX := Trunc(args[1].NumberValue) + FCameraX;
+  scrollY := Trunc(args[2].NumberValue) + FCameraY;
 
   // Calculate visible tile range
   startCol := scrollX div tm.TileW;
@@ -1011,6 +1087,8 @@ begin
     FTilemaps.Clear;
   FillChar(FPalette, SizeOf(FPalette), 0);
   FillChar(FPaletteUsed, SizeOf(FPaletteUsed), 0);
+  FCameraX := 0;
+  FCameraY := 0;
   defineNative('canvasWidth', canvasWidthNative, 0);
   defineNative('canvasHeight', canvasHeightNative, 0);
   defineNative('clearCanvas', clearCanvasNative, 0);
@@ -1033,6 +1111,7 @@ begin
   defineNative('getTile', getTileNative, 3);
   defineNative('flipSprite', flipSpriteNative, 2);
   defineNative('drawSpriteRotated', drawSpriteRotatedNative, 5);
+  defineNative('setCamera', setCameraNative, 2);
 end;
 
 end.
