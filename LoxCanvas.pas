@@ -11,20 +11,43 @@ procedure RegisterCanvasNatives;
 
 implementation
 
+{$POINTERMATH ON}
+
 uses
   SysUtils, Types, Classes, Generics.Collections;
 
 type
+  TRGBQuadRec = packed record
+    rgbBlue, rgbGreen, rgbRed, rgbReserved: Byte;
+  end;
+  TRGBQuadArray = array[0..MaxInt div SizeOf(TRGBQuadRec) - 1] of TRGBQuadRec;
+  PRGBQuadArray = ^TRGBQuadArray;
+
   TCanvasHelper = class
     procedure PaintBoxPaint(Sender: TObject);
   end;
+
+  TTilemap = class
+    Cols, Rows: Integer;
+    TileW, TileH: Integer;
+    Tiles: array of Integer;
+    constructor Create(ACols, ARows, ATileW, ATileH: Integer);
+  end;
+
+const
+  COLORONCOLOR = 3; // nearest-neighbor stretch mode
+
+function SetStretchBltMode(DC: THandle; Mode: Integer): Integer; stdcall;
+  external 'gdi32.dll' name 'SetStretchBltMode';
 
 var
   FPaintBox: TPaintBox;
   FBackBuffer: TBitmap;
   FCurrentColor: TColor;
+  FCurrentPixel: Cardinal;  // precomputed BGRA pixel for ScanLine writes
   FCanvasHelper: TCanvasHelper;
   FSprites: TObjectList<TBitmap>;
+  FTilemaps: TObjectList<TTilemap>;
 
 procedure EnsureBackBuffer;
 begin
@@ -50,13 +73,26 @@ begin
     FPaintBox.Canvas.Draw(0, 0, FBackBuffer);
 end;
 
+{ TTilemap }
+
+constructor TTilemap.Create(ACols, ARows, ATileW, ATileH: Integer);
+var
+  i: Integer;
+begin
+  inherited Create;
+  Cols := ACols;
+  Rows := ARows;
+  TileW := ATileW;
+  TileH := ATileH;
+  SetLength(Tiles, ACols * ARows);
+  for i := 0 to Length(Tiles) - 1 do
+    Tiles[i] := -1;
+end;
+
 procedure InitCanvas(APaintBox: TPaintBox);
 begin
   FPaintBox := APaintBox;
   FCurrentColor := clWhite;
-  // Clear sprites from previous run
-  if FSprites <> nil then
-    FSprites.Clear;
   if FCanvasHelper = nil then
     FCanvasHelper := TCanvasHelper.Create;
   FreeAndNil(FBackBuffer);
@@ -72,6 +108,7 @@ procedure FreeCanvas;
 begin
   if FPaintBox <> nil then
     FPaintBox.OnPaint := nil;
+  FreeAndNil(FTilemaps);
   FreeAndNil(FSprites);
   FreeAndNil(FBackBuffer);
   FreeAndNil(FCanvasHelper);
@@ -132,6 +169,8 @@ begin
     Exit(CreateNilValue);
   end;
   FCurrentColor := TColor(r or (g shl 8) or (b shl 16));
+  // Precompute native BGRA pixel: TRGBQuad layout is Blue, Green, Red, Reserved
+  FCurrentPixel := Cardinal(b or (g shl 8) or (r shl 16));
   Result := CreateNilValue;
 end;
 
@@ -261,6 +300,29 @@ begin
   Result := CreateNilValue;
 end;
 
+function drawPixelNative(argCount: integer; args: pValue): TValue;
+var
+  x, y: Integer;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('drawPixel() takes 2 arguments (x, y).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('drawPixel() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x := Trunc(args[0].NumberValue);
+  y := Trunc(args[1].NumberValue);
+  if (x >= 0) and (x < FBackBuffer.Width) and
+     (y >= 0) and (y < FBackBuffer.Height) then
+    PCardinal(FBackBuffer.ScanLine[y])[x] := FCurrentPixel;
+  Result := CreateNilValue;
+end;
+
 // -- Sprite functions --
 
 function createSpriteNative(argCount: integer; args: pValue): TValue;
@@ -269,6 +331,7 @@ var
   s: AnsiString;
   bmp: TBitmap;
   transColor: TColor;
+  row: PRGBQuadArray;
 begin
   if argCount <> 3 then
   begin
@@ -304,16 +367,20 @@ begin
   try
     bmp.PixelFormat := pf32bit;
     bmp.SetSize(w, h);
-    bmp.Canvas.Brush.Color := transColor;
-    bmp.Canvas.FillRect(Rect(0, 0, w, h));
+    // Fill with transparency key and stamp colored pixels via ScanLine
     i := 1;
     for y := 0 to h - 1 do
+    begin
+      row := bmp.ScanLine[y];
       for x := 0 to w - 1 do
       begin
         if s[i] <> '.' then
-          bmp.Canvas.Pixels[x, y] := FCurrentColor;
+          PCardinal(@row[x])^ := FCurrentPixel
+        else
+          PCardinal(@row[x])^ := $00FF00FF; // magenta in BGRA
         Inc(i);
       end;
+    end;
     bmp.Transparent := True;
     bmp.TransparentColor := transColor;
   except
@@ -388,12 +455,146 @@ begin
   sw := FSprites[id].Width * scale;
   sh := FSprites[id].Height * scale;
   destRect := Rect(x, y, x + sw, y + sh);
+  SetStretchBltMode(FBackBuffer.Canvas.Handle, COLORONCOLOR);
   FBackBuffer.Canvas.StretchDraw(destRect, FSprites[id]);
+  Result := CreateNilValue;
+end;
+
+// -- Tilemap functions --
+
+function createTilemapNative(argCount: integer; args: pValue): TValue;
+var
+  cols, rows, tw, th: Integer;
+begin
+  if argCount <> 4 then
+  begin
+    RuntimeError('createTilemap() takes 4 arguments (cols, rows, tileW, tileH).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
+     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('createTilemap() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  cols := Trunc(args[0].NumberValue);
+  rows := Trunc(args[1].NumberValue);
+  tw := Trunc(args[2].NumberValue);
+  th := Trunc(args[3].NumberValue);
+  if (cols <= 0) or (rows <= 0) or (tw <= 0) or (th <= 0) then
+  begin
+    RuntimeError('createTilemap() all arguments must be positive.');
+    Exit(CreateNilValue);
+  end;
+  if FTilemaps = nil then
+    FTilemaps := TObjectList<TTilemap>.Create(True);
+  Result := CreateNumber(FTilemaps.Add(TTilemap.Create(cols, rows, tw, th)));
+end;
+
+function setTileNative(argCount: integer; args: pValue): TValue;
+var
+  mapId, col, row, spriteId: Integer;
+  tm: TTilemap;
+begin
+  if argCount <> 4 then
+  begin
+    RuntimeError('setTile() takes 4 arguments (mapId, col, row, spriteId).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
+     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('setTile() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  mapId := Trunc(args[0].NumberValue);
+  if (FTilemaps = nil) or (mapId < 0) or (mapId >= FTilemaps.Count) then
+  begin
+    RuntimeError('setTile() invalid tilemap id.');
+    Exit(CreateNilValue);
+  end;
+  tm := FTilemaps[mapId];
+  col := Trunc(args[1].NumberValue);
+  row := Trunc(args[2].NumberValue);
+  spriteId := Trunc(args[3].NumberValue);
+  if (col < 0) or (col >= tm.Cols) or (row < 0) or (row >= tm.Rows) then
+  begin
+    RuntimeError('setTile() col/row out of range.');
+    Exit(CreateNilValue);
+  end;
+  // spriteId -1 = empty, otherwise validate
+  if (spriteId >= 0) and ((FSprites = nil) or (spriteId >= FSprites.Count)) then
+  begin
+    RuntimeError('setTile() invalid sprite id.');
+    Exit(CreateNilValue);
+  end;
+  tm.Tiles[row * tm.Cols + col] := spriteId;
+  Result := CreateNilValue;
+end;
+
+function drawTilemapNative(argCount: integer; args: pValue): TValue;
+var
+  mapId, scrollX, scrollY: Integer;
+  tm: TTilemap;
+  startCol, startRow, endCol, endRow: Integer;
+  c, r, tileIdx, dx, dy: Integer;
+  destRect: TRect;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('drawTilemap() takes 3 arguments (mapId, scrollX, scrollY).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
+     (args[2].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('drawTilemap() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  mapId := Trunc(args[0].NumberValue);
+  if (FTilemaps = nil) or (mapId < 0) or (mapId >= FTilemaps.Count) then
+  begin
+    RuntimeError('drawTilemap() invalid tilemap id.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  tm := FTilemaps[mapId];
+  scrollX := Trunc(args[1].NumberValue);
+  scrollY := Trunc(args[2].NumberValue);
+
+  // Calculate visible tile range
+  startCol := scrollX div tm.TileW;
+  startRow := scrollY div tm.TileH;
+  endCol := (scrollX + FBackBuffer.Width) div tm.TileW;
+  endRow := (scrollY + FBackBuffer.Height) div tm.TileH;
+  if startCol < 0 then startCol := 0;
+  if startRow < 0 then startRow := 0;
+  if endCol >= tm.Cols then endCol := tm.Cols - 1;
+  if endRow >= tm.Rows then endRow := tm.Rows - 1;
+
+  SetStretchBltMode(FBackBuffer.Canvas.Handle, COLORONCOLOR);
+  for r := startRow to endRow do
+    for c := startCol to endCol do
+    begin
+      tileIdx := tm.Tiles[r * tm.Cols + c];
+      if (tileIdx >= 0) and (tileIdx < FSprites.Count) then
+      begin
+        dx := c * tm.TileW - scrollX;
+        dy := r * tm.TileH - scrollY;
+        destRect := Rect(dx, dy, dx + tm.TileW, dy + tm.TileH);
+        FBackBuffer.Canvas.StretchDraw(destRect, FSprites[tileIdx]);
+      end;
+    end;
   Result := CreateNilValue;
 end;
 
 procedure RegisterCanvasNatives;
 begin
+  // Clear sprites and tilemaps from previous run
+  if FSprites <> nil then
+    FSprites.Clear;
+  if FTilemaps <> nil then
+    FTilemaps.Clear;
   defineNative('canvasWidth', canvasWidthNative, 0);
   defineNative('canvasHeight', canvasHeightNative, 0);
   defineNative('clearCanvas', clearCanvasNative, 0);
@@ -403,9 +604,13 @@ begin
   defineNative('present', presentNative, 0);
   defineNative('drawLine', drawLineNative, 4);
   defineNative('fillCircle', fillCircleNative, 3);
+  defineNative('drawPixel', drawPixelNative, 2);
   defineNative('createSprite', createSpriteNative, 3);
   defineNative('drawSprite', drawSpriteNative, 3);
   defineNative('drawSpriteScaled', drawSpriteScaledNative, 4);
+  defineNative('createTilemap', createTilemapNative, 4);
+  defineNative('setTile', setTileNative, 4);
+  defineNative('drawTilemap', drawTilemapNative, 3);
 end;
 
 end.

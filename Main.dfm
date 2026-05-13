@@ -139,7 +139,7 @@ object Form4: TForm4
       Left = 0
       Top = 0
       Width = 1095
-      Height = 439
+      Height = 689
       Align = alTop
       Caption = 'Panel1'
       TabOrder = 0
@@ -147,16 +147,17 @@ object Form4: TForm4
         Left = 481
         Top = 1
         Width = 613
-        Height = 437
+        Height = 687
         Align = alClient
         ExplicitLeft = 608
         ExplicitWidth = 486
+        ExplicitHeight = 437
       end
       object Memo1: TSynEdit
         Left = 1
         Top = 1
         Width = 480
-        Height = 437
+        Height = 687
         Align = alLeft
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -764,21 +765,24 @@ object Form4: TForm4
           ''
           'print "Final score: " + str(score);')
         SelectedColor.Alpha = 0.400000005960464500
+        ExplicitHeight = 437
       end
     end
     object Panel2: TPanel
       Left = 0
-      Top = 439
+      Top = 689
       Width = 1095
-      Height = 361
+      Height = 111
       Align = alClient
       Caption = 'Panel2'
       TabOrder = 1
+      ExplicitTop = 439
+      ExplicitHeight = 361
       object Memo2: TMemo
         Left = 1
         Top = 42
         Width = 1093
-        Height = 318
+        Height = 68
         Align = alClient
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -788,6 +792,8 @@ object Form4: TForm4
         ParentFont = False
         ScrollBars = ssBoth
         TabOrder = 0
+        ExplicitTop = 38
+        ExplicitHeight = 197
       end
       object Panel3: TPanel
         Left = 1
@@ -797,6 +803,7 @@ object Form4: TForm4
         Align = alTop
         Caption = 'Panel3'
         TabOrder = 1
+        ExplicitTop = 5
         DesignSize = (
           1093
           41)

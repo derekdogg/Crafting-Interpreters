@@ -1,0 +1,385 @@
+// ============================================================
+// Tilemap Demo — scrolling platformer level
+// Demonstrates: createTilemap, setTile, drawTilemap, drawPixel
+// ============================================================
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+// --- Tile sprites (8x8 pixel art) ---
+
+// 0: Sky (empty blue)
+setColor(30, 30, 60);
+var SKY = createSprite(8, 8,
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX"
+);
+
+// 1: Grass top
+setColor(50, 180, 50);
+var GRASS = createSprite(8, 8,
+  "XXXXXXXX" +
+  "X.XXXX.X" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX"
+);
+
+// 2: Dirt
+setColor(140, 80, 30);
+var DIRT = createSprite(8, 8,
+  "XXXXXXXX" +
+  "XX.XXXXX" +
+  "XXXXXXXX" +
+  "XXXXX.XX" +
+  "XXXXXXXX" +
+  "X.XXXXXX" +
+  "XXXXXXXX" +
+  "XXXX.XXX"
+);
+
+// 3: Brick
+setColor(180, 60, 40);
+var BRICK = createSprite(8, 8,
+  "XXXXXXXX" +
+  "XXX.XXXX" +
+  "........" +
+  "XXXXXXXX" +
+  "XXXXXX.X" +
+  "........" +
+  "XXXXXXXX" +
+  "XX.XXXXX"
+);
+
+// 4: Stone
+setColor(130, 130, 140);
+var STONE = createSprite(8, 8,
+  "XXXXXXXX" +
+  "X.XXXXXX" +
+  "XXXXXXXX" +
+  "XXXXX.XX" +
+  "XXXXXXXX" +
+  "XX.XXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXX."
+);
+
+// 5: Water surface
+setColor(40, 100, 220);
+var WATER = createSprite(8, 8,
+  "..X...X." +
+  ".XXX.XXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX"
+);
+
+// 6: Coin / collectible
+setColor(255, 220, 50);
+var COIN = createSprite(8, 8,
+  "..XXXX.." +
+  ".XXXXXX." +
+  "XX.XXX.X" +
+  "XX..XX.X" +
+  "XX.XXX.X" +
+  "XX..XX.X" +
+  ".XXXXXX." +
+  "..XXXX.."
+);
+
+// --- Build the tilemap ---
+var mapCols = 40;
+var mapRows = 15;
+var tileSize = 32;
+
+var map = createTilemap(mapCols, mapRows, tileSize, tileSize);
+
+// Fill sky
+var r = 0;
+while (r < mapRows - 3) {
+  var c = 0;
+  while (c < mapCols) {
+    setTile(map, c, r, SKY);
+    c = c + 1;
+  }
+  r = r + 1;
+}
+
+// Ground layer: grass on top, dirt below
+var c = 0;
+while (c < mapCols) {
+  setTile(map, c, mapRows - 3, GRASS);
+  setTile(map, c, mapRows - 2, DIRT);
+  setTile(map, c, mapRows - 1, DIRT);
+  c = c + 1;
+}
+
+// Floating platforms (brick)
+var plats = newArray();
+// col, row pairs
+arrayPush(plats, 5);  arrayPush(plats, 9);
+arrayPush(plats, 6);  arrayPush(plats, 9);
+arrayPush(plats, 7);  arrayPush(plats, 9);
+arrayPush(plats, 12); arrayPush(plats, 7);
+arrayPush(plats, 13); arrayPush(plats, 7);
+arrayPush(plats, 14); arrayPush(plats, 7);
+arrayPush(plats, 15); arrayPush(plats, 7);
+arrayPush(plats, 20); arrayPush(plats, 9);
+arrayPush(plats, 21); arrayPush(plats, 9);
+arrayPush(plats, 22); arrayPush(plats, 9);
+arrayPush(plats, 27); arrayPush(plats, 6);
+arrayPush(plats, 28); arrayPush(plats, 6);
+arrayPush(plats, 29); arrayPush(plats, 6);
+arrayPush(plats, 30); arrayPush(plats, 6);
+arrayPush(plats, 34); arrayPush(plats, 8);
+arrayPush(plats, 35); arrayPush(plats, 8);
+arrayPush(plats, 36); arrayPush(plats, 8);
+
+var pi = 0;
+while (pi < arrayLen(plats)) {
+  setTile(map, arrayGet(plats, pi), arrayGet(plats, pi + 1), BRICK);
+  pi = pi + 2;
+}
+
+// Stone pillars
+setTile(map, 10, mapRows - 4, STONE);
+setTile(map, 10, mapRows - 3, STONE);
+setTile(map, 25, mapRows - 4, STONE);
+setTile(map, 25, mapRows - 5, STONE);
+setTile(map, 25, mapRows - 3, STONE);
+
+// Water pit
+c = 16;
+while (c <= 18) {
+  setTile(map, c, mapRows - 3, WATER);
+  setTile(map, c, mapRows - 2, WATER);
+  setTile(map, c, mapRows - 1, WATER);
+  c = c + 1;
+}
+
+// Coins
+setTile(map, 6, 8, COIN);
+setTile(map, 13, 6, COIN);
+setTile(map, 21, 8, COIN);
+setTile(map, 28, 5, COIN);
+setTile(map, 35, 7, COIN);
+
+// --- Player (simple colored square) ---
+setColor(0, 200, 255);
+var playerSprite = createSprite(8, 8,
+  "..XXXX.." +
+  ".XXXXXX." +
+  "XX.XX.XX" +
+  "XXXXXXXX" +
+  "X.XXXX.X" +
+  "X.X..X.X" +
+  ".XXXXXX." +
+  "..X..X.."
+);
+
+var playerX = 64;
+var playerY = 320;
+var playerVX = 0;
+var playerVY = 0;
+var playerSize = 28;
+var gravity = 600;
+var jumpSpeed = -300;
+var moveSpeed = 150;
+var onGround = false;
+var leftHeld = false;
+var rightHeld = false;
+
+var scrollX = 0;
+var scrollY = 0;
+var maxScrollX = mapCols * tileSize - w;
+var maxScrollY = mapRows * tileSize - h;
+
+var running = true;
+var lastTime = clock();
+
+// --- Starfield behind sky ---
+var numStars = 40;
+var starX = newArray();
+var starY = newArray();
+var starBright = newArray();
+var i = 0;
+while (i < numStars) {
+  arrayPush(starX, floor(random() * mapCols * tileSize));
+  arrayPush(starY, floor(random() * (mapRows - 3) * tileSize));
+  arrayPush(starBright, floor(100 + random() * 155));
+  i = i + 1;
+}
+
+// --- Helpers ---
+fun tileAt(col, row) {
+  if (col < 0) return -1;
+  if (col >= mapCols) return -1;
+  if (row < 0) return -1;
+  if (row >= mapRows) return -1;
+  // Read tile — we check for solid types
+  // For simplicity, solid = GRASS, DIRT, BRICK, STONE
+  return true;
+}
+
+fun isSolid(px, py) {
+  var col = floor(px / tileSize);
+  var row = floor(py / tileSize);
+  if (col < 0) return true;
+  if (col >= mapCols) return true;
+  if (row < 0) return false;
+  if (row >= mapRows) return true;
+  // We don't have getTile native, so we'll just check ground rows
+  // and platform positions. For a full engine we'd add getTile().
+  // Simple approach: anything at row >= mapRows-3 is solid (except water)
+  if (row >= mapRows - 3) {
+    // Water columns are passthrough
+    if (col >= 16 and col <= 18) return false;
+    return true;
+  }
+  return false;
+}
+
+fun isPlatform(px, py) {
+  var col = floor(px / tileSize);
+  var row = floor(py / tileSize);
+  // Check our platform positions
+  var pi2 = 0;
+  while (pi2 < arrayLen(plats)) {
+    if (arrayGet(plats, pi2) == col and arrayGet(plats, pi2 + 1) == row) return true;
+    pi2 = pi2 + 2;
+  }
+  // Stone pillars
+  if (col == 10 and (row == mapRows - 4 or row == mapRows - 3)) return true;
+  if (col == 25 and (row >= mapRows - 5 and row <= mapRows - 3)) return true;
+  return false;
+}
+
+fun solidAt(px, py) {
+  return isSolid(px, py) or isPlatform(px, py);
+}
+
+// ============================================================
+// Game loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // --- Input ---
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:left") leftHeld = true;
+    if (e == "keyup:left") leftHeld = false;
+    if (e == "keydown:right") rightHeld = true;
+    if (e == "keyup:right") rightHeld = false;
+    if (e == "keydown:escape") running = false;
+    if (e == "keydown:space") {
+      if (onGround) {
+        playerVY = jumpSpeed;
+        onGround = false;
+        playSweep(200, 500, 80);
+      }
+    }
+  }
+
+  // --- Player physics ---
+  playerVX = 0;
+  if (leftHeld) playerVX = -moveSpeed;
+  if (rightHeld) playerVX = moveSpeed;
+
+  // Gravity
+  playerVY = playerVY + gravity * dt;
+
+  // Move X
+  var newX = playerX + playerVX * dt;
+  if (!solidAt(newX, playerY) and !solidAt(newX + playerSize - 1, playerY) and
+      !solidAt(newX, playerY + playerSize - 1) and !solidAt(newX + playerSize - 1, playerY + playerSize - 1)) {
+    playerX = newX;
+  }
+
+  // Move Y
+  var newY = playerY + playerVY * dt;
+  if (playerVY >= 0) {
+    // Falling: check feet
+    if (solidAt(playerX, newY + playerSize) or solidAt(playerX + playerSize - 1, newY + playerSize)) {
+      // Snap to tile top
+      playerY = floor((newY + playerSize) / tileSize) * tileSize - playerSize;
+      playerVY = 0;
+      onGround = true;
+    } else {
+      playerY = newY;
+      onGround = false;
+    }
+  } else {
+    // Rising: check head
+    if (solidAt(playerX, newY) or solidAt(playerX + playerSize - 1, newY)) {
+      playerVY = 0;
+    } else {
+      playerY = newY;
+    }
+  }
+
+  // Fell off map?
+  if (playerY > mapRows * tileSize + 100) {
+    playerX = 64;
+    playerY = 320;
+    playerVX = 0;
+    playerVY = 0;
+  }
+
+  // --- Camera follow ---
+  scrollX = floor(playerX - w / 2 + playerSize / 2);
+  scrollY = floor(playerY - h / 2 + playerSize / 2);
+  if (scrollX < 0) scrollX = 0;
+  if (scrollY < 0) scrollY = 0;
+  if (scrollX > maxScrollX) scrollX = maxScrollX;
+  if (scrollY > maxScrollY) scrollY = maxScrollY;
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas();
+
+  // --- Draw stars (behind tilemap sky) ---
+  i = 0;
+  while (i < numStars) {
+    var sx = arrayGet(starX, i) - scrollX;
+    var sy = arrayGet(starY, i) - scrollY;
+    if (sx >= 0 and sx < w and sy >= 0 and sy < h) {
+      var b = arrayGet(starBright, i);
+      setColor(b, b, b);
+      drawPixel(sx, sy);
+    }
+    i = i + 1;
+  }
+
+  // --- Draw tilemap (one native call!) ---
+  drawTilemap(map, scrollX, scrollY);
+
+  // --- Draw player ---
+  drawSpriteScaled(playerSprite, floor(playerX) - scrollX, floor(playerY) - scrollY, 4);
+
+  // --- HUD ---
+  setColor(255, 255, 255);
+  drawText(10, 8, "ARROWS: move   SPACE: jump   ESC: quit");
+  drawText(10, 30, "Scroll: " + str(scrollX) + ", " + str(scrollY));
+
+  present();
+}
+
+print "Tilemap demo finished.";

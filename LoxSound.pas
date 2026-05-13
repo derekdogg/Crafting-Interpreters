@@ -143,7 +143,7 @@ begin
   SetLength(buf, n * 2);
   for i := 0 to n - 1 do
   begin
-    if ((i * freq * 2) div SAMPLE_RATE) mod 2 = 0 then
+    if ((Int64(i) * freq * 2) div SAMPLE_RATE) mod 2 = 0 then
       sv := 10000
     else
       sv := -10000;
