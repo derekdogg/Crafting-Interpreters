@@ -464,6 +464,7 @@ begin
     for F in SubDirs do
     begin
       DirName := TPath.GetFileName(F);
+      if DirName = 'demos' then Continue;  // skip interactive demos
       SubNode := TestTree.Items.AddChild(ParentNode, DirName);
       SubNode.StateIndex := STATE_CHECKED;
       SubNode.Data := nil;

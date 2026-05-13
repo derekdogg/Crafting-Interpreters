@@ -538,7 +538,7 @@ while (running) {
   }
 
   // --- Draw player ---
-  drawSpriteScaled(playerSprite, playerX, playerY - 6, 3);
+  drawSpriteScaled(playerSprite, floor(playerX), playerY - 6, 3);
 
   // --- Draw player bullet ---
   if (bulletActive) {

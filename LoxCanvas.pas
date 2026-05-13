@@ -14,6 +14,7 @@ implementation
 {$POINTERMATH ON}
 
 uses
+  Vcl.Controls, Winapi.Messages,
   SysUtils, Types, Classes, Generics.Collections;
 
 type
@@ -23,8 +24,10 @@ type
   TRGBQuadArray = array[0..MaxInt div SizeOf(TRGBQuadRec) - 1] of TRGBQuadRec;
   PRGBQuadArray = ^TRGBQuadArray;
 
-  TCanvasHelper = class
-    procedure PaintBoxPaint(Sender: TObject);
+  TGameSurface = class(TCustomControl)
+  protected
+    procedure Paint; override;
+    procedure WMEraseBkgnd(var Msg: TWMEraseBkgnd); message WM_ERASEBKGND;
   end;
 
   TTilemap = class
@@ -35,19 +38,22 @@ type
   end;
 
 const
-  COLORONCOLOR = 3; // nearest-neighbor stretch mode
+  SRCCOPY = $00CC0020;
 
-function SetStretchBltMode(DC: THandle; Mode: Integer): Integer; stdcall;
-  external 'gdi32.dll' name 'SetStretchBltMode';
+function BitBlt(DestDC: THandle; X, Y, Width, Height: Integer;
+  SrcDC: THandle; XSrc, YSrc: Integer; Rop: Cardinal): LongBool; stdcall;
+  external 'gdi32.dll' name 'BitBlt';
 
 var
   FPaintBox: TPaintBox;
+  FGameSurface: TGameSurface;
   FBackBuffer: TBitmap;
+  FFrontBuffer: TBitmap;   // presented frame — never partially drawn
   FCurrentColor: TColor;
   FCurrentPixel: Cardinal;  // precomputed BGRA pixel for ScanLine writes
-  FCanvasHelper: TCanvasHelper;
   FSprites: TObjectList<TBitmap>;
   FTilemaps: TObjectList<TTilemap>;
+  FHasFrontFrame: Boolean;  // true once present() has been called at least once
 
 procedure EnsureBackBuffer;
 begin
@@ -56,21 +62,27 @@ begin
     FBackBuffer := TBitmap.Create;
     FBackBuffer.PixelFormat := pf32bit;
   end;
-  if (FBackBuffer.Width <> FPaintBox.Width) or
-     (FBackBuffer.Height <> FPaintBox.Height) then
+  if (FBackBuffer.Width <> FGameSurface.Width) or
+     (FBackBuffer.Height <> FGameSurface.Height) then
   begin
-    FBackBuffer.SetSize(FPaintBox.Width, FPaintBox.Height);
+    FBackBuffer.SetSize(FGameSurface.Width, FGameSurface.Height);
     FBackBuffer.Canvas.Brush.Color := clBlack;
     FBackBuffer.Canvas.FillRect(Rect(0, 0, FBackBuffer.Width, FBackBuffer.Height));
   end;
 end;
 
-{ TCanvasHelper }
+{ TGameSurface }
 
-procedure TCanvasHelper.PaintBoxPaint(Sender: TObject);
+procedure TGameSurface.Paint;
 begin
-  if FBackBuffer <> nil then
-    FPaintBox.Canvas.Draw(0, 0, FBackBuffer);
+  if FHasFrontFrame and (FFrontBuffer <> nil) then
+    BitBlt(Canvas.Handle, 0, 0, FFrontBuffer.Width, FFrontBuffer.Height,
+           FFrontBuffer.Canvas.Handle, 0, 0, SRCCOPY);
+end;
+
+procedure TGameSurface.WMEraseBkgnd(var Msg: TWMEraseBkgnd);
+begin
+  Msg.Result := 1;  // suppress background erase entirely
 end;
 
 { TTilemap }
@@ -93,25 +105,32 @@ procedure InitCanvas(APaintBox: TPaintBox);
 begin
   FPaintBox := APaintBox;
   FCurrentColor := clWhite;
-  if FCanvasHelper = nil then
-    FCanvasHelper := TCanvasHelper.Create;
+  // Create a TGameSurface to replace the TPaintBox — it owns its window
+  // handle, suppresses WM_ERASEBKGND, and has a single paint path.
+  FreeAndNil(FGameSurface);
+  FGameSurface := TGameSurface.Create(FPaintBox.Owner);
+  FGameSurface.Parent := FPaintBox.Parent;
+  FGameSurface.Align := FPaintBox.Align;
+  FGameSurface.BoundsRect := FPaintBox.BoundsRect;
+  FPaintBox.Visible := False;
   FreeAndNil(FBackBuffer);
   FBackBuffer := TBitmap.Create;
   FBackBuffer.PixelFormat := pf32bit;
-  FBackBuffer.SetSize(FPaintBox.Width, FPaintBox.Height);
+  FBackBuffer.SetSize(FGameSurface.Width, FGameSurface.Height);
   FBackBuffer.Canvas.Brush.Color := clBlack;
   FBackBuffer.Canvas.FillRect(Rect(0, 0, FBackBuffer.Width, FBackBuffer.Height));
-  FPaintBox.OnPaint := FCanvasHelper.PaintBoxPaint;
+  FHasFrontFrame := False;
 end;
 
 procedure FreeCanvas;
 begin
-  if FPaintBox <> nil then
-    FPaintBox.OnPaint := nil;
   FreeAndNil(FTilemaps);
   FreeAndNil(FSprites);
+  FreeAndNil(FFrontBuffer);
   FreeAndNil(FBackBuffer);
-  FreeAndNil(FCanvasHelper);
+  FreeAndNil(FGameSurface);
+  if FPaintBox <> nil then
+    FPaintBox.Visible := True;
   FPaintBox := nil;
 end;
 
@@ -119,29 +138,36 @@ end;
 
 function canvasWidthNative(argCount: integer; args: pValue): TValue;
 begin
-  if FPaintBox = nil then
+  if FGameSurface = nil then
   begin
     RuntimeError('Canvas not initialized.');
     Exit(CreateNilValue);
   end;
-  Result := CreateNumber(FPaintBox.Width);
+  Result := CreateNumber(FGameSurface.Width);
 end;
 
 function canvasHeightNative(argCount: integer; args: pValue): TValue;
 begin
-  if FPaintBox = nil then
+  if FGameSurface = nil then
   begin
     RuntimeError('Canvas not initialized.');
     Exit(CreateNilValue);
   end;
-  Result := CreateNumber(FPaintBox.Height);
+  Result := CreateNumber(FGameSurface.Height);
+end;
+
+procedure ClearBuffer(ABmp: TBitmap);
+var
+  y: Integer;
+begin
+  for y := 0 to ABmp.Height - 1 do
+    FillChar(ABmp.ScanLine[y]^, ABmp.Width * SizeOf(Cardinal), 0);
 end;
 
 function clearCanvasNative(argCount: integer; args: pValue): TValue;
 begin
   EnsureBackBuffer;
-  FBackBuffer.Canvas.Brush.Color := clBlack;
-  FBackBuffer.Canvas.FillRect(Rect(0, 0, FBackBuffer.Width, FBackBuffer.Height));
+  ClearBuffer(FBackBuffer);
   Result := CreateNilValue;
 end;
 
@@ -170,7 +196,9 @@ begin
   end;
   FCurrentColor := TColor(r or (g shl 8) or (b shl 16));
   // Precompute native BGRA pixel: TRGBQuad layout is Blue, Green, Red, Reserved
-  FCurrentPixel := Cardinal(b or (g shl 8) or (r shl 16));
+  // Alpha must be $FF (opaque) so 32-bit alpha-aware GDI paths don't treat
+  // colored pixels as transparent.
+  FCurrentPixel := Cardinal(b or (g shl 8) or (r shl 16) or $FF000000);
   Result := CreateNilValue;
 end;
 
@@ -237,9 +265,29 @@ begin
 end;
 
 function presentNative(argCount: integer; args: pValue): TValue;
+var
+  Temp: TBitmap;
 begin
   EnsureBackBuffer;
-  FPaintBox.Canvas.Draw(0, 0, FBackBuffer);
+  // Swap buffers: promote back buffer to front, reuse old front as new back.
+  if FFrontBuffer = nil then
+  begin
+    FFrontBuffer := TBitmap.Create;
+    FFrontBuffer.PixelFormat := pf32bit;
+    FFrontBuffer.SetSize(FBackBuffer.Width, FBackBuffer.Height);
+  end;
+  Temp := FFrontBuffer;
+  FFrontBuffer := FBackBuffer;
+  FBackBuffer := Temp;
+  // Ensure new back buffer matches dimensions and is cleared
+  if (FBackBuffer.Width <> FFrontBuffer.Width) or
+     (FBackBuffer.Height <> FFrontBuffer.Height) then
+    FBackBuffer.SetSize(FFrontBuffer.Width, FFrontBuffer.Height);
+  ClearBuffer(FBackBuffer);
+  FHasFrontFrame := True;
+  // Async repaint: let Windows coalesce and
+  // paint at its own pace for smoother frame pacing.
+  FGameSurface.Invalidate;
   Result := CreateNilValue;
 end;
 
@@ -395,7 +443,11 @@ end;
 
 function drawSpriteNative(argCount: integer; args: pValue): TValue;
 var
-  id, x, y: Integer;
+  id, x, y, sx, sy, bw, bh: Integer;
+  bmp: TBitmap;
+  srcRow: PRGBQuadArray;
+  dstRow: PCardinal;
+  pixel: Cardinal;
 begin
   if argCount <> 3 then
   begin
@@ -417,14 +469,33 @@ begin
   EnsureBackBuffer;
   x := Trunc(args[1].NumberValue);
   y := Trunc(args[2].NumberValue);
-  FBackBuffer.Canvas.Draw(x, y, FSprites[id]);
+  bmp := FSprites[id];
+  bw := FBackBuffer.Width;
+  bh := FBackBuffer.Height;
+  for sy := 0 to bmp.Height - 1 do
+  begin
+    if (y + sy < 0) or (y + sy >= bh) then Continue;
+    srcRow := bmp.ScanLine[sy];
+    dstRow := FBackBuffer.ScanLine[y + sy];
+    for sx := 0 to bmp.Width - 1 do
+    begin
+      if (x + sx < 0) or (x + sx >= bw) then Continue;
+      pixel := PCardinal(@srcRow[sx])^;
+      if pixel <> $00FF00FF then
+        dstRow[x + sx] := pixel;
+    end;
+  end;
   Result := CreateNilValue;
 end;
 
 function drawSpriteScaledNative(argCount: integer; args: pValue): TValue;
 var
   id, x, y, scale, sw, sh: Integer;
-  destRect: TRect;
+  bmp: TBitmap;
+  sx, sy, dx, dy, bw, bh: Integer;
+  srcRow: PRGBQuadArray;
+  dstRow: PCardinal;
+  pixel: Cardinal;
 begin
   if argCount <> 4 then
   begin
@@ -452,11 +523,28 @@ begin
     RuntimeError('drawSpriteScaled() scale must be >= 1.');
     Exit(CreateNilValue);
   end;
-  sw := FSprites[id].Width * scale;
-  sh := FSprites[id].Height * scale;
-  destRect := Rect(x, y, x + sw, y + sh);
-  SetStretchBltMode(FBackBuffer.Canvas.Handle, COLORONCOLOR);
-  FBackBuffer.Canvas.StretchDraw(destRect, FSprites[id]);
+  bmp := FSprites[id];
+  sw := bmp.Width * scale;
+  sh := bmp.Height * scale;
+  bw := FBackBuffer.Width;
+  bh := FBackBuffer.Height;
+  // Manual scanline blit: skip transparent pixels ($00FF00FF), copy opaque ones.
+  // Single pass, no GDI mask operations, deterministic rendering.
+  for dy := 0 to sh - 1 do
+  begin
+    if (y + dy < 0) or (y + dy >= bh) then Continue;
+    sy := dy div scale;
+    srcRow := bmp.ScanLine[sy];
+    dstRow := FBackBuffer.ScanLine[y + dy];
+    for dx := 0 to sw - 1 do
+    begin
+      if (x + dx < 0) or (x + dx >= bw) then Continue;
+      sx := dx div scale;
+      pixel := PCardinal(@srcRow[sx])^;
+      if pixel <> $00FF00FF then
+        dstRow[x + dx] := pixel;
+    end;
+  end;
   Result := CreateNilValue;
 end;
 
@@ -538,7 +626,11 @@ var
   tm: TTilemap;
   startCol, startRow, endCol, endRow: Integer;
   c, r, tileIdx, dx, dy: Integer;
-  destRect: TRect;
+  bmp: TBitmap;
+  scaleX, scaleY, sx, sy, px, py, bw, bh: Integer;
+  srcRow: PRGBQuadArray;
+  dstRow: PCardinal;
+  pixel: Cardinal;
 begin
   if argCount <> 3 then
   begin
@@ -572,17 +664,38 @@ begin
   if endCol >= tm.Cols then endCol := tm.Cols - 1;
   if endRow >= tm.Rows then endRow := tm.Rows - 1;
 
-  SetStretchBltMode(FBackBuffer.Canvas.Handle, COLORONCOLOR);
+  bw := FBackBuffer.Width;
+  bh := FBackBuffer.Height;
   for r := startRow to endRow do
     for c := startCol to endCol do
     begin
       tileIdx := tm.Tiles[r * tm.Cols + c];
       if (tileIdx >= 0) and (tileIdx < FSprites.Count) then
       begin
+        bmp := FSprites[tileIdx];
         dx := c * tm.TileW - scrollX;
         dy := r * tm.TileH - scrollY;
-        destRect := Rect(dx, dy, dx + tm.TileW, dy + tm.TileH);
-        FBackBuffer.Canvas.StretchDraw(destRect, FSprites[tileIdx]);
+        scaleX := tm.TileW div bmp.Width;
+        scaleY := tm.TileH div bmp.Height;
+        if scaleX < 1 then scaleX := 1;
+        if scaleY < 1 then scaleY := 1;
+        for py := 0 to tm.TileH - 1 do
+        begin
+          if (dy + py < 0) or (dy + py >= bh) then Continue;
+          sy := py div scaleY;
+          if sy >= bmp.Height then sy := bmp.Height - 1;
+          srcRow := bmp.ScanLine[sy];
+          dstRow := FBackBuffer.ScanLine[dy + py];
+          for px := 0 to tm.TileW - 1 do
+          begin
+            if (dx + px < 0) or (dx + px >= bw) then Continue;
+            sx := px div scaleX;
+            if sx >= bmp.Width then sx := bmp.Width - 1;
+            pixel := PCardinal(@srcRow[sx])^;
+            if pixel <> $00FF00FF then
+              dstRow[dx + px] := pixel;
+          end;
+        end;
       end;
     end;
   Result := CreateNilValue;

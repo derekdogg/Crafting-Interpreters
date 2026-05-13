@@ -204,7 +204,9 @@ var rightHeld = false;
 var scrollX = 0;
 var scrollY = 0;
 var maxScrollX = mapCols * tileSize - w;
+if (maxScrollX < 0) maxScrollX = 0;
 var maxScrollY = mapRows * tileSize - h;
+if (maxScrollY < 0) maxScrollY = 0;
 
 var running = true;
 var lastTime = clock();
