@@ -1,0 +1,213 @@
+// ============================================================
+// Rotation Demo — spinning sprites, orbiting objects, a clock
+// ============================================================
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+// --- Create sprites ---
+
+// Star (5-pointed, yellow/orange)
+setPaletteColor("Y", 255, 255, 0);
+setPaletteColor("O", 255, 180, 0);
+var star = createPaletteSprite(11, 11,
+  ".....Y....." +
+  "....YYY...." +
+  "....YYY...." +
+  "OOOYYYYOOOO" +
+  ".OYYYYYYYO." +
+  "..OYYYYYO.." +
+  "..OYYYYYO.." +
+  ".OY.YYY.YO." +
+  ".O...Y...O." +
+  "O.........O" +
+  "...........");
+
+// Arrow (pointer showing direction)
+setPaletteColor("W", 255, 255, 255);
+setPaletteColor("R", 255, 60, 60);
+var arrow = createPaletteSprite(11, 7,
+  ".....W....." +
+  "....WWW...." +
+  "...WWWWW..." +
+  "..WWWWWWW.." +
+  ".....W....." +
+  ".....W....." +
+  ".....W.....");
+
+// Spaceship (detailed)
+setPaletteColor("C", 0, 200, 255);
+setPaletteColor("G", 100, 100, 100);
+setPaletteColor("R", 255, 50, 50);
+setPaletteColor("Y", 255, 255, 0);
+var ship = createPaletteSprite(9, 13,
+  "....C...." +
+  "...CCC..." +
+  "...CCC..." +
+  "..CCCCC.." +
+  "..CCCCC.." +
+  ".CCCCCCC." +
+  ".CCCCCCC." +
+  "GCCCCCCCG" +
+  "GCCCCCCCG" +
+  "GGGCCCGGG" +
+  "GG.GGG.GG" +
+  "R..GGG..R" +
+  "Y..YYY..Y");
+
+// Planet (blue/green)
+setPaletteColor("B", 40, 80, 200);
+setPaletteColor("G", 50, 180, 80);
+setPaletteColor("W", 200, 220, 255);
+var planet = createPaletteSprite(12, 12,
+  "....BBBB...." +
+  "..BBBBBBBB.." +
+  ".BBBGGGBBBB." +
+  "BBBGGGGGBBBB" +
+  "BBBBGGGGBBBB" +
+  "BBBBBGBBBBBB" +
+  "BBBBBBBBWBBB" +
+  "BBBBBBBWWBBB" +
+  "BBBBBBBBBBBB" +
+  ".BBGBBBBBB.." +
+  "..BBBBBBBB.." +
+  "....BBBB....");
+
+// Clock face
+setPaletteColor("W", 255, 255, 255);
+setPaletteColor("G", 180, 180, 180);
+var clockFace = createPaletteSprite(13, 13,
+  ".....WWW....." +
+  "...WWWWWWW..." +
+  "..WWWWWWWWW.." +
+  ".WWWWWGWWWWW." +
+  "WWWWWWGWWWWWW" +
+  "WWWWWWGWWWWWW" +
+  "WWGGGGGGGGGWW" +
+  "WWWWWWGWWWWWW" +
+  "WWWWWWGWWWWWW" +
+  ".WWWWWGWWWWW." +
+  "..WWWWWWWWW.." +
+  "...WWWWWWW..." +
+  ".....WWW.....");
+
+// Clock hand (thin line)
+setPaletteColor("R", 220, 30, 30);
+var clockHand = createPaletteSprite(3, 10,
+  ".R." +
+  ".R." +
+  ".R." +
+  ".R." +
+  ".R." +
+  ".R." +
+  ".R." +
+  ".R." +
+  "RRR" +
+  "RRR");
+
+clearPalette();
+
+// --- State ---
+var lastTime = clock();
+var running = true;
+var angle1 = 0;     // star rotation
+var angle2 = 0;     // ship orbit angle
+var shipAngle = 0;  // ship facing
+var clockAngle = 0; // clock hand
+
+// Orbit parameters
+var orbitCx = w / 2;
+var orbitCy = h / 2;
+var orbitR = 100;
+
+// Star positions (corners, spinning independently)
+var star1Angle = 0;
+var star2Angle = 120;
+var star3Angle = 240;
+
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // Events
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  // Update angles
+  angle1 = angle1 + 90 * dt;   // 90 deg/sec
+  if (angle1 >= 360) angle1 = angle1 - 360;
+
+  angle2 = angle2 + 45 * dt;   // orbit speed
+  if (angle2 >= 360) angle2 = angle2 - 360;
+
+  shipAngle = shipAngle + 60 * dt;
+  if (shipAngle >= 360) shipAngle = shipAngle - 360;
+
+  clockAngle = clockAngle + 6 * dt;  // 1 RPM
+  if (clockAngle >= 360) clockAngle = clockAngle - 360;
+
+  star1Angle = star1Angle + 120 * dt;
+  star2Angle = star2Angle + 80 * dt;
+  star3Angle = star3Angle + 200 * dt;
+
+  // --- Draw ---
+  clearCanvas();
+
+  // Background stars (static)
+  setColor(40, 40, 60);
+  fillRect(0, 0, w, h);
+
+  // Static twinkling dots
+  setColor(100, 100, 120);
+  var s = 0;
+  while (s < 30) {
+    // Pseudo-random positions based on index
+    var sx = ((s * 137 + 51) - floor((s * 137 + 51) / w) * w);
+    var sy = ((s * 97 + 23) - floor((s * 97 + 23) / h) * h);
+    drawPixel(sx, sy);
+    s = s + 1;
+  }
+
+  // Planet in center (static, large)
+  drawSpriteRotated(planet, floor(orbitCx), floor(orbitCy), 4, 0);
+
+  // Ship orbiting the planet
+  var shipX = floor(orbitCx + orbitR * cos(angle2 * 3.14159 / 180));
+  var shipY = floor(orbitCy + orbitR * sin(angle2 * 3.14159 / 180));
+  // Ship faces tangent to orbit (perpendicular to radius)
+  var facingAngle = angle2 + 90;
+  drawSpriteRotated(ship, shipX, shipY, 3, facingAngle);
+
+  // Spinning stars in corners
+  drawSpriteRotated(star, 80, 80, 3, star1Angle);
+  drawSpriteRotated(star, w - 80, 80, 3, star2Angle);
+  drawSpriteRotated(star, 80, h - 80, 3, star3Angle);
+
+  // Arrow pointing at mouse-ish position (just rotates continuously)
+  drawSpriteRotated(arrow, w - 80, h - 80, 3, angle1);
+
+  // Clock in top-right
+  var clockX = w - 100;
+  var clockY = 100;
+  drawSpriteRotated(clockFace, clockX, clockY, 3, 0);
+  drawSpriteRotated(clockHand, clockX, clockY - 10, 2, clockAngle);
+
+  // Labels
+  setColor(255, 255, 255);
+  drawText(10, h - 30, "drawSpriteRotated(id, x, y, scale, angleDeg)");
+  drawText(10, h - 50, "ESC to quit");
+
+  // Show current angles
+  setColor(200, 200, 100);
+  drawText(10, 10, "Ship orbit: " + str(floor(angle2)) + " deg");
+  drawText(10, 26, "Star spin: " + str(floor(star1Angle)) + " deg");
+
+  present();
+}
+
+print "Rotation demo complete.";

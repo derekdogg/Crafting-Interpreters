@@ -15,7 +15,7 @@ implementation
 
 uses
   Vcl.Controls, Winapi.Messages,
-  SysUtils, Types, Classes, Generics.Collections;
+  SysUtils, Types, Classes, Generics.Collections, Math;
 
 type
   TRGBQuadRec = packed record
@@ -54,6 +54,8 @@ var
   FSprites: TObjectList<TBitmap>;
   FTilemaps: TObjectList<TTilemap>;
   FHasFrontFrame: Boolean;  // true once present() has been called at least once
+  FPalette: array[0..255] of Cardinal;   // char -> BGRA color
+  FPaletteUsed: array[0..255] of Boolean;
 
 procedure EnsureBackBuffer;
 begin
@@ -162,6 +164,13 @@ var
 begin
   for y := 0 to ABmp.Height - 1 do
     FillChar(ABmp.ScanLine[y]^, ABmp.Width * SizeOf(Cardinal), 0);
+end;
+
+// Unchecked pixel write — caller must guarantee x,y are in bounds.
+// Use this in internal native blitters where clipping is done at a higher level.
+procedure PutPixelUnchecked(x, y: Integer; pixel: Cardinal); inline;
+begin
+  PCardinal(FBackBuffer.ScanLine[y])[x] := pixel;
 end;
 
 function clearCanvasNative(argCount: integer; args: pValue): TValue;
@@ -548,6 +557,206 @@ begin
   Result := CreateNilValue;
 end;
 
+function drawSpriteRotatedNative(argCount: integer; args: pValue): TValue;
+var
+  id, x, y, scale, sw, sh, dw, dh: Integer;
+  bmp: TBitmap;
+  angle, cosA, sinA, cx, cy, srcCx, srcCy: Double;
+  dx, dy, sx, sy, bw, bh: Integer;
+  fx, fy: Double;
+  srcRow: PRGBQuadArray;
+  dstRow: PCardinal;
+  pixel: Cardinal;
+begin
+  if argCount <> 5 then
+  begin
+    RuntimeError('drawSpriteRotated() takes 5 arguments (id, x, y, scale, angle).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
+     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) or
+     (args[4].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('drawSpriteRotated() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  id := Trunc(args[0].NumberValue);
+  if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
+  begin
+    RuntimeError('drawSpriteRotated() invalid sprite id.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x := Trunc(args[1].NumberValue);
+  y := Trunc(args[2].NumberValue);
+  scale := Trunc(args[3].NumberValue);
+  if scale < 1 then scale := 1;
+  angle := args[4].NumberValue * Pi / 180.0; // degrees to radians
+  cosA := Cos(angle);
+  sinA := Sin(angle);
+
+  bmp := FSprites[id];
+  sw := bmp.Width * scale;
+  sh := bmp.Height * scale;
+  // Bounding box of rotated sprite
+  dw := Ceil(Abs(sw * cosA) + Abs(sh * sinA));
+  dh := Ceil(Abs(sw * sinA) + Abs(sh * cosA));
+  // Center of destination bounding box (x, y is center of output)
+  cx := dw / 2.0;
+  cy := dh / 2.0;
+  // Center of source (scaled) sprite
+  srcCx := sw / 2.0;
+  srcCy := sh / 2.0;
+  bw := FBackBuffer.Width;
+  bh := FBackBuffer.Height;
+
+  // Inverse-mapping: for each destination pixel, find source pixel
+  for dy := 0 to dh - 1 do
+  begin
+    if (y - Trunc(cy) + dy < 0) or (y - Trunc(cy) + dy >= bh) then Continue;
+    dstRow := FBackBuffer.ScanLine[y - Trunc(cy) + dy];
+    for dx := 0 to dw - 1 do
+    begin
+      if (x - Trunc(cx) + dx < 0) or (x - Trunc(cx) + dx >= bw) then Continue;
+      // Rotate destination pixel back to source space
+      fx := (dx - cx) * cosA + (dy - cy) * sinA + srcCx;
+      fy := -(dx - cx) * sinA + (dy - cy) * cosA + srcCy;
+      // Map back through scale to original sprite coords
+      sx := Trunc(fx) div scale;
+      sy := Trunc(fy) div scale;
+      if (sx >= 0) and (sx < bmp.Width) and (sy >= 0) and (sy < bmp.Height) and
+         (Trunc(fx) >= 0) and (Trunc(fx) < sw) and (Trunc(fy) >= 0) and (Trunc(fy) < sh) then
+      begin
+        srcRow := bmp.ScanLine[sy];
+        pixel := PCardinal(@srcRow[sx])^;
+        if pixel <> $00FF00FF then
+          dstRow[x - Trunc(cx) + dx] := pixel;
+      end;
+    end;
+  end;
+  Result := CreateNilValue;
+end;
+
+// -- Palette sprite functions --
+
+function setPaletteColorNative(argCount: integer; args: pValue): TValue;
+var
+  s: AnsiString;
+  ch: Byte;
+  r, g, b: Integer;
+begin
+  if argCount <> 4 then
+  begin
+    RuntimeError('setPaletteColor() takes 4 arguments (char, r, g, b).');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[0]) then
+  begin
+    RuntimeError('setPaletteColor() first argument must be a single-character string.');
+    Exit(CreateNilValue);
+  end;
+  if (args[1].ValueKind <> vkNumber) or (args[2].ValueKind <> vkNumber) or
+     (args[3].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('setPaletteColor() r, g, b must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  if Length(s) <> 1 then
+  begin
+    RuntimeError('setPaletteColor() first argument must be a single character.');
+    Exit(CreateNilValue);
+  end;
+  ch := Ord(s[1]);
+  r := Trunc(args[1].NumberValue);
+  g := Trunc(args[2].NumberValue);
+  b := Trunc(args[3].NumberValue);
+  if (r < 0) or (r > 255) or (g < 0) or (g > 255) or (b < 0) or (b > 255) then
+  begin
+    RuntimeError('setPaletteColor() color values must be 0..255.');
+    Exit(CreateNilValue);
+  end;
+  FPalette[ch] := Cardinal(b or (g shl 8) or (r shl 16) or $FF000000);
+  FPaletteUsed[ch] := True;
+  Result := CreateNilValue;
+end;
+
+function clearPaletteNative(argCount: integer; args: pValue): TValue;
+begin
+  FillChar(FPalette, SizeOf(FPalette), 0);
+  FillChar(FPaletteUsed, SizeOf(FPaletteUsed), 0);
+  Result := CreateNilValue;
+end;
+
+function createPaletteSpriteNative(argCount: integer; args: pValue): TValue;
+var
+  w, h, x, y, i: Integer;
+  s: AnsiString;
+  bmp: TBitmap;
+  row: PRGBQuadArray;
+  ch: Byte;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('createPaletteSprite() takes 3 arguments (width, height, pixels).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('createPaletteSprite() width and height must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[2]) then
+  begin
+    RuntimeError('createPaletteSprite() third argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+  w := Trunc(args[0].NumberValue);
+  h := Trunc(args[1].NumberValue);
+  if (w <= 0) or (h <= 0) then
+  begin
+    RuntimeError('createPaletteSprite() width and height must be positive.');
+    Exit(CreateNilValue);
+  end;
+  s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
+  if Length(s) <> w * h then
+  begin
+    RuntimeError('createPaletteSprite() pixel string length must equal width * height.');
+    Exit(CreateNilValue);
+  end;
+
+  bmp := TBitmap.Create;
+  try
+    bmp.PixelFormat := pf32bit;
+    bmp.SetSize(w, h);
+    i := 1;
+    for y := 0 to h - 1 do
+    begin
+      row := bmp.ScanLine[y];
+      for x := 0 to w - 1 do
+      begin
+        ch := Ord(s[i]);
+        if s[i] = '.' then
+          PCardinal(@row[x])^ := $00FF00FF
+        else if FPaletteUsed[ch] then
+          PCardinal(@row[x])^ := FPalette[ch]
+        else
+          PCardinal(@row[x])^ := FCurrentPixel;  // fallback to current color
+        Inc(i);
+      end;
+    end;
+    bmp.Transparent := True;
+    bmp.TransparentColor := TColor($FF00FF);
+  except
+    bmp.Free;
+    raise;
+  end;
+
+  if FSprites = nil then
+    FSprites := TObjectList<TBitmap>.Create(True);
+  Result := CreateNumber(FSprites.Add(bmp));
+end;
+
 // -- Tilemap functions --
 
 function createTilemapNative(argCount: integer; args: pValue): TValue;
@@ -620,6 +829,37 @@ begin
   Result := CreateNilValue;
 end;
 
+function getTileNative(argCount: integer; args: pValue): TValue;
+var
+  mapId, col, row: Integer;
+  tm: TTilemap;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('getTile() takes 3 arguments (mapId, col, row).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
+     (args[2].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('getTile() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  mapId := Trunc(args[0].NumberValue);
+  if (FTilemaps = nil) or (mapId < 0) or (mapId >= FTilemaps.Count) then
+  begin
+    RuntimeError('getTile() invalid tilemap id.');
+    Exit(CreateNilValue);
+  end;
+  tm := FTilemaps[mapId];
+  col := Trunc(args[1].NumberValue);
+  row := Trunc(args[2].NumberValue);
+  if (col < 0) or (col >= tm.Cols) or (row < 0) or (row >= tm.Rows) then
+    Result := CreateNumber(-1)
+  else
+    Result := CreateNumber(tm.Tiles[row * tm.Cols + col]);
+end;
+
 function drawTilemapNative(argCount: integer; args: pValue): TValue;
 var
   mapId, scrollX, scrollY: Integer;
@@ -627,7 +867,7 @@ var
   startCol, startRow, endCol, endRow: Integer;
   c, r, tileIdx, dx, dy: Integer;
   bmp: TBitmap;
-  scaleX, scaleY, sx, sy, px, py, bw, bh: Integer;
+  sx, sy, px, py, bw, bh: Integer;
   srcRow: PRGBQuadArray;
   dstRow: PCardinal;
   pixel: Cardinal;
@@ -675,22 +915,16 @@ begin
         bmp := FSprites[tileIdx];
         dx := c * tm.TileW - scrollX;
         dy := r * tm.TileH - scrollY;
-        scaleX := tm.TileW div bmp.Width;
-        scaleY := tm.TileH div bmp.Height;
-        if scaleX < 1 then scaleX := 1;
-        if scaleY < 1 then scaleY := 1;
         for py := 0 to tm.TileH - 1 do
         begin
           if (dy + py < 0) or (dy + py >= bh) then Continue;
-          sy := py div scaleY;
-          if sy >= bmp.Height then sy := bmp.Height - 1;
+          sy := (py * bmp.Height) div tm.TileH;
           srcRow := bmp.ScanLine[sy];
           dstRow := FBackBuffer.ScanLine[dy + py];
           for px := 0 to tm.TileW - 1 do
           begin
             if (dx + px < 0) or (dx + px >= bw) then Continue;
-            sx := px div scaleX;
-            if sx >= bmp.Width then sx := bmp.Width - 1;
+            sx := (px * bmp.Width) div tm.TileW;
             pixel := PCardinal(@srcRow[sx])^;
             if pixel <> $00FF00FF then
               dstRow[dx + px] := pixel;
@@ -701,13 +935,82 @@ begin
   Result := CreateNilValue;
 end;
 
+// -- Sprite utility functions --
+
+function flipSpriteNative(argCount: integer; args: pValue): TValue;
+var
+  id: Integer;
+  src, bmp: TBitmap;
+  sx, sy, w, h: Integer;
+  srcRow, dstRow: PRGBQuadArray;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('flipSprite() takes 2 arguments (id, direction).');
+    Exit(CreateNilValue);
+  end;
+  if (args[0].ValueKind <> vkNumber) then
+  begin
+    RuntimeError('flipSprite() first argument must be a number.');
+    Exit(CreateNilValue);
+  end;
+  if not isString(args[1]) then
+  begin
+    RuntimeError('flipSprite() second argument must be "h" or "v".');
+    Exit(CreateNilValue);
+  end;
+  id := Trunc(args[0].NumberValue);
+  if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
+  begin
+    RuntimeError('flipSprite() invalid sprite id.');
+    Exit(CreateNilValue);
+  end;
+  src := FSprites[id];
+  w := src.Width;
+  h := src.Height;
+  bmp := TBitmap.Create;
+  try
+    bmp.PixelFormat := pf32bit;
+    bmp.SetSize(w, h);
+    if ObjStringToAnsiString(pObjString(args[1].ObjValue)) = 'v' then
+    begin
+      // Vertical flip
+      for sy := 0 to h - 1 do
+      begin
+        srcRow := src.ScanLine[sy];
+        dstRow := bmp.ScanLine[h - 1 - sy];
+        Move(srcRow^, dstRow^, w * SizeOf(TRGBQuadRec));
+      end;
+    end
+    else
+    begin
+      // Horizontal flip (default)
+      for sy := 0 to h - 1 do
+      begin
+        srcRow := src.ScanLine[sy];
+        dstRow := bmp.ScanLine[sy];
+        for sx := 0 to w - 1 do
+          PCardinal(@dstRow[sx])^ := PCardinal(@srcRow[w - 1 - sx])^;
+      end;
+    end;
+    bmp.Transparent := True;
+    bmp.TransparentColor := TColor($FF00FF);
+  except
+    bmp.Free;
+    raise;
+  end;
+  Result := CreateNumber(FSprites.Add(bmp));
+end;
+
 procedure RegisterCanvasNatives;
 begin
-  // Clear sprites and tilemaps from previous run
+  // Clear sprites, tilemaps, and palette from previous run
   if FSprites <> nil then
     FSprites.Clear;
   if FTilemaps <> nil then
     FTilemaps.Clear;
+  FillChar(FPalette, SizeOf(FPalette), 0);
+  FillChar(FPaletteUsed, SizeOf(FPaletteUsed), 0);
   defineNative('canvasWidth', canvasWidthNative, 0);
   defineNative('canvasHeight', canvasHeightNative, 0);
   defineNative('clearCanvas', clearCanvasNative, 0);
@@ -724,6 +1027,12 @@ begin
   defineNative('createTilemap', createTilemapNative, 4);
   defineNative('setTile', setTileNative, 4);
   defineNative('drawTilemap', drawTilemapNative, 3);
+  defineNative('setPaletteColor', setPaletteColorNative, 4);
+  defineNative('clearPalette', clearPaletteNative, 0);
+  defineNative('createPaletteSprite', createPaletteSpriteNative, 3);
+  defineNative('getTile', getTileNative, 3);
+  defineNative('flipSprite', flipSpriteNative, 2);
+  defineNative('drawSpriteRotated', drawSpriteRotatedNative, 5);
 end;
 
 end.

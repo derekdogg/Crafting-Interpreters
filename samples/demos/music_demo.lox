@@ -1,0 +1,258 @@
+// ============================================================
+// Music Sequencer Demo — playSequence / stopSequence
+// ============================================================
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+// --- Note frequency constants (octave 4 & 5) ---
+var C4 = 262;  var D4 = 294;  var E4 = 330;  var F4 = 349;
+var G4 = 392;  var A4 = 440;  var B4 = 494;
+var C5 = 523;  var D5 = 587;  var E5 = 659;  var F5 = 698;
+var G5 = 784;  var A5 = 880;  var B5 = 988;
+var C3 = 131;  var D3 = 147;  var E3 = 165;  var F3 = 175;
+var G3 = 196;  var A3 = 220;  var B3 = 247;
+var REST = 0;
+
+// Waveform types: 0=pulse25, 1=triangle, 2=sawtooth, 3=noise
+var PULSE = 0;
+var TRI = 1;
+var SAW = 2;
+var NOISE = 3;
+
+// --- Melodies ---
+
+// Melody 1: Ode to Joy — triangle wave (warm, smooth)
+var odeToJoy = [
+  [E4, 300, TRI], [E4, 300, TRI], [F4, 300, TRI], [G4, 300, TRI],
+  [G4, 300, TRI], [F4, 300, TRI], [E4, 300, TRI], [D4, 300, TRI],
+  [C4, 300, TRI], [C4, 300, TRI], [D4, 300, TRI], [E4, 300, TRI],
+  [E4, 450, TRI], [D4, 150, TRI], [D4, 600, TRI],
+  [E4, 300, TRI], [E4, 300, TRI], [F4, 300, TRI], [G4, 300, TRI],
+  [G4, 300, TRI], [F4, 300, TRI], [E4, 300, TRI], [D4, 300, TRI],
+  [C4, 300, TRI], [C4, 300, TRI], [D4, 300, TRI], [E4, 300, TRI],
+  [D4, 450, TRI], [C4, 150, TRI], [C4, 600, TRI]
+];
+
+// Melody 2: Twinkle Twinkle — pulse (bright, classic chiptune)
+var twinkle = [
+  [C4, 400, PULSE], [C4, 400, PULSE], [G4, 400, PULSE], [G4, 400, PULSE],
+  [A4, 400, PULSE], [A4, 400, PULSE], [G4, 800, PULSE],
+  [F4, 400, PULSE], [F4, 400, PULSE], [E4, 400, PULSE], [E4, 400, PULSE],
+  [D4, 400, PULSE], [D4, 400, PULSE], [C4, 800, PULSE],
+  [G4, 400, PULSE], [G4, 400, PULSE], [F4, 400, PULSE], [F4, 400, PULSE],
+  [E4, 400, PULSE], [E4, 400, PULSE], [D4, 800, PULSE],
+  [G4, 400, PULSE], [G4, 400, PULSE], [F4, 400, PULSE], [F4, 400, PULSE],
+  [E4, 400, PULSE], [E4, 400, PULSE], [D4, 800, PULSE],
+  [C4, 400, PULSE], [C4, 400, PULSE], [G4, 400, PULSE], [G4, 400, PULSE],
+  [A4, 400, PULSE], [A4, 400, PULSE], [G4, 800, PULSE],
+  [F4, 400, PULSE], [F4, 400, PULSE], [E4, 400, PULSE], [E4, 400, PULSE],
+  [D4, 400, PULSE], [D4, 400, PULSE], [C4, 800, PULSE]
+];
+
+// Melody 3: Sawtooth bass groove
+var bassGroove = [
+  [C3, 200, SAW], [REST, 50], [C3, 150, SAW], [REST, 50],
+  [E3, 200, SAW], [REST, 50], [G3, 200, SAW], [REST, 50],
+  [A3, 300, SAW], [G3, 150, SAW], [REST, 50],
+  [E3, 200, SAW], [REST, 50], [C3, 400, SAW], [REST, 100],
+  [D3, 200, SAW], [REST, 50], [D3, 150, SAW], [REST, 50],
+  [F3, 200, SAW], [REST, 50], [A3, 200, SAW], [REST, 50],
+  [G3, 300, SAW], [F3, 150, SAW], [REST, 50],
+  [D3, 200, SAW], [REST, 50], [C3, 400, SAW], [REST, 200]
+];
+
+// Melody 4: Game action theme — mixed waveforms
+var actionTheme = [
+  [E4, 150, PULSE], [E4, 150, PULSE], [REST, 150], [E4, 150, PULSE],
+  [REST, 150], [C4, 150, TRI], [E4, 150, PULSE], [REST, 150],
+  [G4, 300, PULSE], [REST, 300], [G3, 300, SAW], [REST, 300],
+  [C4, 300, TRI], [REST, 150], [G3, 300, SAW], [REST, 150],
+  [E3, 300, SAW], [REST, 150], [A3, 200, TRI], [B3, 200, TRI],
+  [REST, 100], [A3, 300, TRI], [G3, 200, SAW], [E4, 200, PULSE],
+  [G4, 200, PULSE], [A4, 300, PULSE], [F4, 200, TRI], [G4, 200, PULSE],
+  [REST, 100], [E4, 200, TRI], [C4, 200, TRI], [D4, 200, TRI],
+  [B3, 300, SAW], [REST, 300]
+];
+
+// Melody 5: Percussion pattern (noise channel)
+var drumLoop = [
+  [200, 80, NOISE], [REST, 120], [80, 40, NOISE], [REST, 160],
+  [400, 60, NOISE], [REST, 140], [80, 40, NOISE], [REST, 160],
+  [200, 80, NOISE], [REST, 120], [80, 40, NOISE], [80, 40, NOISE], [REST, 80],
+  [400, 60, NOISE], [REST, 140], [150, 50, NOISE], [REST, 150]
+];
+
+// --- State ---
+var currentMelody = 0;
+var melodyNames = ["Ode to Joy (tri)", "Twinkle (pulse)", "Bass Groove (saw)", "Action (mixed)", "Drums (noise)"];
+var playing = false;
+var looping = true;
+var running = true;
+var lastTime = clock();
+var visualTimer = 0;
+var noteVis = 0;  // which note is "highlighted" visually
+
+// --- Visualization ---
+var barCount = 16;
+var barHeights = newArray();
+var barTargets = newArray();
+var i = 0;
+while (i < barCount) {
+  arrayPush(barHeights, 0);
+  arrayPush(barTargets, 0);
+  i = i + 1;
+}
+
+fun startMelody() {
+  if (currentMelody == 0) playSequence(odeToJoy, looping);
+  if (currentMelody == 1) playSequence(twinkle, looping);
+  if (currentMelody == 2) playSequence(bassGroove, looping);
+  if (currentMelody == 3) playSequence(actionTheme, looping);
+  if (currentMelody == 4) playSequence(drumLoop, looping);
+  playing = true;
+}
+
+fun stopMelody() {
+  stopSequence();
+  playing = false;
+}
+
+// ============================================================
+// Main loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // Events
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") {
+      stopMelody();
+      running = false;
+    }
+    if (e == "keydown:space") {
+      if (playing) {
+        stopMelody();
+      } else {
+        startMelody();
+      }
+    }
+    if (e == "keydown:right") {
+      currentMelody = currentMelody + 1;
+      if (currentMelody > 4) currentMelody = 0;
+      if (playing) startMelody();
+    }
+    if (e == "keydown:left") {
+      currentMelody = currentMelody - 1;
+      if (currentMelody < 0) currentMelody = 4;
+      if (playing) startMelody();
+    }
+    if (e == "keydown:l") {
+      looping = !looping;
+      if (playing) startMelody();
+    }
+  }
+
+  // Animate visualizer bars
+  visualTimer = visualTimer + dt;
+  if (visualTimer > 0.08) {
+    visualTimer = 0;
+    // Shift and generate new random targets based on playing state
+    i = 0;
+    while (i < barCount - 1) {
+      arraySet(barTargets, i, arrayGet(barTargets, i + 1));
+      i = i + 1;
+    }
+    if (playing) {
+      arraySet(barTargets, barCount - 1, 30 + floor(random() * 120));
+    } else {
+      arraySet(barTargets, barCount - 1, 0);
+    }
+  }
+  // Smooth bars toward targets
+  i = 0;
+  while (i < barCount) {
+    var cur = arrayGet(barHeights, i);
+    var tgt = arrayGet(barTargets, i);
+    var diff = tgt - cur;
+    arraySet(barHeights, i, cur + diff * dt * 12);
+    i = i + 1;
+  }
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas();
+  setColor(20, 20, 40);
+  fillRect(0, 0, w, h);
+
+  // --- Visualizer bars ---
+  var barW = floor((w - 40) / barCount);
+  var barBaseY = h / 2 + 40;
+  i = 0;
+  while (i < barCount) {
+    var bh = floor(arrayGet(barHeights, i));
+    if (bh < 1) bh = 1;
+    // Color gradient: green to cyan to blue
+    var r = floor(50 - i * 3);
+    var g = floor(100 + i * 10);
+    var b = floor(150 + i * 6);
+    if (r < 0) r = 0;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    setColor(r, g, b);
+    fillRect(20 + i * barW, floor(barBaseY - bh), barW - 2, bh);
+    // Mirror below
+    setColor(floor(r / 3), floor(g / 3), floor(b / 3));
+    fillRect(20 + i * barW, floor(barBaseY), barW - 2, floor(bh / 2));
+    i = i + 1;
+  }
+
+  // --- Title ---
+  setColor(255, 255, 255);
+  drawText(w / 2 - 80, 20, "MUSIC SEQUENCER");
+
+  // --- Current melody name ---
+  setColor(100, 255, 200);
+  drawText(w / 2 - 60, 50, arrayGet(melodyNames, currentMelody));
+
+  // --- Status ---
+  if (playing) {
+    setColor(50, 255, 50);
+    drawText(w / 2 - 30, 75, "PLAYING");
+  } else {
+    setColor(255, 100, 100);
+    drawText(w / 2 - 30, 75, "STOPPED");
+  }
+
+  // --- Loop indicator ---
+  if (looping) {
+    setColor(255, 255, 100);
+    drawText(w / 2 - 25, 95, "LOOP: ON");
+  } else {
+    setColor(150, 150, 150);
+    drawText(w / 2 - 25, 95, "LOOP: OFF");
+  }
+
+  // --- Controls ---
+  setColor(180, 180, 180);
+  drawText(20, h - 80, "SPACE = play/stop");
+  drawText(20, h - 60, "LEFT/RIGHT = change melody");
+  drawText(20, h - 40, "L = toggle loop");
+  drawText(20, h - 20, "ESC = quit");
+
+  // --- Note display (show first few notes of current melody) ---
+  setColor(80, 80, 120);
+  fillRect(20, h - 140, w - 40, 40);
+  setColor(200, 200, 255);
+  drawText(25, h - 135, "Notes:");
+
+  present();
+}
+
+print "Music demo complete.";

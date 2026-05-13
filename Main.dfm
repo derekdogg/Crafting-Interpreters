@@ -1,9 +1,9 @@
 object Form4: TForm4
   Left = 0
   Top = 0
-  Caption = 'Lox Interpreter'
+  Caption = 'bet'
   ClientHeight = 800
-  ClientWidth = 1400
+  ClientWidth = 1665
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -123,11 +123,12 @@ object Form4: TForm4
   object PanelRight: TPanel
     Left = 305
     Top = 0
-    Width = 1095
+    Width = 1360
     Height = 800
     Align = alClient
     BevelOuter = bvNone
     TabOrder = 1
+    ExplicitWidth = 1095
     object Splitter2: TSplitter
       Left = 0
       Top = 445
@@ -138,15 +139,16 @@ object Form4: TForm4
     object Panel1: TPanel
       Left = 0
       Top = 0
-      Width = 1095
+      Width = 1360
       Height = 689
       Align = alTop
       Caption = 'Panel1'
       TabOrder = 0
+      ExplicitWidth = 1095
       object PaintBox1: TPaintBox
         Left = 481
         Top = 1
-        Width = 613
+        Width = 878
         Height = 687
         Align = alClient
         ExplicitLeft = 608
@@ -804,17 +806,16 @@ object Form4: TForm4
     object Panel2: TPanel
       Left = 0
       Top = 689
-      Width = 1095
+      Width = 1360
       Height = 111
       Align = alClient
       Caption = 'Panel2'
       TabOrder = 1
-      ExplicitTop = 439
-      ExplicitHeight = 361
+      ExplicitWidth = 1095
       object Memo2: TMemo
         Left = 1
         Top = 42
-        Width = 1093
+        Width = 1358
         Height = 68
         Align = alClient
         Font.Charset = DEFAULT_CHARSET
@@ -825,20 +826,19 @@ object Form4: TForm4
         ParentFont = False
         ScrollBars = ssBoth
         TabOrder = 0
-        ExplicitTop = 38
-        ExplicitHeight = 197
+        ExplicitWidth = 1093
       end
       object Panel3: TPanel
         Left = 1
         Top = 1
-        Width = 1093
+        Width = 1358
         Height = 41
         Align = alTop
         Caption = 'Panel3'
         TabOrder = 1
-        ExplicitTop = 5
+        ExplicitWidth = 1093
         DesignSize = (
-          1093
+          1358
           41)
         object Label1: TLabel
           Left = 8

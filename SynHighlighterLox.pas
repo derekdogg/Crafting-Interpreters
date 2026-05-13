@@ -67,7 +67,7 @@ const
     'break', 'continue'
   );
 
-  LoxBuiltIns: array[0..58] of string = (
+  LoxBuiltIns: array[0..60] of string = (
     // Core
     'clock', 'collectGarbage', 'assert',
     // Conversion
@@ -80,6 +80,7 @@ const
     'env', 'loadEnv',
     // Math
     'abs', 'ceil', 'floor', 'round', 'sqrt', 'pow', 'min', 'max', 'random',
+    'sin', 'cos',
     // String
     'strlen', 'substr', 'indexOf', 'charAt', 'upper', 'lower', 'trim', 'split',
     // Array

@@ -1,0 +1,722 @@
+// ============================================================
+// Manic Cavern — single-screen platformer
+// Inspired by Manic Miner / Jet Set Willy
+// Collect all keys to open the exit before air runs out!
+// ============================================================
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+// --- Tile definitions (8x8) ---
+var mapCols = 25;
+var mapRows = 16;
+var hudHeight = 80;
+// Dynamic tile size — fills canvas
+var tileSize = floor((h - hudHeight) / mapRows);
+if (tileSize > floor(w / mapCols)) {
+  tileSize = floor(w / mapCols);
+}
+
+// Brick wall (red)
+setPaletteColor("R", 180, 40, 30);
+setPaletteColor("D", 120, 25, 20);
+var WALL = createPaletteSprite(8, 8,
+  "RRRRRRRR" +
+  "RRRD.RRR" +
+  "RRRRRRRR" +
+  "........" +
+  "RRRRRRRR" +
+  "R.RRRRRR" +
+  "RRRRRRRR" +
+  "........"
+);
+
+// Platform (red crumbly)
+setPaletteColor("R", 200, 50, 40);
+setPaletteColor("D", 140, 30, 25);
+var PLATFORM = createPaletteSprite(8, 8,
+  "RDRDRDRD" +
+  "DRDRDRDR" +
+  "RDRDRDRD" +
+  "DRDRDRDR" +
+  "RDRDRDRD" +
+  "DRDRDRDR" +
+  "RDRDRDRD" +
+  "DRDRDRDR"
+);
+
+// Grass top (green tufts)
+setPaletteColor("G", 50, 200, 50);
+setPaletteColor("L", 80, 255, 80);
+var GRASS = createPaletteSprite(8, 8,
+  "L.L..L.L" +
+  "GLGLLGLG" +
+  "GGGGGGGG" +
+  "GGGGGGGG" +
+  "GGGGGGGG" +
+  "GGGGGGGG" +
+  "GGGGGGGG" +
+  "GGGGGGGG"
+);
+
+// Empty (black)
+setColor(0, 0, 0);
+var EMPTY = createSprite(8, 8,
+  "........" +
+  "........" +
+  "........" +
+  "........" +
+  "........" +
+  "........" +
+  "........" +
+  "........"
+);
+
+// Exit door (checkered blue/yellow)
+setPaletteColor("B", 40, 40, 180);
+setPaletteColor("Y", 200, 200, 50);
+var DOOR = createPaletteSprite(8, 8,
+  "BYBYBYBY" +
+  "YBYBYBYB" +
+  "BYBYBYBY" +
+  "YBYBYBYB" +
+  "BYBYBYBY" +
+  "YBYBYBYB" +
+  "BYBYBYBY" +
+  "YBYBYBYB"
+);
+
+// Key collectible (yellow)
+setPaletteColor("Y", 255, 220, 0);
+setPaletteColor("O", 200, 160, 0);
+var KEY = createPaletteSprite(8, 8,
+  "..YYYY.." +
+  ".Y....Y." +
+  ".Y....Y." +
+  "..YYYY.." +
+  "...YY..." +
+  "...YO..." +
+  "...YO..." +
+  "...YY..."
+);
+
+// Hazard — dripping stalactite (cyan)
+setPaletteColor("C", 0, 220, 255);
+setPaletteColor("W", 200, 240, 255);
+var STALACTITE = createPaletteSprite(8, 8,
+  "CCCCCCCC" +
+  ".CC..CC." +
+  ".CC..CC." +
+  "..C..C.." +
+  "..C..C.." +
+  "..W..W.." +
+  "..W....." +
+  "..W....."
+);
+
+clearPalette();
+
+// --- Player sprite (10x14 Willy-style) ---
+setPaletteColor("H", 255, 200, 100);   // hat/hair
+setPaletteColor("S", 255, 200, 150);   // skin
+setPaletteColor("B", 40, 40, 200);     // blue shirt
+setPaletteColor("R", 200, 40, 40);     // red trousers
+setPaletteColor("W", 60, 60, 60);      // boots
+setPaletteColor("E", 255, 255, 255);   // eyes
+
+var playerStand = createPaletteSprite(10, 14,
+  "..HHHH...." +
+  ".HHHHHH..." +
+  "..SSSS...." +
+  ".SESSSES.." +
+  ".SSSSSS..." +
+  "..SSSS...." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  "..RRRR...." +
+  "..RRRR...." +
+  "..RR.RR..." +
+  "..RR.RR..." +
+  ".WW...WW.."
+);
+
+var playerWalk1 = createPaletteSprite(10, 14,
+  "..HHHH...." +
+  ".HHHHHH..." +
+  "..SSSS...." +
+  ".SESSSES.." +
+  ".SSSSSS..." +
+  "..SSSS...." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  "..RRRR...." +
+  ".RR..RR..." +
+  "RR....RR.." +
+  "WW....WW.." +
+  "WW.....WW."
+);
+
+var playerWalk2 = createPaletteSprite(10, 14,
+  "..HHHH...." +
+  ".HHHHHH..." +
+  "..SSSS...." +
+  ".SESSSES.." +
+  ".SSSSSS..." +
+  "..SSSS...." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  "..RRRR...." +
+  "..RRRR...." +
+  "..RR.RR..." +
+  ".WW...WW.." +
+  "WW.....WW."
+);
+
+var playerJump = createPaletteSprite(10, 14,
+  "..HHHH...." +
+  ".HHHHHH..." +
+  "..SSSS...." +
+  ".SESSSES.." +
+  "S.SSSS.S.." +
+  "..SSSS...." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  ".BBBBBB..." +
+  "..RRRR...." +
+  "..RRRR...." +
+  ".WW..WW..." +
+  "..WW.WW..." +
+  ".........."
+);
+
+clearPalette();
+
+var playerStandL = flipSprite(playerStand, "h");
+var playerWalk1L = flipSprite(playerWalk1, "h");
+var playerWalk2L = flipSprite(playerWalk2, "h");
+var playerJumpL = flipSprite(playerJump, "h");
+
+// --- Enemy sprite (yellow robot guardian) ---
+setPaletteColor("Y", 220, 200, 0);
+setPaletteColor("D", 160, 140, 0);
+setPaletteColor("R", 255, 0, 0);
+var enemySprite = createPaletteSprite(8, 10,
+  "..YYYY.." +
+  ".YYYYYY." +
+  "YYRYYRYY" +
+  "YYYYYYYY" +
+  ".YDDDDY." +
+  ".YYYYYY." +
+  "..YYYY.." +
+  "..YYYY.." +
+  "..YY.YY." +
+  ".YY...YY"
+);
+var enemySpriteL = flipSprite(enemySprite, "h");
+clearPalette();
+
+// --- Build the level tilemap ---
+var map = createTilemap(mapCols, mapRows, tileSize, tileSize);
+
+// Fill with empty
+var row = 0;
+while (row < mapRows) {
+  var col = 0;
+  while (col < mapCols) {
+    setTile(map, col, row, EMPTY);
+    col = col + 1;
+  }
+  row = row + 1;
+}
+
+// Border walls (left, right columns)
+row = 0;
+while (row < mapRows) {
+  setTile(map, 0, row, WALL);
+  setTile(map, mapCols - 1, row, WALL);
+  row = row + 1;
+}
+
+// Top wall
+var col = 0;
+while (col < mapCols) {
+  setTile(map, col, 0, WALL);
+  col = col + 1;
+}
+
+// --- Ground floor (rows 13-15) with grass ---
+col = 1;
+while (col < mapCols - 1) {
+  setTile(map, col, 13, GRASS);
+  setTile(map, col, 14, PLATFORM);
+  setTile(map, col, 15, PLATFORM);
+  col = col + 1;
+}
+
+// --- Platforms ---
+// Platform 1: left mid (row 10)
+col = 2;
+while (col <= 8) {
+  setTile(map, col, 10, GRASS);
+  col = col + 1;
+}
+
+// Platform 2: center (row 7)
+col = 9;
+while (col <= 16) {
+  setTile(map, col, 7, GRASS);
+  col = col + 1;
+}
+
+// Platform 3: right mid (row 10)
+col = 16;
+while (col <= 23) {
+  setTile(map, col, 10, GRASS);
+  col = col + 1;
+}
+
+// Platform 4: upper left (row 4)
+col = 2;
+while (col <= 7) {
+  setTile(map, col, 4, GRASS);
+  col = col + 1;
+}
+
+// Platform 5: upper right (row 3)
+col = 17;
+while (col <= 23) {
+  setTile(map, col, 3, GRASS);
+  col = col + 1;
+}
+
+// Small stepping stones
+setTile(map, 12, 11, PLATFORM);
+setTile(map, 13, 11, PLATFORM);
+
+// Stalactites (hazards along top)
+setTile(map, 5, 1, STALACTITE);
+setTile(map, 10, 1, STALACTITE);
+setTile(map, 15, 1, STALACTITE);
+setTile(map, 20, 1, STALACTITE);
+
+// Exit door (upper right platform)
+setTile(map, 22, 2, DOOR);
+
+// --- Key positions (world pixel coords) ---
+var maxKeys = 5;
+var keyX = newArray();
+var keyY = newArray();
+var keyCollected = newArray();
+// Key 1: ground floor right
+arrayPush(keyX, 18 * tileSize); arrayPush(keyY, 12 * tileSize); arrayPush(keyCollected, false);
+// Key 2: left mid platform
+arrayPush(keyX, 5 * tileSize); arrayPush(keyY, 9 * tileSize); arrayPush(keyCollected, false);
+// Key 3: center platform
+arrayPush(keyX, 12 * tileSize); arrayPush(keyY, 6 * tileSize); arrayPush(keyCollected, false);
+// Key 4: right mid platform
+arrayPush(keyX, 20 * tileSize); arrayPush(keyY, 9 * tileSize); arrayPush(keyCollected, false);
+// Key 5: upper left
+arrayPush(keyX, 4 * tileSize); arrayPush(keyY, 3 * tileSize); arrayPush(keyCollected, false);
+
+var keysCollected = 0;
+var doorOpen = false;
+
+// --- Enemy patrols (parallel arrays) ---
+var maxEnemies = 4;
+var enemyX = newArray();
+var enemyY = newArray();
+var enemyMinX = newArray();
+var enemyMaxX = newArray();
+var enemySpeed = newArray();
+var enemyDir = newArray();
+
+// Enemy 0: patrols ground floor
+arrayPush(enemyX, 8 * tileSize); arrayPush(enemyY, 11.5 * tileSize);
+arrayPush(enemyMinX, 2 * tileSize); arrayPush(enemyMaxX, 14 * tileSize);
+arrayPush(enemySpeed, 50); arrayPush(enemyDir, 1);
+
+// Enemy 1: patrols center platform
+arrayPush(enemyX, 10 * tileSize); arrayPush(enemyY, 5.5 * tileSize);
+arrayPush(enemyMinX, 9 * tileSize); arrayPush(enemyMaxX, 15 * tileSize);
+arrayPush(enemySpeed, 40); arrayPush(enemyDir, -1);
+
+// Enemy 2: patrols right platform
+arrayPush(enemyX, 18 * tileSize); arrayPush(enemyY, 8.5 * tileSize);
+arrayPush(enemyMinX, 16 * tileSize); arrayPush(enemyMaxX, 22 * tileSize);
+arrayPush(enemySpeed, 55); arrayPush(enemyDir, 1);
+
+// Enemy 3: patrols upper area
+arrayPush(enemyX, 9 * tileSize); arrayPush(enemyY, 1.5 * tileSize);
+arrayPush(enemyMinX, 6 * tileSize); arrayPush(enemyMaxX, 14 * tileSize);
+arrayPush(enemySpeed, 35); arrayPush(enemyDir, 1);
+
+// --- Player state ---
+var playerX = 2 * tileSize;
+var playerY = 11 * tileSize;
+var playerVX = 0;
+var playerVY = 0;
+var playerW = 14;
+var playerH = 20;
+var gravity = 500;
+var jumpSpeed = -250;
+var moveSpeed = 100;
+var onGround = false;
+var facingRight = true;
+var leftHeld = false;
+var rightHeld = false;
+var walkTimer = 0;
+var walkFrame = 0;
+var walkInterval = 0.12;
+
+// --- Game state ---
+var lives = 3;
+var score = 0;
+var airMax = 100;
+var air = airMax;
+var airDrainRate = 3.5;  // per second
+var running = true;
+var gameOver = false;
+var levelComplete = false;
+var lastTime = clock();
+var spawnX = 2 * tileSize;
+var spawnY = 11 * tileSize;
+
+// --- Collision helpers ---
+fun solidAt(px, py) {
+  var col = floor(px / tileSize);
+  var row = floor(py / tileSize);
+  if (col < 0) return true;
+  if (col >= mapCols) return true;
+  if (row < 0) return true;
+  if (row >= mapRows) return true;
+  var tile = getTile(map, col, row);
+  return tile == WALL or tile == PLATFORM or tile == GRASS;
+}
+
+fun hazardAt(px, py) {
+  var col = floor(px / tileSize);
+  var row = floor(py / tileSize);
+  if (col < 0 or col >= mapCols or row < 0 or row >= mapRows) return false;
+  var tile = getTile(map, col, row);
+  return tile == STALACTITE;
+}
+
+fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  if (ax + aw <= bx) return false;
+  if (bx + bw <= ax) return false;
+  if (ay + ah <= by) return false;
+  if (by + bh <= ay) return false;
+  return true;
+}
+
+fun killPlayer() {
+  lives = lives - 1;
+  playNoise(400);
+  if (lives <= 0) {
+    gameOver = true;
+  } else {
+    playerX = spawnX;
+    playerY = spawnY;
+    playerVX = 0;
+    playerVY = 0;
+    onGround = false;
+    air = airMax;
+  }
+}
+
+// ============================================================
+// Game loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // --- Input ---
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:left") leftHeld = true;
+    if (e == "keyup:left") leftHeld = false;
+    if (e == "keydown:right") rightHeld = true;
+    if (e == "keyup:right") rightHeld = false;
+    if (e == "keydown:escape") running = false;
+    if (e == "keydown:space") {
+      if (onGround and !gameOver and !levelComplete) {
+        playerVY = jumpSpeed;
+        onGround = false;
+        playSweep(200, 400, 60);
+      }
+    }
+    if (e == "keydown:enter") {
+      if (gameOver or levelComplete) {
+        // Restart
+        gameOver = false;
+        levelComplete = false;
+        lives = 3;
+        score = 0;
+        air = airMax;
+        keysCollected = 0;
+        doorOpen = false;
+        var k = 0;
+        while (k < maxKeys) {
+          arraySet(keyCollected, k, false);
+          k = k + 1;
+        }
+        playerX = spawnX;
+        playerY = spawnY;
+        playerVX = 0;
+        playerVY = 0;
+      }
+    }
+  }
+
+  if (!gameOver and !levelComplete) {
+    // --- Player movement ---
+    playerVX = 0;
+    if (leftHeld) { playerVX = -moveSpeed; facingRight = false; }
+    if (rightHeld) { playerVX = moveSpeed; facingRight = true; }
+
+    // Walk animation
+    if (playerVX != 0 and onGround) {
+      walkTimer = walkTimer + dt;
+      if (walkTimer >= walkInterval) {
+        walkTimer = walkTimer - walkInterval;
+        walkFrame = walkFrame + 1;
+        if (walkFrame > 2) walkFrame = 1;
+      }
+    } else {
+      if (onGround) { walkFrame = 0; walkTimer = 0; }
+    }
+
+    // Gravity
+    playerVY = playerVY + gravity * dt;
+    if (playerVY > 400) playerVY = 400;
+
+    // Move X
+    var newX = playerX + playerVX * dt;
+    if (!solidAt(newX, playerY + 2) and !solidAt(newX + playerW, playerY + 2) and
+        !solidAt(newX, playerY + playerH - 1) and !solidAt(newX + playerW, playerY + playerH - 1)) {
+      playerX = newX;
+    }
+
+    // Move Y
+    var newY = playerY + playerVY * dt;
+    if (playerVY >= 0) {
+      if (solidAt(playerX + 2, newY + playerH) or solidAt(playerX + playerW - 2, newY + playerH)) {
+        playerY = floor((newY + playerH) / tileSize) * tileSize - playerH;
+        playerVY = 0;
+        onGround = true;
+      } else {
+        playerY = newY;
+        onGround = false;
+      }
+    } else {
+      if (solidAt(playerX + 2, newY) or solidAt(playerX + playerW - 2, newY)) {
+        playerVY = 0;
+      } else {
+        playerY = newY;
+      }
+    }
+
+    // --- Hazard check (stalactites) ---
+    if (hazardAt(playerX + playerW / 2, playerY) or
+        hazardAt(playerX + playerW / 2, playerY + playerH / 2)) {
+      killPlayer();
+    }
+
+    // --- Enemy patrol + collision ---
+    var ei = 0;
+    while (ei < maxEnemies) {
+      var ex = arrayGet(enemyX, ei);
+      var ey = arrayGet(enemyY, ei);
+      var espd = arrayGet(enemySpeed, ei);
+      var edir = arrayGet(enemyDir, ei);
+
+      ex = ex + espd * edir * dt;
+      if (ex <= arrayGet(enemyMinX, ei)) {
+        ex = arrayGet(enemyMinX, ei);
+        edir = 1;
+      }
+      if (ex >= arrayGet(enemyMaxX, ei)) {
+        ex = arrayGet(enemyMaxX, ei);
+        edir = -1;
+      }
+      arraySet(enemyX, ei, ex);
+      arraySet(enemyDir, ei, edir);
+
+      // Collision with player
+      if (rectsOverlap(playerX, playerY, playerW, playerH, ex, ey, 12, 14)) {
+        killPlayer();
+      }
+
+      ei = ei + 1;
+    }
+
+    // --- Key collection ---
+    var ki = 0;
+    while (ki < maxKeys) {
+      if (!arrayGet(keyCollected, ki)) {
+        if (rectsOverlap(playerX, playerY, playerW, playerH,
+                         arrayGet(keyX, ki), arrayGet(keyY, ki), 12, 12)) {
+          arraySet(keyCollected, ki, true);
+          keysCollected = keysCollected + 1;
+          score = score + 100;
+          playSweep(600, 1200, 80);
+          if (keysCollected >= maxKeys) {
+            doorOpen = true;
+            playTone(880, 100);
+          }
+        }
+      }
+      ki = ki + 1;
+    }
+
+    // --- Check exit door ---
+    if (doorOpen) {
+      var doorPx = 22 * tileSize;
+      var doorPy = 2 * tileSize;
+      if (rectsOverlap(playerX, playerY, playerW, playerH, doorPx, doorPy, tileSize, tileSize)) {
+        levelComplete = true;
+        score = score + floor(air) * 10;
+        playSweep(400, 1600, 200);
+      }
+    }
+
+    // --- Air depletes ---
+    air = air - airDrainRate * dt;
+    if (air <= 0) {
+      air = 0;
+      killPlayer();
+      air = airMax;
+    }
+  }
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas();
+
+  // --- Draw tilemap ---
+  drawTilemap(map, 0, 0);
+
+  // --- Draw keys (that haven't been collected) ---
+  var ki = 0;
+  while (ki < maxKeys) {
+    if (!arrayGet(keyCollected, ki)) {
+      drawSpriteScaled(KEY, arrayGet(keyX, ki), arrayGet(keyY, ki), 2);
+    }
+    ki = ki + 1;
+  }
+
+  // --- Draw exit door glow when open ---
+  if (doorOpen) {
+    setColor(100, 255, 100);
+    fillRect(22 * tileSize - 2, 2 * tileSize - 2, tileSize + 4, tileSize + 4);
+  }
+
+  // --- Draw enemies ---
+  var ei = 0;
+  while (ei < maxEnemies) {
+    var ex = floor(arrayGet(enemyX, ei));
+    var ey = floor(arrayGet(enemyY, ei));
+    var edir = arrayGet(enemyDir, ei);
+    if (edir > 0) {
+      drawSpriteScaled(enemySprite, ex, ey, 2);
+    } else {
+      drawSpriteScaled(enemySpriteL, ex, ey, 2);
+    }
+    ei = ei + 1;
+  }
+
+  // --- Draw player ---
+  var spr = playerStand;
+  if (!facingRight) spr = playerStandL;
+  if (!onGround) {
+    if (facingRight) spr = playerJump;
+    if (!facingRight) spr = playerJumpL;
+  } else {
+    if (walkFrame == 1) {
+      if (facingRight) spr = playerWalk1;
+      if (!facingRight) spr = playerWalk1L;
+    }
+    if (walkFrame == 2) {
+      if (facingRight) spr = playerWalk2;
+      if (!facingRight) spr = playerWalk2L;
+    }
+  }
+  drawSpriteScaled(spr, floor(playerX) - 3, floor(playerY) - 8, 2);
+
+  // ============================================================
+  // HUD (bottom area)
+  // ============================================================
+  var hudY = mapRows * tileSize + 2;
+
+  // Level name bar
+  setColor(180, 180, 40);
+  fillRect(0, hudY, w, 18);
+  setColor(0, 0, 0);
+  drawText(w / 2 - 60, hudY + 2, "Central Cavern");
+
+  // Air bar
+  var airBarY = hudY + 20;
+  setColor(150, 150, 170);
+  drawText(4, airBarY, "AIR");
+  // Background
+  setColor(60, 60, 80);
+  fillRect(36, airBarY, 200, 12);
+  // Fill (green -> red as it depletes)
+  var airPct = air / airMax;
+  var airR = floor((1 - airPct) * 255);
+  var airG = floor(airPct * 200);
+  setColor(airR, airG, 40);
+  fillRect(36, airBarY, floor(200 * airPct), 12);
+
+  // Score
+  var scoreY = airBarY + 16;
+  setColor(200, 200, 50);
+  drawText(4, scoreY, "High Score 000200");
+  drawText(w / 2, scoreY, "Score " + str(score));
+
+  // Lives
+  var livesY = scoreY + 18;
+  setColor(200, 200, 220);
+  drawText(4, livesY, "Lives:");
+  var li = 0;
+  while (li < lives) {
+    setColor(255, 150, 100);
+    fillRect(56 + li * 18, livesY, 10, 12);
+    li = li + 1;
+  }
+
+  // Keys remaining
+  setColor(255, 220, 0);
+  drawText(w - 120, livesY, "Keys: " + str(keysCollected) + "/" + str(maxKeys));
+
+  // --- Game over / level complete overlays ---
+  if (gameOver) {
+    setColor(0, 0, 0);
+    fillRect(w / 2 - 110, h / 2 - 30, 220, 60);
+    setColor(255, 50, 50);
+    drawText(w / 2 - 60, h / 2 - 20, "GAME OVER");
+    setColor(200, 200, 200);
+    drawText(w / 2 - 90, h / 2 + 4, "ENTER to restart");
+  }
+
+  if (levelComplete) {
+    setColor(0, 0, 0);
+    fillRect(w / 2 - 120, h / 2 - 30, 240, 60);
+    setColor(50, 255, 100);
+    drawText(w / 2 - 80, h / 2 - 20, "LEVEL COMPLETE!");
+    setColor(200, 200, 200);
+    drawText(w / 2 - 90, h / 2 + 4, "Score: " + str(score));
+  }
+
+  present();
+}
+
+print "Final score: " + str(score);
