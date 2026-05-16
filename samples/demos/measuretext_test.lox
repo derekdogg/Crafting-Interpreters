@@ -1,0 +1,90 @@
+// measuretext_test.lox - measureText() for centering & layout (320x240)
+
+clearCanvas(30, 30, 50);
+
+var screenW = canvasWidth();
+
+// --- Centered title ---
+var title = "measureText";
+var titleScale = 2;
+var titleW = measureText(title, titleScale);
+setColor(255, 255, 100);
+drawText((screenW - titleW) / 2, 8, title, titleScale);
+
+// --- Right-aligned score ---
+var score = "Score: 12345";
+var scoreW = measureText(score);
+setColor(255, 255, 255);
+drawText(screenW - scoreW - 4, 32, score);
+
+// --- Centered text in a box ---
+var boxX = 30;
+var boxY = 50;
+var boxW = 180;
+var boxH = 36;
+setColor(80, 80, 120);
+fillRect(boxX, boxY, boxW, boxH);
+setColor(255, 255, 0);
+drawRect(boxX, boxY, boxW, boxH);
+
+var msg = "Centered in box";
+var msgW = measureText(msg);
+setColor(255, 255, 255);
+drawText(boxX + (boxW - msgW) / 2, boxY + (boxH - 7) / 2, msg);
+
+// --- Right-aligned label column ---
+var colX = 240;
+var colY = 50;
+var rowH = 12;
+
+setColor(180, 180, 255);
+drawText(colX - measureText("Health:"), colY,         "Health:");
+setColor(255, 255, 255);
+drawText(colX + 4, colY, "100");
+
+setColor(180, 180, 255);
+drawText(colX - measureText("Mana:"),   colY + rowH,  "Mana:");
+setColor(255, 255, 255);
+drawText(colX + 4, colY + rowH, "45");
+
+setColor(180, 180, 255);
+drawText(colX - measureText("Gold:"),   colY + rowH*2, "Gold:");
+setColor(255, 255, 255);
+drawText(colX + 4, colY + rowH*2, "2300");
+
+setColor(180, 180, 255);
+drawText(colX - measureText("XP:"),     colY + rowH*3, "XP:");
+setColor(255, 255, 255);
+drawText(colX + 4, colY + rowH*3, "8750");
+
+// --- Visual proof: red markers at measured width ---
+setColor(150, 150, 150);
+drawText(8, 130, "Width verification:");
+
+var testStr = "ABCDEF";
+var testScale = 2;
+var tw = measureText(testStr, testScale);
+var tx = 8;
+var ty = 150;
+setColor(255, 255, 255);
+drawText(tx, ty, testStr, testScale);
+setColor(255, 0, 0);
+drawLine(tx, ty - 2, tx, ty + 7 * testScale + 2);
+drawLine(tx + tw, ty - 2, tx + tw, ty + 7 * testScale + 2);
+
+setColor(150, 150, 150);
+drawText(tx, ty + 7 * testScale + 6, "Red lines = measured width");
+
+setColor(200, 200, 200);
+drawText(8, 224, "ESC to quit");
+
+present();
+
+var running = true;
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+}

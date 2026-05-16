@@ -103,7 +103,7 @@ var COIN = createSprite(8, 8,
 // --- Build the tilemap ---
 var mapCols = 40;
 var mapRows = 15;
-var tileSize = 32;
+var tileSize = 16;
 
 var map = createTilemap(mapCols, mapRows, tileSize, tileSize);
 
@@ -273,16 +273,16 @@ var walkInterval = 0.12;
 var coins = 0;
 var totalCoins = 5;
 
-var playerX = 64;
-var playerY = 320;
+var playerX = 32;
+var playerY = 80;
 var playerVX = 0;
 var playerVY = 0;
-var playerSize = 28;
+var playerSize = 14;
 var gravity = 600;
 var jumpSpeed = -300;
-var moveSpeed = 200;
-var accel = 800;
-var friction = 600;
+var moveSpeed = 100;
+var accel = 400;
+var friction = 300;
 var onGround = false;
 var wasOnGround = false;
 var leftHeld = false;

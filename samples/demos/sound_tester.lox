@@ -23,24 +23,24 @@ var noiseDur = 180;
 fun draw() {
   clearCanvas();
   setColor(255, 255, 255);
-  drawText(10, 10, "=== SOUND TESTER ===");
+  drawText(4, 4, "=== SOUND TESTER ===");
 
   setColor(200, 200, 200);
-  drawText(10, 50,  "[1] Tone:  " + str(toneFreq) + " Hz, " + str(toneDur) + " ms");
-  drawText(10, 80,  "[2] Sweep: " + str(sweepStart) + " -> " + str(sweepEnd) + " Hz, " + str(sweepDur) + " ms");
-  drawText(10, 110, "[3] Noise: " + str(noiseDur) + " ms");
+  drawText(4, 20, "[1] Tone:  " + str(toneFreq) + "Hz " + str(toneDur) + "ms");
+  drawText(4, 32, "[2] Sweep: " + str(sweepStart) + "->" + str(sweepEnd) + " " + str(sweepDur) + "ms");
+  drawText(4, 44, "[3] Noise: " + str(noiseDur) + "ms");
 
   setColor(100, 200, 255);
-  drawText(10, 160, "--- Common Game Sounds ---");
+  drawText(4, 64, "--- Game Sounds ---");
   setColor(200, 200, 200);
-  drawText(10, 190, "[Q] Laser pew       [W] Deep explosion");
-  drawText(10, 220, "[E] Enemy zap        [R] Player death");
-  drawText(10, 250, "[A] Invader step     [S] Pickup/coin");
-  drawText(10, 280, "[D] Alarm siren      [F] Bomb drop");
-  drawText(10, 310, "[Z] Menu blip        [X] Error buzz");
+  drawText(4, 80,  "[Q] Laser    [W] Explosion");
+  drawText(4, 92,  "[E] Zap      [R] Death");
+  drawText(4, 104, "[A] Step     [S] Pickup");
+  drawText(4, 116, "[D] Siren    [F] Bomb");
+  drawText(4, 128, "[Z] Blip     [X] Error");
 
   setColor(255, 255, 100);
-  drawText(10, 360, "Press ESC to quit");
+  drawText(4, 220, "Press ESC to quit");
   present();
 }
 

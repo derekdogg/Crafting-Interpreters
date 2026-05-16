@@ -17,8 +17,8 @@ while (running) {
   }
 
   // Constant shake — random offset every frame
-  var shakeX = floor((random() - 0.5) * 12);
-  var shakeY = floor((random() - 0.5) * 12);
+  var shakeX = floor((random() - 0.5) * 6);
+  var shakeY = floor((random() - 0.5) * 6);
   setCamera(shakeX, shakeY);
 
   clearCanvas();
@@ -28,12 +28,12 @@ while (running) {
   var gx = 0;
   while (gx <= w) {
     drawLine(gx, 0, gx, h);
-    gx = gx + 40;
+    gx = gx + 20;
   }
   var gy = 0;
   while (gy <= h) {
     drawLine(0, gy, w, gy);
-    gy = gy + 40;
+    gy = gy + 20;
   }
 
   // Big crosshair
@@ -43,17 +43,17 @@ while (running) {
 
   // Center box
   setColor(255, 0, 0);
-  fillRect(w / 2 - 40, h / 2 - 40, 80, 80);
+  fillRect(w / 2 - 20, h / 2 - 20, 40, 40);
 
   // Corner markers
   setColor(0, 255, 0);
-  fillCircle(50, 50, 20);
-  fillCircle(w - 50, 50, 20);
-  fillCircle(50, h - 50, 20);
-  fillCircle(w - 50, h - 50, 20);
+  fillCircle(20, 20, 8);
+  fillCircle(w - 20, 20, 8);
+  fillCircle(20, h - 20, 8);
+  fillCircle(w - 20, h - 20, 8);
 
   setColor(255, 255, 255);
-  drawText(w / 2 - 100, 10, "SHAKING! ESC to quit");
+  drawText(w / 2 - 60, 6, "SHAKING! ESC to quit");
 
   present();
   frame = frame + 1;

@@ -1,0 +1,65 @@
+// Bitmap font test — built-in 5x7 font on the 320x240 canvas
+var w = canvasWidth();
+var h = canvasHeight();
+var running = true;
+
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  clearCanvas();
+
+  // --- Small text showcase (scale 1 — native 5x7) ---
+  setColor(255, 255, 255);
+  drawText(2, 2,  "5x7 bitmap font, scale 1 (the smallest)");
+  setColor(180, 180, 180);
+  drawText(2, 12, "ABCDEFGHIJKLMNOPQRSTUVWXYZ abc def 0123");
+  drawText(2, 20, "the quick brown fox jumps over lazy dog");
+  drawText(2, 28, "!@#$%^&*()_+-=[]{}|;:,.<>/?`~");
+
+  // A dense info HUD made entirely of scale-1 text
+  setColor(80, 220, 120);
+  drawText(2, 42, "SCORE 000420   HI 999999   LV 03");
+  setColor(220, 220, 100);
+  drawText(2, 50, "AMMO 24/96     HP  87/100   x3");
+  setColor(120, 200, 255);
+  drawText(2, 58, "TIME 02:14     COMBO x7     +200");
+
+  // Multi-color word per line — same scale 1
+  setColor(255,  80,  80); drawText(2,  72, "RED");
+  setColor(255, 180,  60); drawText(26, 72, "ORANGE");
+  setColor(255, 255,  80); drawText(62, 72, "YELLOW");
+  setColor(120, 240, 120); drawText(98, 72, "GREEN");
+  setColor( 80, 180, 255); drawText(134,72, "BLUE");
+  setColor(220, 120, 255); drawText(162,72, "MAGENTA");
+
+  // --- Bigger scales for comparison ---
+  setColor(0, 255, 255);
+  drawText(2,  88, "scale 2", 2);
+  setColor(255, 255,   0);
+  drawText(2, 108, "scale 3", 3);
+  setColor(255, 100,  50);
+  drawText(2, 134, "BIG", 4);
+
+  // --- Printable ASCII at scale 1 ---
+  setColor(150, 150, 150);
+  drawText(2, 174, "Printable ASCII 32-126:");
+  setColor(220, 220, 220);
+  drawText(2, 184, " !#$%&'()*+,-./0123456789:;<=>?");
+  drawText(2, 192, "@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_");
+  drawText(2, 200, "`abcdefghijklmnopqrstuvwxyz{|}~");
+
+  // Tiny footer
+  setColor(255, 0, 255);
+  drawText(2, h - 8, "ESC to quit");
+
+  present();
+}
+
+clearCanvas();
+setColor(255, 255, 255);
+drawText(w / 2 - 15, h / 2 - 3, "Done.", 2);
+present();

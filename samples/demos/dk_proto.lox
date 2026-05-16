@@ -1,0 +1,410 @@
+// ============================================================
+// Donkey Kong proof-of-concept
+// 320x240 landscape canvas, 192-pixel centered portrait playfield.
+// ============================================================
+//   Move:  Left / Right arrows
+//   Jump:  Space
+//   Quit:  Esc
+// ============================================================
+
+var w = canvasWidth();   // 320
+var h = canvasHeight();  // 240
+
+// Playfield is a 192x240 portrait window centered in the canvas
+var fieldX = 64;
+var fieldW = 192;
+var fieldY = 0;
+var fieldH = 240;
+
+// --------- Palette ---------
+setPaletteColor("R", 230,  40,  40);  // mario red / barrel rim
+setPaletteColor("B",  50,  80, 220);  // mario blue overalls
+setPaletteColor("P", 255, 200, 160);  // skin / pauline
+setPaletteColor("K",  40,  20,  10);  // black / outline
+setPaletteColor("Y", 255, 220,  60);  // hammer / pauline dress
+setPaletteColor("W", 255, 255, 255);
+setPaletteColor("O", 180,  90,  20);  // barrel brown
+setPaletteColor("D", 120,  60,  10);  // dark wood
+setPaletteColor("G", 200,  60,  50);  // girder red
+setPaletteColor("S", 110,  35,  30);  // girder shadow
+setPaletteColor("T", 140,  70,  30);  // DK tan
+setPaletteColor("M", 200, 130,  80);  // DK lighter tan
+
+// --------- Mario sprites (12x16) ---------
+var marioStand = createPaletteSprite(12, 16,
+  "....RRRRR..." +
+  "...RRRRRRRR." +
+  "...KKPPPK..." +
+  "..KPPPKPPK.." +
+  "..KPPPPKPPK." +
+  "..KKPPPPKK.." +
+  "....PPPP...." +
+  "...RBRRBR..." +
+  "..RRBRRBRR.." +
+  ".RRRBBBBRRR." +
+  ".PPRBYBBYBPP" +
+  ".PPRBBBBBBPP" +
+  "..RRBBBBBR.." +
+  "..RR....RR.." +
+  ".KKK....KKK." +
+  "KKKK....KKKK"
+);
+
+var marioWalk = createPaletteSprite(12, 16,
+  "....RRRRR..." +
+  "...RRRRRRRR." +
+  "...KKPPPK..." +
+  "..KPPPKPPK.." +
+  "..KPPPPKPPK." +
+  "..KKPPPPKK.." +
+  "....PPPP...." +
+  "...RBRRBR..." +
+  "..RRBRRBRR.." +
+  ".RRRBBBBRRR." +
+  ".PPRBYBBYBPP" +
+  "..RRBBBBBR.." +
+  ".RR.BBBB.RR." +
+  "RR...BB...RR" +
+  ".K....K....." +
+  ".KKK..KKK..."
+);
+
+var marioJump = createPaletteSprite(12, 16,
+  "....RRRRR..." +
+  "...RRRRRRRR." +
+  "...KKPPPK..." +
+  "..KPPPKPPK.." +
+  "..KPPPPKPPK." +
+  "..KKPPPPKK.." +
+  "....PPPP...." +
+  "...RBRRBR..." +
+  "..RRBRRBRR.." +
+  ".RRRBBBBRRR." +
+  "RPPRBYBBYBPR" +
+  "RPPRBBBBBBPR" +
+  ".RRRBBBBBRR." +
+  "..RR....RR.." +
+  ".KK......KK." +
+  "KKK......KKK"
+);
+
+var marioStandL = flipSprite(marioStand, "h");
+var marioWalkL  = flipSprite(marioWalk,  "h");
+var marioJumpL  = flipSprite(marioJump,  "h");
+
+// --------- Barrel (16x14) ---------
+var barrel1 = createPaletteSprite(16, 14,
+  "...KKKKKKKKKK..." +
+  "..KOOOOOOOOOOK.." +
+  ".KOODDDOODDDOOK." +
+  "KOOODDDDODDDDOOK" +
+  "KORROOOOOOOOORRK" +
+  "KOOODDDOODDDOOOK" +
+  "KOOOODDOODDOOOOK" +
+  "KORROOOOOOOOORRK" +
+  "KOOODDDOODDDOOOK" +
+  "KOOODDDDODDDDOOK" +
+  ".KOODDDOODDDOOK." +
+  ".KOOOOOOOOOOOOK." +
+  "..KOOOOOOOOOOK.." +
+  "...KKKKKKKKKK..."
+);
+var barrel2 = createPaletteSprite(16, 14,
+  "...KKKKKKKKKK..." +
+  "..KOOOOOOOOOOK.." +
+  ".KODDDOODDDOODK." +
+  "KODDDDODDDDOOOOK" +
+  "KORROOOOOOOOORRK" +
+  "KODDDOODDDOOOOK." +
+  "KODDOODDOOOOOOOK" +
+  "KORROOOOOOOOORRK" +
+  "KODDDOODDDOOOOOK" +
+  "KODDDDODDDDOOOOK" +
+  ".KODDDOODDDOODK." +
+  ".KOOOOOOOOOOOOK." +
+  "..KOOOOOOOOOOK.." +
+  "...KKKKKKKKKK..."
+);
+
+// --------- Donkey Kong (32x24) ---------
+var dk = createPaletteSprite(32, 24,
+  "........KKKKKKKKKKKK............" +
+  ".......KTTTTTTTTTTTTK..........." +
+  "......KTTMMTTTTTTMMTTK.........." +
+  ".....KTTMMMMTTTTMMMMTTK........." +
+  ".....KTTPPMMTTTTMMPPTTK........." +
+  ".....KTTPPKMTTTTMKPPTTK........." +
+  "....KTTTMMTTKKKKTTMMTTTK........" +
+  "....KTTTTTKKWWWWKKTTTTTK........" +
+  "...KTTTTTKWWPPWWKTTTTTTK........" +
+  "...KTTTTKWWPPPPWWKTTTTTK........" +
+  "...KTTTKWWPKKKPWWKTTTTTK........" +
+  "...KTTTKKWWWWWWKKKTTTTTK........" +
+  "..KTTTTTKKKKKKKKKTTTTTTTK......." +
+  ".KTTTTTTTTMMMMTTTTTTTTTTTK......" +
+  "KTTMMTTTTMMMMMMTTTTTTMMTTTK....." +
+  "KTMMMMTTTTMMMMTTTTTMMMMTTK......" +
+  "KTMMMMTTTTKKKKTTTTTMMMMTTK......" +
+  "KTTMMTTKKKTTTTKKKKTTMMTTTK......" +
+  ".KTTTTKTTTTTTTTTTKTTTTTTK......." +
+  "..KTTKTTTTTTTTTTTTKTTTTK........" +
+  "...KKTTMTTTTTTTTMTTKKKK........." +
+  "....KTTMMTTTTTTMMTTK............" +
+  ".....KKMMKKKKKKMMKK............." +
+  "......KKKK....KKKK.............."
+);
+
+clearPalette();
+
+// --------- Girders (4 horizontal platforms) ---------
+// Y positions (top edge of each girder)
+var girderH = 8;
+var girders = newArray();
+arrayPush(girders, 56);
+arrayPush(girders, 104);
+arrayPush(girders, 152);
+arrayPush(girders, 208);
+
+fun drawGirder(gy) {
+  // base red bar
+  setColor(200, 60, 50);
+  fillRect(fieldX, gy, fieldW, girderH);
+  // top highlight + bottom shadow
+  setColor(255, 130, 110);
+  fillRect(fieldX, gy, fieldW, 1);
+  setColor(110, 35, 30);
+  fillRect(fieldX, gy + girderH - 1, fieldW, 1);
+  // rivets every 12px
+  var rx = fieldX + 4;
+  while (rx < fieldX + fieldW - 2) {
+    setColor(60, 20, 15);
+    fillRect(rx, gy + 3, 2, 2);
+    rx = rx + 12;
+  }
+}
+
+fun girderAt(py) {
+  // Returns Y of girder top if (player_feet_y) is within 4px above, else -1
+  var i = 0;
+  while (i < arrayLen(girders)) {
+    var gy = arrayGet(girders, i);
+    if (py >= gy - 4 and py <= gy + 2) return gy;
+    i = i + 1;
+  }
+  return -1;
+}
+
+// --------- Mario state ---------
+var marioX = fieldX + 20;
+var marioY = arrayGet(girders, 3) - 16;  // stand on bottom girder
+var marioVX = 0;
+var marioVY = 0;
+var onGround = true;
+var facingLeft = false;
+var walkPhase = 0;
+var walkTimer = 0;
+var leftHeld = false;
+var rightHeld = false;
+
+var moveSpeed = 50;     // px/sec
+var gravity = 320;
+var jumpSpeed = -120;
+
+// --------- Barrel state ---------
+var bX = fieldX + fieldW - 32;
+var bY = arrayGet(girders, 0) - 14;
+var bVY = 0;
+var bGirder = 0;             // which girder the barrel rolls on
+var bDir = -1;               // -1 = rolling left, 1 = right
+var bSpinTimer = 0;
+var bSpinFrame = 0;
+var barrelSpeed = 40;
+
+fun resetBarrel() {
+  bX = fieldX + fieldW - 32;
+  bY = arrayGet(girders, 0) - 14;
+  bVY = 0;
+  bGirder = 0;
+  bDir = -1;
+}
+
+// --------- Game loop ---------
+var lastTime = clock();
+var running = true;
+var score = 0;
+
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+    if (e == "keydown:left")  leftHeld = true;
+    if (e == "keyup:left")    leftHeld = false;
+    if (e == "keydown:right") rightHeld = true;
+    if (e == "keyup:right")   rightHeld = false;
+    if (e == "keydown:space") {
+      if (onGround) {
+        marioVY = jumpSpeed;
+        onGround = false;
+        playSweep(220, 440, 120, 0.2);
+      }
+    }
+  }
+
+  // ----- Mario update -----
+  marioVX = 0;
+  if (leftHeld)  { marioVX = -moveSpeed; facingLeft = true; }
+  if (rightHeld) { marioVX =  moveSpeed; facingLeft = false; }
+  marioX = marioX + marioVX * dt;
+  if (marioX < fieldX) marioX = fieldX;
+  if (marioX > fieldX + fieldW - 12) marioX = fieldX + fieldW - 12;
+
+  marioVY = marioVY + gravity * dt;
+  marioY = marioY + marioVY * dt;
+
+  // Ground check (Mario feet at marioY + 16)
+  if (marioVY >= 0) {
+    var feetY = marioY + 16;
+    var gy = girderAt(feetY);
+    if (gy >= 0) {
+      marioY = gy - 16;
+      marioVY = 0;
+      onGround = true;
+    } else {
+      onGround = false;
+    }
+  }
+
+  // Fall off bottom — reset
+  if (marioY > h) {
+    marioY = arrayGet(girders, 3) - 16;
+    marioX = fieldX + 20;
+    marioVY = 0;
+  }
+
+  // Walk anim
+  if (onGround and (marioVX != 0)) {
+    walkTimer = walkTimer + dt;
+    if (walkTimer > 0.12) { walkTimer = 0; walkPhase = 1 - walkPhase; }
+  } else {
+    walkPhase = 0;
+  }
+
+  // ----- Barrel update -----
+  bX = bX + barrelSpeed * bDir * dt;
+  bSpinTimer = bSpinTimer + dt;
+  if (bSpinTimer > 0.1) { bSpinTimer = 0; bSpinFrame = 1 - bSpinFrame; }
+
+  // Drop to next girder at the edges
+  if (bDir < 0 and bX <= fieldX - 4) {
+    bGirder = bGirder + 1;
+    if (bGirder > 3) { resetBarrel(); }
+    else {
+      bX = fieldX;
+      bY = arrayGet(girders, bGirder) - 14;
+      bDir = 1;  // reverse direction each level (DK-style)
+    }
+  } else if (bDir > 0 and bX >= fieldX + fieldW - 12) {
+    bGirder = bGirder + 1;
+    if (bGirder > 3) { resetBarrel(); }
+    else {
+      bX = fieldX + fieldW - 16;
+      bY = arrayGet(girders, bGirder) - 14;
+      bDir = -1;
+    }
+  }
+
+  // Mario hit by barrel?
+  if ((marioX + 10 > bX) and (marioX + 2 < bX + 16) and
+      (marioY + 14 > bY) and (marioY + 2 < bY + 14)) {
+    // bonk — reset Mario
+    playNoise(400, 0.4);
+    marioY = arrayGet(girders, 3) - 16;
+    marioX = fieldX + 20;
+    marioVY = 0;
+  }
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas(0, 0, 0);
+
+  // Side bezels — fake arcade cabinet artwork
+  setColor(20, 20, 40);
+  fillRect(0, 0, fieldX, h);
+  fillRect(fieldX + fieldW, 0, w - fieldX - fieldW, h);
+  // Bezel labels
+  setColor(255, 220, 60);
+  drawText(8, 16, "1UP");
+  setColor(255, 255, 255);
+  drawText(8, 26, str(score));
+  setColor(255, 220, 60);
+  drawText(8, 60, "HIGH");
+  setColor(255, 255, 255);
+  drawText(8, 70, "007650");
+  setColor(255, 100, 100);
+  drawText(8, h - 30, "L=01");
+  setColor(120, 200, 255);
+  drawText(8, h - 18, "BONUS");
+  drawText(8, h - 8, "5000");
+
+  setColor(255, 220, 60);
+  drawText(fieldX + fieldW + 10, 16, "PLAY");
+  drawText(fieldX + fieldW + 10, 26, "ER 1");
+  setColor(200, 200, 200);
+  drawText(fieldX + fieldW + 10, 60, "LEFT/");
+  drawText(fieldX + fieldW + 10, 70, "RIGHT");
+  drawText(fieldX + fieldW + 10, 84, "SPACE=");
+  drawText(fieldX + fieldW + 10, 94, "JUMP");
+  drawText(fieldX + fieldW + 10, h - 18, "ESC=");
+  drawText(fieldX + fieldW + 10, h - 8, "QUIT");
+
+  // Playfield background
+  setColor(10, 10, 30);
+  fillRect(fieldX, fieldY, fieldW, fieldH);
+
+  // Girders
+  var gi = 0;
+  while (gi < arrayLen(girders)) {
+    drawGirder(arrayGet(girders, gi));
+    gi = gi + 1;
+  }
+
+  // Donkey Kong on top-left of playfield
+  drawSpriteScaled(dk, fieldX + 12, 16, 1);
+
+  // Pauline (just a tiny figure top-right)
+  setColor(255, 220, 60);
+  fillRect(fieldX + fieldW - 24, 20, 8, 12);
+  setColor(255, 200, 160);
+  fillRect(fieldX + fieldW - 22, 16, 4, 4);
+
+  // Barrel
+  if (bSpinFrame == 0)
+    drawSpriteScaled(barrel1, floor(bX), floor(bY), 1);
+  else
+    drawSpriteScaled(barrel2, floor(bX), floor(bY), 1);
+
+  // Mario
+  var marioSpr = marioStand;
+  if (!onGround) marioSpr = marioJump;
+  else if (marioVX != 0 and walkPhase == 1) marioSpr = marioWalk;
+  if (facingLeft) {
+    if (marioSpr == marioStand) marioSpr = marioStandL;
+    else if (marioSpr == marioWalk) marioSpr = marioWalkL;
+    else marioSpr = marioJumpL;
+  }
+  drawSpriteScaled(marioSpr, floor(marioX), floor(marioY), 1);
+
+  present();
+}
+
+clearCanvas(0, 0, 0);
+setColor(255, 220, 60);
+drawText(w / 2 - 30, h / 2 - 4, "GAME OVER", 2);
+present();

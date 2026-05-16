@@ -10,7 +10,7 @@ var h = canvasHeight();
 // --- Tile definitions (8x8) ---
 var mapCols = 25;
 var mapRows = 16;
-var hudHeight = 80;
+var hudHeight = 24;
 // Dynamic tile size — fills canvas
 var tileSize = floor((h - hudHeight) / mapRows);
 if (tileSize > floor(w / mapCols)) {

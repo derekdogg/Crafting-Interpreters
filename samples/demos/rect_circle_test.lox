@@ -1,0 +1,66 @@
+// Test drawRect and drawCircle outline primitives
+var w = canvasWidth();
+var h = canvasHeight();
+var running = true;
+
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  clearCanvas();
+
+  // Row of outlined rectangles in different sizes
+  setColor(255, 255, 0);
+  drawRect(10, 10, 30, 20);
+  setColor(0, 255, 255);
+  drawRect(50, 10, 50, 40);
+  setColor(255, 100, 50);
+  drawRect(110, 10, 80, 60);
+
+  // Tiny 1px and 2px rects
+  setColor(255, 255, 255);
+  drawRect(200, 10, 1, 1);
+  drawRect(205, 10, 2, 2);
+  drawRect(212, 10, 3, 3);
+  drawRect(220, 10, 8, 8);
+
+  // Row of outlined circles in different radii
+  setColor(0, 255, 0);
+  drawCircle(30, 110, 18);
+  setColor(255, 0, 255);
+  drawCircle(80, 110, 25);
+  setColor(100, 150, 255);
+  drawCircle(150, 110, 35);
+
+  // Small circles
+  setColor(255, 255, 255);
+  drawCircle(220, 110, 1);
+  drawCircle(230, 110, 3);
+  drawCircle(245, 110, 6);
+  drawCircle(265, 110, 10);
+
+  // Filled vs outline comparison
+  setColor(255, 0, 0);
+  fillCircle(40, 190, 22);
+  setColor(255, 255, 0);
+  drawCircle(40, 190, 22);
+
+  setColor(0, 0, 255);
+  fillRect(110, 170, 50, 50);
+  setColor(255, 255, 255);
+  drawRect(110, 170, 50, 50);
+
+  // Label
+  setColor(255, 255, 255);
+  drawText(10, h - 10, "drawRect/Circle - ESC to quit");
+
+  present();
+}
+
+clearCanvas();
+setColor(255, 255, 255);
+drawText(w / 2 - 30, h / 2 - 10, "Done.");
+present();

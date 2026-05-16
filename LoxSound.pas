@@ -17,6 +17,9 @@ const
   NUM_CHANNELS = 4;
   SAMPLE_RATE  = 44100;
   SEQ_LOOP_REPEATS = 30;  // repeat melody this many times for "looping"
+  MAX_SEQ_BYTES = 30 * 1024 * 1024;  // 30 MB max sequence buffer (~5 min mono 16-bit)
+  MAX_NOTE_DURATION_MS = 30000;  // 30 seconds per note max
+  MAX_NOTE_FREQ = 20000;  // 20 kHz max frequency
 
 var
   FWaveOut: array[0..NUM_CHANNELS-1] of HWAVEOUT;
@@ -311,11 +314,13 @@ end;
 function playSequenceNative(argCount: integer; args: pValue): TValue;
 var
   notesArr, noteArr: pObjArray;
-  noteCount, i, j, freq, durMs, n, totalSamples, sampleIdx, repeats: Integer;
+  noteCount, i, j, freq, durMs, n, sampleIdx, repeats: Integer;
+  totalSamples: Int64;
+  bufferBytes: Int64;
   notePos, waveType: Integer;
   doLoop: Boolean;
   phase, phaseInc, env, vibrato, vibratoPhase: Double;
-  t, sustainLevel, sample: Double;
+  sustainLevel, sample: Double;
   attackSamples, decaySamples, releaseSamples: Integer;
   sv: SmallInt;
 begin
@@ -326,7 +331,7 @@ begin
   end;
   if not isArray(args[0]) then
   begin
-    RuntimeError('playSequence() first argument must be an array of [freq, durationMs] pairs.');
+    RuntimeError('playSequence() first argument must be an array of [freq, durationMs, waveType?] notes.');
     Exit(CreateNilValue);
   end;
   if args[1].ValueKind <> vkBoolean then
@@ -366,7 +371,7 @@ begin
   begin
     if not isArray(notesArr^.Elements[i]) then
     begin
-      RuntimeError('playSequence() each note must be [freq, durationMs].');
+      RuntimeError('playSequence() each note must be [freq, durationMs, waveType?] (waveType: 0=pulse, 1=triangle, 2=saw, 3=noise).');
       Exit(CreateNilValue);
     end;
     noteArr := pObjArray(notesArr^.Elements[i].ObjValue);
@@ -382,7 +387,8 @@ begin
     end;
     durMs := Trunc(noteArr^.Elements[1].NumberValue);
     if durMs < 1 then durMs := 1;
-    totalSamples := totalSamples + (SAMPLE_RATE * durMs) div 1000;
+    if durMs > MAX_NOTE_DURATION_MS then durMs := MAX_NOTE_DURATION_MS;
+    totalSamples := totalSamples + Int64(SAMPLE_RATE) * durMs div 1000;
   end;
 
   // Determine repetitions
@@ -391,8 +397,16 @@ begin
   else
     repeats := 1;
 
+  // Check buffer size before allocating
+  bufferBytes := totalSamples * repeats * 2;
+  if bufferBytes > MAX_SEQ_BYTES then
+  begin
+    RuntimeError('playSequence() sequence too long (exceeds max buffer size).');
+    Exit(CreateNilValue);
+  end;
+
   // Allocate buffer for all repeats
-  SetLength(FSeqBuf, totalSamples * repeats * 2);
+  SetLength(FSeqBuf, Integer(bufferBytes));
 
   // Render with rich synthesis
   sampleIdx := 0;
@@ -402,8 +416,10 @@ begin
     begin
       noteArr := pObjArray(notesArr^.Elements[i].ObjValue);
       freq := Trunc(noteArr^.Elements[0].NumberValue);
+      if freq > MAX_NOTE_FREQ then freq := MAX_NOTE_FREQ;
       durMs := Trunc(noteArr^.Elements[1].NumberValue);
       if durMs < 1 then durMs := 1;
+      if durMs > MAX_NOTE_DURATION_MS then durMs := MAX_NOTE_DURATION_MS;
       n := (SAMPLE_RATE * durMs) div 1000;
       if n < 1 then n := 1;
 
@@ -411,7 +427,11 @@ begin
       // 0 = pulse25 (default), 1 = triangle, 2 = sawtooth, 3 = noise
       waveType := 0;
       if (noteArr^.Count >= 3) and (noteArr^.Elements[2].ValueKind = vkNumber) then
+      begin
         waveType := Trunc(noteArr^.Elements[2].NumberValue);
+        if (waveType < 0) or (waveType > 3) then
+          waveType := 0;
+      end;
 
       if freq <= 0 then
       begin

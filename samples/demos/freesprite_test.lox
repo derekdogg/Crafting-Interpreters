@@ -1,0 +1,124 @@
+// freeSprite test — verifies slot reuse and nil protection
+var w = canvasWidth();
+var h = canvasHeight();
+
+// Create 5 small colored sprites (8x8 each)
+// pixelString: 64 non-dot chars = fully solid 8x8
+var solid8x8 = "################################################################";
+
+fun makeSprite(r, g, b) {
+  setColor(r, g, b);
+  var id = createSprite(8, 8, solid8x8);
+  return id;
+}
+
+var s0 = makeSprite(255, 0, 0);     // red
+var s1 = makeSprite(0, 255, 0);     // green
+var s2 = makeSprite(0, 0, 255);     // blue
+var s3 = makeSprite(255, 255, 0);   // yellow
+var s4 = makeSprite(255, 0, 255);   // magenta
+
+setColor(255, 255, 255);
+
+// Phase 1: Draw all 5
+clearCanvas();
+drawText(4, 4, "Phase 1: All 5 sprites created");
+drawText(4, 14, "IDs: " + str(s0) + " " + str(s1) + " " + str(s2) + " " + str(s3) + " " + str(s4));
+drawSprite(s0, 10, 30);
+drawSprite(s1, 30, 30);
+drawSprite(s2, 50, 30);
+drawSprite(s3, 70, 30);
+drawSprite(s4, 90, 30);
+drawText(4, 50, "Press SPACE to free sprites 1 and 3...");
+present();
+
+// Wait for space
+var waiting = true;
+while (waiting) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") { waiting = false; }
+    if (e == "keydown:space") { waiting = false; }
+  }
+}
+
+// Phase 2: Free sprites 1 (green) and 3 (yellow)
+freeSprite(s1);
+freeSprite(s3);
+
+clearCanvas();
+setColor(255, 255, 255);
+drawText(4, 4, "Phase 2: Freed sprites " + str(s1) + " and " + str(s3));
+drawText(4, 14, "Drawing remaining (0, 2, 4):");
+drawSprite(s0, 10, 30);
+drawSprite(s2, 50, 30);
+drawSprite(s4, 90, 30);
+drawText(4, 50, "Press SPACE to allocate 2 new sprites...");
+present();
+
+// Wait for space
+waiting = true;
+while (waiting) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") { waiting = false; }
+    if (e == "keydown:space") { waiting = false; }
+  }
+}
+
+// Phase 3: Create 2 new sprites — should reuse freed slots
+var s5 = makeSprite(0, 255, 255);   // cyan — should get old slot
+var s6 = makeSprite(128, 128, 128); // gray — should get other old slot
+
+clearCanvas();
+setColor(255, 255, 255);
+drawText(4, 4, "Phase 3: Created 2 new sprites");
+drawText(4, 14, "New IDs: " + str(s5) + " and " + str(s6) + " (reused)");
+drawText(4, 24, "Expected reused: " + str(s3) + " and " + str(s1));
+drawSprite(s0, 10, 50);
+drawSprite(s5, 30, 50);
+drawSprite(s2, 50, 50);
+drawSprite(s6, 70, 50);
+drawSprite(s4, 90, 50);
+drawText(4, 70, "Press SPACE to create one more...");
+present();
+
+// Wait for space
+waiting = true;
+while (waiting) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") { waiting = false; }
+    if (e == "keydown:space") { waiting = false; }
+  }
+}
+
+// Phase 4: One more — freelist empty, should append
+var s7 = makeSprite(255, 128, 0); // orange
+
+clearCanvas();
+setColor(255, 255, 255);
+drawText(4, 4, "Phase 4: Freelist empty, sprite appended");
+drawText(4, 14, "New ID: " + str(s7) + " (should be 5)");
+drawSprite(s0, 10, 35);
+drawSprite(s5, 30, 35);
+drawSprite(s2, 50, 35);
+drawSprite(s6, 70, 35);
+drawSprite(s4, 90, 35);
+drawSprite(s7, 110, 35);
+setColor(100, 255, 100);
+drawText(4, 60, "All tests passed! ESC to quit.");
+present();
+
+// Final wait
+waiting = true;
+while (waiting) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") { waiting = false; }
+  }
+}

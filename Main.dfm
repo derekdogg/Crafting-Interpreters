@@ -11,6 +11,7 @@ object Form4: TForm4
   Font.Name = 'Segoe UI'
   Font.Style = []
   KeyPreview = True
+  WindowState = wsMaximized
   OnCloseQuery = FormCloseQuery
   OnCreate = FormCreate
   OnDestroy = FormDestroy
@@ -32,7 +33,6 @@ object Form4: TForm4
     Align = alLeft
     BevelOuter = bvNone
     TabOrder = 0
-    ExplicitHeight = 800
     DesignSize = (
       300
       1035)
@@ -63,7 +63,6 @@ object Form4: TForm4
       StateImages = StateImages
       TabOrder = 0
       OnClick = TestTreeClick
-      ExplicitHeight = 680
     end
     object BtnPopulate: TButton
       Left = 8
@@ -74,7 +73,6 @@ object Form4: TForm4
       Caption = 'Refresh'
       TabOrder = 1
       OnClick = BtnPopulateClick
-      ExplicitTop = 714
     end
     object BtnRunSelected: TButton
       Left = 92
@@ -85,7 +83,6 @@ object Form4: TForm4
       Caption = 'Run Sel'
       TabOrder = 2
       OnClick = BtnRunSelectedClick
-      ExplicitTop = 714
     end
     object BtnCheckAll: TButton
       Left = 8
@@ -96,7 +93,6 @@ object Form4: TForm4
       Caption = 'All'
       TabOrder = 3
       OnClick = BtnCheckAllClick
-      ExplicitTop = 744
     end
     object BtnUncheckAll: TButton
       Left = 78
@@ -107,7 +103,6 @@ object Form4: TForm4
       Caption = 'None'
       TabOrder = 4
       OnClick = BtnUncheckAllClick
-      ExplicitTop = 744
     end
     object BtnRunAll: TButton
       Left = 176
@@ -118,7 +113,6 @@ object Form4: TForm4
       Caption = 'Run All'
       TabOrder = 5
       OnClick = BtnRunAllClick
-      ExplicitTop = 714
     end
     object ProgressBar1: TProgressBar
       Left = 8
@@ -127,7 +121,6 @@ object Form4: TForm4
       Height = 16
       Anchors = [akLeft, akRight, akBottom]
       TabOrder = 6
-      ExplicitTop = 775
     end
   end
   object PanelRight: TPanel
@@ -138,8 +131,6 @@ object Form4: TForm4
     Align = alClient
     BevelOuter = bvNone
     TabOrder = 1
-    ExplicitWidth = 1095
-    ExplicitHeight = 800
     object Splitter2: TSplitter
       Left = 0
       Top = 445
@@ -155,16 +146,6 @@ object Form4: TForm4
       Align = alTop
       Caption = 'Panel1'
       TabOrder = 0
-      object PaintBox1: TPaintBox
-        Left = 481
-        Top = 1
-        Width = 1210
-        Height = 919
-        Align = alClient
-        ExplicitLeft = 608
-        ExplicitWidth = 486
-        ExplicitHeight = 437
-      end
       object Memo1: TSynEdit
         Left = 1
         Top = 1
@@ -1209,9 +1190,6 @@ object Form4: TForm4
       Align = alClient
       Caption = 'Panel2'
       TabOrder = 1
-      ExplicitTop = 689
-      ExplicitWidth = 1095
-      ExplicitHeight = 111
       object Memo2: TMemo
         Left = 1
         Top = 42
@@ -1226,8 +1204,6 @@ object Form4: TForm4
         ParentFont = False
         ScrollBars = ssBoth
         TabOrder = 0
-        ExplicitWidth = 1093
-        ExplicitHeight = 68
       end
       object Panel3: TPanel
         Left = 1
@@ -1237,7 +1213,6 @@ object Form4: TForm4
         Align = alTop
         Caption = 'Panel3'
         TabOrder = 1
-        ExplicitWidth = 1093
         DesignSize = (
           1690
           41)

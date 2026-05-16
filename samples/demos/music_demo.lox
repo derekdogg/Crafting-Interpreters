@@ -192,12 +192,13 @@ while (running) {
   fillRect(0, 0, w, h);
 
   // --- Visualizer bars ---
-  var barW = floor((w - 40) / barCount);
-  var barBaseY = h / 2 + 40;
+  var barW = floor((w - 20) / barCount);
+  var barBaseY = h / 2 + 20;
   i = 0;
   while (i < barCount) {
     var bh = floor(arrayGet(barHeights, i));
     if (bh < 1) bh = 1;
+    if (bh > 40) bh = 40;
     // Color gradient: green to cyan to blue
     var r = floor(50 - i * 3);
     var g = floor(100 + i * 10);
@@ -206,51 +207,50 @@ while (running) {
     if (g > 255) g = 255;
     if (b > 255) b = 255;
     setColor(r, g, b);
-    fillRect(20 + i * barW, floor(barBaseY - bh), barW - 2, bh);
+    fillRect(10 + i * barW, floor(barBaseY - bh), barW - 1, bh);
     // Mirror below
     setColor(floor(r / 3), floor(g / 3), floor(b / 3));
-    fillRect(20 + i * barW, floor(barBaseY), barW - 2, floor(bh / 2));
+    fillRect(10 + i * barW, floor(barBaseY), barW - 1, floor(bh / 2));
     i = i + 1;
   }
 
   // --- Title ---
   setColor(255, 255, 255);
-  drawText(w / 2 - 80, 20, "MUSIC SEQUENCER");
+  drawText(w / 2 - 45, 6, "MUSIC SEQUENCER");
 
   // --- Current melody name ---
   setColor(100, 255, 200);
-  drawText(w / 2 - 60, 50, arrayGet(melodyNames, currentMelody));
+  drawText(w / 2 - 60, 20, arrayGet(melodyNames, currentMelody));
 
   // --- Status ---
   if (playing) {
     setColor(50, 255, 50);
-    drawText(w / 2 - 30, 75, "PLAYING");
+    drawText(w / 2 - 21, 32, "PLAYING");
   } else {
     setColor(255, 100, 100);
-    drawText(w / 2 - 30, 75, "STOPPED");
+    drawText(w / 2 - 21, 32, "STOPPED");
   }
 
   // --- Loop indicator ---
   if (looping) {
     setColor(255, 255, 100);
-    drawText(w / 2 - 25, 95, "LOOP: ON");
+    drawText(w / 2 - 24, 44, "LOOP: ON");
   } else {
     setColor(150, 150, 150);
-    drawText(w / 2 - 25, 95, "LOOP: OFF");
+    drawText(w / 2 - 27, 44, "LOOP: OFF");
   }
 
-  // --- Controls ---
+  // --- Controls (compressed) ---
   setColor(180, 180, 180);
-  drawText(20, h - 80, "SPACE = play/stop");
-  drawText(20, h - 60, "LEFT/RIGHT = change melody");
-  drawText(20, h - 40, "L = toggle loop");
-  drawText(20, h - 20, "ESC = quit");
+  drawText(6, h - 36, "SPACE play/stop  L loop");
+  drawText(6, h - 24, "LEFT/RIGHT change melody");
+  drawText(6, h - 12, "ESC quit");
 
   // --- Note display (show first few notes of current melody) ---
   setColor(80, 80, 120);
-  fillRect(20, h - 140, w - 40, 40);
+  fillRect(10, h - 60, w - 20, 16);
   setColor(200, 200, 255);
-  drawText(25, h - 135, "Notes:");
+  drawText(14, h - 56, "Notes:");
 
   present();
 }

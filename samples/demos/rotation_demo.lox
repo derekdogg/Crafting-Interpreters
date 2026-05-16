@@ -118,7 +118,7 @@ var clockAngle = 0; // clock hand
 // Orbit parameters
 var orbitCx = w / 2;
 var orbitCy = h / 2;
-var orbitR = 100;
+var orbitR = 50;
 
 // Star positions (corners, spinning independently)
 var star1Angle = 0;
@@ -174,38 +174,37 @@ while (running) {
   }
 
   // Planet in center (static, large)
-  drawSpriteRotated(planet, floor(orbitCx), floor(orbitCy), 4, 0);
+  drawSpriteRotated(planet, floor(orbitCx), floor(orbitCy), 2, 0);
 
   // Ship orbiting the planet
   var shipX = floor(orbitCx + orbitR * cos(angle2 * 3.14159 / 180));
   var shipY = floor(orbitCy + orbitR * sin(angle2 * 3.14159 / 180));
   // Ship faces tangent to orbit (perpendicular to radius)
   var facingAngle = angle2 + 90;
-  drawSpriteRotated(ship, shipX, shipY, 3, facingAngle);
+  drawSpriteRotated(ship, shipX, shipY, 1, facingAngle);
 
   // Spinning stars in corners
-  drawSpriteRotated(star, 80, 80, 3, star1Angle);
-  drawSpriteRotated(star, w - 80, 80, 3, star2Angle);
-  drawSpriteRotated(star, 80, h - 80, 3, star3Angle);
+  drawSpriteRotated(star, 30, 30, 1, star1Angle);
+  drawSpriteRotated(star, w - 30, 30, 1, star2Angle);
+  drawSpriteRotated(star, 30, h - 30, 1, star3Angle);
 
   // Arrow pointing at mouse-ish position (just rotates continuously)
-  drawSpriteRotated(arrow, w - 80, h - 80, 3, angle1);
+  drawSpriteRotated(arrow, w - 30, h - 30, 1, angle1);
 
   // Clock in top-right
-  var clockX = w - 100;
-  var clockY = 100;
-  drawSpriteRotated(clockFace, clockX, clockY, 3, 0);
-  drawSpriteRotated(clockHand, clockX, clockY - 10, 2, clockAngle);
+  var clockX = w - 40;
+  var clockY = 50;
+  drawSpriteRotated(clockFace, clockX, clockY, 1, 0);
+  drawSpriteRotated(clockHand, clockX, clockY - 4, 1, clockAngle);
 
   // Labels
   setColor(255, 255, 255);
-  drawText(10, h - 30, "drawSpriteRotated(id, x, y, scale, angleDeg)");
-  drawText(10, h - 50, "ESC to quit");
+  drawText(10, h - 16, "drawSpriteRotated demo - ESC to quit");
 
   // Show current angles
   setColor(200, 200, 100);
-  drawText(10, 10, "Ship orbit: " + str(floor(angle2)) + " deg");
-  drawText(10, 26, "Star spin: " + str(floor(star1Angle)) + " deg");
+  drawText(10, 8, "Orbit: " + str(floor(angle2)));
+  drawText(10, 18, "Spin:  " + str(floor(star1Angle)));
 
   present();
 }

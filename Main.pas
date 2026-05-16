@@ -37,7 +37,6 @@ type
     Button3: TButton;
     Panel1: TPanel;
     Panel2: TPanel;
-    PaintBox1: TPaintBox;
     Panel3: TPanel;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
@@ -59,6 +58,11 @@ type
       Recurse: Boolean);
     procedure SetAllChecked(Node: TTreeNode; Checked: Boolean);
     procedure ToggleCheck(Node: TTreeNode);
+    procedure GameCanvasKeyDown(Sender: TObject; const KeyName: string);
+    procedure GameCanvasKeyUp(Sender: TObject; const KeyName: string);
+    procedure GameCanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
+    procedure GameCanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
+    procedure GameCanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
     procedure UpdateParentCheck(Node: TTreeNode);
     procedure CollectCheckedFiles(Node: TTreeNode; Files: TStringList);
     function CountChecked(Node: TTreeNode): Integer;
@@ -183,54 +187,51 @@ begin
 end;
 
 procedure TForm4.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
-var
-  KeyName: string;
 begin
+  // F5 is a global shortcut (works regardless of focus) for Run.
   if Key = VK_F5 then
   begin
     Key := 0;
     Button1Click(nil);
     Exit;
   end;
-  // Enqueue key events for Lox scripts
-  case Key of
-    VK_LEFT:   KeyName := 'left';
-    VK_RIGHT:  KeyName := 'right';
-    VK_UP:     KeyName := 'up';
-    VK_DOWN:   KeyName := 'down';
-    VK_SPACE:  KeyName := 'space';
-    VK_RETURN: KeyName := 'enter';
-    VK_ESCAPE: KeyName := 'escape';
-  else
-    if (Key >= Ord('A')) and (Key <= Ord('Z')) then
-      KeyName := LowerCase(Char(Key))
-    else
-      KeyName := '';
-  end;
-  if KeyName <> '' then
-    FEventQueue.Enqueue('keydown:' + KeyName);
+  // All gameplay key handling lives on the TLoxGameCanvas component.
+  // When the canvas has focus, KeyPreview routes events here first; we
+  // simply leave Key untouched so the canvas sees and consumes them.
+  // When other controls (editor, etc.) have focus, gameplay keys must
+  // NOT be hijacked — they belong to that control.
 end;
 
 procedure TForm4.FormKeyUp(Sender: TObject; var Key: Word; Shift: TShiftState);
-var
-  KeyName: string;
 begin
-  case Key of
-    VK_LEFT:   KeyName := 'left';
-    VK_RIGHT:  KeyName := 'right';
-    VK_UP:     KeyName := 'up';
-    VK_DOWN:   KeyName := 'down';
-    VK_SPACE:  KeyName := 'space';
-    VK_RETURN: KeyName := 'enter';
-    VK_ESCAPE: KeyName := 'escape';
-  else
-    if (Key >= Ord('A')) and (Key <= Ord('Z')) then
-      KeyName := LowerCase(Char(Key))
-    else
-      KeyName := '';
-  end;
-  if KeyName <> '' then
-    FEventQueue.Enqueue('keyup:' + KeyName);
+  // See FormKeyDown — no form-level handling for gameplay keys.
+end;
+
+procedure TForm4.GameCanvasKeyDown(Sender: TObject; const KeyName: string);
+begin
+  FEventQueue.Enqueue('keydown:' + KeyName);
+end;
+
+procedure TForm4.GameCanvasKeyUp(Sender: TObject; const KeyName: string);
+begin
+  FEventQueue.Enqueue('keyup:' + KeyName);
+end;
+
+procedure TForm4.GameCanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
+begin
+  FEventQueue.Enqueue(Format('mousedown:%d:%d:%d', [Button, LX, LY]));
+end;
+
+procedure TForm4.GameCanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
+begin
+  FEventQueue.Enqueue(Format('mouseup:%d:%d:%d', [Button, LX, LY]));
+end;
+
+procedure TForm4.GameCanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
+begin
+  // Button is unused for moves (caller passes -1). We still emit logical
+  // coords so scripts can drive hover/drag UI without polling mouseX/Y.
+  FEventQueue.Enqueue(Format('mousemove:%d:%d', [LX, LY]));
 end;
 
 procedure TForm4.FormCreate(Sender: TObject);
@@ -280,7 +281,15 @@ begin
   FLoxSyn.IdentifierAttri.Foreground := $009CDCFE;  // light blue (variables)
   FLoxSyn.SymbolAttri.Foreground     := $00D4D4D4;  // match default text
 
-  InitCanvas(PaintBox1);
+  InitCanvas(Panel1);
+  // The game canvas is the only place gameplay keys are handled. Hook
+  // its events here so the form can enqueue them for the Lox event
+  // queue without the editor or other VCL controls intercepting them.
+  GameCanvas.OnGameKeyDown := GameCanvasKeyDown;
+  GameCanvas.OnGameKeyUp := GameCanvasKeyUp;
+  GameCanvas.OnGameMouseDown := GameCanvasMouseDown;
+  GameCanvas.OnGameMouseUp := GameCanvasMouseUp;
+  GameCanvas.OnGameMouseMove := GameCanvasMouseMove;
 end;
 
 procedure TForm4.FormDestroy(Sender: TObject);
@@ -331,6 +340,11 @@ begin
   BtnRunSelected.Enabled := False;
   BtnRunAll.Enabled := False;
   Memo1.ReadOnly := True;
+  // Give the game canvas keyboard focus so it owns gameplay input from
+  // the moment the script starts. Otherwise the first key event would
+  // still go to whichever control happened to be focused.
+  if (GameCanvas <> nil) and GameCanvas.CanFocus then
+    GameCanvas.SetFocus;
   InitVM;
   try
     defineNative('processMessages', processMessagesNative, 0);

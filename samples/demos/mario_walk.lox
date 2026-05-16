@@ -1,0 +1,290 @@
+// ============================================================
+// Mario Walking Demo
+// 16x16 hand-pixeled sprite, 4-frame walk cycle.
+// Walks back and forth across the screen, flipping direction.
+// ============================================================
+//   ESC = quit
+// ============================================================
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+// --- Palette (NES Super Mario Bros. small Mario) ---
+setPaletteColor("R", 224,  40,  40);  // red — cap, shirt
+setPaletteColor("B",  50,  80, 224);  // blue — overalls
+setPaletteColor("F", 252, 188, 140);  // flesh — face
+setPaletteColor("H", 100,  44,  16);  // hair / sideburn brown
+setPaletteColor("W", 252, 252, 252);  // white — gloves, eyes
+setPaletteColor("Y", 252, 224,  60);  // yellow — buttons
+setPaletteColor("S", 124,  56,   8);  // shoe brown
+
+// ============================================================
+// Layout reference (right-facing, 16 wide x 16 tall)
+//
+//   col:  0 1 2 3 4 5 6 7 8 9 A B C D E F
+//   row 0:       R R R R R              -- cap top
+//   row 1:     R R R R R R R R R R      -- cap brim
+//   row 2:     H H H F F F F H H        -- sideburn / hair / face
+//   row 3:   H F F H F F F H H H        -- face + eye
+//   row 4:   H F F H H F F F H H H      -- eye + mustache start
+//   row 5:   H H F F F F F F H H        -- full mustache row
+//   row 6:       F F F F F F            -- chin
+//   row 7:     R R B R R R B R R        -- shirt + overall straps
+//   row 8:   R R R B R R R R B R R R    -- shoulders
+//   row 9:   H R R B B B B B B R R H    -- hair-shadow + shirt
+//   row A: W W R R B Y B B Y B R R W W  -- gloves + buttons
+//   row B: W W W W B B B B B B W W W W  -- gloves + waist
+//   row C:     B B B B B B B B B B      -- overalls waist
+//   row D:     B B B B   B B B B        -- legs separating
+//   row E:     S S S       S S S        -- shoe tops
+//   row F:   S S S S S   S S S S S      -- shoe soles
+// ============================================================
+
+var marioStand = createPaletteSprite(16, 16,
+  "....RRRRR......." +
+  "..RRRRRRRRRR...." +
+  "..HHHFFFFHH....." +
+  ".HFFHFFFHHH....." +
+  ".HFFHHFFFHHH...." +
+  ".HHFFFFFFHH....." +
+  "....FFFFFF......" +
+  "...RRBRRRBRR...." +
+  "..RRRBRRRRBRR..." +
+  ".HRRBBBBBBBRRH.." +
+  "WWRRBYBBYBBRRWW." +
+  "WWWWBBBBBBWWWW.." +
+  "..BBBBBBBBBB...." +
+  "..BBBB..BBBB...." +
+  "..SSS....SSS...." +
+  ".SSSSS..SSSSS..."
+);
+
+// Frame 1 — left foot forward (small step)
+var marioWalkA = createPaletteSprite(16, 16,
+  "....RRRRR......." +
+  "..RRRRRRRRRR...." +
+  "..HHHFFFFHH....." +
+  ".HFFHFFFHHH....." +
+  ".HFFHHFFFHHH...." +
+  ".HHFFFFFFHH....." +
+  "....FFFFFF......" +
+  "...RRBRRRBRR...." +
+  "..RRRBRRRRBRR..." +
+  ".HRRBBBBBBBRRH.." +
+  "WWRRBYBBYBBRRWW." +
+  "WWWWBBBBBBWWWW.." +
+  "..BBBBBBBBBB...." +
+  "...BBBBBBBB....." +
+  "...BBB..BBBB...." +
+  "..SSSS..SSSSS..."
+);
+
+// Frame 2 — both feet middle (passing pose)
+var marioWalkB = createPaletteSprite(16, 16,
+  "....RRRRR......." +
+  "..RRRRRRRRRR...." +
+  "..HHHFFFFHH....." +
+  ".HFFHFFFHHH....." +
+  ".HFFHHFFFHHH...." +
+  ".HHFFFFFFHH....." +
+  "....FFFFFF......" +
+  "...RRBRRRBRR...." +
+  "..RRRBRRRRBRR..." +
+  ".HRRBBBBBBBRRH.." +
+  "WWRRBYBBYBBRRWW." +
+  "WWWWBBBBBBWWWW.." +
+  "..BBBBBBBBBB...." +
+  "..BBBB..BBBB...." +
+  "..BBBB..BBBB...." +
+  ".SSSSS..SSSSS..."
+);
+
+// Frame 3 — right foot forward
+var marioWalkC = createPaletteSprite(16, 16,
+  "....RRRRR......." +
+  "..RRRRRRRRRR...." +
+  "..HHHFFFFHH....." +
+  ".HFFHFFFHHH....." +
+  ".HFFHHFFFHHH...." +
+  ".HHFFFFFFHH....." +
+  "....FFFFFF......" +
+  "...RRBRRRBRR...." +
+  "..RRRBRRRRBRR..." +
+  ".HRRBBBBBBBRRH.." +
+  "WWRRBYBBYBBRRWW." +
+  "WWWWBBBBBBWWWW.." +
+  "..BBBBBBBBBB...." +
+  "....BBBBBBBB...." +
+  "...BBBB..BBB...." +
+  "...SSSSS..SSSS.."
+);
+
+// Left-facing copies (horizontal flip)
+var marioStandL = flipSprite(marioStand, "h");
+var marioWalkAL = flipSprite(marioWalkA, "h");
+var marioWalkBL = flipSprite(marioWalkB, "h");
+var marioWalkCL = flipSprite(marioWalkC, "h");
+
+clearPalette();
+
+// ============================================================
+// State
+// ============================================================
+var groundY = 180;
+var marioX = 40;
+var marioY = groundY - 16;
+var dir = 1;            // +1 = right, -1 = left
+var speed = 36;         // pixels per second
+
+// Walk-cycle frames: A → B → C → B → A → B → C → B …
+// Picked rate matches one full step pair per ~0.5s of motion.
+var animTimer = 0;
+var animPhase = 0;      // 0..3 indexes into [A, B, C, B]
+var animInterval = 0.12;
+
+// Brief pause when reversing at the edges so the turnaround
+// reads clearly on screen.
+var turnPauseTimer = 0;
+var turnPauseDuration = 0.35;
+
+var running = true;
+var lastTime = clock();
+
+// ============================================================
+// Helpers
+// ============================================================
+fun pickWalkFrame() {
+  if (animPhase == 0) {
+    if (dir > 0) return marioWalkA; else return marioWalkAL;
+  }
+  if (animPhase == 1 or animPhase == 3) {
+    if (dir > 0) return marioWalkB; else return marioWalkBL;
+  }
+  // phase 2
+  if (dir > 0) return marioWalkC; else return marioWalkCL;
+}
+
+fun pickStandFrame() {
+  if (dir > 0) return marioStand; else return marioStandL;
+}
+
+// ============================================================
+// Loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  // Movement / turnaround
+  var moving = true;
+  if (turnPauseTimer > 0) {
+    turnPauseTimer = turnPauseTimer - dt;
+    moving = false;
+  } else {
+    marioX = marioX + speed * dir * dt;
+    if (marioX < 16) {
+      marioX = 16;
+      dir = 1;
+      turnPauseTimer = turnPauseDuration;
+    }
+    if (marioX > w - 32) {
+      marioX = w - 32;
+      dir = -1;
+      turnPauseTimer = turnPauseDuration;
+    }
+  }
+
+  // Animation tick
+  if (moving) {
+    animTimer = animTimer + dt;
+    if (animTimer >= animInterval) {
+      animTimer = animTimer - animInterval;
+      animPhase = animPhase + 1;
+      if (animPhase > 3) animPhase = 0;
+    }
+  } else {
+    animPhase = 0;
+    animTimer = 0;
+  }
+
+  // ----- Draw -----
+  clearCanvas(110, 180, 240);  // sky blue
+
+  // Distant hills
+  setColor(60, 140, 60);
+  fillCircle(60, 200, 40);
+  fillCircle(200, 205, 50);
+  fillCircle(280, 200, 35);
+
+  // A couple of NES-style cloud blobs
+  setColor(255, 255, 255);
+  fillCircle(50, 40, 8);
+  fillCircle(60, 38, 10);
+  fillCircle(70, 42, 8);
+  fillCircle(230, 30, 7);
+  fillCircle(240, 28, 9);
+  fillCircle(250, 32, 7);
+
+  // Ground band
+  setColor(200, 110, 40);
+  fillRect(0, groundY, w, h - groundY);
+  // Ground top edge
+  setColor(60, 220, 60);
+  fillRect(0, groundY, w, 4);
+  // Brick texture stripes
+  setColor(160, 80, 30);
+  var bx = 0;
+  while (bx < w) {
+    fillRect(bx, groundY + 8, 12, 2);
+    fillRect(bx + 6, groundY + 16, 12, 2);
+    fillRect(bx, groundY + 24, 12, 2);
+    fillRect(bx + 6, groundY + 32, 12, 2);
+    bx = bx + 16;
+  }
+
+  // Title
+  setColor(255, 255, 255);
+  drawText(w / 2 - 60, 8, "MARIO WALK CYCLE", 1);
+  setColor(220, 220, 220);
+  drawText(w / 2 - 60, 18, "16x16 sprite, 4 frames");
+
+  // Sprite-sheet preview at scale 2 along the top
+  var refY = 36;
+  drawSpriteScaled(marioStand, 30,  refY, 2);
+  drawSpriteScaled(marioWalkA, 80,  refY, 2);
+  drawSpriteScaled(marioWalkB, 130, refY, 2);
+  drawSpriteScaled(marioWalkC, 180, refY, 2);
+  drawSpriteScaled(marioStandL, 230, refY, 2);
+
+  setColor(180, 180, 180);
+  drawText(34,  refY + 36, "stand");
+  drawText(86,  refY + 36, "walkA");
+  drawText(136, refY + 36, "walkB");
+  drawText(186, refY + 36, "walkC");
+  drawText(232, refY + 36, "flip");
+
+  // The animated Mario
+  var spr;
+  if (turnPauseTimer > 0) spr = pickStandFrame();
+  else spr = pickWalkFrame();
+  drawSpriteScaled(spr, floor(marioX), marioY, 1);
+
+  // Footer
+  setColor(80, 80, 80);
+  drawText(4, h - 8, "ESC to quit");
+
+  present();
+}
+
+clearCanvas(0, 0, 0);
+setColor(224, 40, 40);
+drawText(w / 2 - 24, h / 2 - 4, "BYE!", 2);
+present();

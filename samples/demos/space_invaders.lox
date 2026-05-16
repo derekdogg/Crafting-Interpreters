@@ -6,11 +6,11 @@ var w = canvasWidth();
 var h = canvasHeight();
 
 // --- Player ---
-var playerW = 40;
-var playerH = 16;
+var playerW = 18;
+var playerH = 8;
 var playerX = w / 2 - playerW / 2;
-var playerY = h - 40;
-var playerSpeed = 250;
+var playerY = h - 20;
+var playerSpeed = 100;
 var leftHeld = false;
 var rightHeld = false;
 
@@ -19,9 +19,9 @@ var maxPlayerBullets = 3;
 var bulletX = newArray();
 var bulletY = newArray();
 var bulletActive = newArray();
-var bulletW = 3;
-var bulletH = 10;
-var bulletSpeed = 400;
+var bulletW = 2;
+var bulletH = 5;
+var bulletSpeed = 180;
 
 var i = 0;
 while (i < maxPlayerBullets) {
@@ -34,10 +34,10 @@ while (i < maxPlayerBullets) {
 // --- Invaders grid ---
 var cols = 7;
 var rows = 4;
-var invW = 36;
-var invH = 30;
-var invPadX = 8;
-var invPadY = 8;
+var invW = 16;
+var invH = 12;
+var invPadX = 4;
+var invPadY = 4;
 var invGridW = cols * (invW + invPadX) - invPadX;
 
 // Invader alive flags stored in a flat array: row * cols + col
@@ -52,10 +52,10 @@ var aliveCount = invCount;
 
 // Invader movement
 var invOffsetX = (w - invGridW) / 2;
-var invOffsetY = 40;
+var invOffsetY = 20;
 var invDirX = 1;
-var invSpeedX = 40;
-var invDropAmount = 18;
+var invSpeedX = 18;
+var invDropAmount = 8;
 var invMoveTimer = 0;
 var invMoveInterval = 0.6;  // seconds between steps
 
@@ -64,7 +64,7 @@ var maxEnemyBullets = 4;
 var eBulletX = newArray();
 var eBulletY = newArray();
 var eBulletActive = newArray();
-var eBulletSpeed = 180;
+var eBulletSpeed = 80;
 var enemyShootTimer = 0;
 var enemyShootInterval = 1.2;
 
@@ -859,7 +859,7 @@ while (running) {
 
   // --- Draw UFO ---
   if (ufoActive) {
-    drawSpriteScaled(ufoSprite, floor(ufoX), ufoY, 3);
+    drawSpriteScaled(ufoSprite, floor(ufoX), ufoY, 1);
   }
 
   // --- Draw invaders ---
@@ -868,7 +868,7 @@ while (running) {
     var c = 0;
     while (c < cols) {
       if (arrayGet(invAlive, r * cols + c)) {
-        drawSpriteScaled(arrayGet(invSprites, r * 2 + invFrame), invaderX(c), invaderY(r), 3);
+        drawSpriteScaled(arrayGet(invSprites, r * 2 + invFrame), invaderX(c), invaderY(r), 1);
       }
       c = c + 1;
     }
@@ -881,16 +881,16 @@ while (running) {
     if (arrayGet(explActive, i)) {
       var t = arrayGet(explTimer, i);
       if (t > explDuration / 2) {
-        drawSpriteScaled(explSprite1, arrayGet(explX, i), arrayGet(explY, i), 3);
+        drawSpriteScaled(explSprite1, arrayGet(explX, i), arrayGet(explY, i), 1);
       } else {
-        drawSpriteScaled(explSprite2, arrayGet(explX, i), arrayGet(explY, i), 3);
+        drawSpriteScaled(explSprite2, arrayGet(explX, i), arrayGet(explY, i), 1);
       }
     }
     i = i + 1;
   }
 
   // --- Draw player ---
-  drawSpriteScaled(playerSprite, floor(playerX), playerY - 6, 3);
+  drawSpriteScaled(playerSprite, floor(playerX), playerY - 2, 1);
 
   // --- Draw player bullets ---
   setColor(255, 255, 255);
@@ -907,22 +907,22 @@ while (running) {
   i = 0;
   while (i < maxEnemyBullets) {
     if (arrayGet(eBulletActive, i)) {
-      fillRect(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 3, 10);
+      fillRect(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 2, 5);
     }
     i = i + 1;
   }
 
   // --- HUD ---
   setColor(255, 255, 255);
-  drawText(10, 8, "SCORE: " + str(score));
-  drawText(w - 120, 8, "LIVES: " + str(lives));
+  drawText(4, 4, "SCORE: " + str(score));
+  drawText(w - 60, 4, "LIVES: " + str(lives));
 
   // --- Game over overlay ---
   if (gameOver) {
     setColor(255, 0, 0);
-    drawText(w / 2 - 80, h / 2 - 20, "GAME OVER");
+    drawText(w / 2 - 27, h / 2 - 8, "GAME OVER");
     setColor(255, 255, 255);
-    drawText(w / 2 - 100, h / 2 + 10, "ENTER to restart, ESC to quit");
+    drawText(w / 2 - 78, h / 2 + 4, "ENTER to restart, ESC to quit");
   }
 
   present();
