@@ -193,6 +193,17 @@ begin
     FBackBuffer.Canvas.Brush.Color := clBlack;
     FBackBuffer.Canvas.FillRect(Rect(0, 0, FBackBuffer.Width, FBackBuffer.Height));
   end;
+  // If the current render target is a surface that no longer exists
+  // (freed, surfaces list cleared, etc.), fall back to the back buffer.
+  // This closes a small dangling-pointer window after RegisterCanvasNatives
+  // or any other path that mutates FSurfaces without rebinding.
+  if (FRenderTargetId >= 0) and
+     ((FSurfaces = nil) or (FRenderTargetId >= FSurfaces.Count) or
+      (FSurfaces[FRenderTargetId] = nil)) then
+  begin
+    FRenderTarget := FBackBuffer;
+    FRenderTargetId := -1;
+  end;
   if FRenderTargetId < 0 then
     FRenderTarget := FBackBuffer;
   ResetClipToTarget;
@@ -217,6 +228,26 @@ end;
 // AND N*LOGICAL_H <= ch. If the host is smaller than the logical size on
 // any axis, we still use scale=1 and clip — the result is acceptable for
 // a tiny window and avoids the visual disaster of fractional scaling.
+//
+// Pixel-art invariants (please preserve when changing this routine):
+//   1. All drawing into FBackBuffer/FFrontBuffer happens at integer
+//      logical coordinates. Every native (drawSprite, fillRect, etc.)
+//      Trunc()s its Lox-double arguments before writing, so there is no
+//      sub-pixel sampling anywhere upstream of this point.
+//   2. The scale step uses StretchBlt with SetStretchBltMode(COLORONCOLOR),
+//      which on Windows is nearest-neighbor for 32-bit blits. HALFTONE
+//      would smooth — DO NOT use it. The final stage->client copy is a
+//      1:1 BitBlt, so no resampling happens there.
+//   3. cw/ch should be PHYSICAL client pixels. Callers pass values from
+//      Windows.GetClientRect (true device pixels) rather than
+//      TControl.ClientWidth, so per-monitor DPI virtualization can't
+//      insert a hidden resample between us and the screen. The EXE's
+//      DPI-awareness in the manifest still matters: if Windows is auto-
+//      scaling a non-DPI-aware app, it bitmap-stretches our output AFTER
+//      we deliver it. For pixel-art crispness, declare the EXE
+//      per-monitor DPI-aware (or System DPI aware) in the manifest, and
+//      either set the host form's Scaled := False or leave it on with
+//      integer scale factors only.
 procedure PresentScaled(DC: HDC; cw, ch: Integer);
 var
   scale, dw, dh, dx, dy: Integer;
@@ -235,6 +266,8 @@ begin
   stageDC := FPresentBuffer.Canvas.Handle;
   // Compose the full client image off-screen, then copy it in one blit.
   PatBlt(stageDC, 0, 0, cw, ch, BLACKNESS);
+  // COLORONCOLOR == nearest-neighbor for 32-bit blits. Required for
+  // pixel-art crispness; HALFTONE would smooth and ruin the look.
   SetStretchBltMode(stageDC, COLORONCOLOR);
   StretchBlt(stageDC, dx, dy, dw, dh,
              FFrontBuffer.Canvas.Handle, 0, 0, LOGICAL_W, LOGICAL_H, SRCCOPY);
@@ -402,7 +435,12 @@ begin
   DC := BeginPaint(Handle, PS);
   try
     if FHasFrontFrame and (FFrontBuffer <> nil) then
-      PresentScaled(DC, ClientWidth, ClientHeight)
+    begin
+      // Use physical client pixels (see PresentScaled docs, invariant #3).
+      var rc: TRect;
+      Winapi.Windows.GetClientRect(Handle, rc);
+      PresentScaled(DC, rc.Right - rc.Left, rc.Bottom - rc.Top);
+    end
     else
     begin
       // No frame yet — fill black so we don't show garbage.
@@ -1225,7 +1263,12 @@ begin
   if (FGameSurface <> nil) and FGameSurface.HandleAllocated then
   begin
     var dc := GetDC(FGameSurface.Handle);
-    PresentScaled(dc, FGameSurface.ClientWidth, FGameSurface.ClientHeight);
+    // Use Windows.GetClientRect to read true physical client pixels.
+    // TControl.ClientWidth can be affected by VCL per-monitor DPI scaling;
+    // GetClientRect is always device pixels, which is what BitBlt needs.
+    var rc: TRect;
+    Winapi.Windows.GetClientRect(FGameSurface.Handle, rc);
+    PresentScaled(dc, rc.Right - rc.Left, rc.Bottom - rc.Top);
     ReleaseDC(FGameSurface.Handle, dc);
     ValidateRect(FGameSurface.Handle, nil);
   end;
@@ -2747,6 +2790,13 @@ end;
 
 procedure RegisterCanvasNatives;
 begin
+  // Unbind the current render target BEFORE clearing the surfaces list,
+  // otherwise FRenderTarget could point at a TBitmap that FSurfaces.Clear
+  // is about to free. EnsureBackBuffer (called by the next draw native)
+  // will repoint FRenderTarget at FBackBuffer; until then, nil is the
+  // only safe value if FBackBuffer hasn't been created yet.
+  FRenderTargetId := -1;
+  FRenderTarget := FBackBuffer;  // may be nil; EnsureBackBuffer will fix
   // Clear sprites, tilemaps, surfaces, and palette from previous run
   if FSprites <> nil then
     FSprites.Clear;
