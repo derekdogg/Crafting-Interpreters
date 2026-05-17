@@ -492,6 +492,108 @@ var bgMusic = [
 ];
 var musicPlaying = false;
 
+// --- Shields (destructible barriers) ---
+var numShields = 4;
+var shieldCols = 11;
+var shieldRows = 8;
+var shieldCellSize = 2;
+var shieldW = shieldCols * shieldCellSize;   // 22
+var shieldH = shieldRows * shieldCellSize;   // 16
+var shieldY = playerY - 28;
+
+var shieldX_pos = newArray();
+var shieldCells = newArray();   // flat: shieldIdx * (cols*rows) + row*cols + col
+var cellsPerShield = shieldCols * shieldRows;
+
+// Compute shield X positions (evenly spaced)
+var totalShieldsW = numShields * shieldW;
+var shieldSpacing = (w - totalShieldsW) / (numShields + 1);
+i = 0;
+while (i < numShields) {
+  arrayPush(shieldX_pos, floor(shieldSpacing + i * (shieldW + shieldSpacing)));
+  i = i + 1;
+}
+
+// Classic shape: solid rectangle with rounded top corners and an
+// arch (notch) cut out of the bottom-middle.
+fun shieldCellAlive(row, col) {
+  // Top corners chipped off
+  if (row == 0 and (col == 0 or col == shieldCols - 1)) return false;
+  // Bottom-middle arch
+  if (row >= shieldRows - 3) {
+    if (col >= 3 and col <= shieldCols - 4) return false;
+  }
+  return true;
+}
+
+fun resetShields() {
+  var s = 0;
+  while (s < numShields) {
+    var r = 0;
+    while (r < shieldRows) {
+      var c = 0;
+      while (c < shieldCols) {
+        var idx = s * cellsPerShield + r * shieldCols + c;
+        arraySet(shieldCells, idx, shieldCellAlive(r, c));
+        c = c + 1;
+      }
+      r = r + 1;
+    }
+    s = s + 1;
+  }
+}
+
+// One-time fill so resetShields can use arraySet.
+i = 0;
+while (i < numShields * cellsPerShield) {
+  arrayPush(shieldCells, false);
+  i = i + 1;
+}
+resetShields();
+
+// Returns true if the bullet hit a live shield cell. Destroys one cell.
+// dyDir is the bullet's vertical direction: -1 = moving up (player),
+// +1 = moving down (enemy). We scan rows in the direction the bullet
+// is coming FROM so the cell facing the bullet erodes first.
+fun bulletHitsShield(bx, by, bw, bh, dyDir) {
+  var s = 0;
+  while (s < numShields) {
+    var sx = arrayGet(shieldX_pos, s);
+    if (rectsOverlap(bx, by, bw, bh, sx, shieldY, shieldW, shieldH)) {
+      var base = s * cellsPerShield;
+      // Player bullets travel up -> scan bottom-up.
+      // Enemy bullets travel down -> scan top-down.
+      var rStart = 0;
+      var rEnd = shieldRows;
+      var rStep = 1;
+      if (dyDir < 0) {
+        rStart = shieldRows - 1;
+        rEnd = -1;
+        rStep = -1;
+      }
+      var r = rStart;
+      while (r != rEnd) {
+        var c = 0;
+        while (c < shieldCols) {
+          var idx = base + r * shieldCols + c;
+          if (arrayGet(shieldCells, idx)) {
+            var cx = sx + c * shieldCellSize;
+            var cy = shieldY + r * shieldCellSize;
+            if (rectsOverlap(bx, by, bw, bh, cx, cy, shieldCellSize, shieldCellSize)) {
+              arraySet(shieldCells, idx, false);
+              return true;
+            }
+          }
+          c = c + 1;
+        }
+        r = r + rStep;
+      }
+    }
+    s = s + 1;
+  }
+  return false;
+}
+
 fun startMusic() {
   playSequence(bgMusic, true);
   musicPlaying = true;
@@ -565,6 +667,7 @@ while (running) {
         marchStep = 0;
         ufoActive = false;
         ufoTimer = 0;
+        resetShields();
         resetPlayer();
         startMusic();
       }
@@ -584,6 +687,13 @@ while (running) {
       if (arrayGet(bulletActive, i)) {
         arraySet(bulletY, i, arrayGet(bulletY, i) - bulletSpeed * dt);
         if (arrayGet(bulletY, i) + bulletH < 0) arraySet(bulletActive, i, false);
+        // Hit a shield from below?
+        if (arrayGet(bulletActive, i)) {
+          if (bulletHitsShield(arrayGet(bulletX, i), arrayGet(bulletY, i), bulletW, bulletH, -1)) {
+            arraySet(bulletActive, i, false);
+            playNoise(120, 0.15);
+          }
+        }
       }
       i = i + 1;
     }
@@ -762,16 +872,27 @@ while (running) {
         if (arrayGet(eBulletY, i) > h) {
           arraySet(eBulletActive, i, false);
         }
-        // Hit player
-        if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 3, 10, playerX, playerY - 6, playerW, playerH + 6)) {
-          arraySet(eBulletActive, i, false);
-          lives = lives - 1;
-          playNoise(400, 0.35);
-          if (lives <= 0) {
-            gameOver = true;
-            stopMusic();
-          } else {
-            resetPlayer();
+        // Hit a shield from above?
+        if (arrayGet(eBulletActive, i)) {
+          if (bulletHitsShield(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 2, 5, 1)) {
+            arraySet(eBulletActive, i, false);
+            playNoise(120, 0.15);
+          }
+        }
+        // Hit player. Use the actual rendered rectangles for both:
+        //   bullet  : (eBulletX - 1, eBulletY, 2, 5)
+        //   player  : sprite is 13x7, drawn at (playerX, playerY - 2)
+        if (arrayGet(eBulletActive, i)) {
+          if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 2, 5, playerX, playerY - 2, 13, 7)) {
+            arraySet(eBulletActive, i, false);
+            lives = lives - 1;
+            playNoise(400, 0.35);
+            if (lives <= 0) {
+              gameOver = true;
+              stopMusic();
+            } else {
+              resetPlayer();
+            }
           }
         }
       }
@@ -887,6 +1008,27 @@ while (running) {
       }
     }
     i = i + 1;
+  }
+
+  // --- Draw shields (green pixel blocks) ---
+  setColor(60, 220, 90);
+  var sIdx = 0;
+  while (sIdx < numShields) {
+    var sx = arrayGet(shieldX_pos, sIdx);
+    var base = sIdx * cellsPerShield;
+    var r = 0;
+    while (r < shieldRows) {
+      var c = 0;
+      while (c < shieldCols) {
+        if (arrayGet(shieldCells, base + r * shieldCols + c)) {
+          fillRect(sx + c * shieldCellSize, shieldY + r * shieldCellSize,
+                   shieldCellSize, shieldCellSize);
+        }
+        c = c + 1;
+      }
+      r = r + 1;
+    }
+    sIdx = sIdx + 1;
   }
 
   // --- Draw player ---
