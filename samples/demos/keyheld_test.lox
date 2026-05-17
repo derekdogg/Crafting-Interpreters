@@ -43,9 +43,9 @@ while (running) {
   clearCanvas(20, 20, 40);
 
   setColor(150, 150, 150);
- // drawText(10, 10, "Autonomous square motion test");
- // drawText(10, 25, "1 pixel per presented frame");
- // drawText(10, 40, "ESC quits");
+  drawText(10, 10, "Autonomous square motion test");
+   drawText(10, 25, "1 pixel per presented frame");
+  drawText(10, 40, "ESC quits");
 
   setColor(255, 100, 50);
   fillRect(x, y, size, size);

@@ -132,6 +132,10 @@ var
   FCameraY: Integer;
   FSprites: TObjectList<TBitmap>;
   FSpriteFreelist: TList<Integer>;
+  // Parallel to FSprites: true when the sprite contains no magenta
+  // ($00FF00FF) transparency-key pixels. Set once at slot allocation
+  // time and used by drawSprite to take a per-row Move() fast path.
+  FSpriteOpaque: TList<Boolean>;
   FSurfaces: TObjectList<TBitmap>;
   FSurfaceFreelist: TList<Integer>;
   FTilemaps: TObjectList<TTilemap>;
@@ -148,6 +152,16 @@ var
   FMouseX: Integer;
   FMouseY: Integer;
   FMouseBtn: array[0..2] of Boolean;
+  // -- Glyph cache for drawText() --
+  // Built once from the 5x7 font table. For each printable ASCII char
+  // (32..126) and each of the 7 rows, we pre-extract which of the 5
+  // columns have pixels set. drawText then iterates only those set
+  // pixels instead of testing all 5 columns with shift-and-mask, and
+  // sparse rows (the common case) need just 0-3 writes instead of 5
+  // bit tests + branches.
+  FGlyphCount: array[32..126, 0..6] of Byte;            // pixels per row
+  FGlyphCol:   array[32..126, 0..6, 0..4] of Byte;      // column indices
+  FGlyphCacheBuilt: Boolean;
 
 procedure ResetClipToTarget; forward;
 
@@ -453,6 +467,7 @@ procedure FreeCanvas;
 begin
   FreeAndNil(FTilemaps);
   FreeAndNil(FSpriteFreelist);
+  FreeAndNil(FSpriteOpaque);
   FreeAndNil(FSprites);
   FreeAndNil(FSurfaceFreelist);
   FreeAndNil(FSurfaces);
@@ -672,8 +687,9 @@ end;
 
 function drawTextNative(argCount: integer; args: pValue): TValue;
 const
-  // Built-in 5Ã—7 bitmap font â€” printable ASCII 32..126
-  // Each glyph = 7 bytes (rows top-to-bottom), bit4=leftmost, bit0=rightmost
+  // Built-in 5x7 bitmap font - printable ASCII 32..126.
+  // Each glyph = 7 bytes (rows top-to-bottom), bit4=leftmost, bit0=rightmost.
+  // Used only by BuildGlyphCache below to populate FGlyphCount/FGlyphCol.
   FONT_W = 5;
   FONT_H = 7;
   FONT_ADVANCE = 6;  // 5px glyph + 1px spacing
@@ -872,12 +888,14 @@ const
     $00,$00,$08,$15,$02,$00,$00
   );
 var
-  x, y, scale, i, gx, gy, charIdx: Integer;
+  x, y, scale, i, gx, gy, charIdx, k: Integer;
   ax, ay, px, py, bw, bh: Integer;
   s: AnsiString;
   ch: Byte;
   rowBits: Byte;
+  cnt: Byte;
   dstRow: PCardinal;
+  fullyVisible: Boolean;
 begin
   if (argCount < 3) or (argCount > 4) then
   begin
@@ -906,44 +924,119 @@ begin
     if scale < 1 then scale := 1;
   end;
   EnsureBackBuffer;
+
+  // Lazily build the glyph cache on first call.
+  if not FGlyphCacheBuilt then
+  begin
+    for i := FONT_FIRST to FONT_LAST do
+    begin
+      charIdx := (i - FONT_FIRST) * FONT_H;
+      for gy := 0 to FONT_H - 1 do
+      begin
+        rowBits := FONT_DATA[charIdx + gy];
+        cnt := 0;
+        for gx := 0 to FONT_W - 1 do
+          if (rowBits and ($10 shr gx)) <> 0 then
+          begin
+            FGlyphCol[i, gy, cnt] := gx;
+            Inc(cnt);
+          end;
+        FGlyphCount[i, gy] := cnt;
+      end;
+    end;
+    FGlyphCacheBuilt := True;
+  end;
+
   x := Trunc(args[0].NumberValue) - FCameraX;
   y := Trunc(args[1].NumberValue) - FCameraY;
   s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
   bw := FClipX2;
   bh := FClipY2;
 
-  for i := 1 to Length(s) do
+  if scale = 1 then
   begin
-    ch := Ord(s[i]);
-    if (ch < FONT_FIRST) or (ch > FONT_LAST) then
-      ch := FONT_FIRST;  // unknown â†’ space
-    charIdx := (ch - FONT_FIRST) * FONT_H;
-
-    for gy := 0 to FONT_H - 1 do
+    // Hot path: scale=1. For each glyph, branch once on whether it is
+    // fully inside the clip rect. If so, the inner loop has zero clip
+    // branches and writes only the set pixels via FGlyphCol.
+    for i := 1 to Length(s) do
     begin
-      rowBits := FONT_DATA[charIdx + gy];
-      if rowBits = 0 then Continue;  // skip empty rows
-      for gx := 0 to FONT_W - 1 do
+      ch := Ord(s[i]);
+      if (ch < FONT_FIRST) or (ch > FONT_LAST) then
+        ch := FONT_FIRST;
+
+      // Skip fully off-screen glyphs entirely.
+      if (x + FONT_W <= FClipX1) or (x >= bw) or
+         (y + FONT_H <= FClipY1) or (y >= bh) then
       begin
-        if (rowBits and ($10 shr gx)) <> 0 then
+        x := x + FONT_ADVANCE;
+        Continue;
+      end;
+
+      fullyVisible := (x >= FClipX1) and (x + FONT_W <= bw) and
+                      (y >= FClipY1) and (y + FONT_H <= bh);
+
+      if fullyVisible then
+      begin
+        for gy := 0 to FONT_H - 1 do
         begin
-          // Plot scaled pixel block
-          for py := 0 to scale - 1 do
+          cnt := FGlyphCount[ch, gy];
+          if cnt = 0 then Continue;
+          dstRow := FRenderTarget.ScanLine[y + gy];
+          for k := 0 to cnt - 1 do
+            dstRow[x + FGlyphCol[ch, gy, k]] := FCurrentPixel;
+        end;
+      end
+      else
+      begin
+        // Partially clipped glyph: per-pixel checks.
+        for gy := 0 to FONT_H - 1 do
+        begin
+          cnt := FGlyphCount[ch, gy];
+          if cnt = 0 then Continue;
+          ay := y + gy;
+          if (ay < FClipY1) or (ay >= bh) then Continue;
+          dstRow := FRenderTarget.ScanLine[ay];
+          for k := 0 to cnt - 1 do
           begin
-            ay := y + gy * scale + py;
-            if (ay < FClipY1) or (ay >= bh) then Continue;
-            dstRow := FRenderTarget.ScanLine[ay];
+            ax := x + FGlyphCol[ch, gy, k];
+            if (ax >= FClipX1) and (ax < bw) then
+              dstRow[ax] := FCurrentPixel;
+          end;
+        end;
+      end;
+      x := x + FONT_ADVANCE;
+    end;
+  end
+  else
+  begin
+    // Scaled path. Each set glyph pixel becomes a scale x scale block.
+    for i := 1 to Length(s) do
+    begin
+      ch := Ord(s[i]);
+      if (ch < FONT_FIRST) or (ch > FONT_LAST) then
+        ch := FONT_FIRST;
+      for gy := 0 to FONT_H - 1 do
+      begin
+        cnt := FGlyphCount[ch, gy];
+        if cnt = 0 then Continue;
+        for py := 0 to scale - 1 do
+        begin
+          ay := y + gy * scale + py;
+          if (ay < FClipY1) or (ay >= bh) then Continue;
+          dstRow := FRenderTarget.ScanLine[ay];
+          for k := 0 to cnt - 1 do
+          begin
             for px := 0 to scale - 1 do
             begin
-              ax := x + gx * scale + px;
+              ax := x + FGlyphCol[ch, gy, k] * scale + px;
               if (ax >= FClipX1) and (ax < bw) then
                 dstRow[ax] := FCurrentPixel;
             end;
           end;
         end;
       end;
+      x := x + FONT_ADVANCE * scale;
     end;
-    x := x + FONT_ADVANCE * scale;
   end;
   Result := CreateNilValue;
 end;
@@ -1401,23 +1494,55 @@ end;
 
 // -- Sprite functions --
 
+// One-time scan: returns true if the bitmap has no magenta ($00FF00FF)
+// transparency-key pixels, i.e. every pixel is opaque. Called once per
+// sprite at slot-allocation time so drawSprite can skip per-pixel
+// transparency tests for fully opaque sprites.
+function BitmapIsFullyOpaque(bmp: TBitmap): Boolean;
+var
+  y, x: Integer;
+  row: PRGBQuadArray;
+begin
+  if (bmp = nil) or (bmp.Width <= 0) or (bmp.Height <= 0) then
+    Exit(False);
+  for y := 0 to bmp.Height - 1 do
+  begin
+    row := bmp.ScanLine[y];
+    for x := 0 to bmp.Width - 1 do
+      if PCardinal(@row[x])^ = $00FF00FF then
+        Exit(False);
+  end;
+  Result := True;
+end;
+
 function AllocSpriteSlot(bmp: TBitmap): Integer;
 var
   idx: Integer;
+  opaque: Boolean;
 begin
   if FSprites = nil then
     FSprites := TObjectList<TBitmap>.Create(True);
   if FSpriteFreelist = nil then
     FSpriteFreelist := TList<Integer>.Create;
+  if FSpriteOpaque = nil then
+    FSpriteOpaque := TList<Boolean>.Create;
+  opaque := BitmapIsFullyOpaque(bmp);
   if FSpriteFreelist.Count > 0 then
   begin
     idx := FSpriteFreelist[FSpriteFreelist.Count - 1];
     FSpriteFreelist.Delete(FSpriteFreelist.Count - 1);
     FSprites[idx] := bmp;
+    FSpriteOpaque[idx] := opaque;
     Result := idx;
   end
   else
+  begin
     Result := FSprites.Add(bmp);
+    // Keep FSpriteOpaque strictly parallel to FSprites.
+    while FSpriteOpaque.Count <= Result do
+      FSpriteOpaque.Add(False);
+    FSpriteOpaque[Result] := opaque;
+  end;
 end;
 
 function createSpriteNative(argCount: integer; args: pValue): TValue;
@@ -1489,6 +1614,7 @@ end;
 function drawSpriteNative(argCount: integer; args: pValue): TValue;
 var
   id, x, y, sx, sy, bw, bh: Integer;
+  sx0, sx1, sy0, sy1: Integer;
   bmp: TBitmap;
   srcRow: PRGBQuadArray;
   dstRow: PCardinal;
@@ -1522,14 +1648,39 @@ begin
   end;
   bw := FClipX2;
   bh := FClipY2;
-  for sy := 0 to bmp.Height - 1 do
+  // Pre-clip: compute the visible sub-rectangle in SOURCE coordinates,
+  // then iterate only those pixels. This removes the per-pixel clip
+  // branches from the inner loop (correctness identical to the prior
+  // per-pixel check version; the transparency-key test still runs).
+  sx0 := FClipX1 - x; if sx0 < 0 then sx0 := 0;
+  sy0 := FClipY1 - y; if sy0 < 0 then sy0 := 0;
+  sx1 := bw - x;      if sx1 > bmp.Width  then sx1 := bmp.Width;
+  sy1 := bh - y;      if sy1 > bmp.Height then sy1 := bmp.Height;
+  if (sx0 >= sx1) or (sy0 >= sy1) then
   begin
-    if (y + sy < FClipY1) or (y + sy >= bh) then Continue;
+    Result := CreateNilValue;
+    Exit;
+  end;
+  // Fast path: sprite has no transparent pixels, so each visible row
+  // is just a contiguous copy. Move() compiles to an SSE/AVX-optimized
+  // memcpy and is several times faster than the branchy per-pixel loop.
+  if (FSpriteOpaque <> nil) and (id < FSpriteOpaque.Count) and FSpriteOpaque[id] then
+  begin
+    for sy := sy0 to sy1 - 1 do
+    begin
+      srcRow := bmp.ScanLine[sy];
+      dstRow := FRenderTarget.ScanLine[y + sy];
+      Move(srcRow[sx0], dstRow[x + sx0], (sx1 - sx0) * SizeOf(Cardinal));
+    end;
+    Result := CreateNilValue;
+    Exit;
+  end;
+  for sy := sy0 to sy1 - 1 do
+  begin
     srcRow := bmp.ScanLine[sy];
     dstRow := FRenderTarget.ScanLine[y + sy];
-    for sx := 0 to bmp.Width - 1 do
+    for sx := sx0 to sx1 - 1 do
     begin
-      if (x + sx < FClipX1) or (x + sx >= bw) then Continue;
       pixel := PCardinal(@srcRow[sx])^;
       if pixel <> $00FF00FF then
         dstRow[x + sx] := pixel;
@@ -1543,6 +1694,7 @@ var
   id, x, y, scale, sw, sh: Integer;
   bmp: TBitmap;
   sx, sy, dx, dy, bw, bh: Integer;
+  dx0, dx1, dy0, dy1: Integer;
   srcRow: PRGBQuadArray;
   dstRow: PCardinal;
   pixel: Cardinal;
@@ -1583,17 +1735,26 @@ begin
   sh := bmp.Height * scale;
   bw := FClipX2;
   bh := FClipY2;
+  // Pre-clip in DESTINATION coordinates so the inner loop has no
+  // per-pixel clip branches. Source pixel is then sx = dx div scale.
+  dx0 := FClipX1 - x; if dx0 < 0 then dx0 := 0;
+  dy0 := FClipY1 - y; if dy0 < 0 then dy0 := 0;
+  dx1 := bw - x;      if dx1 > sw then dx1 := sw;
+  dy1 := bh - y;      if dy1 > sh then dy1 := sh;
+  if (dx0 >= dx1) or (dy0 >= dy1) then
+  begin
+    Result := CreateNilValue;
+    Exit;
+  end;
   // Manual scanline blit: skip transparent pixels ($00FF00FF), copy opaque ones.
   // Single pass, no GDI mask operations, deterministic rendering.
-  for dy := 0 to sh - 1 do
+  for dy := dy0 to dy1 - 1 do
   begin
-    if (y + dy < FClipY1) or (y + dy >= bh) then Continue;
     sy := dy div scale;
     srcRow := bmp.ScanLine[sy];
     dstRow := FRenderTarget.ScanLine[y + dy];
-    for dx := 0 to sw - 1 do
+    for dx := dx0 to dx1 - 1 do
     begin
-      if (x + dx < FClipX1) or (x + dx >= bw) then Continue;
       sx := dx div scale;
       pixel := PCardinal(@srcRow[sx])^;
       if pixel <> $00FF00FF then
@@ -1609,10 +1770,20 @@ var
   bmp: TBitmap;
   angle, cosA, sinA, cx, cy, srcCx, srcCy: Double;
   dx, dy, sx, sy, bw, bh: Integer;
+  baseX, baseY: Integer;
+  dx0, dx1, dy0, dy1: Integer;
+  fxc, fyc: Double;
+  // 2x2 supersample offsets in source space (precomputed)
+  ofsXa, ofsXb, ofsYa, ofsYb: Double;
+  // Per-sample iteration
   fx, fy: Double;
+  i: Integer;
+  sumR, sumG, sumB, cnt: Integer;
+  ifx, ify: Integer;
   srcRow: PRGBQuadArray;
   dstRow: PCardinal;
-  pixel: Cardinal;
+  pixel, dstPx: Cardinal;
+  outR, outG, outB, missing: Integer;
 begin
   if argCount <> 5 then
   begin
@@ -1661,28 +1832,87 @@ begin
   bw := FClipX2;
   bh := FClipY2;
 
-  // Inverse-mapping: for each destination pixel, find source pixel
-  for dy := 0 to dh - 1 do
+  // Hoist destination origin so the inner loop just adds dx/dy.
+  baseX := x - Trunc(cx);
+  baseY := y - Trunc(cy);
+
+  // Pre-clip the destination bounding box against the clip rect so the
+  // inner loop has no per-pixel screen-clip branches.
+  dx0 := FClipX1 - baseX; if dx0 < 0 then dx0 := 0;
+  dy0 := FClipY1 - baseY; if dy0 < 0 then dy0 := 0;
+  dx1 := bw - baseX;      if dx1 > dw then dx1 := dw;
+  dy1 := bh - baseY;      if dy1 > dh then dy1 := dh;
+  if (dx0 >= dx1) or (dy0 >= dy1) then
   begin
-    if (y - Trunc(cy) + dy < FClipY1) or (y - Trunc(cy) + dy >= bh) then Continue;
-    dstRow := FRenderTarget.ScanLine[y - Trunc(cy) + dy];
-    for dx := 0 to dw - 1 do
+    Result := CreateNilValue;
+    Exit;
+  end;
+
+  // 2x2 supersampling: sample destination pixel at (+/-0.25, +/-0.25)
+  // offsets, average opaque samples, alpha-blend partial coverage with
+  // the existing destination pixel. Anti-aliases rotated edges while
+  // preserving the magenta ($00FF00FF) transparency key exactly.
+  ofsXa := 0.25 * cosA;   // dest-dx -> source fx contribution
+  ofsXb := 0.25 * sinA;   // dest-dy -> source fx contribution
+  ofsYa := -0.25 * sinA;  // dest-dx -> source fy contribution
+  ofsYb := 0.25 * cosA;   // dest-dy -> source fy contribution
+
+  for dy := dy0 to dy1 - 1 do
+  begin
+    dstRow := FRenderTarget.ScanLine[baseY + dy];
+    for dx := dx0 to dx1 - 1 do
     begin
-      if (x - Trunc(cx) + dx < FClipX1) or (x - Trunc(cx) + dx >= bw) then Continue;
-      // Rotate destination pixel back to source space
-      fx := (dx - cx) * cosA + (dy - cy) * sinA + srcCx;
-      fy := -(dx - cx) * sinA + (dy - cy) * cosA + srcCy;
-      // Map back through scale to original sprite coords
-      sx := Trunc(fx) div scale;
-      sy := Trunc(fy) div scale;
-      if (sx >= 0) and (sx < bmp.Width) and (sy >= 0) and (sy < bmp.Height) and
-         (Trunc(fx) >= 0) and (Trunc(fx) < sw) and (Trunc(fy) >= 0) and (Trunc(fy) < sh) then
+      // Rotated source position at destination pixel center.
+      fxc := (dx - cx) * cosA + (dy - cy) * sinA + srcCx;
+      fyc := -(dx - cx) * sinA + (dy - cy) * cosA + srcCy;
+
+      sumR := 0; sumG := 0; sumB := 0; cnt := 0;
+      // 4 sub-samples: (-, -), (+, -), (-, +), (+, +) in dest space.
+      for i := 0 to 3 do
       begin
+        case i of
+          0: begin fx := fxc - ofsXa - ofsXb; fy := fyc - ofsYa - ofsYb; end;
+          1: begin fx := fxc + ofsXa - ofsXb; fy := fyc + ofsYa - ofsYb; end;
+          2: begin fx := fxc - ofsXa + ofsXb; fy := fyc - ofsYa + ofsYb; end;
+        else
+             begin fx := fxc + ofsXa + ofsXb; fy := fyc + ofsYa + ofsYb; end;
+        end;
+        ifx := Trunc(fx);
+        ify := Trunc(fy);
+        if (ifx < 0) or (ifx >= sw) or (ify < 0) or (ify >= sh) then Continue;
+        sx := ifx div scale;
+        sy := ify div scale;
         srcRow := bmp.ScanLine[sy];
         pixel := PCardinal(@srcRow[sx])^;
-        if pixel <> $00FF00FF then
-          dstRow[x - Trunc(cx) + dx] := pixel;
+        if pixel = $00FF00FF then Continue;
+        sumB := sumB + Integer(pixel and $FF);
+        sumG := sumG + Integer((pixel shr 8) and $FF);
+        sumR := sumR + Integer((pixel shr 16) and $FF);
+        cnt := cnt + 1;
       end;
+
+      if cnt = 0 then Continue;
+      if cnt = 4 then
+      begin
+        // Full coverage: pure average, no blend with destination.
+        outB := sumB shr 2;
+        outG := sumG shr 2;
+        outR := sumR shr 2;
+      end
+      else
+      begin
+        // Partial coverage: alpha-blend averaged source over existing
+        // destination pixel. cnt samples contribute source color,
+        // (4 - cnt) samples contribute destination color.
+        missing := 4 - cnt;
+        dstPx := dstRow[baseX + dx];
+        outB := (sumB + Integer(dstPx and $FF) * missing) shr 2;
+        outG := (sumG + Integer((dstPx shr 8) and $FF) * missing) shr 2;
+        outR := (sumR + Integer((dstPx shr 16) and $FF) * missing) shr 2;
+      end;
+      dstRow[baseX + dx] := (Cardinal(outR) shl 16) or
+                            (Cardinal(outG) shl 8) or
+                             Cardinal(outB);
     end;
   end;
   Result := CreateNilValue;
@@ -2106,6 +2336,8 @@ var
   c, r, tileIdx, dx, dy: Integer;
   bmp: TBitmap;
   sx, sy, px, py, bw, bh: Integer;
+  px0, px1, py0, py1: Integer;
+  oneToOne, opaque: Boolean;
   srcRow: PRGBQuadArray;
   dstRow: PCardinal;
   pixel: Cardinal;
@@ -2153,21 +2385,62 @@ begin
     for c := startCol to endCol do
     begin
       tileIdx := tm.Tiles[r * tm.Cols + c];
-      if (tileIdx >= 0) and (tileIdx < FSprites.Count) then
+      if (tileIdx < 0) or (tileIdx >= FSprites.Count) then Continue;
+      bmp := FSprites[tileIdx];
+      if bmp = nil then Continue;  // freed sprite - skip tile
+      dx := c * tm.TileW - scrollX;
+      dy := r * tm.TileH - scrollY;
+
+      // Pre-clip the tile's visible rectangle in tile-local coords so
+      // the inner loops have no per-pixel screen-clip branches.
+      px0 := FClipX1 - dx; if px0 < 0 then px0 := 0;
+      py0 := FClipY1 - dy; if py0 < 0 then py0 := 0;
+      px1 := bw - dx;      if px1 > tm.TileW then px1 := tm.TileW;
+      py1 := bh - dy;      if py1 > tm.TileH then py1 := tm.TileH;
+      if (px0 >= px1) or (py0 >= py1) then Continue;
+
+      // 1:1 sprite-to-tile dimensions enable a much faster inner loop:
+      // no per-pixel scaling math, and (if opaque) a Move() memcpy.
+      oneToOne := (bmp.Width = tm.TileW) and (bmp.Height = tm.TileH);
+      opaque := (FSpriteOpaque <> nil) and (tileIdx < FSpriteOpaque.Count)
+                and FSpriteOpaque[tileIdx];
+
+      if oneToOne and opaque then
       begin
-        bmp := FSprites[tileIdx];
-        if bmp = nil then Continue;  // freed sprite â€” skip tile
-        dx := c * tm.TileW - scrollX;
-        dy := r * tm.TileH - scrollY;
-        for py := 0 to tm.TileH - 1 do
+        // Fast path: opaque tile, no scaling - one Move() per row.
+        for py := py0 to py1 - 1 do
         begin
-          if (dy + py < FClipY1) or (dy + py >= bh) then Continue;
+          srcRow := bmp.ScanLine[py];
+          dstRow := FRenderTarget.ScanLine[dy + py];
+          Move(srcRow[px0], dstRow[dx + px0], (px1 - px0) * SizeOf(Cardinal));
+        end;
+      end
+      else if oneToOne then
+      begin
+        // No scaling, but transparency-keyed: tight per-pixel copy
+        // without the div math.
+        for py := py0 to py1 - 1 do
+        begin
+          srcRow := bmp.ScanLine[py];
+          dstRow := FRenderTarget.ScanLine[dy + py];
+          for px := px0 to px1 - 1 do
+          begin
+            pixel := PCardinal(@srcRow[px])^;
+            if pixel <> $00FF00FF then
+              dstRow[dx + px] := pixel;
+          end;
+        end;
+      end
+      else
+      begin
+        // Sprite is not the tile's native size: stretch/shrink to fit.
+        for py := py0 to py1 - 1 do
+        begin
           sy := (py * bmp.Height) div tm.TileH;
           srcRow := bmp.ScanLine[sy];
           dstRow := FRenderTarget.ScanLine[dy + py];
-          for px := 0 to tm.TileW - 1 do
+          for px := px0 to px1 - 1 do
           begin
-            if (dx + px < FClipX1) or (dx + px >= bw) then Continue;
             sx := (px * bmp.Width) div tm.TileW;
             pixel := PCardinal(@srcRow[sx])^;
             if pixel <> $00FF00FF then
@@ -2472,6 +2745,8 @@ begin
     FSprites.Clear;
   if FSpriteFreelist <> nil then
     FSpriteFreelist.Clear;
+  if FSpriteOpaque <> nil then
+    FSpriteOpaque.Clear;
   if FSurfaces <> nil then
     FSurfaces.Clear;
   if FSurfaceFreelist <> nil then
