@@ -1,0 +1,110 @@
+// cliprect_test.lox — setClipRect / clearClipRect demo at 320x240
+// 2x2 panel layout, each panel 150x100, gutter 10px.
+
+clearCanvas(40, 40, 60);
+
+// Panel positions
+var p1x = 8;   var p1y = 20;   // top-left:  clipped fillRect
+var p2x = 162; var p2y = 20;   // top-right: clipped sprites
+var p3x = 8;   var p3y = 130;  // bot-left:  clipped circles/lines
+var p4x = 162; var p4y = 130;  // bot-right: clipped text
+var pw = 150;
+var ph = 100;
+
+// --- Panel 1: clipped filled rects ---
+setColor(255, 255, 0);
+drawRect(p1x - 1, p1y - 1, pw + 2, ph + 2);
+setClipRect(p1x, p1y, pw, ph);
+
+setColor(255, 0, 0);
+fillRect(p1x - 30, p1y - 20, pw + 60, ph + 40);  // overflows on all sides
+setColor(0, 200, 0);
+fillRect(p1x + 40, p1y + 30, 80, 30);
+setColor(60, 60, 255);
+fillRect(p1x - 10, p1y + 10, 30, 50);
+
+clearClipRect();
+setColor(255, 255, 255);
+drawText(p1x, p1y - 10, "Clipped rects");
+
+// --- Panel 2: clipped sprites ---
+setColor(255, 128, 0);
+var spr = createSprite(8, 8,
+  ".XXXXXX." +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  "XXXXXXXX" +
+  ".XXXXXX.");
+
+setColor(255, 255, 0);
+drawRect(p2x - 1, p2y - 1, pw + 2, ph + 2);
+setClipRect(p2x, p2y, pw, ph);
+
+var col = 0;
+while (col < 18) {
+  var row = 0;
+  while (row < 12) {
+    drawSprite(spr, p2x - 4 + col * 9, p2y - 4 + row * 9);
+    row = row + 1;
+  }
+  col = col + 1;
+}
+
+clearClipRect();
+setColor(255, 255, 255);
+drawText(p2x, p2y - 10, "Clipped sprites");
+
+// --- Panel 3: clipped circles and lines ---
+setColor(255, 255, 0);
+drawRect(p3x - 1, p3y - 1, pw + 2, ph + 2);
+setClipRect(p3x, p3y, pw, ph);
+
+setColor(0, 200, 255);
+fillCircle(p3x + 75, p3y + 50, 60);
+setColor(255, 255, 255);
+drawCircle(p3x + 75, p3y + 50, 45);
+
+setColor(255, 0, 128);
+var i = 0;
+while (i < 16) {
+  drawLine(p3x + i * 10, p3y, p3x + 75, p3y + ph);
+  i = i + 1;
+}
+
+clearClipRect();
+setColor(255, 255, 255);
+drawText(p3x, p3y - 10, "Clipped circles/lines");
+
+// --- Panel 4: clipped text ---
+setColor(255, 255, 0);
+drawRect(p4x - 1, p4y - 1, pw + 2, ph + 2);
+setClipRect(p4x, p4y, pw, ph);
+
+setColor(255, 255, 255);
+drawText(p4x - 10, p4y + 6,  "This text is clipped at the");
+drawText(p4x - 10, p4y + 18, "edges of the yellow box.");
+drawText(p4x - 10, p4y + 36, "Big:");
+drawText(p4x - 20, p4y + 50, "HELLO", 4);
+
+clearClipRect();
+setColor(255, 255, 255);
+drawText(p4x, p4y - 10, "Clipped text");
+
+// --- Header ---
+setColor(180, 180, 180);
+drawText(4, 4, "cliprect_test - clearCanvas(40,40,60)");
+
+present();
+
+// Wait for ESC
+var running = true;
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+}

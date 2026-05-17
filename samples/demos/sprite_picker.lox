@@ -1,0 +1,345 @@
+// ============================================================
+// Sprite Picker
+// Interactive tool for slicing a PNG sprite sheet into rectangles
+// and emitting ready-to-paste loadSpriteFromPNGRegion(...) calls
+// to the output panel.
+//
+// Controls
+//   Left-click + drag    define a selection rectangle
+//   Right-click + drag   pan the sheet (also WASD / arrow keys)
+//   Z                    toggle 1x / 2x zoom
+//   U                    undo last pick
+//   R                    reset all picks
+//   P                    re-print all picks (oldest first)
+//   ESC                  quit
+//
+// Each finalized pick is printed to the output Memo as
+//     loadSpriteFromPNGRegion(SHEET, 105, 575, 75, 100);
+// To use these lines directly in your game script, just declare
+// the path once at the top of that script:
+//     var SHEET = "Assets/.../whatever.png";
+// then paste the printed lines underneath.
+// ============================================================
+
+// Path is resolved relative to the .exe (Win32/Debug). Walk back up
+// two levels to reach the workspace root where Assets/ lives. If you
+// move the .exe or assets, adjust accordingly — an absolute path
+// like "C:/Crafting Interpreters/Assets/..." also works.
+var SHEET_PATH =
+  "../../Assets/3DS - Paper Mario_ Sticker Star - Playable Characters - Mario.png";
+
+var sheet = loadSpriteFromPNG(SHEET_PATH);
+var sheetW = spriteWidth(sheet);
+var sheetH = spriteHeight(sheet);
+
+var canvasW = canvasWidth();
+var canvasH = canvasHeight();
+
+// Layout: 14px title bar at top, 26px status bar at bottom, the
+// rest is the viewport into the sheet.
+var viewTop = 14;
+var viewBottom = canvasH - 26;
+var viewH = viewBottom - viewTop;
+var viewW = canvasW;
+
+// ============================================================
+// State
+// ============================================================
+var panX = 0;
+var panY = 0;
+var zoom = 1;          // 1 or 2
+
+var dragging = false;
+var dragStartIX = 0;
+var dragStartIY = 0;
+var dragCurIX = 0;
+var dragCurIY = 0;
+
+var panning = false;
+var panAnchorMX = 0;
+var panAnchorMY = 0;
+var panAnchorPX = 0;
+var panAnchorPY = 0;
+
+var prevLeft = false;
+var prevRight = false;
+var prevZ = false;
+var prevU = false;
+var prevR = false;
+var prevP = false;
+
+// Linked list of finalized picks (newest first).
+record PickNode(x, y, w, h, next);
+var picks = nil;
+var pickCount = 0;
+
+// Image-space point returned by mouseToImage().
+record IPoint(x, y);
+
+var running = true;
+var lastTime = clock();
+
+// ============================================================
+// Helpers
+// ============================================================
+fun clampPan() {
+  var maxPX = sheetW * zoom - viewW;
+  var maxPY = sheetH * zoom - viewH;
+  if (maxPX < 0) maxPX = 0;
+  if (maxPY < 0) maxPY = 0;
+  if (panX < 0) panX = 0;
+  if (panY < 0) panY = 0;
+  if (panX > maxPX) panX = maxPX;
+  if (panY > maxPY) panY = maxPY;
+}
+
+fun mouseToImage() {
+  var mx = mouseX();
+  var my = mouseY();
+  if (my < viewTop) return nil;
+  if (my >= viewBottom) return nil;
+  if (mx < 0) return nil;
+  if (mx >= viewW) return nil;
+  var ix = floor((mx + panX) / zoom);
+  var iy = floor((my - viewTop + panY) / zoom);
+  return IPoint(ix, iy);
+}
+
+fun emitPick(x, y, w, h) {
+  // Emitted line references SHEET so we don't need an embedded quote
+  // in the literal (Lox strings don't support \\" escapes).
+  print "loadSpriteFromPNGRegion(SHEET, " +
+        str(x) + ", " + str(y) + ", " +
+        str(w) + ", " + str(h) + ");";
+}
+
+fun addPick(x, y, w, h) {
+  picks = PickNode(x, y, w, h, picks);
+  pickCount = pickCount + 1;
+  emitPick(x, y, w, h);
+}
+
+fun undoPick() {
+  if (picks == nil) return;
+  picks = picks.next;
+  pickCount = pickCount - 1;
+  print "// undo (remaining " + str(pickCount) + ")";
+}
+
+fun resetPicks() {
+  picks = nil;
+  pickCount = 0;
+  print "// --- picks reset ---";
+}
+
+fun replayPrint() {
+  print "// --- replay (" + str(pickCount) + " picks, oldest first) ---";
+  print "// Paste these into a script that declares: var SHEET = " +
+        "(your sheet path here);";
+  // Walk linked list from oldest to newest. Index i counts down from
+  // pickCount-1 to 0; for each i, walk i hops from the head.
+  var i = pickCount - 1;
+  while (i >= 0) {
+    var n = picks;
+    var hops = i;
+    while (hops > 0) { n = n.next; hops = hops - 1; }
+    emitPick(n.x, n.y, n.w, n.h);
+    i = i - 1;
+  }
+}
+
+// ============================================================
+// Frame loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // We only need keydown:escape from the event queue. Mouse and
+  // other keys are handled via held-state polling + edge detection.
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  // ---- Edge-detected key triggers ----
+  var zNow = keyHeld("z");
+  if (zNow and !prevZ) {
+    var pBefore = mouseToImage();
+    if (zoom == 1) zoom = 2; else zoom = 1;
+    if (pBefore != nil) {
+      // Keep the image point under the cursor steady after toggle.
+      panX = pBefore.x * zoom - mouseX();
+      panY = pBefore.y * zoom - (mouseY() - viewTop);
+    }
+    clampPan();
+  }
+  prevZ = zNow;
+
+  var uNow = keyHeld("u");
+  if (uNow and !prevU) undoPick();
+  prevU = uNow;
+
+  var rNow = keyHeld("r");
+  if (rNow and !prevR) resetPicks();
+  prevR = rNow;
+
+  var pNow = keyHeld("p");
+  if (pNow and !prevP) replayPrint();
+  prevP = pNow;
+
+  // ---- Mouse button edges ----
+  var leftNow = mouseDown(0);
+  var rightNow = mouseDown(1);
+
+  if (leftNow and !prevLeft) {
+    var p = mouseToImage();
+    if (p != nil) {
+      dragging = true;
+      dragStartIX = p.x; dragStartIY = p.y;
+      dragCurIX = p.x;   dragCurIY = p.y;
+    }
+  }
+  if (!leftNow and prevLeft) {
+    if (dragging) {
+      var p = mouseToImage();
+      if (p != nil) { dragCurIX = p.x; dragCurIY = p.y; }
+      var x0 = dragStartIX; var y0 = dragStartIY;
+      var x1 = dragCurIX;   var y1 = dragCurIY;
+      if (x1 < x0) { var t = x0; x0 = x1; x1 = t; }
+      if (y1 < y0) { var t = y0; y0 = y1; y1 = t; }
+      var w = x1 - x0 + 1;
+      var h = y1 - y0 + 1;
+      if (w >= 2 and h >= 2) addPick(x0, y0, w, h);
+    }
+    dragging = false;
+  }
+  prevLeft = leftNow;
+
+  if (rightNow and !prevRight) {
+    panning = true;
+    panAnchorMX = mouseX(); panAnchorMY = mouseY();
+    panAnchorPX = panX;     panAnchorPY = panY;
+  }
+  if (!rightNow and prevRight) panning = false;
+  prevRight = rightNow;
+
+  // ---- Continuous input ----
+  var panSpeed = 180 * dt;
+  if (keyHeld("a") or keyHeld("left"))  panX = panX - panSpeed;
+  if (keyHeld("d") or keyHeld("right")) panX = panX + panSpeed;
+  if (keyHeld("w") or keyHeld("up"))    panY = panY - panSpeed;
+  if (keyHeld("s") or keyHeld("down"))  panY = panY + panSpeed;
+
+  if (panning) {
+    panX = panAnchorPX - (mouseX() - panAnchorMX);
+    panY = panAnchorPY - (mouseY() - panAnchorMY);
+  }
+  clampPan();
+
+  if (dragging) {
+    var p = mouseToImage();
+    if (p != nil) { dragCurIX = p.x; dragCurIY = p.y; }
+  }
+
+  // ============================================================
+  // Render
+  // ============================================================
+  clearCanvas(30, 30, 36);
+
+  // Title bar
+  setColor(20, 20, 26);
+  fillRect(0, 0, canvasW, viewTop);
+  setColor(220, 220, 220);
+  drawText(2, 4, "SPRITE PICKER", 1);
+  setColor(140, 200, 255);
+  drawText(120, 4, str(sheetW) + "x" + str(sheetH) +
+                   "   zoom " + str(zoom) + "x" +
+                   "   picks " + str(pickCount));
+
+  setClipRect(0, viewTop, viewW, viewH);
+
+  // Checker background so transparent (magenta-keyed) areas show
+  // as alternating dark squares.
+  var cs = 8;
+  var cy = viewTop;
+  while (cy < viewBottom) {
+    var cx = 0;
+    var rowEvenOffset = floor((cy - viewTop) / cs);
+    while (cx < viewW) {
+      var even = floor(cx / cs) + rowEvenOffset;
+      if (even / 2 == floor(even / 2)) setColor(50, 50, 60);
+      else setColor(64, 64, 76);
+      fillRect(cx, cy, cs, cs);
+      cx = cx + cs;
+    }
+    cy = cy + cs;
+  }
+
+  drawSpriteScaled(sheet, -floor(panX), viewTop - floor(panY), zoom);
+
+  // Picked rectangles (green)
+  setColor(60, 220, 120);
+  var n = picks;
+  while (n != nil) {
+    var rx = n.x * zoom - floor(panX);
+    var ry = n.y * zoom - floor(panY) + viewTop;
+    drawRect(rx, ry, n.w * zoom, n.h * zoom);
+    n = n.next;
+  }
+
+  // Rubberband while dragging
+  if (dragging) {
+    var x0 = dragStartIX; var y0 = dragStartIY;
+    var x1 = dragCurIX;   var y1 = dragCurIY;
+    if (x1 < x0) { var t = x0; x0 = x1; x1 = t; }
+    if (y1 < y0) { var t = y0; y0 = y1; y1 = t; }
+    var rx = x0 * zoom - floor(panX);
+    var ry = y0 * zoom - floor(panY) + viewTop;
+    var rw = (x1 - x0 + 1) * zoom;
+    var rh = (y1 - y0 + 1) * zoom;
+    setColor(255, 230, 80);
+    drawRect(rx, ry, rw, rh);
+    drawText(mouseX() + 4, mouseY() - 8,
+             str(x1 - x0 + 1) + "x" + str(y1 - y0 + 1));
+  }
+
+  // Cursor crosshair (only when over the viewport)
+  var mip = mouseToImage();
+  if (mip != nil) {
+    setColor(255, 80, 200);
+    drawLine(mouseX(), viewTop, mouseX(), viewBottom - 1);
+    drawLine(0, mouseY(), viewW - 1, mouseY());
+  }
+
+  clearClipRect();
+
+  // Status bar
+  setColor(18, 18, 24);
+  fillRect(0, viewBottom, canvasW, canvasH - viewBottom);
+  setColor(200, 200, 200);
+  var statusY = viewBottom + 3;
+  if (mip != nil) {
+    drawText(2, statusY,
+      "img " + str(mip.x) + "," + str(mip.y) +
+      "   pan " + str(floor(panX)) + "," + str(floor(panY)));
+  } else {
+    drawText(2, statusY,
+      "pan " + str(floor(panX)) + "," + str(floor(panY)));
+  }
+  setColor(140, 140, 160);
+  drawText(2, statusY + 10,
+    "LMB pick  RMB pan  Z zoom  U undo  R reset  P replay  ESC");
+
+  present();
+}
+
+clearCanvas(0, 0, 0);
+setColor(140, 200, 255);
+drawText(canvasW / 2 - 96, canvasH / 2 - 4,
+  "Picker closed. " + str(pickCount) + " regions printed to output.", 1);
+present();
+freeSprite(sheet);

@@ -1,0 +1,56 @@
+// keyheld_test.lox — autonomous motion test with no input dependency
+// Logical resolution: 320x240
+// Motion is locked to present(): one pixel per presented frame.
+
+var x = 160;
+var y = 120;
+var vx = 1;
+var vy = 0;
+var size = 16;
+var w = canvasWidth();
+var h = canvasHeight();
+
+var running = true;
+
+while (running) {
+  processMessages();
+
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  x = x + vx;
+  y = y + vy;
+
+  if (x < 0) {
+    x = 0;
+    vx = -vx;
+  }
+  if (y < 0) {
+    y = 0;
+    vy = -vy;
+  }
+  if (x + size > w) {
+    x = w - size;
+    vx = -vx;
+  }
+  if (y + size > h) {
+    y = h - size;
+    vy = -vy;
+  }
+
+  clearCanvas(20, 20, 40);
+
+  setColor(150, 150, 150);
+  drawText(10, 10, "Autonomous square motion test");
+   drawText(10, 25, "1 pixel per presented frame");
+  drawText(10, 40, "ESC quits");
+
+  setColor(255, 100, 50);
+  fillRect(x, y, size, size);
+  setColor(255, 255, 255);
+  drawRect(x, y, size, size);
+
+  present();
+}

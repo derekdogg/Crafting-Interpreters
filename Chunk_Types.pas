@@ -1,7 +1,7 @@
 ﻿unit Chunk_Types;
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
-{$DEFINE DEBUG_LOG_GC}
+{..$DEFINE DEBUG_LOG_GC}
 {..$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
 interface
@@ -11,7 +11,7 @@ uses
 
 const
 
-  START_CAPACITY =  16; //was 256 --- this is to stress array cap growth, and highlight issues with the GC
+  START_CAPACITY =  256;
   MAX_SIZE       =  MaxInt div 2;
   GROWTH_FACTOR  =  2;
   GC_HEAP_GROW_FACTOR = 2;
@@ -6024,6 +6024,40 @@ begin
   Result := CreateNumber(Math.Power(args[0].NumberValue, args[1].NumberValue));
 end;
 
+function sinNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('sin() takes exactly 1 argument (radians).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('sin() argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Sin(args[0].NumberValue));
+end;
+
+function cosNative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('cos() takes exactly 1 argument (radians).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('cos() argument must be a number.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  Result := CreateNumber(Cos(args[0].NumberValue));
+end;
+
 function randomNative(argCount: integer; args: pValue): TValue;
 begin
   if argCount <> 0 then
@@ -7792,6 +7826,8 @@ begin
   defineNative('max', maxNative, 2);
   defineNative('sqrt', sqrtNative, 1);
   defineNative('pow', powNative, 2);
+  defineNative('sin', sinNative, 1);
+  defineNative('cos', cosNative, 1);
   defineNative('random', randomNative, 0);
 
   // String manipulation native functions

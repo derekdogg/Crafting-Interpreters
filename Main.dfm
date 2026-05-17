@@ -1,9 +1,9 @@
 object Form4: TForm4
   Left = 0
   Top = 0
-  Caption = 'Lox Interpreter'
-  ClientHeight = 800
-  ClientWidth = 1400
+  Caption = 'bet'
+  ClientHeight = 1035
+  ClientWidth = 1997
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -11,6 +11,7 @@ object Form4: TForm4
   Font.Name = 'Segoe UI'
   Font.Style = []
   KeyPreview = True
+  WindowState = wsMaximized
   OnCloseQuery = FormCloseQuery
   OnCreate = FormCreate
   OnDestroy = FormDestroy
@@ -21,19 +22,20 @@ object Form4: TForm4
     Left = 300
     Top = 0
     Width = 5
-    Height = 800
+    Height = 1035
+    ExplicitHeight = 800
   end
   object PanelLeft: TPanel
     Left = 0
     Top = 0
     Width = 300
-    Height = 800
+    Height = 1035
     Align = alLeft
     BevelOuter = bvNone
     TabOrder = 0
     DesignSize = (
       300
-      800)
+      1035)
     object Label2: TLabel
       Left = 8
       Top = 8
@@ -43,17 +45,18 @@ object Form4: TForm4
     end
     object LblStatus: TLabel
       Left = 148
-      Top = 748
+      Top = 983
       Width = 35
       Height = 15
       Anchors = [akLeft, akBottom]
       Caption = 'Ready.'
+      ExplicitTop = 748
     end
     object TestTree: TTreeView
       Left = 8
       Top = 28
       Width = 284
-      Height = 680
+      Height = 915
       Anchors = [akLeft, akTop, akRight, akBottom]
       Indent = 19
       ReadOnly = True
@@ -63,7 +66,7 @@ object Form4: TForm4
     end
     object BtnPopulate: TButton
       Left = 8
-      Top = 714
+      Top = 949
       Width = 80
       Height = 25
       Anchors = [akLeft, akBottom]
@@ -73,7 +76,7 @@ object Form4: TForm4
     end
     object BtnRunSelected: TButton
       Left = 92
-      Top = 714
+      Top = 949
       Width = 80
       Height = 25
       Anchors = [akLeft, akBottom]
@@ -83,7 +86,7 @@ object Form4: TForm4
     end
     object BtnCheckAll: TButton
       Left = 8
-      Top = 744
+      Top = 979
       Width = 66
       Height = 25
       Anchors = [akLeft, akBottom]
@@ -93,7 +96,7 @@ object Form4: TForm4
     end
     object BtnUncheckAll: TButton
       Left = 78
-      Top = 744
+      Top = 979
       Width = 66
       Height = 25
       Anchors = [akLeft, akBottom]
@@ -103,7 +106,7 @@ object Form4: TForm4
     end
     object BtnRunAll: TButton
       Left = 176
-      Top = 714
+      Top = 949
       Width = 116
       Height = 25
       Anchors = [akLeft, akBottom]
@@ -113,7 +116,7 @@ object Form4: TForm4
     end
     object ProgressBar1: TProgressBar
       Left = 8
-      Top = 775
+      Top = 1010
       Width = 284
       Height = 16
       Anchors = [akLeft, akRight, akBottom]
@@ -123,8 +126,8 @@ object Form4: TForm4
   object PanelRight: TPanel
     Left = 305
     Top = 0
-    Width = 1095
-    Height = 800
+    Width = 1692
+    Height = 1035
     Align = alClient
     BevelOuter = bvNone
     TabOrder = 1
@@ -138,26 +141,16 @@ object Form4: TForm4
     object Panel1: TPanel
       Left = 0
       Top = 0
-      Width = 1095
-      Height = 689
+      Width = 1692
+      Height = 921
       Align = alTop
       Caption = 'Panel1'
       TabOrder = 0
-      object PaintBox1: TPaintBox
-        Left = 481
-        Top = 1
-        Width = 613
-        Height = 687
-        Align = alClient
-        ExplicitLeft = 608
-        ExplicitWidth = 486
-        ExplicitHeight = 437
-      end
       object Memo1: TSynEdit
         Left = 1
         Top = 1
         Width = 480
-        Height = 687
+        Height = 919
         Align = alLeft
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -201,35 +194,44 @@ object Form4: TForm4
           'var h = canvasHeight();'
           ''
           '// --- Player ---'
-          'var playerW = 40;'
-          'var playerH = 16;'
+          'var playerW = 18;'
+          'var playerH = 8;'
           'var playerX = w / 2 - playerW / 2;'
-          'var playerY = h - 40;'
-          'var playerSpeed = 250;'
+          'var playerY = h - 20;'
+          'var playerSpeed = 100;'
           'var leftHeld = false;'
           'var rightHeld = false;'
           ''
-          '// --- Player bullet ---'
-          'var bulletActive = false;'
-          'var bulletX = 0;'
-          'var bulletY = 0;'
-          'var bulletW = 3;'
-          'var bulletH = 10;'
-          'var bulletSpeed = 400;'
+          '// --- Player bullets (multiple allowed) ---'
+          'var maxPlayerBullets = 3;'
+          'var bulletX = newArray();'
+          'var bulletY = newArray();'
+          'var bulletActive = newArray();'
+          'var bulletW = 2;'
+          'var bulletH = 5;'
+          'var bulletSpeed = 180;'
+          ''
+          'var i = 0;'
+          'while (i < maxPlayerBullets) {'
+          '  arrayPush(bulletX, 0);'
+          '  arrayPush(bulletY, 0);'
+          '  arrayPush(bulletActive, false);'
+          '  i = i + 1;'
+          '}'
           ''
           '// --- Invaders grid ---'
-          'var cols = 8;'
+          'var cols = 7;'
           'var rows = 4;'
-          'var invW = 30;'
-          'var invH = 16;'
-          'var invPadX = 12;'
-          'var invPadY = 10;'
+          'var invW = 16;'
+          'var invH = 12;'
+          'var invPadX = 4;'
+          'var invPadY = 4;'
           'var invGridW = cols * (invW + invPadX) - invPadX;'
           ''
           '// Invader alive flags stored in a flat array: row * cols + col'
           'var invCount = cols * rows;'
           'var invAlive = newArray();'
-          'var i = 0;'
+          'i = 0;'
           'while (i < invCount) {'
           '  arrayPush(invAlive, true);'
           '  i = i + 1;'
@@ -238,10 +240,10 @@ object Form4: TForm4
           ''
           '// Invader movement'
           'var invOffsetX = (w - invGridW) / 2;'
-          'var invOffsetY = 40;'
+          'var invOffsetY = 20;'
           'var invDirX = 1;'
-          'var invSpeedX = 40;'
-          'var invDropAmount = 14;'
+          'var invSpeedX = 18;'
+          'var invDropAmount = 8;'
           'var invMoveTimer = 0;'
           'var invMoveInterval = 0.6;  // seconds between steps'
           ''
@@ -250,7 +252,7 @@ object Form4: TForm4
           'var eBulletX = newArray();'
           'var eBulletY = newArray();'
           'var eBulletActive = newArray();'
-          'var eBulletSpeed = 180;'
+          'var eBulletSpeed = 80;'
           'var enemyShootTimer = 0;'
           'var enemyShootInterval = 1.2;'
           ''
@@ -312,106 +314,301 @@ object Form4: TForm4
           ''
           'fun resetPlayer() {'
           '  playerX = w / 2 - playerW / 2;'
-          '  bulletActive = false;'
+          '  var b = 0;'
+          '  while (b < maxPlayerBullets) {'
+          '    arraySet(bulletActive, b, false);'
+          '    b = b + 1;'
+          '  }'
           '}'
           ''
-          '// --- Sprites ---'
+          '// --- Sprites (multi-color palette) ---'
           'var invSprites = newArray();'
           'var invFrame = 0;'
           'var marchStep = 0;'
           ''
-          'setColor(255, 50, 50);'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  "..XXXXXX.." +'
-          '  ".XXXXXXXX." +'
-          '  "XXX.XX.XXX" +'
-          '  ".X.X..X.X." +'
-          '  "X........X"'
+          '// Row 0 invaders '#8212' red squid, orange eyes'
+          'setPaletteColor("R", 255, 50, 50);'
+          'setPaletteColor("O", 255, 150, 50);'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  "....RRRR...." +'
+          '  "..RRRRRRRR.." +'
+          '  ".RRO.RR.ORR." +'
+          '  ".RRRRRRRRRR." +'
+          '  "..RRRRRRRR.." +'
+          '  "...RRRRRR..." +'
+          '  "..RR.RR.RR.." +'
+          '  ".RR..RR..RR." +'
+          '  "RR...RR...RR" +'
+          '  ".R........R."'
           '));'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  "..XXXXXX.." +'
-          '  ".XXXXXXXX." +'
-          '  "XXX.XX.XXX" +'
-          '  "X.X.XX.X.X" +'
-          '  ".X......X."'
-          '));'
-          ''
-          'setColor(255, 150, 50);'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  ".X......X." +'
-          '  "..XXXXXX.." +'
-          '  ".XX.XX.XX." +'
-          '  "XXXXXXXXXX" +'
-          '  ".X.X..X.X."'
-          '));'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  "X........X" +'
-          '  "..XXXXXX.." +'
-          '  ".XX.XX.XX." +'
-          '  "XXXXXXXXXX" +'
-          '  "..X.XX.X.."'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  "....RRRR...." +'
+          '  "..RRRRRRRR.." +'
+          '  ".RRO.RR.ORR." +'
+          '  ".RRRRRRRRRR." +'
+          '  "..RRRRRRRR.." +'
+          '  "...RRRRRR..." +'
+          '  ".RRR.RR.RRR." +'
+          '  "RR...RR...RR" +'
+          '  ".RR..RR..RR." +'
+          '  "..R..RR..R.."'
           '));'
           ''
-          'setColor(255, 255, 50);'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  "...XXXX..." +'
-          '  ".XXXXXXXX." +'
-          '  "XX.XXXX.XX" +'
-          '  "XXXXXXXXXX" +'
-          '  "..X....X.."'
+          '// Row 1 invaders '#8212' orange crab, yellow eyes'
+          'setPaletteColor("B", 255, 150, 50);'
+          'setPaletteColor("Y", 255, 255, 50);'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  "....BBBB...." +'
+          '  "..BBBBBBBB.." +'
+          '  ".BBY.BB.YBB." +'
+          '  "BBBBBBBBBBBB" +'
+          '  ".BBBBBBBBBB." +'
+          '  "..BBBBBBBB.." +'
+          '  ".BB.BBBB.BB." +'
+          '  "BB..BBBB..BB" +'
+          '  ".B...BB...B." +'
+          '  "B..........B"'
           '));'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  "...XXXX..." +'
-          '  ".XXXXXXXX." +'
-          '  "XX.XXXX.XX" +'
-          '  "XXXXXXXXXX" +'
-          '  ".X..XX..X."'
-          '));'
-          ''
-          'setColor(50, 255, 50);'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  "..XXXXXX.." +'
-          '  "XXXXXXXXXX" +'
-          '  "XX.X..X.XX" +'
-          '  ".XXXXXXXX." +'
-          '  "X..X..X..X"'
-          '));'
-          'arrayPush(invSprites, createSprite(10, 5,'
-          '  "..XXXXXX.." +'
-          '  "XXXXXXXXXX" +'
-          '  "XX.X..X.XX" +'
-          '  ".XXXXXXXX." +'
-          '  ".X.X..X.X."'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  "....BBBB...." +'
+          '  "..BBBBBBBB.." +'
+          '  ".BBY.BB.YBB." +'
+          '  "BBBBBBBBBBBB" +'
+          '  ".BBBBBBBBBB." +'
+          '  "..BBBBBBBB.." +'
+          '  "..BB.BB.BB.." +'
+          '  "..B.BBBB.B.." +'
+          '  ".BB..BB..BB." +'
+          '  "B....BB....B"'
           '));'
           ''
-          'setColor(0, 200, 255);'
-          'var playerSprite = createSprite(13, 7,'
-          '  "......X......" +'
-          '  ".....XXX....." +'
-          '  "...XXXXXXX..." +'
-          '  "..XXXXXXXXX.." +'
-          '  ".XXXXXXXXXXX." +'
-          '  "XXXXXXXXXXXXX" +'
-          '  "XXXXXXXXXXXXX"'
+          '// Row 2 invaders '#8212' yellow beetle, white eyes'
+          'setPaletteColor("Y", 255, 255, 50);'
+          'setPaletteColor("W", 255, 255, 255);'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  ".Y........Y." +'
+          '  "..Y.YYYY.Y.." +'
+          '  "..YYYYYYYY.." +'
+          '  ".YYW.YY.WYY." +'
+          '  ".YYYYYYYYYY." +'
+          '  "YYYYYYYYYYYY" +'
+          '  ".YYY.YY.YYY." +'
+          '  "..YY.YY.YY.." +'
+          '  "..Y..YY..Y.." +'
+          '  ".Y...YY...Y."'
+          '));'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  ".Y........Y." +'
+          '  "..Y.YYYY.Y.." +'
+          '  "..YYYYYYYY.." +'
+          '  ".YYW.YY.WYY." +'
+          '  ".YYYYYYYYYY." +'
+          '  "YYYYYYYYYYYY" +'
+          '  ".YYY.YY.YYY." +'
+          '  "..YYYYYYYY.." +'
+          '  ".Y...YY...Y." +'
+          '  "..Y..YY..Y.."'
+          '));'
+          ''
+          '// Row 3 invaders '#8212' green spider, lime eyes'
+          'setPaletteColor("G", 50, 255, 50);'
+          'setPaletteColor("L", 150, 255, 100);'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  "...GGGGGG..." +'
+          '  "..GGGGGGGG.." +'
+          '  ".GGL.GG.LGG." +'
+          '  "GGGGGGGGGGGG" +'
+          '  "GGGGGGGGGGGG" +'
+          '  ".GGG.GG.GGG." +'
+          '  ".GG..GG..GG." +'
+          '  "GG...GG...GG" +'
+          '  "G....GG....G" +'
+          '  ".G..G..G..G."'
+          '));'
+          'arrayPush(invSprites, createPaletteSprite(12, 10,'
+          '  "...GGGGGG..." +'
+          '  "..GGGGGGGG.." +'
+          '  ".GGL.GG.LGG." +'
+          '  "GGGGGGGGGGGG" +'
+          '  "GGGGGGGGGGGG" +'
+          '  ".GGG.GG.GGG." +'
+          '  "GG...GG...GG" +'
+          '  ".GG..GG..GG." +'
+          '  "..GG.GG.GG.." +'
+          '  ".G..G..G..G."'
+          '));'
+          ''
+          '// Player '#8212' cyan body, white cockpit, dark blue base'
+          'setPaletteColor("C", 0, 200, 255);'
+          'setPaletteColor("W", 255, 255, 255);'
+          'setPaletteColor("D", 0, 80, 160);'
+          'var playerSprite = createPaletteSprite(13, 7,'
+          '  "......W......" +'
+          '  ".....CWC....." +'
+          '  "...CCCCCCC..." +'
+          '  "..CCCCCCCCC.." +'
+          '  ".CCCCCCCCCCC." +'
+          '  "DDDDDDDDDDDDD" +'
+          '  "DDDDDDDDDDDDD"'
           ');'
           ''
-          '// --- Explosion sprites ---'
-          'setColor(255, 200, 50);'
-          'var explSprite1 = createSprite(10, 5,'
-          '  "X..X..X..X" +'
-          '  ".X.XXXX.X." +'
-          '  "..XXXXXX.." +'
-          '  ".X.XXXX.X." +'
-          '  "X..X..X..X"'
+          '// Explosion '#8212' yellow core, orange mid, red outer'
+          'setPaletteColor("Y", 255, 255, 100);'
+          'setPaletteColor("O", 255, 200, 50);'
+          'setPaletteColor("R", 255, 100, 0);'
+          'var explSprite1 = createPaletteSprite(12, 10,'
+          '  "R...O..O...R" +'
+          '  "..O.YYYY.O.." +'
+          '  ".O.YYYYYY.O." +'
+          '  "O.YYYYYYYY.O" +'
+          '  "..YYYYYYYY.." +'
+          '  "..YYYYYYYY.." +'
+          '  "O.YYYYYYYY.O" +'
+          '  ".O.YYYYYY.O." +'
+          '  "..O.YYYY.O.." +'
+          '  "R...O..O...R"'
           ');'
-          'setColor(255, 100, 0);'
-          'var explSprite2 = createSprite(10, 5,'
-          '  ".X......X." +'
-          '  "...X..X..." +'
-          '  "..X.XX.X.." +'
-          '  "...X..X..." +'
-          '  ".X......X."'
+          'var explSprite2 = createPaletteSprite(12, 10,'
+          '  ".R........R." +'
+          '  "....O..O...." +'
+          '  "..O......O.." +'
+          '  "...O.YY.O..." +'
+          '  "....YYYY...." +'
+          '  "....YYYY...." +'
+          '  "...O.YY.O..." +'
+          '  "..O......O.." +'
+          '  "....O..O...." +'
+          '  ".R........R."'
           ');'
+          ''
+          '// Mystery UFO '#8212' magenta dome, red body, yellow lights'
+          'setPaletteColor("M", 220, 50, 220);'
+          'setPaletteColor("R", 200, 40, 40);'
+          'setPaletteColor("Y", 255, 255, 0);'
+          'setPaletteColor("G", 180, 180, 180);'
+          'var ufoSprite = createPaletteSprite(16, 5,'
+          '  "......MMMM......" +'
+          '  "....MMMMMMMM...." +'
+          '  "..RRRRRRRRRRRR.." +'
+          '  ".RRY.RRRRRR.YRR." +'
+          '  "..GGGGGGGGGGGG.."'
+          ');'
+          ''
+          '// --- Background decoration sprites (faked tilemap layer) ---'
+          '// Distant ringed planet '#8212' dim purple with ring'
+          'setPaletteColor("D", 25, 15, 50);'
+          'setPaletteColor("P", 45, 30, 80);'
+          'setPaletteColor("L", 60, 45, 100);'
+          'setPaletteColor("R", 40, 35, 70);'
+          'var bgPlanet = createPaletteSprite(14, 8,'
+          '  ".....DDDD....." +'
+          '  "...DDPPPPDD..." +'
+          '  "..DPPPPPPPPDR." +'
+          '  "RRDPPPPPPPPDRR" +'
+          '  "RRDPPPPPPLLDRR" +'
+          '  "..DLLLLLLLLD.." +'
+          '  "...DDLLLLDD..." +'
+          '  ".....DDDD....."'
+          ');'
+          ''
+          '// Small galaxy '#8212' dim blue spiral'
+          'setPaletteColor("B", 20, 25, 55);'
+          'setPaletteColor("C", 30, 40, 75);'
+          'setPaletteColor("W", 45, 55, 90);'
+          'var bgGalaxy = createPaletteSprite(7, 7,'
+          '  "...B..." +'
+          '  "..BBB.." +'
+          '  ".BCCB.." +'
+          '  "BCWWCB." +'
+          '  "..BCCB." +'
+          '  "..BBB.." +'
+          '  "...B..."'
+          ');'
+          ''
+          '// Distant star cluster '#8212' tiny bright dots'
+          'setPaletteColor("D", 35, 35, 45);'
+          'setPaletteColor("B", 50, 50, 65);'
+          'var bgCluster = createPaletteSprite(6, 5,'
+          '  "D....B" +'
+          '  "..B..." +'
+          '  ".D..D." +'
+          '  "...B.." +'
+          '  "B....D"'
+          ');'
+          ''
+          '// Small crescent moon '#8212' dim grey'
+          'setPaletteColor("G", 40, 40, 50);'
+          'setPaletteColor("L", 55, 55, 65);'
+          'var bgMoon = createPaletteSprite(6, 6,'
+          '  "..GGG." +'
+          '  ".GLLL." +'
+          '  "GLLL.." +'
+          '  "GLLL.." +'
+          '  ".GLLL." +'
+          '  "..GGG."'
+          ');'
+          ''
+          '// Create flipped variants for visual variety'
+          'var bgMoonFlipped = flipSprite(bgMoon, "h");'
+          'var bgPlanetFlipped = flipSprite(bgPlanet, "h");'
+          ''
+          '// Background element positions (fixed, scattered)'
+          'var bgCount = 8;'
+          'var bgSprite = newArray();'
+          'var bgX_pos = newArray();'
+          'var bgY_pos = newArray();'
+          'var bgScale = newArray();'
+          ''
+          '// Planet '#8212' upper right area (flipped so ring faces other way)'
+          
+            'arrayPush(bgSprite, bgPlanetFlipped);  arrayPush(bgX_pos, floor(' +
+            'w * 0.78)); arrayPush(bgY_pos, 55);  arrayPush(bgScale, 3);'
+          '// Galaxy '#8212' left mid'
+          
+            'arrayPush(bgSprite, bgGalaxy);  arrayPush(bgX_pos, 35);  arrayPu' +
+            'sh(bgY_pos, 130); arrayPush(bgScale, 3);'
+          '// Star cluster '#8212' center low'
+          
+            'arrayPush(bgSprite, bgCluster);  arrayPush(bgX_pos, floor(w * 0.' +
+            '45)); arrayPush(bgY_pos, floor(h * 0.72)); arrayPush(bgScale, 3)' +
+            ';'
+          '// Moon '#8212' upper left (original, crescent faces right)'
+          
+            'arrayPush(bgSprite, bgMoon);  arrayPush(bgX_pos, floor(w * 0.18)' +
+            '); arrayPush(bgY_pos, 40);  arrayPush(bgScale, 3);'
+          '// Another galaxy '#8212' right mid'
+          
+            'arrayPush(bgSprite, bgGalaxy);  arrayPush(bgX_pos, floor(w * 0.8' +
+            '8)); arrayPush(bgY_pos, floor(h * 0.48)); arrayPush(bgScale, 2);'
+          '// Cluster '#8212' lower left'
+          
+            'arrayPush(bgSprite, bgCluster);  arrayPush(bgX_pos, floor(w * 0.' +
+            '1)); arrayPush(bgY_pos, floor(h * 0.58)); arrayPush(bgScale, 4);'
+          '// Flipped moon '#8212' lower right (crescent faces left)'
+          
+            'arrayPush(bgSprite, bgMoonFlipped);  arrayPush(bgX_pos, floor(w ' +
+            '* 0.85)); arrayPush(bgY_pos, floor(h * 0.65)); arrayPush(bgScale' +
+            ', 2);'
+          '// Small planet '#8212' center-left area'
+          
+            'arrayPush(bgSprite, bgPlanet);  arrayPush(bgX_pos, floor(w * 0.3' +
+            '5)); arrayPush(bgY_pos, floor(h * 0.38)); arrayPush(bgScale, 2);'
+          ''
+          'clearPalette();'
+          ''
+          '// --- UFO state ---'
+          'var ufoActive = false;'
+          'var ufoX = 0;'
+          'var ufoY = 12;'
+          'var ufoDir = 1;'
+          'var ufoSpeed = 120;'
+          'var ufoW = 48;   // 16 * scale 3'
+          'var ufoH = 15;   // 5 * scale 3'
+          'var ufoTimer = 0;'
+          'var ufoInterval = 8;  // seconds between spawns'
+          'var ufoPoints = 50;'
+          'var ufoSoundTimer = 0;'
+          'var ufoSoundFlip = false;'
           ''
           '// --- Explosion tracking ---'
           'var maxExplosions = 8;'
@@ -446,6 +643,196 @@ object Form4: TForm4
           '  i = i + 1;'
           '}'
           ''
+          '// --- Background music (space invader theme) ---'
+          'var TRI = 1;'
+          'var SAW = 2;'
+          'var PULSE = 0;'
+          'var bgMusic = ['
+          '  // --- A: Core ostinato ---'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [98, 100, SAW], [0, 60],     // G2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [73, 100, SAW], [0, 60],     // D2'
+          '  [69, 150, SAW], [0, 60],     // C#2'
+          ''
+          '  // --- A'#39': Bb stinger variant ---'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [98, 100, SAW], [0, 60],     // G2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [116, 100, SAW], [0, 60],    // Bb2 '#8212' tritone punch'
+          '  [82, 150, SAW], [0, 60],     // E2 '#8212' snap back'
+          ''
+          '  // --- B: Same groove, drop to E1 octave ---'
+          '  [41, 100, SAW], [0, 60],     // E1'
+          '  [41, 100, SAW], [0, 60],     // E1'
+          '  [41, 100, SAW], [0, 60],     // E1'
+          '  [49, 100, SAW], [0, 60],     // G1'
+          '  [41, 100, SAW], [0, 60],     // E1'
+          '  [41, 100, SAW], [0, 60],     // E1'
+          '  [55, 100, SAW], [0, 60],     // A1'
+          '  [58, 150, SAW], [0, 60],     // Bb1'
+          ''
+          '  // --- A again ---'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [98, 100, SAW], [0, 60],     // G2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [82, 100, SAW], [0, 60],     // E2'
+          '  [73, 100, SAW], [0, 60],     // D2'
+          '  [69, 150, SAW], [0, 60],     // C#2'
+          ''
+          '  // --- C: Tighter rhythm, same key ---'
+          '  [82, 70, SAW], [0, 40],      // E2 '#8212' tighter'
+          '  [82, 70, SAW], [0, 40],      // E2'
+          '  [98, 70, SAW], [0, 40],      // G2'
+          '  [82, 70, SAW], [0, 40],      // E2'
+          '  [73, 70, SAW], [0, 40],      // D2'
+          '  [82, 70, SAW], [0, 40],      // E2'
+          '  [116, 70, SAW], [0, 40],     // Bb2'
+          '  [82, 100, SAW], [0, 80]      // E2 '#8212' breathe'
+          '];'
+          'var musicPlaying = false;'
+          ''
+          '// --- Shields (destructible barriers) ---'
+          'var numShields = 4;'
+          'var shieldCols = 11;'
+          'var shieldRows = 8;'
+          'var shieldCellSize = 2;'
+          'var shieldW = shieldCols * shieldCellSize;   // 22'
+          'var shieldH = shieldRows * shieldCellSize;   // 16'
+          'var shieldY = playerY - 28;'
+          ''
+          'var shieldX_pos = newArray();'
+          
+            'var shieldCells = newArray();   // flat: shieldIdx * (cols*rows)' +
+            ' + row*cols + col'
+          'var cellsPerShield = shieldCols * shieldRows;'
+          ''
+          '// Compute shield X positions (evenly spaced)'
+          'var totalShieldsW = numShields * shieldW;'
+          'var shieldSpacing = (w - totalShieldsW) / (numShields + 1);'
+          'i = 0;'
+          'while (i < numShields) {'
+          
+            '  arrayPush(shieldX_pos, floor(shieldSpacing + i * (shieldW + sh' +
+            'ieldSpacing)));'
+          '  i = i + 1;'
+          '}'
+          ''
+          
+            '// Classic shape: solid rectangle with rounded top corners and a' +
+            'n'
+          '// arch (notch) cut out of the bottom-middle.'
+          'fun shieldCellAlive(row, col) {'
+          '  // Top corners chipped off'
+          
+            '  if (row == 0 and (col == 0 or col == shieldCols - 1)) return f' +
+            'alse;'
+          '  // Bottom-middle arch'
+          '  if (row >= shieldRows - 3) {'
+          '    if (col >= 3 and col <= shieldCols - 4) return false;'
+          '  }'
+          '  return true;'
+          '}'
+          ''
+          'fun resetShields() {'
+          '  var s = 0;'
+          '  while (s < numShields) {'
+          '    var r = 0;'
+          '    while (r < shieldRows) {'
+          '      var c = 0;'
+          '      while (c < shieldCols) {'
+          '        var idx = s * cellsPerShield + r * shieldCols + c;'
+          '        arraySet(shieldCells, idx, shieldCellAlive(r, c));'
+          '        c = c + 1;'
+          '      }'
+          '      r = r + 1;'
+          '    }'
+          '    s = s + 1;'
+          '  }'
+          '}'
+          ''
+          '// One-time fill so resetShields can use arraySet.'
+          'i = 0;'
+          'while (i < numShields * cellsPerShield) {'
+          '  arrayPush(shieldCells, false);'
+          '  i = i + 1;'
+          '}'
+          'resetShields();'
+          ''
+          
+            '// Returns true if the bullet hit a live shield cell. Destroys o' +
+            'ne cell.'
+          
+            '// dyDir is the bullet'#39's vertical direction: -1 = moving up (pla' +
+            'yer),'
+          
+            '// +1 = moving down (enemy). We scan rows in the direction the b' +
+            'ullet'
+          '// is coming FROM so the cell facing the bullet erodes first.'
+          'fun bulletHitsShield(bx, by, bw, bh, dyDir) {'
+          '  var s = 0;'
+          '  while (s < numShields) {'
+          '    var sx = arrayGet(shieldX_pos, s);'
+          
+            '    if (rectsOverlap(bx, by, bw, bh, sx, shieldY, shieldW, shiel' +
+            'dH)) {'
+          '      var base = s * cellsPerShield;'
+          '      // Player bullets travel up -> scan bottom-up.'
+          '      // Enemy bullets travel down -> scan top-down.'
+          '      var rStart = 0;'
+          '      var rEnd = shieldRows;'
+          '      var rStep = 1;'
+          '      if (dyDir < 0) {'
+          '        rStart = shieldRows - 1;'
+          '        rEnd = -1;'
+          '        rStep = -1;'
+          '      }'
+          '      var r = rStart;'
+          '      while (r != rEnd) {'
+          '        var c = 0;'
+          '        while (c < shieldCols) {'
+          '          var idx = base + r * shieldCols + c;'
+          '          if (arrayGet(shieldCells, idx)) {'
+          '            var cx = sx + c * shieldCellSize;'
+          '            var cy = shieldY + r * shieldCellSize;'
+          
+            '            if (rectsOverlap(bx, by, bw, bh, cx, cy, shieldCellS' +
+            'ize, shieldCellSize)) {'
+          '              arraySet(shieldCells, idx, false);'
+          '              return true;'
+          '            }'
+          '          }'
+          '          c = c + 1;'
+          '        }'
+          '        r = r + rStep;'
+          '      }'
+          '    }'
+          '    s = s + 1;'
+          '  }'
+          '  return false;'
+          '}'
+          ''
+          'fun startMusic() {'
+          '  playSequence(bgMusic, true);'
+          '  musicPlaying = true;'
+          '}'
+          ''
+          'fun stopMusic() {'
+          '  stopSequence();'
+          '  musicPlaying = false;'
+          '}'
+          ''
+          '// Start the music'
+          'startMusic();'
+          ''
           '// ============================================================'
           '// Game loop'
           '// ============================================================'
@@ -464,13 +851,27 @@ object Form4: TForm4
           '    if (e == "keyup:left") leftHeld = false;'
           '    if (e == "keydown:right") rightHeld = true;'
           '    if (e == "keyup:right") rightHeld = false;'
-          '    if (e == "keydown:escape") running = false;'
+          '    if (e == "keydown:escape") {'
+          '      stopMusic();'
+          '      running = false;'
+          '    }'
           '    if (e == "keydown:space") {'
-          '      if (!bulletActive and !gameOver) {'
-          '        bulletActive = true;'
-          '        bulletX = playerX + playerW / 2 - bulletW / 2;'
-          '        bulletY = playerY;'
-          '        playSweep(1200, 400, 80);'
+          '      if (!gameOver) {'
+          '        // Find a free bullet slot'
+          '        var bSlot = 0;'
+          '        var fired = false;'
+          '        while (bSlot < maxPlayerBullets) {'
+          '          if (!arrayGet(bulletActive, bSlot) and !fired) {'
+          '            arraySet(bulletActive, bSlot, true);'
+          
+            '            arraySet(bulletX, bSlot, playerX + playerW / 2 - bul' +
+            'letW / 2);'
+          '            arraySet(bulletY, bSlot, playerY);'
+          '            playSweep(1200, 400, 80, 0.3);'
+          '            fired = true;'
+          '          }'
+          '          bSlot = bSlot + 1;'
+          '        }'
           '      }'
           '    }'
           '    if (e == "keydown:enter") {'
@@ -492,7 +893,11 @@ object Form4: TForm4
           '        invMoveInterval = 0.6;'
           '        invMoveTimer = 0;'
           '        marchStep = 0;'
+          '        ufoActive = false;'
+          '        ufoTimer = 0;'
+          '        resetShields();'
           '        resetPlayer();'
+          '        startMusic();'
           '      }'
           '    }'
           '  }'
@@ -504,10 +909,27 @@ object Form4: TForm4
           '    if (playerX < 0) playerX = 0;'
           '    if (playerX > w - playerW) playerX = w - playerW;'
           ''
-          '    // --- Update player bullet ---'
-          '    if (bulletActive) {'
-          '      bulletY = bulletY - bulletSpeed * dt;'
-          '      if (bulletY + bulletH < 0) bulletActive = false;'
+          '    // --- Update player bullets ---'
+          '    i = 0;'
+          '    while (i < maxPlayerBullets) {'
+          '      if (arrayGet(bulletActive, i)) {'
+          
+            '        arraySet(bulletY, i, arrayGet(bulletY, i) - bulletSpeed ' +
+            '* dt);'
+          
+            '        if (arrayGet(bulletY, i) + bulletH < 0) arraySet(bulletA' +
+            'ctive, i, false);'
+          '        // Hit a shield from below?'
+          '        if (arrayGet(bulletActive, i)) {'
+          
+            '          if (bulletHitsShield(arrayGet(bulletX, i), arrayGet(bu' +
+            'lletY, i), bulletW, bulletH, -1)) {'
+          '            arraySet(bulletActive, i, false);'
+          '            playNoise(120, 0.15);'
+          '          }'
+          '        }'
+          '      }'
+          '      i = i + 1;'
           '    }'
           ''
           '    // --- Invader movement ---'
@@ -517,10 +939,10 @@ object Form4: TForm4
           '      invOffsetX = invOffsetX + invSpeedX * invDirX;'
           '      invFrame = 1 - invFrame;'
           '      // 4-step mechanical march'
-          '      if (marchStep == 0) playTone(60, 30);'
-          '      if (marchStep == 1) playTone(70, 30);'
-          '      if (marchStep == 2) playTone(80, 30);'
-          '      if (marchStep == 3) playTone(70, 30);'
+          '      if (marchStep == 0) playTone(60, 30, 0.25);'
+          '      if (marchStep == 1) playTone(70, 30, 0.25);'
+          '      if (marchStep == 2) playTone(80, 30, 0.25);'
+          '      if (marchStep == 3) playTone(70, 30, 0.25);'
           
             '      marchStep = (marchStep + 1) - floor((marchStep + 1) / 4) *' +
             ' 4;'
@@ -546,49 +968,114 @@ object Form4: TForm4
           '      }'
           '    }'
           ''
-          '    // --- Bullet vs invaders collision ---'
-          '    if (bulletActive) {'
-          '      var r = 0;'
-          '      while (r < rows) {'
-          '        var c = 0;'
-          '        while (c < cols) {'
-          '          var idx = r * cols + c;'
-          '          if (arrayGet(invAlive, idx)) {'
-          '            var ix = invaderX(c);'
-          '            var iy = invaderY(r);'
+          '    // --- UFO spawn & movement ---'
+          '    ufoTimer = ufoTimer + dt;'
+          '    if (!ufoActive and ufoTimer >= ufoInterval) {'
+          '      ufoActive = true;'
+          '      ufoTimer = 0;'
+          '      ufoInterval = 6 + random() * 10;  // randomize next spawn'
+          '      if (random() < 0.5) {'
+          '        ufoDir = 1;'
+          '        ufoX = -ufoW;'
+          '      } else {'
+          '        ufoDir = -1;'
+          '        ufoX = w;'
+          '      }'
+          '    }'
+          '    if (ufoActive) {'
+          '      ufoX = ufoX + ufoSpeed * ufoDir * dt;'
+          '      if (ufoDir > 0 and ufoX > w + ufoW) ufoActive = false;'
+          '      if (ufoDir < 0 and ufoX < -ufoW * 2) ufoActive = false;'
+          '      // Warbling hum while UFO is on screen'
+          '      ufoSoundTimer = ufoSoundTimer + dt;'
+          '      if (ufoSoundTimer >= 0.18) {'
+          '        ufoSoundTimer = 0;'
+          '        if (ufoSoundFlip) {'
+          '          playTone(130, 60, 0.05);'
+          '        } else {'
+          '          playTone(138, 60, 0.05);'
+          '        }'
+          '        ufoSoundFlip = !ufoSoundFlip;'
+          '      }'
+          '    }'
+          ''
+          '    // --- Bullets vs UFO collision ---'
+          '    if (ufoActive) {'
+          '      var bi = 0;'
+          '      while (bi < maxPlayerBullets) {'
+          '        if (arrayGet(bulletActive, bi)) {'
           
-            '            if (rectsOverlap(bulletX, bulletY, bulletW, bulletH,' +
-            ' ix, iy, invW, invH)) {'
-          '              arraySet(invAlive, idx, false);'
-          '              bulletActive = false;'
-          '              aliveCount = aliveCount - 1;'
-          '              score = score + 10;'
-          '              playNoise(180);'
-          '              // Spawn explosion'
-          '              var eSlot = 0;'
-          '              while (eSlot < maxExplosions) {'
-          '                if (!arrayGet(explActive, eSlot)) {'
-          '                  arraySet(explX, eSlot, ix);'
-          '                  arraySet(explY, eSlot, iy);'
-          '                  arraySet(explTimer, eSlot, explDuration);'
-          '                  arraySet(explActive, eSlot, true);'
-          '                  eSlot = maxExplosions; // break'
-          '                }'
-          '                eSlot = eSlot + 1;'
+            '          if (rectsOverlap(arrayGet(bulletX, bi), arrayGet(bulle' +
+            'tY, bi), bulletW, bulletH, ufoX, ufoY, ufoW, ufoH)) {'
+          '            ufoActive = false;'
+          '            arraySet(bulletActive, bi, false);'
+          '            score = score + ufoPoints;'
+          '            playSweep(800, 200, 150, 0.4);'
+          '            // Spawn explosion at UFO position'
+          '            var eSlot = 0;'
+          '            while (eSlot < maxExplosions) {'
+          '              if (!arrayGet(explActive, eSlot)) {'
+          '                arraySet(explX, eSlot, ufoX);'
+          '                arraySet(explY, eSlot, ufoY);'
+          '                arraySet(explTimer, eSlot, explDuration);'
+          '                arraySet(explActive, eSlot, true);'
+          '                eSlot = maxExplosions;'
           '              }'
-          '              // Speed up as invaders die'
-          '              if (aliveCount > 0) {'
-          '                invMoveInterval = 0.6 * aliveCount / invCount;'
-          
-            '                if (invMoveInterval < 0.05) invMoveInterval = 0.' +
-            '05;'
-          '              }'
+          '              eSlot = eSlot + 1;'
           '            }'
           '          }'
-          '          c = c + 1;'
           '        }'
-          '        r = r + 1;'
+          '        bi = bi + 1;'
           '      }'
+          '    }'
+          ''
+          '    // --- Bullets vs invaders collision ---'
+          '    var bi = 0;'
+          '    while (bi < maxPlayerBullets) {'
+          '      if (arrayGet(bulletActive, bi)) {'
+          '        var r = 0;'
+          '        while (r < rows) {'
+          '          var c = 0;'
+          '          while (c < cols) {'
+          '            var idx = r * cols + c;'
+          '            if (arrayGet(invAlive, idx)) {'
+          '              var ix = invaderX(c);'
+          '              var iy = invaderY(r);'
+          
+            '              if (rectsOverlap(arrayGet(bulletX, bi), arrayGet(b' +
+            'ulletY, bi), bulletW, bulletH, ix, iy, invW, invH)) {'
+          '                arraySet(invAlive, idx, false);'
+          '                arraySet(bulletActive, bi, false);'
+          '                aliveCount = aliveCount - 1;'
+          '                score = score + 10;'
+          '                playNoise(180, 0.4);'
+          '                // Spawn explosion'
+          '                var eSlot = 0;'
+          '                while (eSlot < maxExplosions) {'
+          '                  if (!arrayGet(explActive, eSlot)) {'
+          '                    arraySet(explX, eSlot, ix);'
+          '                    arraySet(explY, eSlot, iy);'
+          '                    arraySet(explTimer, eSlot, explDuration);'
+          '                    arraySet(explActive, eSlot, true);'
+          '                    eSlot = maxExplosions; // break'
+          '                  }'
+          '                  eSlot = eSlot + 1;'
+          '                }'
+          '                // Speed up as invaders die'
+          '                if (aliveCount > 0) {'
+          '                  invMoveInterval = 0.6 * aliveCount / invCount;'
+          
+            '                  if (invMoveInterval < 0.05) invMoveInterval = ' +
+            '0.05;'
+          '                }'
+          '              }'
+          '            }'
+          '            c = c + 1;'
+          '          }'
+          '          r = r + 1;'
+          '        }'
+          '      }'
+          '      bi = bi + 1;'
           '    }'
           ''
           '    // --- Enemy shooting ---'
@@ -615,7 +1102,7 @@ object Form4: TForm4
           '          arraySet(eBulletX, slot, invaderX(sc) + invW / 2);'
           '          arraySet(eBulletY, slot, invaderY(sr) + invH);'
           '          arraySet(eBulletActive, slot, true);'
-          '          playSweep(600, 900, 50);'
+          '          playSweep(600, 900, 50, 0.25);'
           '        }'
           '      }'
           '    }'
@@ -631,17 +1118,35 @@ object Form4: TForm4
           '        if (arrayGet(eBulletY, i) > h) {'
           '          arraySet(eBulletActive, i, false);'
           '        }'
-          '        // Hit player'
+          '        // Hit a shield from above?'
+          '        if (arrayGet(eBulletActive, i)) {'
           
-            '        if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(eBu' +
-            'lletY, i), 3, 10, playerX, playerY - 6, playerW, playerH + 6)) {'
-          '          arraySet(eBulletActive, i, false);'
-          '          lives = lives - 1;'
-          '          playNoise(400);'
-          '          if (lives <= 0) {'
-          '            gameOver = true;'
-          '          } else {'
-          '            resetPlayer();'
+            '          if (bulletHitsShield(arrayGet(eBulletX, i) - 1, arrayG' +
+            'et(eBulletY, i), 2, 5, 1)) {'
+          '            arraySet(eBulletActive, i, false);'
+          '            playNoise(120, 0.15);'
+          '          }'
+          '        }'
+          
+            '        // Hit player. Use the actual rendered rectangles for bo' +
+            'th:'
+          '        //   bullet  : (eBulletX - 1, eBulletY, 2, 5)'
+          
+            '        //   player  : sprite is 13x7, drawn at (playerX, player' +
+            'Y - 2)'
+          '        if (arrayGet(eBulletActive, i)) {'
+          
+            '          if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(e' +
+            'BulletY, i), 2, 5, playerX, playerY - 2, 13, 7)) {'
+          '            arraySet(eBulletActive, i, false);'
+          '            lives = lives - 1;'
+          '            playNoise(400, 0.35);'
+          '            if (lives <= 0) {'
+          '              gameOver = true;'
+          '              stopMusic();'
+          '            } else {'
+          '              resetPlayer();'
+          '            }'
           '          }'
           '        }'
           '      }'
@@ -668,6 +1173,7 @@ object Form4: TForm4
           '        if (arrayGet(invAlive, r * cols + c)) {'
           '          if (invaderY(r) + invH >= playerY) {'
           '            gameOver = true;'
+          '            stopMusic();'
           '          }'
           '        }'
           '        c = c + 1;'
@@ -725,6 +1231,20 @@ object Form4: TForm4
           '    i = i + 1;'
           '  }'
           ''
+          '  // --- Draw background decorations ---'
+          '  i = 0;'
+          '  while (i < bgCount) {'
+          
+            '    drawSpriteScaled(arrayGet(bgSprite, i), arrayGet(bgX_pos, i)' +
+            ', arrayGet(bgY_pos, i), arrayGet(bgScale, i));'
+          '    i = i + 1;'
+          '  }'
+          ''
+          '  // --- Draw UFO ---'
+          '  if (ufoActive) {'
+          '    drawSpriteScaled(ufoSprite, floor(ufoX), ufoY, 1);'
+          '  }'
+          ''
           '  // --- Draw invaders ---'
           '  var r = 0;'
           '  while (r < rows) {'
@@ -733,7 +1253,7 @@ object Form4: TForm4
           '      if (arrayGet(invAlive, r * cols + c)) {'
           
             '        drawSpriteScaled(arrayGet(invSprites, r * 2 + invFrame),' +
-            ' invaderX(c), invaderY(r), 3);'
+            ' invaderX(c), invaderY(r), 1);'
           '      }'
           '      c = c + 1;'
           '    }'
@@ -748,23 +1268,54 @@ object Form4: TForm4
           '      if (t > explDuration / 2) {'
           
             '        drawSpriteScaled(explSprite1, arrayGet(explX, i), arrayG' +
-            'et(explY, i), 3);'
+            'et(explY, i), 1);'
           '      } else {'
           
             '        drawSpriteScaled(explSprite2, arrayGet(explX, i), arrayG' +
-            'et(explY, i), 3);'
+            'et(explY, i), 1);'
           '      }'
           '    }'
           '    i = i + 1;'
           '  }'
           ''
-          '  // --- Draw player ---'
-          '  drawSpriteScaled(playerSprite, playerX, playerY - 6, 3);'
+          '  // --- Draw shields (green pixel blocks) ---'
+          '  setColor(60, 220, 90);'
+          '  var sIdx = 0;'
+          '  while (sIdx < numShields) {'
+          '    var sx = arrayGet(shieldX_pos, sIdx);'
+          '    var base = sIdx * cellsPerShield;'
+          '    var r = 0;'
+          '    while (r < shieldRows) {'
+          '      var c = 0;'
+          '      while (c < shieldCols) {'
+          '        if (arrayGet(shieldCells, base + r * shieldCols + c)) {'
+          
+            '          fillRect(sx + c * shieldCellSize, shieldY + r * shield' +
+            'CellSize,'
+          '                   shieldCellSize, shieldCellSize);'
+          '        }'
+          '        c = c + 1;'
+          '      }'
+          '      r = r + 1;'
+          '    }'
+          '    sIdx = sIdx + 1;'
+          '  }'
           ''
-          '  // --- Draw player bullet ---'
-          '  if (bulletActive) {'
-          '    setColor(255, 255, 255);'
-          '    fillRect(bulletX, bulletY, bulletW, bulletH);'
+          '  // --- Draw player ---'
+          
+            '  drawSpriteScaled(playerSprite, floor(playerX), playerY - 2, 1)' +
+            ';'
+          ''
+          '  // --- Draw player bullets ---'
+          '  setColor(255, 255, 255);'
+          '  i = 0;'
+          '  while (i < maxPlayerBullets) {'
+          '    if (arrayGet(bulletActive, i)) {'
+          
+            '      fillRect(arrayGet(bulletX, i), arrayGet(bulletY, i), bulle' +
+            'tW, bulletH);'
+          '    }'
+          '    i = i + 1;'
           '  }'
           ''
           '  // --- Draw enemy bullets ---'
@@ -774,24 +1325,24 @@ object Form4: TForm4
           '    if (arrayGet(eBulletActive, i)) {'
           
             '      fillRect(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i),' +
-            ' 3, 10);'
+            ' 2, 5);'
           '    }'
           '    i = i + 1;'
           '  }'
           ''
           '  // --- HUD ---'
           '  setColor(255, 255, 255);'
-          '  drawText(10, 8, "SCORE: " + str(score));'
-          '  drawText(w - 120, 8, "LIVES: " + str(lives));'
+          '  drawText(4, 4, "SCORE: " + str(score));'
+          '  drawText(w - 60, 4, "LIVES: " + str(lives));'
           ''
           '  // --- Game over overlay ---'
           '  if (gameOver) {'
           '    setColor(255, 0, 0);'
-          '    drawText(w / 2 - 80, h / 2 - 20, "GAME OVER");'
+          '    drawText(w / 2 - 27, h / 2 - 8, "GAME OVER");'
           '    setColor(255, 255, 255);'
           
-            '    drawText(w / 2 - 100, h / 2 + 10, "ENTER to restart, ESC to ' +
-            'quit");'
+            '    drawText(w / 2 - 78, h / 2 + 4, "ENTER to restart, ESC to qu' +
+            'it");'
           '  }'
           ''
           '  present();'
@@ -803,19 +1354,17 @@ object Form4: TForm4
     end
     object Panel2: TPanel
       Left = 0
-      Top = 689
-      Width = 1095
-      Height = 111
+      Top = 921
+      Width = 1692
+      Height = 114
       Align = alClient
       Caption = 'Panel2'
       TabOrder = 1
-      ExplicitTop = 439
-      ExplicitHeight = 361
       object Memo2: TMemo
         Left = 1
         Top = 42
-        Width = 1093
-        Height = 68
+        Width = 1690
+        Height = 71
         Align = alClient
         Font.Charset = DEFAULT_CHARSET
         Font.Color = clWindowText
@@ -825,20 +1374,17 @@ object Form4: TForm4
         ParentFont = False
         ScrollBars = ssBoth
         TabOrder = 0
-        ExplicitTop = 38
-        ExplicitHeight = 197
       end
       object Panel3: TPanel
         Left = 1
         Top = 1
-        Width = 1093
+        Width = 1690
         Height = 41
         Align = alTop
         Caption = 'Panel3'
         TabOrder = 1
-        ExplicitTop = 5
         DesignSize = (
-          1093
+          1690
           41)
         object Label1: TLabel
           Left = 8

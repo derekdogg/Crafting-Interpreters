@@ -1,0 +1,71 @@
+// Offscreen render target test — demonstrates createSurface/setRenderTarget/drawSurface
+var w = canvasWidth();
+var h = canvasHeight();
+
+// Create 2 offscreen surfaces
+var hud = createSurface(120, 24);
+var bg = createSurface(w, h);
+
+// --- Draw a starfield background onto the bg surface ---
+setRenderTarget(bg);
+setColor(0, 0, 30);
+fillRect(0, 0, w, h);  // dark blue base
+
+// Scatter some "stars"
+var i = 0;
+var seed = 12345;
+while (i < 80) {
+  seed = (seed * 1103515245 + 12345) % 2147483648;
+  var sx = seed % w;
+  seed = (seed * 1103515245 + 12345) % 2147483648;
+  var sy = seed % h;
+  seed = (seed * 1103515245 + 12345) % 2147483648;
+  var brightness = 100 + seed % 156;
+  setColor(brightness, brightness, brightness);
+  drawPixel(sx, sy);
+  i = i + 1;
+}
+
+// --- Draw a HUD panel onto the hud surface ---
+setRenderTarget(hud);
+setColor(40, 40, 40);
+fillRect(0, 0, 120, 24);
+setColor(255, 255, 0);
+drawRect(0, 0, 120, 24);
+setColor(255, 255, 255);
+drawText(4, 3, "SCORE: 99999");
+drawText(4, 14, "LIVES: 3");
+
+// --- Switch back to main back buffer and composite ---
+setRenderTarget(-1);
+
+var running = true;
+var frame = 0;
+
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  clearCanvas();
+
+  // Draw pre-rendered background (drawn once, blitted every frame)
+  drawSurface(bg, 0, 0);
+
+  // Animate something on the main buffer to prove it's live
+  setColor(0, 255, 100);
+  var bx = (frame * 2) % (w + 40) - 20;
+  fillCircle(bx, h / 2, 6);
+
+  // Draw HUD overlay (drawn once, blitted every frame)
+  drawSurface(hud, w / 2 - 60, 6);
+
+  // Live text on main buffer
+  setColor(200, 200, 200);
+  drawText(4, h - 12, "Surfaces: bg + HUD. ESC to quit.");
+
+  present();
+  frame = frame + 1;
+}

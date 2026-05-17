@@ -1,0 +1,60 @@
+// Screen shake test — shakes constantly so you can see the effect
+var w = canvasWidth();
+var h = canvasHeight();
+var running = true;
+var lastTime = clock();
+var frame = 0;
+
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+
+  // Constant shake — random offset every frame
+  var shakeX = floor((random() - 0.5) * 6);
+  var shakeY = floor((random() - 0.5) * 6);
+  setCamera(shakeX, shakeY);
+
+  clearCanvas();
+
+  // Draw a grid so shake is obvious
+  setColor(40, 40, 40);
+  var gx = 0;
+  while (gx <= w) {
+    drawLine(gx, 0, gx, h);
+    gx = gx + 20;
+  }
+  var gy = 0;
+  while (gy <= h) {
+    drawLine(0, gy, w, gy);
+    gy = gy + 20;
+  }
+
+  // Big crosshair
+  setColor(255, 255, 0);
+  drawLine(w / 2, 0, w / 2, h);
+  drawLine(0, h / 2, w, h / 2);
+
+  // Center box
+  setColor(255, 0, 0);
+  fillRect(w / 2 - 20, h / 2 - 20, 40, 40);
+
+  // Corner markers
+  setColor(0, 255, 0);
+  fillCircle(20, 20, 8);
+  fillCircle(w - 20, 20, 8);
+  fillCircle(20, h - 20, 8);
+  fillCircle(w - 20, h - 20, 8);
+
+  setColor(255, 255, 255);
+  drawText(w / 2 - 60, 6, "SHAKING! ESC to quit");
+
+  present();
+  frame = frame + 1;
+}

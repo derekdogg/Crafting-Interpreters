@@ -1,6 +1,7 @@
 // ============================================================
 // Tilemap Demo — scrolling platformer level
-// Demonstrates: createTilemap, setTile, drawTilemap, drawPixel
+// Demonstrates: createTilemap, setTile, drawTilemap, getTile,
+//               flipSprite, drawPixel
 // ============================================================
 
 var w = canvasWidth();
@@ -102,7 +103,7 @@ var COIN = createSprite(8, 8,
 // --- Build the tilemap ---
 var mapCols = 40;
 var mapRows = 15;
-var tileSize = 32;
+var tileSize = 16;
 
 var map = createTilemap(mapCols, mapRows, tileSize, tileSize);
 
@@ -176,30 +177,154 @@ setTile(map, 21, 8, COIN);
 setTile(map, 28, 5, COIN);
 setTile(map, 35, 7, COIN);
 
-// --- Player (simple colored square) ---
-setColor(0, 200, 255);
-var playerSprite = createSprite(8, 8,
-  "..XXXX.." +
-  ".XXXXXX." +
-  "XX.XX.XX" +
-  "XXXXXXXX" +
-  "X.XXXX.X" +
-  "X.X..X.X" +
-  ".XXXXXX." +
-  "..X..X.."
+// --- Player (Mario-style palette sprite, 10x14 hi-res walk cycle) ---
+setPaletteColor("R", 220, 30, 30);
+setPaletteColor("S", 255, 200, 150);
+setPaletteColor("B", 30, 30, 200);
+setPaletteColor("Y", 255, 220, 0);
+setPaletteColor("W", 140, 80, 30);
+setPaletteColor("E", 255, 255, 255);
+setPaletteColor("D", 100, 50, 20);
+
+// Frame 0: standing (10x14)
+var playerStand = createPaletteSprite(10, 14,
+  "...RRRR..." +
+  "..RRRRRR.." +
+  ".RRRRRRRR." +
+  ".SSSSSSSS." +
+  ".SESSSSES." +
+  ".SSSSSSSS." +
+  "..SDDDDS.." +
+  "...SSSS..." +
+  ".SBBBYBBS." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "..BB..BB.." +
+  "..BB..BB.." +
+  ".WWW..WWW."
 );
 
-var playerX = 64;
-var playerY = 320;
+// Frame 1: walk (right arm forward, left leg forward)
+var playerWalk1 = createPaletteSprite(10, 14,
+  "...RRRR..." +
+  "..RRRRRR.." +
+  ".RRRRRRRR." +
+  ".SSSSSSSS." +
+  ".SESSSSES." +
+  ".SSSSSSSS." +
+  "..SDDDDS.." +
+  "...SSSS..." +
+  "..BBBYBBS." +
+  ".SBBBBBB.." +
+  "..BBBBBB.." +
+  "..BB..BB.." +
+  ".BB....BB." +
+  "WWW....WWW"
+);
+
+// Frame 2: walk (left arm forward, right leg forward)
+var playerWalk2 = createPaletteSprite(10, 14,
+  "...RRRR..." +
+  "..RRRRRR.." +
+  ".RRRRRRRR." +
+  ".SSSSSSSS." +
+  ".SESSSSES." +
+  ".SSSSSSSS." +
+  "..SDDDDS.." +
+  "...SSSS..." +
+  ".SBBBYBB.." +
+  "..BBBBBBS." +
+  "..BBBBBB.." +
+  "..BB..BB.." +
+  ".BB....BB." +
+  "WWW....WWW"
+);
+
+// Frame 3: jump / airborne (arms up, legs apart)
+var playerJump = createPaletteSprite(10, 14,
+  "...RRRR..." +
+  "..RRRRRR.." +
+  ".RRRRRRRR." +
+  ".SSSSSSSS." +
+  ".SESSSSES." +
+  "S.SSSSSS.S" +
+  "..SDDDDS.." +
+  "...SSSS..." +
+  "..BBBYBB.." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  ".WW....WW." +
+  "..WW..WW.."
+);
+
+clearPalette();
+
+// Flipped versions for facing left
+var playerStandL = flipSprite(playerStand, "h");
+var playerWalk1L = flipSprite(playerWalk1, "h");
+var playerWalk2L = flipSprite(playerWalk2, "h");
+var playerJumpL = flipSprite(playerJump, "h");
+
+var facingRight = true;
+var walkTimer = 0;
+var walkFrame = 0;
+var walkInterval = 0.12;
+var coins = 0;
+var totalCoins = 5;
+
+var playerX = 32;
+var playerY = 80;
 var playerVX = 0;
 var playerVY = 0;
-var playerSize = 28;
+var playerSize = 14;
 var gravity = 600;
 var jumpSpeed = -300;
-var moveSpeed = 150;
+var moveSpeed = 100;
+var accel = 400;
+var friction = 300;
 var onGround = false;
+var wasOnGround = false;
 var leftHeld = false;
 var rightHeld = false;
+var coyoteTime = 0;
+var coyoteMax = 0.1;
+
+// --- Dust particles ---
+var maxDust = 12;
+var dustX = newArray();
+var dustY = newArray();
+var dustVX = newArray();
+var dustVY = newArray();
+var dustLife = newArray();
+var dustActive = newArray();
+var i = 0;
+while (i < maxDust) {
+  arrayPush(dustX, 0);
+  arrayPush(dustY, 0);
+  arrayPush(dustVX, 0);
+  arrayPush(dustVY, 0);
+  arrayPush(dustLife, 0);
+  arrayPush(dustActive, false);
+  i = i + 1;
+}
+
+fun spawnDust(px, py, count) {
+  var d = 0;
+  var spawned = 0;
+  while (d < maxDust and spawned < count) {
+    if (!arrayGet(dustActive, d)) {
+      arraySet(dustX, d, px);
+      arraySet(dustY, d, py);
+      arraySet(dustVX, d, (random() - 0.5) * 80);
+      arraySet(dustVY, d, -random() * 40 - 10);
+      arraySet(dustLife, d, 0.3 + random() * 0.2);
+      arraySet(dustActive, d, true);
+      spawned = spawned + 1;
+    }
+    d = d + 1;
+  }
+}
 
 var scrollX = 0;
 var scrollY = 0;
@@ -225,51 +350,16 @@ while (i < numStars) {
 }
 
 // --- Helpers ---
-fun tileAt(col, row) {
-  if (col < 0) return -1;
-  if (col >= mapCols) return -1;
-  if (row < 0) return -1;
-  if (row >= mapRows) return -1;
-  // Read tile — we check for solid types
-  // For simplicity, solid = GRASS, DIRT, BRICK, STONE
-  return true;
-}
-
-fun isSolid(px, py) {
+fun solidAt(px, py) {
   var col = floor(px / tileSize);
   var row = floor(py / tileSize);
   if (col < 0) return true;
   if (col >= mapCols) return true;
   if (row < 0) return false;
   if (row >= mapRows) return true;
-  // We don't have getTile native, so we'll just check ground rows
-  // and platform positions. For a full engine we'd add getTile().
-  // Simple approach: anything at row >= mapRows-3 is solid (except water)
-  if (row >= mapRows - 3) {
-    // Water columns are passthrough
-    if (col >= 16 and col <= 18) return false;
-    return true;
-  }
-  return false;
-}
-
-fun isPlatform(px, py) {
-  var col = floor(px / tileSize);
-  var row = floor(py / tileSize);
-  // Check our platform positions
-  var pi2 = 0;
-  while (pi2 < arrayLen(plats)) {
-    if (arrayGet(plats, pi2) == col and arrayGet(plats, pi2 + 1) == row) return true;
-    pi2 = pi2 + 2;
-  }
-  // Stone pillars
-  if (col == 10 and (row == mapRows - 4 or row == mapRows - 3)) return true;
-  if (col == 25 and (row >= mapRows - 5 and row <= mapRows - 3)) return true;
-  return false;
-}
-
-fun solidAt(px, py) {
-  return isSolid(px, py) or isPlatform(px, py);
+  var tile = getTile(map, col, row);
+  // Solid tiles: GRASS, DIRT, BRICK, STONE
+  return tile == GRASS or tile == DIRT or tile == BRICK or tile == STONE;
 }
 
 // ============================================================
@@ -291,18 +381,64 @@ while (running) {
     if (e == "keyup:right") rightHeld = false;
     if (e == "keydown:escape") running = false;
     if (e == "keydown:space") {
-      if (onGround) {
+      if (onGround or coyoteTime > 0) {
         playerVY = jumpSpeed;
         onGround = false;
+        coyoteTime = 0;
+        spawnDust(playerX + playerSize / 2, playerY + playerSize, 4);
         playSweep(200, 500, 80);
       }
     }
   }
 
   // --- Player physics ---
-  playerVX = 0;
-  if (leftHeld) playerVX = -moveSpeed;
-  if (rightHeld) playerVX = moveSpeed;
+  var targetVX = 0;
+  if (leftHeld) { targetVX = -moveSpeed; facingRight = false; }
+  if (rightHeld) { targetVX = moveSpeed; facingRight = true; }
+
+  // Acceleration / friction
+  if (targetVX != 0) {
+    if (targetVX > playerVX) {
+      playerVX = playerVX + accel * dt;
+      if (playerVX > targetVX) playerVX = targetVX;
+    }
+    if (targetVX < playerVX) {
+      playerVX = playerVX - accel * dt;
+      if (playerVX < targetVX) playerVX = targetVX;
+    }
+  } else {
+    // Apply friction toward zero
+    if (playerVX > 0) {
+      playerVX = playerVX - friction * dt;
+      if (playerVX < 0) playerVX = 0;
+    }
+    if (playerVX < 0) {
+      playerVX = playerVX + friction * dt;
+      if (playerVX > 0) playerVX = 0;
+    }
+  }
+
+  // Coyote time — allow jumping briefly after walking off edge
+  if (onGround) {
+    coyoteTime = coyoteMax;
+  } else {
+    coyoteTime = coyoteTime - dt;
+  }
+
+  // Walk animation
+  if (playerVX != 0 and onGround) {
+    walkTimer = walkTimer + dt;
+    if (walkTimer >= walkInterval) {
+      walkTimer = walkTimer - walkInterval;
+      walkFrame = walkFrame + 1;
+      if (walkFrame > 2) walkFrame = 1;
+    }
+  } else {
+    if (onGround) {
+      walkFrame = 0;
+      walkTimer = 0;
+    }
+  }
 
   // Gravity
   playerVY = playerVY + gravity * dt;
@@ -315,12 +451,17 @@ while (running) {
   }
 
   // Move Y
+  wasOnGround = onGround;
   var newY = playerY + playerVY * dt;
   if (playerVY >= 0) {
     // Falling: check feet
     if (solidAt(playerX, newY + playerSize) or solidAt(playerX + playerSize - 1, newY + playerSize)) {
       // Snap to tile top
       playerY = floor((newY + playerSize) / tileSize) * tileSize - playerSize;
+      // Landing dust
+      if (!wasOnGround) {
+        spawnDust(playerX + playerSize / 2, playerY + playerSize, 5);
+      }
       playerVY = 0;
       onGround = true;
     } else {
@@ -336,12 +477,45 @@ while (running) {
     }
   }
 
-  // Fell off map?
-  if (playerY > mapRows * tileSize + 100) {
+  // Fell off map or into water?
+  var feetCol = floor((playerX + playerSize / 2) / tileSize);
+  var feetRow = floor((playerY + playerSize) / tileSize);
+  var inWater = false;
+  if (feetCol >= 0 and feetCol < mapCols and feetRow >= 0 and feetRow < mapRows) {
+    if (getTile(map, feetCol, feetRow) == WATER) inWater = true;
+  }
+  if (playerY > mapRows * tileSize + 100 or inWater) {
+    if (inWater) playNoise(200);
     playerX = 64;
     playerY = 320;
     playerVX = 0;
     playerVY = 0;
+    onGround = false;
+  }
+
+  // --- Coin collection (using getTile!) ---
+  var centerCol = floor((playerX + playerSize / 2) / tileSize);
+  var centerRow = floor((playerY + playerSize / 2) / tileSize);
+  if (centerCol >= 0 and centerCol < mapCols and centerRow >= 0 and centerRow < mapRows) {
+    if (getTile(map, centerCol, centerRow) == COIN) {
+      setTile(map, centerCol, centerRow, SKY);
+      coins = coins + 1;
+      playSweep(500, 1200, 60);
+    }
+  }
+
+  // --- Update dust particles ---
+  i = 0;
+  while (i < maxDust) {
+    if (arrayGet(dustActive, i)) {
+      arraySet(dustX, i, arrayGet(dustX, i) + arrayGet(dustVX, i) * dt);
+      arraySet(dustY, i, arrayGet(dustY, i) + arrayGet(dustVY, i) * dt);
+      arraySet(dustLife, i, arrayGet(dustLife, i) - dt);
+      if (arrayGet(dustLife, i) <= 0) {
+        arraySet(dustActive, i, false);
+      }
+    }
+    i = i + 1;
   }
 
   // --- Camera follow ---
@@ -373,13 +547,47 @@ while (running) {
   // --- Draw tilemap (one native call!) ---
   drawTilemap(map, scrollX, scrollY);
 
-  // --- Draw player ---
-  drawSpriteScaled(playerSprite, floor(playerX) - scrollX, floor(playerY) - scrollY, 4);
+  // --- Draw player (facing direction + walk/jump animation) ---
+  var spr = playerStand;
+  if (!facingRight) spr = playerStandL;
+  if (!onGround) {
+    // Airborne pose
+    if (facingRight) spr = playerJump;
+    if (!facingRight) spr = playerJumpL;
+  } else {
+    if (walkFrame == 1) {
+      if (facingRight) spr = playerWalk1;
+      if (!facingRight) spr = playerWalk1L;
+    }
+    if (walkFrame == 2) {
+      if (facingRight) spr = playerWalk2;
+      if (!facingRight) spr = playerWalk2L;
+    }
+  }
+  drawSpriteScaled(spr, floor(playerX) - scrollX, floor(playerY) - scrollY, 3);
+
+  // --- Draw dust particles ---
+  i = 0;
+  while (i < maxDust) {
+    if (arrayGet(dustActive, i)) {
+      var life = arrayGet(dustLife, i);
+      var alpha = floor(life / 0.5 * 200);
+      if (alpha > 200) alpha = 200;
+      if (alpha < 40) alpha = 40;
+      setColor(alpha, alpha, alpha);
+      fillRect(floor(arrayGet(dustX, i)) - scrollX, floor(arrayGet(dustY, i)) - scrollY, 3, 3);
+    }
+    i = i + 1;
+  }
 
   // --- HUD ---
   setColor(255, 255, 255);
   drawText(10, 8, "ARROWS: move   SPACE: jump   ESC: quit");
-  drawText(10, 30, "Scroll: " + str(scrollX) + ", " + str(scrollY));
+  drawText(10, 30, "COINS: " + str(coins) + " / " + str(totalCoins));
+  if (coins >= totalCoins) {
+    setColor(255, 220, 50);
+    drawText(w / 2 - 80, h / 2, "ALL COINS COLLECTED!");
+  }
 
   present();
 }

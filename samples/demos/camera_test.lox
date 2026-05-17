@@ -1,0 +1,68 @@
+// Camera offset test — verifies setCamera() shifts all drawing
+var w = canvasWidth();
+var h = canvasHeight();
+var running = true;
+var lastTime = clock();
+var shakeTimer = 0;
+var shakeActive = false;
+
+// Draw a static scene and shake it with spacebar
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+    if (e == "keydown:space") {
+      shakeActive = true;
+      shakeTimer = 0.3;
+    }
+  }
+
+  // Update shake
+  var camX = 0;
+  var camY = 0;
+  if (shakeActive) {
+    shakeTimer = shakeTimer - dt;
+    if (shakeTimer <= 0) {
+      shakeActive = false;
+    } else {
+      camX = floor((random() - 0.5) * 4);
+      camY = floor((random() - 0.5) * 4);
+    }
+  }
+  setCamera(camX, camY);
+
+  clearCanvas();
+
+  // Grid of circles
+  var gx = 0;
+  while (gx < 8) {
+    var gy = 0;
+    while (gy < 6) {
+      setColor(50 + gx * 20, 50 + gy * 25, 150);
+      fillCircle(30 + gx * 32, 25 + gy * 32, 7);
+      gy = gy + 1;
+    }
+    gx = gx + 1;
+  }
+
+  // Crosshair lines
+  setColor(255, 255, 0);
+  drawLine(w / 2, 0, w / 2, h);
+  drawLine(0, h / 2, w, h / 2);
+
+  // Box
+  setColor(255, 100, 100);
+  fillRect(w / 2 - 15, h / 2 - 10, 30, 20);
+
+  // Instructions
+  setColor(255, 255, 255);
+  drawText(10, h - 12, "SPACE = shake, ESC = quit");
+
+  present();
+}
