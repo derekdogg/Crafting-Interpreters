@@ -15,16 +15,8 @@ uses
 type
 
   TForm4 = class(TForm)
-    Splitter1: TSplitter;
-    Splitter2: TSplitter;
     PanelLeft: TPanel;
-    PanelRight: TPanel;
-    Label1: TLabel;
     Label2: TLabel;
-    Label3: TLabel;
-    Memo1: TSynEdit;
-    Memo2: TMemo;
-    Button1: TButton;
     TestTree: TTreeView;
     BtnPopulate: TButton;
     BtnRunSelected: TButton;
@@ -34,11 +26,14 @@ type
     ProgressBar1: TProgressBar;
     LblStatus: TLabel;
     StateImages: TImageList;
+    PanelRight: TPanel;
+    Memo1: TSynEdit;
+    PanelToolbar: TPanel;
+    Button1: TButton;
     Button2: TButton;
     Button3: TButton;
-    Panel1: TPanel;
-    Panel2: TPanel;
-    Panel3: TPanel;
+    SplitterOutput: TSplitter;
+    Memo2: TMemo;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -82,7 +77,10 @@ type
     FScriptRunning: Boolean;
     FClosing: Boolean;
   public
-    { Public declarations }
+    // Set by frmGame.FormCloseQuery when the user tries to close the
+    // game window mid-script. processMessagesNative observes it and
+    // raises a runtime error so the Lox while-loop unwinds cleanly.
+    FAbortScript: Boolean;
   end;
 
 var
@@ -90,7 +88,7 @@ var
 
 implementation
 uses
-  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, LoxSound;
+  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, LoxSound, fmGame;
 
 {$R *.dfm}
 
@@ -315,7 +313,13 @@ begin
   FLoxSyn.IdentifierAttri.Foreground := $009CDCFE;  // light blue (variables)
   FLoxSyn.SymbolAttri.Foreground     := $00D4D4D4;  // match default text
 
-  InitCanvas(Panel1);
+  // The game canvas lives on the dedicated game form (frmGame). Parent
+  // it there and let its client dimensions drive LOGICAL_W / LOGICAL_H.
+  // Form4 is created first by the .dpr so frmGame may not exist yet —
+  // construct it now if needed.
+  if frmGame = nil then
+    frmGame := TfrmGame.Create(Application);
+  InitCanvas(frmGame);
   // The game canvas is the only place gameplay keys are handled. Hook
   // its events here so the form can enqueue them for the Lox event
   // queue without the editor or other VCL controls intercepting them.
@@ -355,9 +359,12 @@ begin
     VM.PrintOutput := '';
   end;
   Application.ProcessMessages;
-  if Form4.FClosing then
+  if Form4.FClosing or Form4.FAbortScript then
   begin
-    RuntimeError('Script aborted: application closing.');
+    if Form4.FAbortScript then
+      RuntimeError('Script aborted: game window closed.')
+    else
+      RuntimeError('Script aborted: application closing.');
     Exit(CreateNilValue);
   end;
   Result := CreateNilValue;
@@ -372,10 +379,14 @@ begin
   txt := AnsiString(Memo1.Lines.Text);
   FEventQueue.clear;
   FScriptRunning := True;
+  FAbortScript := False;
   Button1.Enabled := False;
   BtnRunSelected.Enabled := False;
   BtnRunAll.Enabled := False;
   Memo1.ReadOnly := True;
+  // Show the game window and let it know a script is starting so it
+  // refuses to close while drawing is live.
+  frmGame.NotifyScriptStarted;
   // Give the game canvas keyboard focus so it owns gameplay input from
   // the moment the script starts. Otherwise the first key event would
   // still go to whichever control happened to be focused.
@@ -391,11 +402,13 @@ begin
     IR := CompileAndRun(PAnsiChar(txt));
   finally
     FreeVM;
+    StopAllSound;
     FScriptRunning := False;
     Button1.Enabled := True;
     BtnRunSelected.Enabled := True;
     BtnRunAll.Enabled := True;
     Memo1.ReadOnly := False;
+    frmGame.NotifyScriptStopped;
   end;
 
   case IR.code of

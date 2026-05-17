@@ -7,6 +7,7 @@ uses
 
 procedure RegisterSoundNatives;
 procedure FreeSound;
+procedure StopAllSound;
 
 implementation
 
@@ -71,6 +72,25 @@ begin
   FSeqPlaying := False;
   FNextCh := 0;
   FReady := anyOpen;
+end;
+
+procedure StopAllSound;
+var
+  i: Integer;
+begin
+  // Halt any in-flight playback on every channel + the sequencer, but
+  // leave the wave devices open so the next script run can keep
+  // playing without paying the open/format-negotiation cost. Called when
+  // a script ends (normally or via abort) so audio doesn't outlive it.
+  if FReady then
+  begin
+    for i := 0 to NUM_CHANNELS - 1 do
+      if FWaveOut[i] <> 0 then
+        waveOutReset(FWaveOut[i]);
+    if FSeqWaveOut <> 0 then
+      waveOutReset(FSeqWaveOut);
+    FSeqPlaying := False;
+  end;
 end;
 
 procedure FreeSound;

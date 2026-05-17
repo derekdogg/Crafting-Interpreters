@@ -3,7 +3,7 @@ unit LoxCanvas;
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, Vcl.Controls, Vcl.Graphics, Classes, Chunk_Types;
+  Winapi.Windows, Winapi.Messages, Vcl.Controls, Vcl.Forms, Vcl.Graphics, Classes, Chunk_Types;
 
 type
   // Fired by the game canvas when a recognised key is pressed/released
@@ -62,6 +62,7 @@ type
 
 procedure InitCanvas(AParent: TWinControl);
 procedure FreeCanvas;
+procedure DetachCanvasFromHost;
 procedure RegisterCanvasNatives;
 procedure SetKeyState(const KeyName: string; Down: Boolean);
 procedure ClearAllKeyState;
@@ -92,12 +93,18 @@ const
   SRCCOPY = $00CC0020;
   COLORONCOLOR = 3;  // StretchBlt mode: nearest-neighbor for color bitmaps
 
-  // Fixed logical resolution. All Lox draw calls operate in this
-  // coordinate space. At present() time the back buffer is scaled by
-  // the largest integer factor that fits the host control, centered,
+  // Logical resolution. All Lox draw calls operate in this coordinate
+  // space. Defaults to 320x240 but a script can mutate it at startup
+  // via setCanvasSize(w, h). At present() time the back buffer is scaled
+  // by the largest integer factor that fits the host control, centered,
   // with black letterbox/pillarbox bars filling any remainder.
-  LOGICAL_W = 320;
-  LOGICAL_H = 240;
+  //
+  // These are intentionally module-level vars (not consts) so that
+  // setCanvasSize can change them between frames; EnsureBackBuffer +
+  // present's swap path both check and resize the underlying bitmaps
+  // to match on the next frame.
+
+// (moved out of const block - see var block below)
 
 function SetStretchBltMode(DC: HDC; iStretchMode: Integer): Integer; stdcall;
   external 'gdi32.dll' name 'SetStretchBltMode';
@@ -121,6 +128,8 @@ function DwmFlush: Integer; stdcall;
   external 'dwmapi.dll' name 'DwmFlush';
 
 var
+  LOGICAL_W: Integer = 320;
+  LOGICAL_H: Integer = 240;
   FGameSurface: TLoxGameCanvas;
   FBackBuffer: TBitmap;
   FFrontBuffer: TBitmap;   // presented frame â€” never partially drawn
@@ -496,10 +505,26 @@ begin
 end;
 
 procedure InitCanvas(AParent: TWinControl);
+var
+  hostW, hostH: Integer;
 begin
   FCurrentPixel := $FFFFFFFF;  // opaque white in BGRA
   FreeAndNil(FGameSurface);
-  FGameSurface := TLoxGameCanvas.Create(AParent);
+  // Adopt the host's current client size as the logical canvas
+  // resolution. Resize the host (e.g. the game form) before pressing
+  // Run to change resolution. Clamp to sane bounds.
+  hostW := AParent.ClientWidth;
+  hostH := AParent.ClientHeight;
+  if hostW < 32   then hostW := 32;
+  if hostH < 32   then hostH := 32;
+  if hostW > 4096 then hostW := 4096;
+  if hostH > 4096 then hostH := 4096;
+  LOGICAL_W := hostW;
+  LOGICAL_H := hostH;
+  // Owner = nil so FreeCanvas owns lifetime; otherwise the host form
+  // would destroy FGameSurface first and leave a dangling pointer for
+  // FreeCanvas (Form4.OnDestroy runs AFTER frmGame on shutdown).
+  FGameSurface := TLoxGameCanvas.Create(nil);
   FGameSurface.Parent := AParent;
   FGameSurface.Align := alClient;
   FreeAndNil(FBackBuffer);
@@ -516,6 +541,17 @@ begin
   FreeAndNil(FPresentBuffer);
   FreeAndNil(FKeysHeld);
   FKeysHeld := TDictionary<string, Boolean>.Create;
+end;
+
+procedure DetachCanvasFromHost;
+begin
+  // Drop the parent pointer so the canvas can outlive the host form.
+  // Application destroys frmGame BEFORE Form4, but FGameSurface is freed
+  // by Form4.OnDestroy (FreeCanvas). Without this, FGameSurface.FParent
+  // would dangle and FreeAndNil would AV inside the inherited
+  // TWinControl destructor.
+  if Assigned(FGameSurface) then
+    FGameSurface.Parent := nil;
 end;
 
 procedure FreeCanvas;
@@ -545,6 +581,62 @@ end;
 function canvasHeightNative(argCount: integer; args: pValue): TValue;
 begin
   Result := CreateNumber(LOGICAL_H);
+end;
+
+// setCanvasSize(w, h) - change the logical drawing surface dimensions.
+// Sizes are clamped to [32..4096] in each axis. Safe to call between
+// frames; the back buffer is resized on the next EnsureBackBuffer pass
+// and the front buffer is resized lazily on the next present(). All
+// existing sprites, surfaces, and tilemaps are preserved unchanged.
+// Typical use: call once at the top of a script before reading
+// canvasWidth()/canvasHeight().
+function setCanvasSizeNative(argCount: integer; args: pValue): TValue;
+var
+  newW, newH: Integer;
+  host: TWinControl;
+  hostForm: TCustomForm;
+begin
+  Result := CreateNilValue;
+  if argCount < 2 then Exit;
+  newW := Trunc(args[0].NumberValue);
+  newH := Trunc(args[1].NumberValue);
+  if newW < 32 then newW := 32 else if newW > 4096 then newW := 4096;
+  if newH < 32 then newH := 32 else if newH > 4096 then newH := 4096;
+  LOGICAL_W := newW;
+  LOGICAL_H := newH;
+  // Resize the host window (the game form) so the visible area matches
+  // the new logical dimensions. The canvas itself is alClient and will
+  // follow automatically. We walk up to the parent form rather than
+  // resizing FGameSurface directly so window chrome stays correct.
+  if FGameSurface <> nil then
+  begin
+    host := FGameSurface.Parent;
+    if host <> nil then
+    begin
+      hostForm := GetParentForm(host);
+      if hostForm <> nil then
+      begin
+        hostForm.ClientWidth  := newW;
+        hostForm.ClientHeight := newH;
+      end
+      else
+      begin
+        host.Width  := newW;
+        host.Height := newH;
+      end;
+    end;
+  end;
+  // Recreate / resize the back buffer immediately so subsequent draw
+  // calls in the same frame see the new dimensions.
+  EnsureBackBuffer;
+  // Resize front buffer too if it exists; present() will allocate one
+  // at the right size if it doesn't.
+  if (FFrontBuffer <> nil) and (FFrontBuffer <> FBackBuffer) and
+     ((FFrontBuffer.Width <> LOGICAL_W) or (FFrontBuffer.Height <> LOGICAL_H)) then
+    FFrontBuffer.SetSize(LOGICAL_W, LOGICAL_H);
+  // Drop any user clip rect; old coordinates may be out of bounds.
+  FClipActive := False;
+  ResetClipToTarget;
 end;
 
 procedure ClearBuffer(ABmp: TBitmap);
@@ -3037,6 +3129,7 @@ begin
   ClearAllKeyState;
   defineNative('canvasWidth', canvasWidthNative, 0);
   defineNative('canvasHeight', canvasHeightNative, 0);
+  defineNative('setCanvasSize', setCanvasSizeNative, 2);
   defineNative('clearCanvas', clearCanvasNative, -1);
   defineNative('setColor', setColorNative, 3);
   defineNative('fillRect', fillRectNative, 4);

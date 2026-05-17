@@ -2,15 +2,25 @@
 // Space Invaders — written in Lox
 // ============================================================
 
+// Classic arcade cabinet aspect: tall portrait window.
+setCanvasSize(480, 720);
+
 var w = canvasWidth();
 var h = canvasHeight();
 
+// --- Sprite scale ---
+// Everything that gets drawnSpriteScaled / measured for collision uses
+// this multiplier so the artwork is legible on the tall canvas. Bump
+// it to 3 for a chunkier feel; collision math reads from the scaled
+// values below so it stays consistent.
+var SPR = 2;
+
 // --- Player ---
-var playerW = 18;
-var playerH = 8;
+var playerW = 13 * SPR;   // matches rendered sprite (13x7) * SPR
+var playerH = 7 * SPR;
 var playerX = w / 2 - playerW / 2;
-var playerY = h - 20;
-var playerSpeed = 100;
+var playerY = h - 30;
+var playerSpeed = 140;
 var leftHeld = false;
 var rightHeld = false;
 
@@ -19,9 +29,9 @@ var maxPlayerBullets = 3;
 var bulletX = newArray();
 var bulletY = newArray();
 var bulletActive = newArray();
-var bulletW = 2;
-var bulletH = 5;
-var bulletSpeed = 180;
+var bulletW = 3;
+var bulletH = 8;
+var bulletSpeed = 260;
 
 var i = 0;
 while (i < maxPlayerBullets) {
@@ -34,10 +44,10 @@ while (i < maxPlayerBullets) {
 // --- Invaders grid ---
 var cols = 7;
 var rows = 4;
-var invW = 16;
-var invH = 12;
-var invPadX = 4;
-var invPadY = 4;
+var invW = 12 * SPR;   // sprites are 12x10
+var invH = 10 * SPR;
+var invPadX = 6;
+var invPadY = 6;
 var invGridW = cols * (invW + invPadX) - invPadX;
 
 // Invader alive flags stored in a flat array: row * cols + col
@@ -52,10 +62,10 @@ var aliveCount = invCount;
 
 // Invader movement
 var invOffsetX = (w - invGridW) / 2;
-var invOffsetY = 20;
+var invOffsetY = 40;
 var invDirX = 1;
 var invSpeedX = 18;
-var invDropAmount = 8;
+var invDropAmount = 12;
 var invMoveTimer = 0;
 var invMoveInterval = 0.6;  // seconds between steps
 
@@ -64,7 +74,9 @@ var maxEnemyBullets = 4;
 var eBulletX = newArray();
 var eBulletY = newArray();
 var eBulletActive = newArray();
-var eBulletSpeed = 80;
+var eBulletW = 3;
+var eBulletH = 8;
+var eBulletSpeed = 130;
 var enemyShootTimer = 0;
 var enemyShootInterval = 1.2;
 
@@ -391,11 +403,12 @@ clearPalette();
 // --- UFO state ---
 var ufoActive = false;
 var ufoX = 0;
-var ufoY = 12;
+var ufoY = 18;
 var ufoDir = 1;
-var ufoSpeed = 120;
-var ufoW = 48;   // 16 * scale 3
-var ufoH = 15;   // 5 * scale 3
+var ufoSpeed = 160;
+var UFO_SCALE = 3;
+var ufoW = 16 * UFO_SCALE;
+var ufoH = 5 * UFO_SCALE;
 var ufoTimer = 0;
 var ufoInterval = 8;  // seconds between spawns
 var ufoPoints = 50;
@@ -496,10 +509,10 @@ var musicPlaying = false;
 var numShields = 4;
 var shieldCols = 11;
 var shieldRows = 8;
-var shieldCellSize = 2;
-var shieldW = shieldCols * shieldCellSize;   // 22
-var shieldH = shieldRows * shieldCellSize;   // 16
-var shieldY = playerY - 28;
+var shieldCellSize = 3;
+var shieldW = shieldCols * shieldCellSize;
+var shieldH = shieldRows * shieldCellSize;
+var shieldY = playerY - 44;
 
 var shieldX_pos = newArray();
 var shieldCells = newArray();   // flat: shieldIdx * (cols*rows) + row*cols + col
@@ -874,16 +887,14 @@ while (running) {
         }
         // Hit a shield from above?
         if (arrayGet(eBulletActive, i)) {
-          if (bulletHitsShield(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 2, 5, 1)) {
+          if (bulletHitsShield(arrayGet(eBulletX, i) - eBulletW / 2, arrayGet(eBulletY, i), eBulletW, eBulletH, 1)) {
             arraySet(eBulletActive, i, false);
             playNoise(120, 0.15);
           }
         }
-        // Hit player. Use the actual rendered rectangles for both:
-        //   bullet  : (eBulletX - 1, eBulletY, 2, 5)
-        //   player  : sprite is 13x7, drawn at (playerX, playerY - 2)
+        // Hit player. Use the actual rendered rectangles for both.
         if (arrayGet(eBulletActive, i)) {
-          if (rectsOverlap(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 2, 5, playerX, playerY - 2, 13, 7)) {
+          if (rectsOverlap(arrayGet(eBulletX, i) - eBulletW / 2, arrayGet(eBulletY, i), eBulletW, eBulletH, playerX, playerY - 2, playerW, playerH)) {
             arraySet(eBulletActive, i, false);
             lives = lives - 1;
             playNoise(400, 0.35);
@@ -977,7 +988,7 @@ while (running) {
 
   // --- Draw UFO ---
   if (ufoActive) {
-    drawSpriteScaled(ufoSprite, floor(ufoX), ufoY, 1);
+    drawSpriteScaled(ufoSprite, floor(ufoX), ufoY, UFO_SCALE);
   }
 
   // --- Draw invaders ---
@@ -986,7 +997,7 @@ while (running) {
     var c = 0;
     while (c < cols) {
       if (arrayGet(invAlive, r * cols + c)) {
-        drawSpriteScaled(arrayGet(invSprites, r * 2 + invFrame), invaderX(c), invaderY(r), 1);
+        drawSpriteScaled(arrayGet(invSprites, r * 2 + invFrame), invaderX(c), invaderY(r), SPR);
       }
       c = c + 1;
     }
@@ -999,9 +1010,9 @@ while (running) {
     if (arrayGet(explActive, i)) {
       var t = arrayGet(explTimer, i);
       if (t > explDuration / 2) {
-        drawSpriteScaled(explSprite1, arrayGet(explX, i), arrayGet(explY, i), 1);
+        drawSpriteScaled(explSprite1, arrayGet(explX, i), arrayGet(explY, i), SPR);
       } else {
-        drawSpriteScaled(explSprite2, arrayGet(explX, i), arrayGet(explY, i), 1);
+        drawSpriteScaled(explSprite2, arrayGet(explX, i), arrayGet(explY, i), SPR);
       }
     }
     i = i + 1;
@@ -1029,7 +1040,7 @@ while (running) {
   }
 
   // --- Draw player ---
-  drawSpriteScaled(playerSprite, floor(playerX), playerY - 2, 1);
+  drawSpriteScaled(playerSprite, floor(playerX), playerY - 2, SPR);
 
   // --- Draw player bullets ---
   setColor(255, 255, 255);
@@ -1046,7 +1057,7 @@ while (running) {
   i = 0;
   while (i < maxEnemyBullets) {
     if (arrayGet(eBulletActive, i)) {
-      fillRect(arrayGet(eBulletX, i) - 1, arrayGet(eBulletY, i), 2, 5);
+      fillRect(arrayGet(eBulletX, i) - eBulletW / 2, arrayGet(eBulletY, i), eBulletW, eBulletH);
     }
     i = i + 1;
   }
