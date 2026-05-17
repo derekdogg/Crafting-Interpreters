@@ -1,4 +1,4 @@
-﻿unit LoxCanvas;
+unit LoxCanvas;
 
 interface
 
