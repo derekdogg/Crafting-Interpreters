@@ -924,6 +924,14 @@ uses
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
 
+type
+  // Raised by the slow paths of stack growth (pushStackGrow) and other
+  // VM-internal unwinders when an unrecoverable condition is hit mid-
+  // bytecode-dispatch. Caught at the CompileAndRun boundary and translated
+  // into INTERPRET_RUNTIME_ERROR so deep recursion / runaway pushes surface
+  // as a clean script error instead of crashing the host app.
+  ELoxRuntimeError = class(Exception);
+
 { LoxClassAttribute }
 
 constructor LoxClassAttribute.Create(const AName: string);
@@ -1783,9 +1791,10 @@ begin
   // can safely protect unrooted objects (same pattern as book's fixed stack)
   // Enforce hard upper bound. Asserts compile out in release; this raise
   // ensures runaway recursion / infinite push surfaces as a clean
-  // "Stack overflow" instead of an eventual OOM crash.
+  // "Stack overflow" instead of an eventual OOM crash. Caught at the
+  // CompileAndRun boundary and converted to INTERPRET_RUNTIME_ERROR.
   if Stack.CurrentCapacity >= STACK_MAX then
-    raise Exception.CreateFmt('Stack overflow (max %d slots).', [STACK_MAX]);
+    raise ELoxRuntimeError.CreateFmt('Stack overflow (max %d slots).', [STACK_MAX]);
   AssertStackCapacityCanGrow(Stack);
   NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
   if NewCapacity > STACK_MAX then
@@ -4900,7 +4909,29 @@ begin
    VM.Frames[0].slots := VM.Stack.Values;
    VM.FrameCount := 1;
 
-   Result := Run;
+   try
+     Result := Run;
+   except
+     // Stack overflow (or any other VM-internal abort raised as
+     // ELoxRuntimeError) unwinds out of Run mid-dispatch. Translate to
+     // a clean runtime-error result and reset transient VM state so a
+     // subsequent CompileAndRun on the same initVM session starts fresh.
+     on E: ELoxRuntimeError do
+     begin
+       VM.RuntimeErrorStr := E.Message;
+       VM.FrameCount := 0;
+       VM.OpenUpvalues := nil;
+       if VM.Stack <> nil then
+       begin
+         VM.Stack.Count := 0;
+         VM.Stack.StackTop := VM.Stack.Values;
+       end;
+       Result.code := INTERPRET_RUNTIME_ERROR;
+       Result.ErrorStr := E.Message;
+       Result.OutputStr := VM.PrintOutput;
+       Exit;
+     end;
+   end;
    if Result.code = INTERPRET_RUNTIME_ERROR then
      Result.ErrorStr := VM.RuntimeErrorStr
    else if (Result.code = INTERPRET_OK) and isString(Result.value) then

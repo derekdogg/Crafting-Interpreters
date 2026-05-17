@@ -1586,6 +1586,106 @@ begin
   Result := CreateNilValue;
 end;
 
+// drawPixels(xs, ys): batch-plot N pixels using the current setColor()
+// pen colour. Collapses N x (setColor + drawPixel) RTTI crossings into
+// one call. Mismatched array lengths use min(Count). Per-pixel clip +
+// camera + ScanLine cache by Y. Used by particle/starfield code.
+function drawPixelsNative(argCount: integer; args: pValue): TValue;
+var
+  xs, ys: pObjArray;
+  n, i, x, y, lastY: Integer;
+  row: PCardinal;
+  px: Cardinal;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('drawPixels() takes 2 arguments (xs, ys).');
+    Exit(CreateNilValue);
+  end;
+  if (not isArray(args[0])) or (not isArray(args[1])) then
+  begin
+    RuntimeError('drawPixels() arguments must be arrays.');
+    Exit(CreateNilValue);
+  end;
+  xs := pObjArray(args[0].ObjValue);
+  ys := pObjArray(args[1].ObjValue);
+  n := xs^.Count;
+  if ys^.Count < n then n := ys^.Count;
+  if n <= 0 then Exit(CreateNilValue);
+  EnsureBackBuffer;
+  px := FCurrentPixel;
+  row := nil;
+  lastY := -$7FFFFFFF;
+  for i := 0 to n - 1 do
+  begin
+    if (xs^.Elements[i].ValueKind <> vkNumber) or
+       (ys^.Elements[i].ValueKind <> vkNumber) then Continue;
+    x := Trunc(xs^.Elements[i].NumberValue) - FCameraX;
+    y := Trunc(ys^.Elements[i].NumberValue) - FCameraY;
+    if (x < FClipX1) or (x >= FClipX2) or
+       (y < FClipY1) or (y >= FClipY2) then Continue;
+    if y <> lastY then
+    begin
+      row := FRenderTarget.ScanLine[y];
+      lastY := y;
+    end;
+    row[x] := px;
+  end;
+  Result := CreateNilValue;
+end;
+
+// drawPixelsGray(xs, ys, brights): batch-plot N grayscale pixels with
+// per-pixel brightness (0..255). Identical inner loop to drawPixels
+// but packs (b,b,b) for each point. Designed for starfields where
+// every star has its own brightness.
+function drawPixelsGrayNative(argCount: integer; args: pValue): TValue;
+var
+  xs, ys, bs: pObjArray;
+  n, i, x, y, b, lastY: Integer;
+  row: PCardinal;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('drawPixelsGray() takes 3 arguments (xs, ys, brights).');
+    Exit(CreateNilValue);
+  end;
+  if (not isArray(args[0])) or (not isArray(args[1])) or
+     (not isArray(args[2])) then
+  begin
+    RuntimeError('drawPixelsGray() arguments must be arrays.');
+    Exit(CreateNilValue);
+  end;
+  xs := pObjArray(args[0].ObjValue);
+  ys := pObjArray(args[1].ObjValue);
+  bs := pObjArray(args[2].ObjValue);
+  n := xs^.Count;
+  if ys^.Count < n then n := ys^.Count;
+  if bs^.Count < n then n := bs^.Count;
+  if n <= 0 then Exit(CreateNilValue);
+  EnsureBackBuffer;
+  row := nil;
+  lastY := -$7FFFFFFF;
+  for i := 0 to n - 1 do
+  begin
+    if (xs^.Elements[i].ValueKind <> vkNumber) or
+       (ys^.Elements[i].ValueKind <> vkNumber) or
+       (bs^.Elements[i].ValueKind <> vkNumber) then Continue;
+    x := Trunc(xs^.Elements[i].NumberValue) - FCameraX;
+    y := Trunc(ys^.Elements[i].NumberValue) - FCameraY;
+    if (x < FClipX1) or (x >= FClipX2) or
+       (y < FClipY1) or (y >= FClipY2) then Continue;
+    b := Trunc(bs^.Elements[i].NumberValue);
+    if b < 0 then b := 0 else if b > 255 then b := 255;
+    if y <> lastY then
+    begin
+      row := FRenderTarget.ScanLine[y];
+      lastY := y;
+    end;
+    row[x] := Cardinal($FF000000 or (b shl 16) or (b shl 8) or b);
+  end;
+  Result := CreateNilValue;
+end;
+
 // -- Sprite functions --
 
 // One-time scan: returns true if the bitmap has no magenta ($00FF00FF)
@@ -2947,6 +3047,8 @@ begin
   defineNative('drawCircle', drawCircleNative, 3);
   defineNative('fillCircle', fillCircleNative, 3);
   defineNative('drawPixel', drawPixelNative, 2);
+  defineNative('drawPixels', drawPixelsNative, 2);
+  defineNative('drawPixelsGray', drawPixelsGrayNative, 3);
   defineNative('createSprite', createSpriteNative, 3);
   defineNative('drawSprite', drawSpriteNative, 3);
   defineNative('drawSpriteScaled', drawSpriteScaledNative, 4);
