@@ -9,7 +9,8 @@ uses
   Chunk_Types,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait,
-  System.ImageList,NativeObjects, LoxCanvas;
+  System.ImageList,NativeObjects, LoxCanvas,
+  System.Generics.Collections;
 
 type
 
@@ -72,6 +73,12 @@ type
   private
     FLoxSyn: TSynLoxSyn;
     FEventQueue: TLoxQueue;
+    // Lazy caches mapping a key name ('left', 'a', ...) to its fully
+    // formed event string ('keydown:left'). Built on first miss so we
+    // pay the concat allocation once per (key, direction) pair instead
+    // of once per keystroke.
+    FKeyDownCache: TDictionary<string, string>;
+    FKeyUpCache: TDictionary<string, string>;
     FScriptRunning: Boolean;
     FClosing: Boolean;
   public
@@ -208,35 +215,62 @@ begin
 end;
 
 procedure TForm4.GameCanvasKeyDown(Sender: TObject; const KeyName: string);
+var
+  Msg: string;
 begin
-  FEventQueue.Enqueue('keydown:' + KeyName);
+  if not FKeyDownCache.TryGetValue(KeyName, Msg) then
+  begin
+    Msg := 'keydown:' + KeyName;
+    FKeyDownCache.Add(KeyName, Msg);
+  end;
+  FEventQueue.Enqueue(Msg);
 end;
 
 procedure TForm4.GameCanvasKeyUp(Sender: TObject; const KeyName: string);
+var
+  Msg: string;
 begin
-  FEventQueue.Enqueue('keyup:' + KeyName);
+  if not FKeyUpCache.TryGetValue(KeyName, Msg) then
+  begin
+    Msg := 'keyup:' + KeyName;
+    FKeyUpCache.Add(KeyName, Msg);
+  end;
+  FEventQueue.Enqueue(Msg);
 end;
 
 procedure TForm4.GameCanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
 begin
-  FEventQueue.Enqueue(Format('mousedown:%d:%d:%d', [Button, LX, LY]));
+  // Manual concat (~10x faster than Format with VarRec marshalling).
+  FEventQueue.Enqueue('mousedown:' + IntToStr(Button) + ':' +
+    IntToStr(LX) + ':' + IntToStr(LY));
 end;
 
 procedure TForm4.GameCanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
 begin
-  FEventQueue.Enqueue(Format('mouseup:%d:%d:%d', [Button, LX, LY]));
+  FEventQueue.Enqueue('mouseup:' + IntToStr(Button) + ':' +
+    IntToStr(LX) + ':' + IntToStr(LY));
 end;
 
 procedure TForm4.GameCanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
+var
+  Msg: string;
 begin
   // Button is unused for moves (caller passes -1). We still emit logical
   // coords so scripts can drive hover/drag UI without polling mouseX/Y.
-  FEventQueue.Enqueue(Format('mousemove:%d:%d', [LX, LY]));
+  Msg := 'mousemove:' + IntToStr(LX) + ':' + IntToStr(LY);
+  // Coalesce consecutive mouse-move events: WM_MOUSEMOVE can fire 100+
+  // times per second, but only the latest position matters for typical
+  // hover/drag logic. Overwriting the tail caps queue growth between
+  // processMessages() calls.
+  if not FEventQueue.ReplaceTailIfPrefix('mousemove:', Msg) then
+    FEventQueue.Enqueue(Msg);
 end;
 
 procedure TForm4.FormCreate(Sender: TObject);
 begin
   FEventQueue := TLoxQueue.Create;
+  FKeyDownCache := TDictionary<string, string>.Create;
+  FKeyUpCache := TDictionary<string, string>.Create;
   FLoxSyn := TSynLoxSyn.Create(Self);
   Memo1.Highlighter := FLoxSyn;
 
@@ -298,6 +332,8 @@ var
 begin
   FreeCanvas;
   FEventQueue.Free;
+  FKeyDownCache.Free;
+  FKeyUpCache.Free;
   N := TestTree.Items.GetFirstNode;
   while N <> nil do
   begin

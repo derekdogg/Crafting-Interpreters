@@ -7,13 +7,23 @@ uses
 
 type
   // ---- Queue for event passing between Delphi and Lox ----
+  // Backed by TList<string> + a head index instead of TQueue<string> so
+  // we can peek/replace the tail element. The tail-replace path is used
+  // by mouse-move coalescing: consecutive mousemove events overwrite
+  // each other in place rather than piling up in the queue.
   TLoxQueue = class
   private
-    FItems: TQueue<string>;
+    FItems: TList<string>;
+    FHead: Integer;
+    procedure Compact;
   public
     constructor Create;
     destructor Destroy; override;
     procedure Enqueue(const Value: string);
+    // Returns True and overwrites the most-recently-enqueued item if
+    // it begins with Prefix; otherwise returns False without modifying
+    // the queue. Used by the event-dispatch layer for coalescing.
+    function ReplaceTailIfPrefix(const Prefix, NewValue: string): Boolean;
     [LoxMethod]
     function dequeue: string;
     [LoxMethod]
@@ -105,7 +115,8 @@ uses
 constructor TLoxQueue.Create;
 begin
   inherited Create;
-  FItems := TQueue<string>.Create;
+  FItems := TList<string>.Create;
+  FHead := 0;
 end;
 
 destructor TLoxQueue.Destroy;
@@ -114,38 +125,74 @@ begin
   inherited;
 end;
 
+procedure TLoxQueue.Compact;
+begin
+  // Shift live items down to the front and reset FHead. Called when
+  // the dead-prefix region is large enough that O(n) memmove is worth
+  // it to keep the backing TArray from growing without bound on
+  // long-lived queues (e.g. UI session with thousands of events).
+  if FHead > 0 then
+  begin
+    FItems.DeleteRange(0, FHead);
+    FHead := 0;
+  end;
+end;
+
 procedure TLoxQueue.Enqueue(const Value: string);
 begin
-  FItems.Enqueue(Value);
+  FItems.Add(Value);
+end;
+
+function TLoxQueue.ReplaceTailIfPrefix(const Prefix, NewValue: string): Boolean;
+var
+  lastIdx: Integer;
+begin
+  Result := False;
+  lastIdx := FItems.Count - 1;
+  // Tail must be a live item (>= FHead). Empty/drained queue: nothing
+  // to replace.
+  if lastIdx < FHead then Exit;
+  if Copy(FItems[lastIdx], 1, Length(Prefix)) = Prefix then
+  begin
+    FItems[lastIdx] := NewValue;
+    Result := True;
+  end;
 end;
 
 function TLoxQueue.dequeue: string;
 begin
-  if FItems.Count = 0 then
-    Exit('');
-  Result := FItems.Dequeue;
+  if FHead >= FItems.Count then Exit('');
+  Result := FItems[FHead];
+  // Release the string ref-count immediately so a long-running queue
+  // doesn't hold onto stale event strings until Compact runs.
+  FItems[FHead] := '';
+  Inc(FHead);
+  // Compact when more than half the backing array is dead prefix and
+  // there are at least a few items, to amortize the move cost.
+  if (FHead >= 32) and (FHead * 2 >= FItems.Count) then
+    Compact;
 end;
 
 function TLoxQueue.peek: string;
 begin
-  if FItems.Count = 0 then
-    Exit('');
-  Result := FItems.Peek;
+  if FHead >= FItems.Count then Exit('');
+  Result := FItems[FHead];
 end;
 
 function TLoxQueue.count: Integer;
 begin
-  Result := FItems.Count;
+  Result := FItems.Count - FHead;
 end;
 
 function TLoxQueue.hasItems: Boolean;
 begin
-  Result := FItems.Count > 0;
+  Result := FHead < FItems.Count;
 end;
 
 procedure TLoxQueue.clear;
 begin
   FItems.Clear;
+  FHead := 0;
 end;
 
 { TAddress }

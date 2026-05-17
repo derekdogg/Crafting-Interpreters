@@ -1,9 +1,9 @@
 ﻿unit Chunk_Types;
 {$POINTERMATH ON}
 {$ASSERTIONS ON}
-{..$DEFINE DEBUG_LOG_GC}
-{..$DEFINE DEBUG_STRESS_GC}
-{..$DEFINE DEBUG_STRESS_TABLE}
+{$DEFINE DEBUG_LOG_GC}
+{$DEFINE DEBUG_STRESS_GC}
+{$DEFINE DEBUG_STRESS_TABLE}
 interface
  
 uses
@@ -9722,7 +9722,7 @@ end;
 
 function TableFindString(Table: pTable; const chars: PAnsiChar; length: integer; hash: uint32): pObjString;
 var
-  index: uint32;
+  index, probes, capacity: uint32;
   entry: pEntry;
 begin
   AssertTable(Table);
@@ -9733,8 +9733,16 @@ begin
 
   AssertTableEntries(Table);
 
-  index := hash mod uint32(Table.CurrentCapacity);
-  while true do
+  // Probe-count cap: a healthy table grows before it ever reaches full
+  // saturation, so a single pass over every slot is always enough to
+  // either locate the key or prove it isn't present. The cap protects
+  // against pathological states (e.g. all slots tombstoned with no
+  // empty slot remaining) where the original `while true do` could
+  // spin forever.
+  capacity := uint32(Table.CurrentCapacity);
+  index := hash mod capacity;
+  probes := 0;
+  while probes < capacity do
   begin
     entry := @Table.Entries[index];
     if entry.key = nil then
@@ -9749,8 +9757,11 @@ begin
       Result := entry.key;
       Exit;
     end;
-    index := (index + 1) mod uint32(Table.CurrentCapacity);
+    index := (index + 1) mod capacity;
+    Inc(probes);
   end;
+  // Walked the entire table without finding key or an empty slot.
+  // Treat as "not present" rather than spinning indefinitely.
 end;
 
 
