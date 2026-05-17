@@ -137,6 +137,7 @@ const
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 256;
+  STACK_MAX = FRAMES_MAX * UINT8_COUNT;  // 65536 slots — hard upper bound on Stack growth
 
 
 type
@@ -144,7 +145,6 @@ type
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
   TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord, okNativeObject, okDictionary);
-  TBinaryOperation = (boAdd, boSubtract, boMultiply, boDivide, boModulo, boGreater, boLess);
   TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
     // Single-character tokens
@@ -307,6 +307,9 @@ type
       vkObject:  (ObjValue : pObj);  //note here that this pointer is to TObjectKind.However, since all objects are derived from it, we can cast the pointer to the actual object (and back).
   end;
 
+  // `args` points into VM.Stack.Values. Natives MUST read args[i] into local
+  // Pascal vars before any pushStack / CreateString / allocation call — those
+  // can ReallocMem the stack buffer and dangle the pointer. See CallValue.
   TNativeFn = function(argCount: integer; args: pValue): TValue;
 
   TObjNative = record
@@ -620,7 +623,7 @@ function ObjStringToAnsiString(S: PObjString): AnsiString;
 function ValueToString(const value : TValue) : pObjString;
 function ValueToStr(const value : TValue) : String;
 function StringToValue(const value : pObjString) : TValue;
-function isString(value : TValue) : boolean;
+function isString(value : TValue) : boolean; inline;
 procedure Concatenate(stack : pStack; MemTracker : pMemTracker);
 
 
@@ -672,10 +675,11 @@ procedure FreeVM();
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker);
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);
 procedure ResetStack(var stack : pStack);
-procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
-function peekStack(stack : pStack) : TValue; overload;
-function peekStack(stack : pStack; distanceFromTop : integer) : TValue;overload;
-function  popStack(var stack : pStack) : TValue;
+procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker); inline;
+procedure pushStackGrow(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
+function peekStack(stack : pStack) : TValue; overload; inline;
+function peekStack(stack : pStack; distanceFromTop : integer) : TValue; overload; inline;
+function  popStack(var stack : pStack) : TValue; inline;
 
 //Scanner
 procedure InitScanner(source : pAnsiChar);
@@ -683,7 +687,6 @@ function  advance : ansichar;
 function  isAtEnd : boolean;
 
 //compilation
-function BinaryOp(Op: TBinaryOperation): boolean;
 function compile(source : pAnsiChar) : pObjClosure;
 procedure declaration();
 procedure synchronize();
@@ -717,10 +720,10 @@ function newNative(func : TNativeFn; arity: Integer; aName: PAnsiChar; MemTracke
 function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure;
 function newUpvalue(slot : pValue; MemTracker : pMemTracker) : pObjUpvalue;
 function newArray(MemTracker : pMemTracker) : pObjArray;
-function isArray(value : TValue) : boolean;
+function isArray(value : TValue) : boolean; inline;
 procedure EnsureArrayCapacity(arr : pObjArray; MemTracker : pMemTracker);
 function newDictionary(MemTracker : pMemTracker) : pObjDictionary;
-function isDictionary(value : TValue) : boolean;
+function isDictionary(value : TValue) : boolean; inline;
 function HashValue(const value : TValue) : UInt32;
 function DictGet(dict : pObjDictionary; const key : TValue; var outValue : TValue) : boolean;
 procedure DictSet(dict : pObjDictionary; const key : TValue; const val : TValue; MemTracker : pMemTracker);
@@ -729,9 +732,9 @@ function InvokeDictMethod(dict: pObjDictionary; const methodName: AnsiString;
   argCount: integer; args: pValue; var outResult: TValue): boolean;
 function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppObjString; MemTracker : pMemTracker) : pObjRecordType;
 function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
-function isRecordType(value : TValue) : boolean;
-function isRecord(value : TValue) : boolean;
-function isNativeObject(value : TValue) : boolean;
+function isRecordType(value : TValue) : boolean; inline;
+function isRecord(value : TValue) : boolean; inline;
+function isNativeObject(value : TValue) : boolean; inline;
 function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeObject;
 function findNativeMethod(classInfo : pNativeClassInfo; const methodName : AnsiString; out found : TNativeMethodFn) : boolean;
 procedure recordDeclaration();
@@ -745,9 +748,9 @@ procedure InjectObject(const name : AnsiString; instance : TObject);
 function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
 
 //Value constructors
-function CreateNumber(Value: Double): TValue;
-function CreateBoolean(Value: Boolean): TValue;
-function CreateNilValue: TValue;
+function CreateNumber(Value: Double): TValue; inline;
+function CreateBoolean(Value: Boolean): TValue; inline;
+function CreateNilValue: TValue; inline;
 function CreateObject(value : pObj) : TValue;
 
 //Table
@@ -920,6 +923,14 @@ uses
   sysutils, Math, strUtils, Windows, System.AnsiStrings,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
+
+type
+  // Raised by the slow paths of stack growth (pushStackGrow) and other
+  // VM-internal unwinders when an unrecoverable condition is hit mid-
+  // bytecode-dispatch. Caught at the CompileAndRun boundary and translated
+  // into INTERPRET_RUNTIME_ERROR so deep recursion / runaway pushes surface
+  // as a clean script error instead of crashing the host app.
+  ELoxRuntimeError = class(Exception);
 
 { LoxClassAttribute }
 
@@ -1747,67 +1758,106 @@ begin
   AssertPointerIsNil(Stack, 'FreeStack exit: Stack should be nil');
 end;
 
-procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
+// pushStackGrow — slow path for pushStack.
+// Called only when Stack.Count >= Stack.CurrentCapacity. Handles the realloc,
+// rebase of frame.slots and open upvalues, and finally writes the value and
+// increments. Kept out-of-line so the fast path (pushStack) stays tiny enough
+// for Delphi to inline at every call site without code bloat.
+//
+// Defensive `LocalValue := value` copy lives HERE because only this path can
+// realloc the stack buffer — callers routinely pass references into
+// Stack.Values itself (e.g. OP_GET_LOCAL), so we must snapshot before the
+// ReallocMem moves the buffer.
+procedure pushStackGrow(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
 var
   NewCapacity : integer;
   OldValues   : pValue;
   Offset      : NativeInt;
   i           : integer;
   upval       : pObjUpvalue;
+  LocalValue  : TValue;
 begin
-  // ---- Test MemTracker ---------------------------------------------------
+  // ---- Entry assertions ----
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
   AssertStackCapacityIsGreaterThanZero(Stack);
   AssertStackTopCountConsistent(Stack);
+
+  // Snapshot value before any realloc (see header comment).
+  LocalValue := value;
+
   // Grow using raw ReallocMem — must never trigger GC so push/pop
   // can safely protect unrooted objects (same pattern as book's fixed stack)
-  if Stack.Count >= Stack.CurrentCapacity then
+  // Enforce hard upper bound. Asserts compile out in release; this raise
+  // ensures runaway recursion / infinite push surfaces as a clean
+  // "Stack overflow" instead of an eventual OOM crash. Caught at the
+  // CompileAndRun boundary and converted to INTERPRET_RUNTIME_ERROR.
+  if Stack.CurrentCapacity >= STACK_MAX then
+    raise ELoxRuntimeError.CreateFmt('Stack overflow (max %d slots).', [STACK_MAX]);
+  AssertStackCapacityCanGrow(Stack);
+  NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
+  if NewCapacity > STACK_MAX then
+    NewCapacity := STACK_MAX;
+  AssertStackByteSizeIsSafe(NewCapacity);
+  OldValues := Stack.Values;
+  ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
+  AssertStackValuesIsAssigned(Stack);
+  AssertStackCapacityIsGreaterThanZero(Stack);
+  // Zero new portion
+  FillChar(Stack.Values[Stack.CurrentCapacity],
+    (NewCapacity - Stack.CurrentCapacity) * SizeOf(TValue), 0);
+  Stack.CurrentCapacity := NewCapacity;
+  // Rebase StackTop after realloc (pointer may have moved)
+  Stack.StackTop := Stack.Values + Stack.Count;
+  // If the buffer moved, rebase all frame.slots and open upvalue locations
+  if Stack.Values <> OldValues then
   begin
-    AssertStackCapacityCanGrow(Stack);
-    NewCapacity := Stack.CurrentCapacity * GROWTH_FACTOR;
-    AssertStackByteSizeIsSafe(NewCapacity);
-    OldValues := Stack.Values;
-    ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
-    AssertStackValuesIsAssigned(Stack);
-    AssertStackCapacityIsGreaterThanZero(Stack);
-    // Zero new portion
-    FillChar(Stack.Values[Stack.CurrentCapacity],
-      (NewCapacity - Stack.CurrentCapacity) * SizeOf(TValue), 0);
-    Stack.CurrentCapacity := NewCapacity;
-    // Rebase StackTop after realloc (pointer may have moved)
-    Stack.StackTop := Stack.Values + Stack.Count;
-    // If the buffer moved, rebase all frame.slots and open upvalue locations
-    if Stack.Values <> OldValues then
+    Offset := NativeInt(Stack.Values) - NativeInt(OldValues);
+    AssertRebaseOffsetIsNonZero(Offset);
+    // Rebase call frame slot pointers
+    if (VM <> nil) and (Stack = VM.Stack) then
     begin
-      Offset := NativeInt(Stack.Values) - NativeInt(OldValues);
-      AssertRebaseOffsetIsNonZero(Offset);
-      // Rebase call frame slot pointers
-      if (VM <> nil) and (Stack = VM.Stack) then
+      AssertFrameCountInBounds(VM.FrameCount);
+      for i := 0 to VM.FrameCount - 1 do
+        Inc(PByte(VM.Frames[i].slots), Offset);
+      // Rebase open upvalue location pointers
+      upval := VM.OpenUpvalues; //this global has sneaked in, just debating whether to inject it
+      while upval <> nil do
       begin
-        AssertFrameCountInBounds(VM.FrameCount);
-        for i := 0 to VM.FrameCount - 1 do
-          Inc(PByte(VM.Frames[i].slots), Offset);
-        // Rebase open upvalue location pointers
-        upval := VM.OpenUpvalues; //this global has sneaked in, just debating whether to inject it
-        while upval <> nil do
-        begin
-          Inc(PByte(upval^.location), Offset);
-          upval := upval^.next;
-        end;
+        Inc(PByte(upval^.location), Offset);
+        upval := upval^.next;
       end;
     end;
   end;
-  Stack.StackTop^ := Value;
+
+  Stack.StackTop^ := LocalValue;
   Inc(Stack.StackTop);
-  inc(Stack.Count);
-  
+  Inc(Stack.Count);
+
   // ---- Exit assertions ----
   AssertStackIsAssigned(Stack);
   AssertStackIsNotEmpty(Stack);
   AssertStackTopIsNotNil(Stack);
   AssertStackTopCountConsistent(Stack);
+end;
+
+// pushStack — fast-path inline wrapper.
+// Hot path (Stack.Count < Stack.CurrentCapacity): 3 stores + 1 predicted-
+// not-taken branch. No realloc, so `value` cannot alias a memory region
+// that's about to move — direct write is safe without a defensive copy.
+// Cold path delegates to pushStackGrow which carries all the assertions
+// and rebase logic.
+procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
+begin
+  if Stack.Count >= Stack.CurrentCapacity then
+    pushStackGrow(Stack, value, MemTracker)
+  else
+  begin
+    Stack.StackTop^ := value;
+    Inc(Stack.StackTop);
+    Inc(Stack.Count);
+  end;
 end;
 
 
@@ -1818,7 +1868,7 @@ end;
 
 
 
-function isObject(value : TValue) : boolean;
+function isObject(value : TValue) : boolean; inline;
 begin
   result := value.valueKind = vkObject;
 end;
@@ -1840,22 +1890,22 @@ begin
 end;
 
 
-function isString(value : TValue) : boolean;
+function isString(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okString);
 end;
 
-function isFunction(value : TValue) : boolean;
+function isFunction(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okFunction);
 end;
 
-function isNative(value : TValue) : boolean;
+function isNative(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okNative);
 end;
 
-function isClosure(value : TValue) : boolean;
+function isClosure(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okClosure);
 end;
@@ -1972,7 +2022,7 @@ begin
   Assert(Result^.Count = 0, 'newArray exit: Count should be 0');
 end;
 
-function isArray(value : TValue) : boolean;
+function isArray(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okArray);
 end;
@@ -2005,7 +2055,7 @@ begin
   AddToCreatedObjects(pObj(Result), MemTracker);
 end;
 
-function isDictionary(value : TValue) : boolean;
+function isDictionary(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okDictionary);
 end;
@@ -2253,12 +2303,12 @@ begin
     'DictDelete exit: count + tombstones exceeds capacity');
 end;
 
-function isRecordType(value : TValue) : boolean;
+function isRecordType(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okRecordType);
 end;
 
-function isRecord(value : TValue) : boolean;
+function isRecord(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okRecord);
 end;
@@ -2325,7 +2375,7 @@ begin
   Result := -1;
 end;
 
-function isNativeObject(value : TValue) : boolean;
+function isNativeObject(value : TValue) : boolean; inline;
 begin
   result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okNativeObject);
 end;
@@ -3056,7 +3106,7 @@ begin
 end;
 
 
-function CreateBoolean(Value: Boolean): TValue;
+function CreateBoolean(Value: Boolean): TValue; inline;
 begin
   Result.ValueKind := vkBoolean;
   Result.BooleanValue := Value;
@@ -3081,7 +3131,7 @@ begin
   Result := Value.ValueKind = vkNumber;
 end;
 
-function CreateNumber(Value: Double): TValue;
+function CreateNumber(Value: Double): TValue; inline;
 begin
   Result.ValueKind := vkNumber;
   Result.NumberValue := Value;
@@ -3090,13 +3140,13 @@ begin
   Assert(Result.ValueKind = vkNumber, 'CreateNumber exit: ValueKind should be vkNumber');
 end;
 
-function GetNumber(Value : TValue) : double;
+function GetNumber(Value : TValue) : double; inline;
 begin
   AssertValueIsNumber(Value);
   result := value.NumberValue;
 end;
 
-function CreateNilValue : TValue;
+function CreateNilValue : TValue; inline;
 begin
   Result.ValueKind := vkNull;
   Result.NullValue := 0;
@@ -3175,10 +3225,11 @@ begin
                   AssertPointerIsNotNil(b.ObjValue, 'B value in ValuesEqual');
                   case a.ObjValue.ObjectKind of
                     okString : begin
-                      if b.ObjValue.ObjectKind = okString then
-                        result := StringsEqual(ValueToString(a),ValueToString(b))
-                      else
-                        result := false;
+                      // Strings are interned in VM.Strings, so equal content
+                      // implies identical pObjString pointers. Pointer
+                      // compare suffices and avoids CompareMem.
+                      result := (b.ObjValue.ObjectKind = okString) and
+                                (a.ObjValue = b.ObjValue);
                     end;
                     okNativeObject : begin
                       if b.ObjValue.ObjectKind = okNativeObject then
@@ -3692,6 +3743,14 @@ var
         Exit(false);
       end;
       native := pObjNative(callee.ObjValue)^.func;
+      // NOTE: `args` points into VM.Stack.Values at StackTop - argCnt. Any
+      // operation inside the native that calls pushStack with growth (directly,
+      // or transitively via CreateString / DictSet / newArray-grow / etc.) can
+      // ReallocMem the stack buffer, which makes this `args` pointer dangle.
+      // Convention enforced for all natives in this file: read every args[i]
+      // you need into Pascal locals BEFORE the first pushStack/CreateString/
+      // allocation call, and do not touch args after that point. (Audited
+      // 2026-05; all in-tree natives comply.)
       nativeResult := native(argCnt, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt) * SizeOf(TValue)));
       // Check if native signalled a runtime error
       if VM.RuntimeErrorStr <> '' then
@@ -3783,19 +3842,14 @@ begin
         end;
 
         OP_NEGATE : begin
-
-          if not isNumber(peekStack(vm.stack)) then
+          // In-place negation: rewrite the top slot, no pop/push.
+          if vm.Stack.StackTop[-1].ValueKind <> vkNumber then
           begin
              result.code := INTERPRET_RUNTIME_ERROR;
              runtimeError('Operand must be a number.');
              exit;
           end;
-
-          value := popStack(vm.Stack);
-          value.NumberValue := -Value.NumberValue;
-
-          PushStack(vm.Stack,value,vm.MemTracker);
-
+          vm.Stack.StackTop[-1].NumberValue := -vm.Stack.StackTop[-1].NumberValue;
         end;
 
         OP_NIL      : pushStack(vm.stack, CreateNilValue,vm.MemTracker);
@@ -3809,34 +3863,49 @@ begin
         end;
 
         OP_GREATER  : begin
-                        if not binaryOp(boGreater) then
+                        // Inlined: peek-peek-typecheck, write boolean result, pop 2 push 1.
+                        // Stack before: [..., A, B]   StackTop[-2]=A, StackTop[-1]=B
+                        // Stack after:  [..., A>B]    boolean in old A slot
+                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
                         begin
+                          runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
+                        vm.Stack.StackTop[-2].ValueKind := vkBoolean;
+                        vm.Stack.StackTop[-2].BooleanValue :=
+                          vm.Stack.StackTop[-2].NumberValue > vm.Stack.StackTop[-1].NumberValue;
+                        Dec(vm.Stack.StackTop);
+                        Dec(vm.Stack.Count);
                       end;
 
         OP_LESS     : begin
-                        if not binaryOp(boLess) then
+                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
                         begin
+                          runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
+                        vm.Stack.StackTop[-2].ValueKind := vkBoolean;
+                        vm.Stack.StackTop[-2].BooleanValue :=
+                          vm.Stack.StackTop[-2].NumberValue < vm.Stack.StackTop[-1].NumberValue;
+                        Dec(vm.Stack.StackTop);
+                        Dec(vm.Stack.Count);
                       end;
 
         OP_ADD      : begin
-                        if isNumber(peekStack(vm.stack,0)) and isNumber(peekStack(vm.stack,1)) then
+                        // Fast path: both numbers — direct in-place add, no pop/push.
+                        if isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2]) then
                         begin
-                          if not BinaryOp(boAdd) then
-                          begin
-                            result.code := INTERPRET_RUNTIME_ERROR;
-                            exit;
-                          end;
+                          vm.Stack.StackTop[-2].NumberValue :=
+                            vm.Stack.StackTop[-2].NumberValue + vm.Stack.StackTop[-1].NumberValue;
+                          // ValueKind already vkNumber, no rewrite needed.
+                          Dec(vm.Stack.StackTop);
+                          Dec(vm.Stack.Count);
                         end
-                        else
-                        if isString(peekStack(vm.stack,0)) and isString(peekStack(vm.stack,1)) then
+                        else if isString(vm.Stack.StackTop[-1]) and isString(vm.Stack.StackTop[-2]) then
                         begin
-                          Concatenate(vm.stack,vm.MemTracker);
+                          Concatenate(vm.stack, vm.MemTracker);
                         end
                         else
                         begin
@@ -3847,38 +3916,65 @@ begin
                       end;
 
         OP_SUBTRACT : begin
-                        if not BinaryOp(boSubtract) then
+                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
                         begin
+                          runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
+                        vm.Stack.StackTop[-2].NumberValue :=
+                          vm.Stack.StackTop[-2].NumberValue - vm.Stack.StackTop[-1].NumberValue;
+                        Dec(vm.Stack.StackTop);
+                        Dec(vm.Stack.Count);
                       end;
 
         OP_MULTIPLY : begin
-                        if not BinaryOp(boMultiply) then
+                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
                         begin
+                          runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
+                        vm.Stack.StackTop[-2].NumberValue :=
+                          vm.Stack.StackTop[-2].NumberValue * vm.Stack.StackTop[-1].NumberValue;
+                        Dec(vm.Stack.StackTop);
+                        Dec(vm.Stack.Count);
                       end;
 
         OP_DIVIDE   : begin
-                        if not BinaryOp(boDivide) then
+                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
                         begin
+                          runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
+                        vm.Stack.StackTop[-2].NumberValue :=
+                          vm.Stack.StackTop[-2].NumberValue / vm.Stack.StackTop[-1].NumberValue;
+                        Dec(vm.Stack.StackTop);
+                        Dec(vm.Stack.Count);
                       end;
 
         OP_MODULO   : begin
-                        if not BinaryOp(boModulo) then
+                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
                         begin
+                          runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
+                        // Match prior semantics: A - Trunc(A/B)*B
+                        vm.Stack.StackTop[-2].NumberValue :=
+                          vm.Stack.StackTop[-2].NumberValue -
+                          Trunc(vm.Stack.StackTop[-2].NumberValue / vm.Stack.StackTop[-1].NumberValue) *
+                          vm.Stack.StackTop[-1].NumberValue;
+                        Dec(vm.Stack.StackTop);
+                        Dec(vm.Stack.Count);
                       end;
 
-        OP_NOT      : pushStack(vm.Stack,CreateBoolean(isFalsey(popStack(vm.Stack))),vm.MemTracker);
+        OP_NOT      : begin
+          // In-place: rewrite top slot to boolean(isFalsey(top)).
+          vm.Stack.StackTop[-1].BooleanValue := isFalsey(vm.Stack.StackTop[-1]);
+          vm.Stack.StackTop[-1].ValueKind := vkBoolean;
+        end;
 
         OP_PRINT: begin
           value := popStack(vm.Stack);
@@ -3888,7 +3984,9 @@ begin
         end;
 
         OP_POP: begin
-          popStack(vm.Stack);
+          // Inlined popStack: just shrink top, no asserts.
+          Dec(vm.Stack.StackTop);
+          Dec(vm.Stack.Count);
         end;
 
         OP_GET_GLOBAL: begin
@@ -3938,7 +4036,7 @@ begin
         OP_JUMP_IF_FALSE: begin
           offset := ReadByteFr shl 8;
           offset := offset or ReadByteFr;
-          if isFalsey(peekStack(vm.Stack)) then
+          if isFalsey(vm.Stack.StackTop[-1]) then
             Inc(frame^.ip, offset);
         end;
 
@@ -4748,7 +4846,7 @@ end;
 
 
 
-function peekStack(Stack: pStack; DistanceFromTop: Integer): TValue;
+function peekStack(Stack: pStack; DistanceFromTop: Integer): TValue; inline;
 begin
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
@@ -4759,12 +4857,12 @@ begin
   Result := Stack.Values[Stack.Count - 1 - DistanceFromTop];
 end;
 
-function peekStack(Stack: pStack): TValue;
+function peekStack(Stack: pStack): TValue; inline;
 begin
   Result := peekStack(Stack, 0);
 end;
 
-function popStack(var stack : pStack) : TValue;
+function popStack(var stack : pStack) : TValue; inline;
 var
   oldCount : integer;
 begin
@@ -4785,191 +4883,6 @@ begin
    Assert(Stack.Count >= 0, 'popStack exit: count should not be negative');
    AssertStackTopCountConsistent(Stack);
 end;
-
-function CheckBinaryNumbers: Boolean;
-begin
-  Result := False;
-  if (not isNumber(PeekStack(vm.stack,0))) or
-     (not isNumber(PeekStack(vm.stack,1))) then
-  begin
-    RuntimeError('Operands must be numbers.');
-    exit;
-  end;
-
-  Result := True;
-end;
-
-
-function BinaryOpNumber_Add: boolean;
-var
-  A, B: Double;
-  oldCount : integer;
-begin
-  if not CheckBinaryNumbers then
-    Exit(false);
-
-  oldCount := vm.stack.Count;
-  
-  B := GetNumber(PopStack(vm.Stack));
-  A := GetNumber(PopStack(vm.stack));
-
-  PushStack(vm.stack,CreateNumber(A + B),vm.MemTracker);
-  
-  // ---- Exit assertions ----
-  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Add exit: should pop 2, push 1 (net -1)');
-  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Add exit: result should be a number');
-  
-  Result := true;
-end;
-
-function BinaryOpNumber_Subtract: boolean;
-var
-  A, B: Double;
-  oldCount : integer;
-begin
-  if not CheckBinaryNumbers then
-    Exit(false);
-
-  oldCount := vm.stack.Count;
-  
-  B := GetNumber(PopStack(vm.Stack));
-  A := GetNumber(PopStack(vm.stack));
-
-  PushStack(vm.stack,CreateNumber(A - B),vm.MemTracker);
-  
-  // ---- Exit assertions ----
-  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Subtract exit: should pop 2, push 1 (net -1)');
-  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Subtract exit: result should be a number');
-  
-  Result := true;
-end;
-
-function BinaryOpNumber_Multiply: boolean;
-var
-  A, B: Double;
-  oldCount : integer;
-begin
-  if not CheckBinaryNumbers then
-    Exit(false);
-
-  oldCount := vm.stack.Count;
-  
-  B := GetNumber(PopStack(vm.Stack));
-  A := GetNumber(PopStack(vm.stack));
-
-  PushStack(vm.stack,CreateNumber(A * B),vm.MemTracker);
-  
-  // ---- Exit assertions ----
-  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Multiply exit: should pop 2, push 1 (net -1)');
-  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Multiply exit: result should be a number');
-  
-  Result := true;
-end;
-
-function BinaryOpNumber_Divide: boolean;
-var
-  A, B: Double;
-  oldCount : integer;
-begin
-  if not CheckBinaryNumbers then
-    Exit(false);
-
-  oldCount := vm.stack.Count;
-  
-  B := GetNumber(PopStack(vm.Stack));
-  A := GetNumber(PopStack(vm.stack));
-
-  PushStack(vm.stack,CreateNumber(A / B),vm.MemTracker);
-  
-  // ---- Exit assertions ----
-  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Divide exit: should pop 2, push 1 (net -1)');
-  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Divide exit: result should be a number');
-  
-  Result := true;
-end;
-
-function BinaryOpNumber_Modulo: boolean;
-var
-  A, B: Double;
-  oldCount : integer;
-begin
-  if not CheckBinaryNumbers then
-    Exit(false);
-
-  oldCount := vm.stack.Count;
-
-  B := GetNumber(PopStack(vm.Stack));
-  A := GetNumber(PopStack(vm.stack));
-
-  PushStack(vm.stack,CreateNumber(A - Trunc(A / B) * B),vm.MemTracker);
-
-  // ---- Exit assertions ----
-  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Modulo exit: should pop 2, push 1 (net -1)');
-  Assert(isNumber(peekStack(vm.stack)), 'BinaryOpNumber_Modulo exit: result should be a number');
-
-  Result := true;
-end;
-
-function BinaryOpNumber_Greater: boolean;
-var
-  A, B: Double;
-  oldCount : integer;
-begin
-  if not CheckBinaryNumbers then
-    Exit(false);
-
-  oldCount := vm.stack.Count;
-  
-  B := GetNumber(PopStack(vm.Stack));
-  A := GetNumber(PopStack(vm.stack));
-
-  PushStack(vm.stack,CreateBoolean(A > B),vm.MemTracker);
-  
-  // ---- Exit assertions ----
-  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Greater exit: should pop 2, push 1 (net -1)');
-  Assert(isBoolean(peekStack(vm.stack)), 'BinaryOpNumber_Greater exit: result should be a boolean');
-  
-  Result := true;
-end;
-
-function BinaryOpNumber_Less: boolean;
-var
-  A, B: Double;
-  oldCount : integer;
-begin
-  if not CheckBinaryNumbers then
-    Exit(false);
-
-  oldCount := vm.stack.Count;
-  
-  B := GetNumber(PopStack(vm.Stack));
-  A := GetNumber(PopStack(vm.stack));
-
-  PushStack(vm.stack,CreateBoolean(A < B),vm.MemTracker);
-  
-  // ---- Exit assertions ----
-  Assert(vm.stack.Count = oldCount - 1, 'BinaryOpNumber_Less exit: should pop 2, push 1 (net -1)');
-  Assert(isBoolean(peekStack(vm.stack)), 'BinaryOpNumber_Less exit: result should be a boolean');
-  
-  Result := true;
-end;
-
-
-function BinaryOp(Op: TBinaryOperation): boolean;
-begin
-  case Op of
-    boAdd       : Result := BinaryOpNumber_Add;
-    boSubtract  : Result := BinaryOpNumber_subtract;
-    boMultiply  : Result := BinaryOpNumber_Multiply;
-    boDivide    : Result := BinaryOpNumber_Divide;
-    boModulo    : Result := BinaryOpNumber_Modulo;
-    boGreater   : Result := BinaryOpNumber_Greater;
-    boLess      : Result := BinaryOpNumber_Less;
-  else
-    raise Exception.Create('Unknown operator');
-  end;
-end;
-
 
 //entry point into vm
 function CompileAndRun(source : pAnsiChar) : TInterpretResult;
@@ -4996,7 +4909,29 @@ begin
    VM.Frames[0].slots := VM.Stack.Values;
    VM.FrameCount := 1;
 
-   Result := Run;
+   try
+     Result := Run;
+   except
+     // Stack overflow (or any other VM-internal abort raised as
+     // ELoxRuntimeError) unwinds out of Run mid-dispatch. Translate to
+     // a clean runtime-error result and reset transient VM state so a
+     // subsequent CompileAndRun on the same initVM session starts fresh.
+     on E: ELoxRuntimeError do
+     begin
+       VM.RuntimeErrorStr := E.Message;
+       VM.FrameCount := 0;
+       VM.OpenUpvalues := nil;
+       if VM.Stack <> nil then
+       begin
+         VM.Stack.Count := 0;
+         VM.Stack.StackTop := VM.Stack.Values;
+       end;
+       Result.code := INTERPRET_RUNTIME_ERROR;
+       Result.ErrorStr := E.Message;
+       Result.OutputStr := VM.PrintOutput;
+       Exit;
+     end;
+   end;
    if Result.code = INTERPRET_RUNTIME_ERROR then
      Result.ErrorStr := VM.RuntimeErrorStr
    else if (Result.code = INTERPRET_OK) and isString(Result.value) then
@@ -5068,6 +5003,10 @@ begin
       if pObjNativeObject(obj)^.ownsInstance and
          Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
       begin
+        // Contract: native destructors MUST NOT raise. They run mid-sweep,
+        // so any raise here unwinds through Allocate -> Run and leaves the
+        // GC cycle in an inconsistent state. If a destructor needs to fail,
+        // fix it at the source — do not wrap this call.
         pObjNativeObject(obj)^.classInfo^.destructor_(pObjNativeObject(obj)^.instance);
         pObjNativeObject(obj)^.instance := nil;
       end;
@@ -5129,10 +5068,13 @@ begin
       newCapacity := GRAY_STACK_INITIAL_CAPACITY
     else
       newCapacity := VM.MemTracker.GrayCapacity * 2;
+    // Overflow check on the computed byte size before the realloc.
+    Assert(newCapacity <= MaxInt div SizeOf(pObj), 'MarkObject: GrayStack byte size overflow');
+    // Use raw ReallocMem to avoid recursive GC trigger.
+    // Update GrayCapacity only AFTER a successful realloc, so an EOutOfMemory
+    // exception leaves the tracker's capacity matching the still-valid old buffer.
+    ReallocMem(VM.MemTracker.GrayStack, SizeOf(pObj) * newCapacity);
     VM.MemTracker.GrayCapacity := newCapacity;
-    // Use raw ReallocMem to avoid recursive GC trigger
-    Assert(VM.MemTracker.GrayCapacity <= MaxInt div SizeOf(pObj), 'MarkObject: GrayStack byte size overflow');
-    ReallocMem(VM.MemTracker.GrayStack, SizeOf(pObj) * VM.MemTracker.GrayCapacity);
     // ---- Mid assertions ----
     Assert(VM.MemTracker.GrayStack <> nil, 'MarkObject: GrayStack is nil after realloc');
     Assert(VM.MemTracker.GrayCapacity > 0, 'MarkObject: GrayCapacity should be > 0 after growth');
@@ -9811,7 +9753,7 @@ end;
 
 function TableFindString(Table: pTable; const chars: PAnsiChar; length: integer; hash: uint32): pObjString;
 var
-  index: uint32;
+  index, probes, capacity: uint32;
   entry: pEntry;
 begin
   AssertTable(Table);
@@ -9822,8 +9764,16 @@ begin
 
   AssertTableEntries(Table);
 
-  index := hash mod uint32(Table.CurrentCapacity);
-  while true do
+  // Probe-count cap: a healthy table grows before it ever reaches full
+  // saturation, so a single pass over every slot is always enough to
+  // either locate the key or prove it isn't present. The cap protects
+  // against pathological states (e.g. all slots tombstoned with no
+  // empty slot remaining) where the original `while true do` could
+  // spin forever.
+  capacity := uint32(Table.CurrentCapacity);
+  index := hash mod capacity;
+  probes := 0;
+  while probes < capacity do
   begin
     entry := @Table.Entries[index];
     if entry.key = nil then
@@ -9838,8 +9788,11 @@ begin
       Result := entry.key;
       Exit;
     end;
-    index := (index + 1) mod uint32(Table.CurrentCapacity);
+    index := (index + 1) mod capacity;
+    Inc(probes);
   end;
+  // Walked the entire table without finding key or an empty slot.
+  // Treat as "not present" rather than spinning indefinitely.
 end;
 
 

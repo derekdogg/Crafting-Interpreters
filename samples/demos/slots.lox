@@ -1,0 +1,552 @@
+// ============================================================
+// LOX SLOTS — 3-reel progressive-jackpot slot machine
+// ============================================================
+//
+// Math (single center payline, independent reels, 20-stop strips):
+//
+//   per-reel symbol counts:    cherry 6, lemon 5, bell 4, bar 3, seven 2
+//   per-reel probabilities:    .30      .25      .20    .15    .10
+//   3-of-a-kind probabilities: .027     .015625  .008   .003375 .001
+//   base payouts (x bet):      5        12       25     60     100*
+//
+//   *Three 7s at MAX BET wins the PROGRESSIVE JACKPOT instead of 100x.
+//   The jackpot grows by 10% of every bet and resets to its seed (500)
+//   after a hit. Lower bets that hit 3x seven still get the 100x base.
+//
+//   Base RTP (no jackpot) ~82.5%. At equilibrium the jackpot adds ~10
+//   percentage points back at max bet, bringing real RTP close to 92.5%.
+//
+// Controls:
+//   SPACE      spin
+//   UP / DOWN  bet +/- 1  (bet max for jackpot eligibility)
+//   ESC        quit
+// ============================================================
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+// --- Palette sprites (12x12, drawn at scale 4 -> 48x48 on screen) ---
+
+// CHERRY
+setPaletteColor("R", 220,  30,  30);
+setPaletteColor("D", 140,  10,  10);
+setPaletteColor("G",  40, 170,  50);
+setPaletteColor("W", 255, 255, 255);
+var sCherry = createPaletteSprite(12, 12,
+  "...........G" +
+  "..........G." +
+  ".........G.." +
+  "........G..." +
+  ".....GGGG..." +
+  "..RRRR.RRRR." +
+  ".RRWRR.RRWR." +
+  ".RRRRR.RRRR." +
+  ".RRRRR.RRRR." +
+  ".RDDDR.RDDR." +
+  "..RDR...RR.." +
+  "............"
+);
+
+// LEMON
+setPaletteColor("Y", 250, 220,  40);
+setPaletteColor("O", 200, 160,  20);
+setPaletteColor("W", 255, 255, 200);
+var sLemon = createPaletteSprite(12, 12,
+  "............" +
+  "...OOOOOO..." +
+  "..OYYYYYYO.." +
+  ".OYYWYYYYYO." +
+  "OYYWWYYYYYYO" +
+  "OYYWYYYYYYYO" +
+  "OYYYYYYYYYYO" +
+  "OYYYYYYYYYYO" +
+  ".OYYYYYYYYO." +
+  "..OYYYYYYO.." +
+  "...OOOOOO..." +
+  "............"
+);
+
+// BELL
+setPaletteColor("Y", 240, 200,  40);
+setPaletteColor("O", 180, 130,  20);
+setPaletteColor("D",  90,  60,  10);
+setPaletteColor("W", 255, 240, 160);
+var sBell = createPaletteSprite(12, 12,
+  "....OOOO...." +
+  "...OYYYYO..." +
+  "..OYYWYYYO.." +
+  ".OYYWYYYYYO." +
+  ".OYYYYYYYYO." +
+  ".OYYYYYYYYO." +
+  "OYYYYYYYYYYO" +
+  "OYYYYYYYYYYO" +
+  "OOOOOOOOOOOO" +
+  "....OOOO...." +
+  "....ODDO...." +
+  ".....OO....."
+);
+
+// BAR
+setPaletteColor("Y", 250, 200,  40);
+setPaletteColor("O", 170, 110,  10);
+setPaletteColor("D",  80,  50,   5);
+var sBar = createPaletteSprite(12, 12,
+  "............" +
+  "............" +
+  "OOOOOOOOOOOO" +
+  "OYYYYYYYYYYO" +
+  "OYODOYDODOYO" +
+  "OYOYOYOYOYOO" +
+  "OYODOYDODOYO" +
+  "OYYYYYYYYYYO" +
+  "OOOOOOOOOOOO" +
+  "............" +
+  "............" +
+  "............"
+);
+
+// SEVEN
+setPaletteColor("R", 240,  40,  40);
+setPaletteColor("D", 140,  10,  10);
+setPaletteColor("W", 255, 220, 220);
+var sSeven = createPaletteSprite(12, 12,
+  "............" +
+  ".RRRRRRRRRR." +
+  ".RRRRRRRRRR." +
+  ".DDDDDDDDRR." +
+  ".......RRR.." +
+  "......RRR..." +
+  ".....RRR...." +
+  "....RRR....." +
+  "....RRR....." +
+  "....RRR....." +
+  "....RRR....." +
+  "............"
+);
+
+clearPalette();
+
+// Symbol IDs (also index into sprite/name/pay arrays)
+var SYM_CHERRY = 0;
+var SYM_LEMON  = 1;
+var SYM_BELL   = 2;
+var SYM_BAR    = 3;
+var SYM_SEVEN  = 4;
+
+var symSprite = newArray();
+arrayPush(symSprite, sCherry);
+arrayPush(symSprite, sLemon);
+arrayPush(symSprite, sBell);
+arrayPush(symSprite, sBar);
+arrayPush(symSprite, sSeven);
+
+var symName = newArray();
+arrayPush(symName, "CHERRY");
+arrayPush(symName, "LEMON");
+arrayPush(symName, "BELL");
+arrayPush(symName, "BAR");
+arrayPush(symName, "777");
+
+// 3-of-a-kind payout multipliers (x bet)
+var payout = newArray();
+arrayPush(payout, 5);    // cherry
+arrayPush(payout, 12);   // lemon
+arrayPush(payout, 25);   // bell
+arrayPush(payout, 60);   // bar
+arrayPush(payout, 100);  // seven (base; max-bet triggers progressive jackpot)
+
+// --- Reel strips (20 stops each, identical distribution per reel) ---
+// Order chosen so common symbols don't cluster -> visually nicer scroll.
+var stripLen = 20;
+fun buildStrip() {
+  var s = newArray();
+  arrayPush(s, SYM_CHERRY); arrayPush(s, SYM_LEMON); arrayPush(s, SYM_BELL);
+  arrayPush(s, SYM_CHERRY); arrayPush(s, SYM_BAR);   arrayPush(s, SYM_LEMON);
+  arrayPush(s, SYM_CHERRY); arrayPush(s, SYM_SEVEN); arrayPush(s, SYM_BELL);
+  arrayPush(s, SYM_LEMON);  arrayPush(s, SYM_CHERRY); arrayPush(s, SYM_BAR);
+  arrayPush(s, SYM_BELL);   arrayPush(s, SYM_LEMON); arrayPush(s, SYM_CHERRY);
+  arrayPush(s, SYM_BAR);    arrayPush(s, SYM_BELL);  arrayPush(s, SYM_CHERRY);
+  arrayPush(s, SYM_LEMON);  arrayPush(s, SYM_SEVEN);
+  return s;
+}
+var strip = newArray();   // 3 strips, one per reel
+arrayPush(strip, buildStrip());
+arrayPush(strip, buildStrip());
+arrayPush(strip, buildStrip());
+
+// --- Reel layout ---
+var symPx       = 48;             // displayed symbol size
+var reelW       = symPx;
+var reelGap     = 12;
+var reelsTotalW = 3 * reelW + 2 * reelGap;
+var reelsX      = floor((w - reelsTotalW) / 2);
+var reelsY      = 56;
+var reelH       = 3 * symPx;      // window shows 3 symbols
+var paylineY    = reelsY + symPx + symPx / 2;  // middle row centre
+
+// --- Reel state ---
+// position[i] = continuous scroll offset in *pixels*, where each symbol
+// occupies symPx pixels. position increases as the reel "spins down".
+// Visible center symbol index = floor(position / symPx) mod stripLen.
+var position    = newArray();
+var velocity    = newArray();     // px/sec while spinning
+var spinning    = newArray();     // boolean
+var stopAt      = newArray();     // wall-clock time to begin braking
+var targetPos   = newArray();     // final pixel-aligned position
+var lastStopIdx = newArray();     // last symbol index that crossed the line (for click sfx)
+
+var i = 0;
+while (i < 3) {
+  arrayPush(position, floor(random() * stripLen) * symPx);
+  arrayPush(velocity, 0);
+  arrayPush(spinning, false);
+  arrayPush(stopAt, 0);
+  arrayPush(targetPos, 0);
+  arrayPush(lastStopIdx, -1);
+  i = i + 1;
+}
+
+// --- Game state ---
+var credits   = 100;
+var bet       = 1;
+var maxBet    = 10;
+var lastWin   = 0;
+var lastMsg   = "PRESS SPACE TO SPIN";
+var msgFlash  = 0;       // seconds remaining for highlighted msg
+var running   = true;
+var anySpinning = false;
+var lastTime  = clock();
+
+// --- Progressive jackpot ---
+// 10% of every bet feeds the pool. 3x seven at maxBet wins it all and the
+// pool resets to the seed. 3x seven at lower bets pays the base 100x only.
+var jackpotSeed         = 500;
+var jackpot             = jackpotSeed;
+var jackpotContribRate  = 0.10;
+var jackpotFlash        = 0;       // seconds remaining of pulsing display
+var jackpotPulse        = 0;       // accumulator for idle shimmer
+
+// --- Helpers ---
+fun centerSymbol(reelIdx) {
+  // Which symbol is currently lined up on the payline?
+  var p = arrayGet(position, reelIdx);
+  // The "center row" is the second visible symbol. Offset by symPx so
+  // position 0 means symbol 0 on the centre line.
+  var idx = floor(p / symPx);
+  // Modulo into strip length
+  idx = idx - floor(idx / stripLen) * stripLen;
+  if (idx < 0) idx = idx + stripLen;
+  return arrayGet(arrayGet(strip, reelIdx), idx);
+}
+
+fun startSpin() {
+  if (anySpinning) return;
+  if (credits < bet) {
+    lastMsg = "INSUFFICIENT CREDITS";
+    msgFlash = 1.0;
+    playNoise(200, 0.25);
+    return;
+  }
+  credits = credits - bet;
+  // Feed the pool. Tracked as float; display floors it.
+  jackpot = jackpot + bet * jackpotContribRate;
+  lastWin = 0;
+  lastMsg = "SPINNING...";
+  msgFlash = 0;
+  var now = clock();
+  var r = 0;
+  while (r < 3) {
+    arraySet(spinning, r, true);
+    // ~1200 px/s -> 25 symbols/s, very blurry
+    arraySet(velocity, r, 1100 + random() * 200);
+    // Stagger stop times: reel 1 stops at +1.4s, reel 2 at +1.9s, reel 3 at +2.5s
+    var stopDelay = 1.4 + r * 0.55;
+    arraySet(stopAt, r, now + stopDelay);
+    // Pre-decide target so braking can ease into it. Random stop index 0..19.
+    var t = floor(random() * stripLen) * symPx;
+    // Push target several full revs ahead of current position so we always
+    // brake forward (never backward).
+    var p = arrayGet(position, r);
+    var stripPixels = stripLen * symPx;
+    // Find the next p' >= p + 3 full strips with p' mod stripPixels == t
+    var pmod = p - floor(p / stripPixels) * stripPixels;
+    var ahead = t - pmod;
+    if (ahead < 0) ahead = ahead + stripPixels;
+    var fp = p + ahead + 3 * stripPixels;
+    arraySet(targetPos, r, fp);
+    r = r + 1;
+  }
+  playSweep(200, 800, 250, 0.25);
+}
+
+fun evaluateWin() {
+  var a = centerSymbol(0);
+  var b = centerSymbol(1);
+  var c = centerSymbol(2);
+  if (a == b and b == c) {
+    if (a == SYM_SEVEN and bet == maxBet) {
+      // *** PROGRESSIVE JACKPOT ***
+      var win = floor(jackpot);
+      credits = credits + win;
+      lastWin = win;
+      lastMsg = "*** JACKPOT! " + str(win) + " ***";
+      msgFlash = 6.0;
+      jackpot = jackpotSeed;
+      jackpotFlash = 5.0;
+      // Six-tone fanfare.
+      playTone( 800, 100, 0.6); playTone(1000, 100, 0.6);
+      playTone(1200, 100, 0.6); playTone(1000, 100, 0.6);
+      playTone(1200, 100, 0.6); playTone(1600, 400, 0.7);
+    } else {
+      var mult = arrayGet(payout, a);
+      var win = mult * bet;
+      credits = credits + win;
+      lastWin = win;
+      if (a == SYM_SEVEN) {
+        // Sevens at non-max bet: base pay only, nag the player.
+        lastMsg = "777 x" + str(mult) + " = " + str(win) + "   (BET MAX FOR JACKPOT!)";
+        msgFlash = 4.0;
+        playTone(800, 120, 0.5); playTone(1000, 120, 0.5); playTone(1200, 200, 0.5);
+      } else {
+        lastMsg = "WIN! " + arrayGet(symName, a) + " x" + str(mult) + " = " + str(win);
+        msgFlash = 2.5;
+        playTone(600 + mult * 4, 100, 0.4);
+        playTone(800 + mult * 4, 150, 0.4);
+      }
+    }
+  } else {
+    lastWin = 0;
+    lastMsg = "NO WIN - SPACE TO SPIN AGAIN";
+    msgFlash = 0.8;
+  }
+}
+
+// ============================================================
+// Game loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // --- Input ---
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+    if (e == "keydown:space") startSpin();
+    if (e == "keydown:up") {
+      if (!anySpinning and bet < maxBet) {
+        bet = bet + 1;
+        playTone(900, 30, 0.2);
+      }
+    }
+    if (e == "keydown:down") {
+      if (!anySpinning and bet > 1) {
+        bet = bet - 1;
+        playTone(600, 30, 0.2);
+      }
+    }
+  }
+
+  // --- Update reels ---
+  anySpinning = false;
+  var r = 0;
+  while (r < 3) {
+    if (arrayGet(spinning, r)) {
+      anySpinning = true;
+      var p = arrayGet(position, r);
+      var v = arrayGet(velocity, r);
+      var stopT = arrayGet(stopAt, r);
+      var tgt = arrayGet(targetPos, r);
+
+      if (now < stopT) {
+        // Free-spinning phase: constant high velocity.
+        p = p + v * dt;
+      } else {
+        // Brake phase: ease p toward tgt with exponential decay.
+        // Remaining distance shrinks geometrically each frame; clamp so
+        // we always advance forward and finish in a bounded time.
+        var remain = tgt - p;
+        if (remain < 1.0) {
+          p = tgt;
+          arraySet(spinning, r, false);
+          // Final click + ripple-evaluate when last reel locks.
+          playTone(180, 25, 0.3);
+          arraySet(position, r, p);
+          if (r == 2) evaluateWin();
+        } else {
+          // Step toward target. 8 = decay constant: bigger = snappier stop.
+          var step = remain * dt * 8;
+          // Make sure we move at least a slow crawl so we don't stall.
+          if (step < 30 * dt) step = 30 * dt;
+          if (step > remain) step = remain;
+          p = p + step;
+        }
+      }
+
+      // Per-symbol click while spinning (whenever the integer symbol idx
+      // changes). Cheap audio feedback that ties speed to sound density.
+      var newIdx = floor(p / symPx);
+      if (newIdx != arrayGet(lastStopIdx, r) and arrayGet(spinning, r)) {
+        arraySet(lastStopIdx, r, newIdx);
+        // Soft tick - quieter than the lock-in click.
+        playTone(120, 8, 0.06);
+      }
+
+      arraySet(position, r, p);
+    }
+    r = r + 1;
+  }
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas(20, 16, 32);
+
+  // Title bar - "LOX SLOTS" on the left, jackpot meter on the right.
+  setColor(0, 0, 0);
+  fillRect(0, 0, w, 28);
+  setColor(255, 220, 60);
+  drawText(8, 6, "LOX SLOTS", 2);
+
+  // Jackpot meter. Pulses gold->white-hot for jackpotFlash seconds after
+  // a win; otherwise shimmers subtly so the eye knows it's growing.
+  jackpotPulse = jackpotPulse + dt;
+  var jp = floor(jackpot);
+  var jpLabel = "JACKPOT " + str(jp);
+  // 8px font; label width = 8 * len. We don't have strlen() so estimate.
+  var jpEstW = 80 + 8 * 6;  // "JACKPOT " (8 chars) + up to 6 digits
+  var jpX = w - jpEstW - 8;
+  if (jackpotFlash > 0) {
+    jackpotFlash = jackpotFlash - dt;
+    // Strobe red <-> white for the duration of the win celebration.
+    if (floor(jackpotPulse * 12) - floor(jackpotPulse * 12 / 2) * 2 == 0) {
+      setColor(255, 255, 255);
+    } else {
+      setColor(255, 80, 80);
+    }
+  } else {
+    // Idle: gentle gold shimmer.
+    var s = jackpotPulse - floor(jackpotPulse);
+    if (s < 0.5) {
+      setColor(255, 220, 60);
+    } else {
+      setColor(255, 240, 140);
+    }
+  }
+  drawText(jpX, 6, jpLabel, 2);
+
+  // Reel cabinet (frame around all 3 reels)
+  var frameX = reelsX - 8;
+  var frameY = reelsY - 8;
+  var frameW = reelsTotalW + 16;
+  var frameH = reelH + 16;
+  setColor(60, 40, 20);
+  fillRect(frameX, frameY, frameW, frameH);
+  setColor(200, 160, 60);
+  drawRect(frameX, frameY, frameW, frameH);
+  drawRect(frameX + 1, frameY + 1, frameW - 2, frameH - 2);
+
+  // Reels (each masked by a clip rect so off-window symbols don't leak)
+  r = 0;
+  while (r < 3) {
+    var rx = reelsX + r * (reelW + reelGap);
+    var ry = reelsY;
+    // Reel face background
+    setColor(10, 8, 16);
+    fillRect(rx, ry, reelW, reelH);
+
+    setClipRect(rx, ry, reelW, reelH);
+    var p = arrayGet(position, r);
+    // The visible center index is floor(p / symPx). We draw that plus
+    // one above and one below so the window stays filled during scroll.
+    var centerIdx = floor(p / symPx);
+    var subPixel = p - centerIdx * symPx;   // 0..symPx-1
+    var s = strip;
+    var thisStrip = arrayGet(strip, r);
+    var k = -1;
+    while (k <= 1) {
+      var stripIdx = centerIdx + k;
+      stripIdx = stripIdx - floor(stripIdx / stripLen) * stripLen;
+      if (stripIdx < 0) stripIdx = stripIdx + stripLen;
+      var sym = arrayGet(thisStrip, stripIdx);
+      var drawY = ry + symPx + k * symPx - subPixel;
+      drawSpriteScaled(arrayGet(symSprite, sym), rx, drawY, 4);
+      k = k + 1;
+    }
+    clearClipRect();
+
+    // Reel border
+    setColor(100, 80, 40);
+    drawRect(rx, ry, reelW, reelH);
+
+    r = r + 1;
+  }
+
+  // Payline (only highlight when stopped)
+  if (!anySpinning and lastWin > 0) {
+    setColor(255, 220, 60);
+  } else {
+    setColor(180, 60, 60);
+  }
+  drawLine(frameX, paylineY, frameX + frameW - 1, paylineY);
+
+  // HUD - credits (top-left), bet (top-right). When bet is at max, the
+  // BET indicator turns gold to advertise jackpot eligibility.
+  setColor(255, 255, 255);
+  drawText(8, 32, "CREDITS: " + str(credits));
+  if (bet == maxBet) setColor(255, 220, 60);
+  else setColor(255, 255, 255);
+  drawText(w - 100, 32, "BET: " + str(bet) + "/" + str(maxBet));
+
+  // Paytable column - left of the reel cabinet, aligned with reel window.
+  // Drawn at the same scale as the reels (4x) would dominate, so we use
+  // scale 2 (24x24 icons) and a compact "x N" label beside each.
+  var ptX = 8;
+  var ptY = reelsY;
+  setColor(160, 160, 200);
+  drawText(ptX, ptY - 10, "PAYS");
+  var pi = 4;   // 777 at top, cherry at bottom
+  var py = ptY;
+  while (pi >= 0) {
+    drawSpriteScaled(arrayGet(symSprite, pi), ptX, py, 2);
+    setColor(220, 220, 220);
+    drawText(ptX + 28, py + 8, "x" + str(arrayGet(payout, pi)));
+    py = py + 28;
+    pi = pi - 1;
+  }
+
+  // Last-win indicator - right of the reel cabinet, mirroring paytable.
+  var lwX = w - 60;
+  setColor(160, 160, 200);
+  drawText(lwX, reelsY - 10, "WIN");
+  if (lastWin > 0) {
+    setColor(255, 220, 60);
+  } else {
+    setColor(80, 80, 100);
+  }
+  drawText(lwX, reelsY + 4, str(lastWin));
+
+  // Message line (just under the cabinet)
+  var msgY = reelsY + reelH + 14;
+  setColor(0, 0, 0);
+  fillRect(8, msgY - 2, w - 16, 12);
+  if (msgFlash > 0) {
+    msgFlash = msgFlash - dt;
+    if (lastWin > 0) setColor(255, 220, 60);
+    else setColor(255, 100, 100);
+  } else {
+    setColor(200, 200, 220);
+  }
+  drawText(12, msgY, lastMsg);
+
+  // Controls hint (bottom edge, well clear of message line)
+  setColor(120, 120, 160);
+  drawText(8, h - 12, "SPACE spin   UP/DOWN bet   ESC quit");
+
+  present();
+}
+
+print "Final credits: " + str(credits);

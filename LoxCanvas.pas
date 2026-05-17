@@ -1,4 +1,4 @@
-﻿unit LoxCanvas;
+unit LoxCanvas;
 
 interface
 
@@ -165,6 +165,23 @@ var
 
 procedure ResetClipToTarget; forward;
 
+// Fast 32-bit fill: rep stosd. Bit-identical to a scalar `for i := 0 to
+// Count-1 do P[i] := Value` loop but avoids per-pixel loop overhead on
+// the hot rasterizer paths (fillRect / clearCanvas / fillCircle.HLine).
+procedure FillDWord(var Dest; Count: Integer; Value: LongWord);
+asm
+  // Win32 fastcall: EAX=@Dest, EDX=Count, ECX=Value.
+  PUSH EDI
+  MOV  EDI, EAX
+  MOV  EAX, ECX
+  MOV  ECX, EDX
+  TEST ECX, ECX
+  JLE  @@done
+  REP  STOSD
+@@done:
+  POP  EDI
+end;
+
 procedure EnsurePresentBuffer(cw, ch: Integer);
 begin
   if (cw <= 0) or (ch <= 0) then Exit;
@@ -193,6 +210,17 @@ begin
     FBackBuffer.Canvas.Brush.Color := clBlack;
     FBackBuffer.Canvas.FillRect(Rect(0, 0, FBackBuffer.Width, FBackBuffer.Height));
   end;
+  // If the current render target is a surface that no longer exists
+  // (freed, surfaces list cleared, etc.), fall back to the back buffer.
+  // This closes a small dangling-pointer window after RegisterCanvasNatives
+  // or any other path that mutates FSurfaces without rebinding.
+  if (FRenderTargetId >= 0) and
+     ((FSurfaces = nil) or (FRenderTargetId >= FSurfaces.Count) or
+      (FSurfaces[FRenderTargetId] = nil)) then
+  begin
+    FRenderTarget := FBackBuffer;
+    FRenderTargetId := -1;
+  end;
   if FRenderTargetId < 0 then
     FRenderTarget := FBackBuffer;
   ResetClipToTarget;
@@ -217,6 +245,26 @@ end;
 // AND N*LOGICAL_H <= ch. If the host is smaller than the logical size on
 // any axis, we still use scale=1 and clip — the result is acceptable for
 // a tiny window and avoids the visual disaster of fractional scaling.
+//
+// Pixel-art invariants (please preserve when changing this routine):
+//   1. All drawing into FBackBuffer/FFrontBuffer happens at integer
+//      logical coordinates. Every native (drawSprite, fillRect, etc.)
+//      Trunc()s its Lox-double arguments before writing, so there is no
+//      sub-pixel sampling anywhere upstream of this point.
+//   2. The scale step uses StretchBlt with SetStretchBltMode(COLORONCOLOR),
+//      which on Windows is nearest-neighbor for 32-bit blits. HALFTONE
+//      would smooth — DO NOT use it. The final stage->client copy is a
+//      1:1 BitBlt, so no resampling happens there.
+//   3. cw/ch should be PHYSICAL client pixels. Callers pass values from
+//      Windows.GetClientRect (true device pixels) rather than
+//      TControl.ClientWidth, so per-monitor DPI virtualization can't
+//      insert a hidden resample between us and the screen. The EXE's
+//      DPI-awareness in the manifest still matters: if Windows is auto-
+//      scaling a non-DPI-aware app, it bitmap-stretches our output AFTER
+//      we deliver it. For pixel-art crispness, declare the EXE
+//      per-monitor DPI-aware (or System DPI aware) in the manifest, and
+//      either set the host form's Scaled := False or leave it on with
+//      integer scale factors only.
 procedure PresentScaled(DC: HDC; cw, ch: Integer);
 var
   scale, dw, dh, dx, dy: Integer;
@@ -235,6 +283,8 @@ begin
   stageDC := FPresentBuffer.Canvas.Handle;
   // Compose the full client image off-screen, then copy it in one blit.
   PatBlt(stageDC, 0, 0, cw, ch, BLACKNESS);
+  // COLORONCOLOR == nearest-neighbor for 32-bit blits. Required for
+  // pixel-art crispness; HALFTONE would smooth and ruin the look.
   SetStretchBltMode(stageDC, COLORONCOLOR);
   StretchBlt(stageDC, dx, dy, dw, dh,
              FFrontBuffer.Canvas.Handle, 0, 0, LOGICAL_W, LOGICAL_H, SRCCOPY);
@@ -402,7 +452,12 @@ begin
   DC := BeginPaint(Handle, PS);
   try
     if FHasFrontFrame and (FFrontBuffer <> nil) then
-      PresentScaled(DC, ClientWidth, ClientHeight)
+    begin
+      // Use physical client pixels (see PresentScaled docs, invariant #3).
+      var rc: TRect;
+      Winapi.Windows.GetClientRect(Handle, rc);
+      PresentScaled(DC, rc.Right - rc.Left, rc.Bottom - rc.Top);
+    end
     else
     begin
       // No frame yet — fill black so we don't show garbage.
@@ -511,7 +566,7 @@ function clearCanvasNative(argCount: integer; args: pValue): TValue;
 var
   r, g, b: Integer;
   pixel: Cardinal;
-  x, y, w, h: Integer;
+  y, w, h: Integer;
   row: PCardinal;
 begin
   EnsureBackBuffer;
@@ -531,11 +586,12 @@ begin
     pixel := Cardinal(b or (g shl 8) or (r shl 16) or $FF000000);
     w := FRenderTarget.Width;
     h := FRenderTarget.Height;
+    // FillDWord compiles to `rep stosd`: one 32-bit store per pixel
+    // with no loop overhead in the Pascal code.
     for y := 0 to h - 1 do
     begin
       row := FRenderTarget.ScanLine[y];
-      for x := 0 to w - 1 do
-        row[x] := pixel;
+      FillDWord(row^, w, pixel);
     end;
   end else
   begin
@@ -646,7 +702,7 @@ end;
 function fillRectNative(argCount: integer; args: pValue): TValue;
 var
   x, y, w, h: Integer;
-  x1, y1, x2, y2, py, px: Integer;
+  x1, y1, x2, y2, py: Integer;
   row: PCardinal;
 begin
   if argCount <> 4 then
@@ -676,11 +732,12 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
+  // FillDWord (rep stosd) writes one 32-bit pixel per cycle with no
+  // per-pixel loop overhead. Bit-identical to the prior scalar loop.
   for py := y1 to y2 - 1 do
   begin
     row := FRenderTarget.ScanLine[py];
-    for px := x1 to x2 - 1 do
-      row[px] := FCurrentPixel;
+    FillDWord(row[x1], x2 - x1, FCurrentPixel);
   end;
   Result := CreateNilValue;
 end;
@@ -1225,7 +1282,12 @@ begin
   if (FGameSurface <> nil) and FGameSurface.HandleAllocated then
   begin
     var dc := GetDC(FGameSurface.Handle);
-    PresentScaled(dc, FGameSurface.ClientWidth, FGameSurface.ClientHeight);
+    // Use Windows.GetClientRect to read true physical client pixels.
+    // TControl.ClientWidth can be affected by VCL per-monitor DPI scaling;
+    // GetClientRect is always device pixels, which is what BitBlt needs.
+    var rc: TRect;
+    Winapi.Windows.GetClientRect(FGameSurface.Handle, rc);
+    PresentScaled(dc, rc.Right - rc.Left, rc.Bottom - rc.Top);
     ReleaseDC(FGameSurface.Handle, dc);
     ValidateRect(FGameSurface.Handle, nil);
   end;
@@ -1279,8 +1341,8 @@ end;
 function drawRectNative(argCount: integer; args: pValue): TValue;
 var
   x, y, w, h: Integer;
-  bw, bh, px, py: Integer;
-  row: PCardinal;
+  bw, bh, py: Integer;
+  px0, px1, py0, py1: Integer;
 begin
   if argCount <> 4 then
   begin
@@ -1305,32 +1367,29 @@ begin
   end;
   bw := FClipX2;
   bh := FClipY2;
+  // Pre-clip the horizontal x-range once for the top/bottom edges so
+  // the per-pixel loop has no clip branches; FillDWord (rep stosd)
+  // writes one 32-bit pixel per cycle.
+  px0 := x;       if px0 < FClipX1 then px0 := FClipX1;
+  px1 := x + w;   if px1 > bw      then px1 := bw;
   // Top edge
-  if (y >= FClipY1) and (y < bh) then
-  begin
-    row := FRenderTarget.ScanLine[y];
-    for px := x to x + w - 1 do
-      if (px >= FClipX1) and (px < bw) then
-        row[px] := FCurrentPixel;
-  end;
-  // Bottom edge
-  if (y + h - 1 >= FClipY1) and (y + h - 1 < bh) and (h > 1) then
-  begin
-    row := FRenderTarget.ScanLine[y + h - 1];
-    for px := x to x + w - 1 do
-      if (px >= FClipX1) and (px < bw) then
-        row[px] := FCurrentPixel;
-  end;
+  if (px0 < px1) and (y >= FClipY1) and (y < bh) then
+    FillDWord(PCardinal(FRenderTarget.ScanLine[y])[px0], px1 - px0, FCurrentPixel);
+  // Bottom edge (skip if h = 1; the top edge already covered it)
+  if (px0 < px1) and (h > 1) and (y + h - 1 >= FClipY1) and (y + h - 1 < bh) then
+    FillDWord(PCardinal(FRenderTarget.ScanLine[y + h - 1])[px0], px1 - px0, FCurrentPixel);
+  // Pre-clip the vertical y-range once for the left/right edges so the
+  // per-row loop has no clip branches.
+  py0 := y + 1;     if py0 < FClipY1 then py0 := FClipY1;
+  py1 := y + h - 2; if py1 >= bh     then py1 := bh - 1;
   // Left edge
   if (x >= FClipX1) and (x < bw) then
-    for py := y + 1 to y + h - 2 do
-      if (py >= FClipY1) and (py < bh) then
-        PCardinal(FRenderTarget.ScanLine[py])[x] := FCurrentPixel;
+    for py := py0 to py1 do
+      PCardinal(FRenderTarget.ScanLine[py])[x] := FCurrentPixel;
   // Right edge
   if (x + w - 1 >= FClipX1) and (x + w - 1 < bw) then
-    for py := y + 1 to y + h - 2 do
-      if (py >= FClipY1) and (py < bh) then
-        PCardinal(FRenderTarget.ScanLine[py])[x + w - 1] := FCurrentPixel;
+    for py := py0 to py1 do
+      PCardinal(FRenderTarget.ScanLine[py])[x + w - 1] := FCurrentPixel;
   Result := CreateNilValue;
 end;
 
@@ -1339,6 +1398,7 @@ var
   cx, cy, r: Integer;
   bw, bh: Integer;
   x, y, d: Integer;
+  fullyInside: Boolean;
 begin
   if argCount <> 3 then
   begin
@@ -1362,36 +1422,72 @@ begin
   end;
   bw := FClipX2;
   bh := FClipY2;
-  // Midpoint circle â€” plot outline pixels in all 8 octants
+  // Trivial reject: circle's bounding box is entirely outside the clip rect.
+  if (cx + r < FClipX1) or (cx - r >= bw) or
+     (cy + r < FClipY1) or (cy - r >= bh) then
+  begin
+    Result := CreateNilValue;
+    Exit;
+  end;
+  // Trivial accept: bounding box entirely inside clip; the per-pixel
+  // clip checks (4 conditions x 8 octants per Bresenham step) can be
+  // skipped, leaving a tight outline plot.
+  fullyInside := (cx - r >= FClipX1) and (cx + r < bw) and
+                 (cy - r >= FClipY1) and (cy + r < bh);
   x := 0;
   y := r;
   d := 1 - r;
-  while x <= y do
+  if fullyInside then
   begin
-    // 8-way symmetry
-    if (cx + x >= FClipX1) and (cx + x < bw) and (cy + y >= FClipY1) and (cy + y < bh) then
-      PutPixelUnchecked(cx + x, cy + y, FCurrentPixel);
-    if (cx - x >= FClipX1) and (cx - x < bw) and (cy + y >= FClipY1) and (cy + y < bh) then
-      PutPixelUnchecked(cx - x, cy + y, FCurrentPixel);
-    if (cx + x >= FClipX1) and (cx + x < bw) and (cy - y >= FClipY1) and (cy - y < bh) then
-      PutPixelUnchecked(cx + x, cy - y, FCurrentPixel);
-    if (cx - x >= FClipX1) and (cx - x < bw) and (cy - y >= FClipY1) and (cy - y < bh) then
-      PutPixelUnchecked(cx - x, cy - y, FCurrentPixel);
-    if (cx + y >= FClipX1) and (cx + y < bw) and (cy + x >= FClipY1) and (cy + x < bh) then
-      PutPixelUnchecked(cx + y, cy + x, FCurrentPixel);
-    if (cx - y >= FClipX1) and (cx - y < bw) and (cy + x >= FClipY1) and (cy + x < bh) then
-      PutPixelUnchecked(cx - y, cy + x, FCurrentPixel);
-    if (cx + y >= FClipX1) and (cx + y < bw) and (cy - x >= FClipY1) and (cy - x < bh) then
-      PutPixelUnchecked(cx + y, cy - x, FCurrentPixel);
-    if (cx - y >= FClipX1) and (cx - y < bw) and (cy - x >= FClipY1) and (cy - x < bh) then
-      PutPixelUnchecked(cx - y, cy - x, FCurrentPixel);
-    Inc(x);
-    if d < 0 then
-      d := d + 2 * x + 1
-    else
+    while x <= y do
     begin
-      Dec(y);
-      d := d + 2 * (x - y) + 1;
+      PutPixelUnchecked(cx + x, cy + y, FCurrentPixel);
+      PutPixelUnchecked(cx - x, cy + y, FCurrentPixel);
+      PutPixelUnchecked(cx + x, cy - y, FCurrentPixel);
+      PutPixelUnchecked(cx - x, cy - y, FCurrentPixel);
+      PutPixelUnchecked(cx + y, cy + x, FCurrentPixel);
+      PutPixelUnchecked(cx - y, cy + x, FCurrentPixel);
+      PutPixelUnchecked(cx + y, cy - x, FCurrentPixel);
+      PutPixelUnchecked(cx - y, cy - x, FCurrentPixel);
+      Inc(x);
+      if d < 0 then
+        d := d + 2 * x + 1
+      else
+      begin
+        Dec(y);
+        d := d + 2 * (x - y) + 1;
+      end;
+    end;
+  end
+  else
+  begin
+    while x <= y do
+    begin
+      // 8-way symmetry
+      if (cx + x >= FClipX1) and (cx + x < bw) and (cy + y >= FClipY1) and (cy + y < bh) then
+        PutPixelUnchecked(cx + x, cy + y, FCurrentPixel);
+      if (cx - x >= FClipX1) and (cx - x < bw) and (cy + y >= FClipY1) and (cy + y < bh) then
+        PutPixelUnchecked(cx - x, cy + y, FCurrentPixel);
+      if (cx + x >= FClipX1) and (cx + x < bw) and (cy - y >= FClipY1) and (cy - y < bh) then
+        PutPixelUnchecked(cx + x, cy - y, FCurrentPixel);
+      if (cx - x >= FClipX1) and (cx - x < bw) and (cy - y >= FClipY1) and (cy - y < bh) then
+        PutPixelUnchecked(cx - x, cy - y, FCurrentPixel);
+      if (cx + y >= FClipX1) and (cx + y < bw) and (cy + x >= FClipY1) and (cy + x < bh) then
+        PutPixelUnchecked(cx + y, cy + x, FCurrentPixel);
+      if (cx - y >= FClipX1) and (cx - y < bw) and (cy + x >= FClipY1) and (cy + x < bh) then
+        PutPixelUnchecked(cx - y, cy + x, FCurrentPixel);
+      if (cx + y >= FClipX1) and (cx + y < bw) and (cy - x >= FClipY1) and (cy - x < bh) then
+        PutPixelUnchecked(cx + y, cy - x, FCurrentPixel);
+      if (cx - y >= FClipX1) and (cx - y < bw) and (cy - x >= FClipY1) and (cy - x < bh) then
+        PutPixelUnchecked(cx - y, cy - x, FCurrentPixel);
+      Inc(x);
+      if d < 0 then
+        d := d + 2 * x + 1
+      else
+      begin
+        Dec(y);
+        d := d + 2 * (x - y) + 1;
+      end;
     end;
   end;
   Result := CreateNilValue;
@@ -1406,16 +1502,14 @@ var
   row: PCardinal;
 
   procedure HLine(hx0, hx1, hy: Integer);
-  var
-    px: Integer;
   begin
     if (hy < FClipY1) or (hy >= bh) then Exit;
     if hx0 < FClipX1 then hx0 := FClipX1;
     if hx1 >= bw then hx1 := bw - 1;
     if hx0 > hx1 then Exit;
     row := FRenderTarget.ScanLine[hy];
-    for px := hx0 to hx1 do
-      row[px] := FCurrentPixel;
+    // FillDWord: rep stosd, one 32-bit store per pixel.
+    FillDWord(row[hx0], hx1 - hx0 + 1, FCurrentPixel);
   end;
 
 begin
@@ -1489,6 +1583,106 @@ begin
   if (x >= FClipX1) and (x < FClipX2) and
      (y >= FClipY1) and (y < FClipY2) then
     PCardinal(FRenderTarget.ScanLine[y])[x] := FCurrentPixel;
+  Result := CreateNilValue;
+end;
+
+// drawPixels(xs, ys): batch-plot N pixels using the current setColor()
+// pen colour. Collapses N x (setColor + drawPixel) RTTI crossings into
+// one call. Mismatched array lengths use min(Count). Per-pixel clip +
+// camera + ScanLine cache by Y. Used by particle/starfield code.
+function drawPixelsNative(argCount: integer; args: pValue): TValue;
+var
+  xs, ys: pObjArray;
+  n, i, x, y, lastY: Integer;
+  row: PCardinal;
+  px: Cardinal;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('drawPixels() takes 2 arguments (xs, ys).');
+    Exit(CreateNilValue);
+  end;
+  if (not isArray(args[0])) or (not isArray(args[1])) then
+  begin
+    RuntimeError('drawPixels() arguments must be arrays.');
+    Exit(CreateNilValue);
+  end;
+  xs := pObjArray(args[0].ObjValue);
+  ys := pObjArray(args[1].ObjValue);
+  n := xs^.Count;
+  if ys^.Count < n then n := ys^.Count;
+  if n <= 0 then Exit(CreateNilValue);
+  EnsureBackBuffer;
+  px := FCurrentPixel;
+  row := nil;
+  lastY := -$7FFFFFFF;
+  for i := 0 to n - 1 do
+  begin
+    if (xs^.Elements[i].ValueKind <> vkNumber) or
+       (ys^.Elements[i].ValueKind <> vkNumber) then Continue;
+    x := Trunc(xs^.Elements[i].NumberValue) - FCameraX;
+    y := Trunc(ys^.Elements[i].NumberValue) - FCameraY;
+    if (x < FClipX1) or (x >= FClipX2) or
+       (y < FClipY1) or (y >= FClipY2) then Continue;
+    if y <> lastY then
+    begin
+      row := FRenderTarget.ScanLine[y];
+      lastY := y;
+    end;
+    row[x] := px;
+  end;
+  Result := CreateNilValue;
+end;
+
+// drawPixelsGray(xs, ys, brights): batch-plot N grayscale pixels with
+// per-pixel brightness (0..255). Identical inner loop to drawPixels
+// but packs (b,b,b) for each point. Designed for starfields where
+// every star has its own brightness.
+function drawPixelsGrayNative(argCount: integer; args: pValue): TValue;
+var
+  xs, ys, bs: pObjArray;
+  n, i, x, y, b, lastY: Integer;
+  row: PCardinal;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('drawPixelsGray() takes 3 arguments (xs, ys, brights).');
+    Exit(CreateNilValue);
+  end;
+  if (not isArray(args[0])) or (not isArray(args[1])) or
+     (not isArray(args[2])) then
+  begin
+    RuntimeError('drawPixelsGray() arguments must be arrays.');
+    Exit(CreateNilValue);
+  end;
+  xs := pObjArray(args[0].ObjValue);
+  ys := pObjArray(args[1].ObjValue);
+  bs := pObjArray(args[2].ObjValue);
+  n := xs^.Count;
+  if ys^.Count < n then n := ys^.Count;
+  if bs^.Count < n then n := bs^.Count;
+  if n <= 0 then Exit(CreateNilValue);
+  EnsureBackBuffer;
+  row := nil;
+  lastY := -$7FFFFFFF;
+  for i := 0 to n - 1 do
+  begin
+    if (xs^.Elements[i].ValueKind <> vkNumber) or
+       (ys^.Elements[i].ValueKind <> vkNumber) or
+       (bs^.Elements[i].ValueKind <> vkNumber) then Continue;
+    x := Trunc(xs^.Elements[i].NumberValue) - FCameraX;
+    y := Trunc(ys^.Elements[i].NumberValue) - FCameraY;
+    if (x < FClipX1) or (x >= FClipX2) or
+       (y < FClipY1) or (y >= FClipY2) then Continue;
+    b := Trunc(bs^.Elements[i].NumberValue);
+    if b < 0 then b := 0 else if b > 255 then b := 255;
+    if y <> lastY then
+    begin
+      row := FRenderTarget.ScanLine[y];
+      lastY := y;
+    end;
+    row[x] := Cardinal($FF000000 or (b shl 16) or (b shl 8) or b);
+  end;
   Result := CreateNilValue;
 end;
 
@@ -1694,6 +1888,7 @@ var
   id, x, y, scale, sw, sh: Integer;
   bmp: TBitmap;
   sx, sy, dx, dy, bw, bh: Integer;
+  sxFrac: Integer;
   dx0, dx1, dy0, dy1: Integer;
   srcRow: PRGBQuadArray;
   dstRow: PCardinal;
@@ -1748,17 +1943,27 @@ begin
   end;
   // Manual scanline blit: skip transparent pixels ($00FF00FF), copy opaque ones.
   // Single pass, no GDI mask operations, deterministic rendering.
+  // Inner-loop optimization: replace per-pixel `sx := dx div scale` with an
+  // incremental counter that increments sx every `scale` destination pixels.
+  // Eliminates an integer division per destination pixel.
   for dy := dy0 to dy1 - 1 do
   begin
     sy := dy div scale;
     srcRow := bmp.ScanLine[sy];
     dstRow := FRenderTarget.ScanLine[y + dy];
+    sx := dx0 div scale;
+    sxFrac := dx0 mod scale;
     for dx := dx0 to dx1 - 1 do
     begin
-      sx := dx div scale;
       pixel := PCardinal(@srcRow[sx])^;
       if pixel <> $00FF00FF then
         dstRow[x + dx] := pixel;
+      Inc(sxFrac);
+      if sxFrac >= scale then
+      begin
+        sxFrac := 0;
+        Inc(sx);
+      end;
     end;
   end;
   Result := CreateNilValue;
@@ -1772,11 +1977,11 @@ var
   dx, dy, sx, sy, bw, bh: Integer;
   baseX, baseY: Integer;
   dx0, dx1, dy0, dy1: Integer;
-  fxc, fyc: Double;
+  fxc, fyc, fxcRow, fycRow: Double;
   // 2x2 supersample offsets in source space (precomputed)
   ofsXa, ofsXb, ofsYa, ofsYb: Double;
+  fxOff, fyOff: array[0..3] of Double;
   // Per-sample iteration
-  fx, fy: Double;
   i: Integer;
   sumR, sumG, sumB, cnt: Integer;
   ifx, ify: Integer;
@@ -1784,6 +1989,8 @@ var
   dstRow: PCardinal;
   pixel, dstPx: Cardinal;
   outR, outG, outB, missing: Integer;
+  scaleIsOne: Boolean;
+  lastSy: Integer;
 begin
   if argCount <> 5 then
   begin
@@ -1857,32 +2064,63 @@ begin
   ofsYa := -0.25 * sinA;  // dest-dx -> source fy contribution
   ofsYb := 0.25 * cosA;   // dest-dy -> source fy contribution
 
+  // Precompute the 4 (fx, fy) sub-sample deltas relative to the pixel
+  // center so the inner sample loop is a straight `for i := 0 to 3`
+  // (no `case` jump-table branch per sub-sample).
+  fxOff[0] := -ofsXa - ofsXb; fyOff[0] := -ofsYa - ofsYb;
+  fxOff[1] :=  ofsXa - ofsXb; fyOff[1] :=  ofsYa - ofsYb;
+  fxOff[2] := -ofsXa + ofsXb; fyOff[2] := -ofsYa + ofsYb;
+  fxOff[3] :=  ofsXa + ofsXb; fyOff[3] :=  ofsYa + ofsYb;
+
+  // scale=1 is the overwhelmingly common case; hoist the test out of
+  // the inner sub-sample loop so the per-pixel branch is just a load.
+  scaleIsOne := (scale = 1);
+
+  // DDA: the original code recomputed
+  //   fxc = (dx - cx)*cosA + (dy - cy)*sinA + srcCx
+  //   fyc = -(dx - cx)*sinA + (dy - cy)*cosA + srcCy
+  // for every destination pixel. Both forms are linear in dx and dy,
+  // so we step them incrementally instead: per-column adds {cosA, -sinA},
+  // per-row adds {sinA, cosA}. Removes 4 multiplies + 4 adds per pixel.
+  fxcRow := (dx0 - cx) * cosA + (dy0 - cy) * sinA + srcCx;
+  fycRow := -(dx0 - cx) * sinA + (dy0 - cy) * cosA + srcCy;
+
+  // Initialize so the "did we already fetch this row?" cache is unset.
+  srcRow := nil;
+
   for dy := dy0 to dy1 - 1 do
   begin
     dstRow := FRenderTarget.ScanLine[baseY + dy];
+    fxc := fxcRow;
+    fyc := fycRow;
     for dx := dx0 to dx1 - 1 do
     begin
-      // Rotated source position at destination pixel center.
-      fxc := (dx - cx) * cosA + (dy - cy) * sinA + srcCx;
-      fyc := -(dx - cx) * sinA + (dy - cy) * cosA + srcCy;
-
       sumR := 0; sumG := 0; sumB := 0; cnt := 0;
-      // 4 sub-samples: (-, -), (+, -), (-, +), (+, +) in dest space.
+      // ScanLine cache: most rotations have shallow angles, so all 4
+      // sub-samples within a pixel usually fall on the same source row.
+      // Reset per output pixel so the cache reflects reality.
+      lastSy := -1;
+
       for i := 0 to 3 do
       begin
-        case i of
-          0: begin fx := fxc - ofsXa - ofsXb; fy := fyc - ofsYa - ofsYb; end;
-          1: begin fx := fxc + ofsXa - ofsXb; fy := fyc + ofsYa - ofsYb; end;
-          2: begin fx := fxc - ofsXa + ofsXb; fy := fyc - ofsYa + ofsYb; end;
-        else
-             begin fx := fxc + ofsXa + ofsXb; fy := fyc + ofsYa + ofsYb; end;
-        end;
-        ifx := Trunc(fx);
-        ify := Trunc(fy);
+        ifx := Trunc(fxc + fxOff[i]);
+        ify := Trunc(fyc + fyOff[i]);
         if (ifx < 0) or (ifx >= sw) or (ify < 0) or (ify >= sh) then Continue;
-        sx := ifx div scale;
-        sy := ify div scale;
-        srcRow := bmp.ScanLine[sy];
+        if scaleIsOne then
+        begin
+          sx := ifx;
+          sy := ify;
+        end
+        else
+        begin
+          sx := ifx div scale;
+          sy := ify div scale;
+        end;
+        if sy <> lastSy then
+        begin
+          srcRow := bmp.ScanLine[sy];
+          lastSy := sy;
+        end;
         pixel := PCardinal(@srcRow[sx])^;
         if pixel = $00FF00FF then Continue;
         sumB := sumB + Integer(pixel and $FF);
@@ -1891,29 +2129,38 @@ begin
         cnt := cnt + 1;
       end;
 
-      if cnt = 0 then Continue;
-      if cnt = 4 then
+      if cnt <> 0 then
       begin
-        // Full coverage: pure average, no blend with destination.
-        outB := sumB shr 2;
-        outG := sumG shr 2;
-        outR := sumR shr 2;
-      end
-      else
-      begin
-        // Partial coverage: alpha-blend averaged source over existing
-        // destination pixel. cnt samples contribute source color,
-        // (4 - cnt) samples contribute destination color.
-        missing := 4 - cnt;
-        dstPx := dstRow[baseX + dx];
-        outB := (sumB + Integer(dstPx and $FF) * missing) shr 2;
-        outG := (sumG + Integer((dstPx shr 8) and $FF) * missing) shr 2;
-        outR := (sumR + Integer((dstPx shr 16) and $FF) * missing) shr 2;
+        if cnt = 4 then
+        begin
+          // Full coverage: pure average, no blend with destination.
+          outB := sumB shr 2;
+          outG := sumG shr 2;
+          outR := sumR shr 2;
+        end
+        else
+        begin
+          // Partial coverage: alpha-blend averaged source over existing
+          // destination pixel. cnt samples contribute source color,
+          // (4 - cnt) samples contribute destination color.
+          missing := 4 - cnt;
+          dstPx := dstRow[baseX + dx];
+          outB := (sumB + Integer(dstPx and $FF) * missing) shr 2;
+          outG := (sumG + Integer((dstPx shr 8) and $FF) * missing) shr 2;
+          outR := (sumR + Integer((dstPx shr 16) and $FF) * missing) shr 2;
+        end;
+        dstRow[baseX + dx] := (Cardinal(outR) shl 16) or
+                              (Cardinal(outG) shl 8) or
+                               Cardinal(outB);
       end;
-      dstRow[baseX + dx] := (Cardinal(outR) shl 16) or
-                            (Cardinal(outG) shl 8) or
-                             Cardinal(outB);
+
+      // Step source coords by one destination column.
+      fxc := fxc + cosA;
+      fyc := fyc - sinA;
     end;
+    // Step source coords by one destination row.
+    fxcRow := fxcRow + sinA;
+    fycRow := fycRow + cosA;
   end;
   Result := CreateNilValue;
 end;
@@ -2441,17 +2688,30 @@ begin
       else
       begin
         // Sprite is not the tile's native size: stretch/shrink to fit.
+        // Inner loop uses a fractional-counter (Bresenham-style) advance
+        // for sx so we avoid an integer division per destination pixel.
         for py := py0 to py1 - 1 do
         begin
           sy := (py * bmp.Height) div tm.TileH;
           srcRow := bmp.ScanLine[sy];
           dstRow := FRenderTarget.ScanLine[dy + py];
+          // Initial sx for px0 (one div, hoisted out of the inner loop).
+          sx := (px0 * bmp.Width) div tm.TileW;
+          // Fractional accumulator over tm.TileW units.
+          // After each px, advance by bmp.Width; while >= tm.TileW, Inc(sx).
+          // (Works for both stretching and shrinking ratios.)
+          var sxFrac2: Integer := (px0 * bmp.Width) mod tm.TileW;
           for px := px0 to px1 - 1 do
           begin
-            sx := (px * bmp.Width) div tm.TileW;
             pixel := PCardinal(@srcRow[sx])^;
             if pixel <> $00FF00FF then
               dstRow[dx + px] := pixel;
+            Inc(sxFrac2, bmp.Width);
+            while sxFrac2 >= tm.TileW do
+            begin
+              Dec(sxFrac2, tm.TileW);
+              Inc(sx);
+            end;
           end;
         end;
       end;
@@ -2747,6 +3007,13 @@ end;
 
 procedure RegisterCanvasNatives;
 begin
+  // Unbind the current render target BEFORE clearing the surfaces list,
+  // otherwise FRenderTarget could point at a TBitmap that FSurfaces.Clear
+  // is about to free. EnsureBackBuffer (called by the next draw native)
+  // will repoint FRenderTarget at FBackBuffer; until then, nil is the
+  // only safe value if FBackBuffer hasn't been created yet.
+  FRenderTargetId := -1;
+  FRenderTarget := FBackBuffer;  // may be nil; EnsureBackBuffer will fix
   // Clear sprites, tilemaps, surfaces, and palette from previous run
   if FSprites <> nil then
     FSprites.Clear;
@@ -2780,6 +3047,8 @@ begin
   defineNative('drawCircle', drawCircleNative, 3);
   defineNative('fillCircle', fillCircleNative, 3);
   defineNative('drawPixel', drawPixelNative, 2);
+  defineNative('drawPixels', drawPixelsNative, 2);
+  defineNative('drawPixelsGray', drawPixelsGrayNative, 3);
   defineNative('createSprite', createSpriteNative, 3);
   defineNative('drawSprite', drawSpriteNative, 3);
   defineNative('drawSpriteScaled', drawSpriteScaledNative, 4);

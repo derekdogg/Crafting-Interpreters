@@ -1214,7 +1214,9 @@ object Form4: TForm4
             '='
           '  clearCanvas();'
           ''
-          '  // --- Draw starfield ---'
+          
+            '  // --- Draw starfield (batched: one native call instead of 60x' +
+            ' setColor+drawPixel) ---'
           '  i = 0;'
           '  while (i < numStars) {'
           
@@ -1224,12 +1226,9 @@ object Form4: TForm4
           '      arraySet(starY, i, 0);'
           '      arraySet(starX, i, floor(random() * w));'
           '    }'
-          '    var b = arrayGet(starBright, i);'
-          '    if (b > 255) b = 255;'
-          '    setColor(b, b, b);'
-          '    drawPixel(arrayGet(starX, i), floor(arrayGet(starY, i)));'
           '    i = i + 1;'
           '  }'
+          '  drawPixelsGray(starX, starY, starBright);'
           ''
           '  // --- Draw background decorations ---'
           '  i = 0;'
