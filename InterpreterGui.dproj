@@ -131,6 +131,11 @@
             <Form>Form4</Form>
         </DCCReference>
         <DCCReference Include="SynHighlighterLox.pas"/>
+        <DCCReference Include="NativeObjects.pas"/>
+        <DCCReference Include="fmGame.pas">
+            <Form>frmGame</Form>
+            <FormType>dfm</FormType>
+        </DCCReference>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

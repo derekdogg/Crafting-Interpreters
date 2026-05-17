@@ -21,6 +21,10 @@
 // then paste the printed lines underneath.
 // ============================================================
 
+// Wide letterbox window — sprite sheets are usually horizontal strips,
+// so a 16:9 viewport gives the most working area.
+setCanvasSize(1280, 480);
+
 // Path is resolved relative to the .exe (Win32/Debug). Walk back up
 // two levels to reach the workspace root where Assets/ lives. If you
 // move the .exe or assets, adjust accordingly — an absolute path

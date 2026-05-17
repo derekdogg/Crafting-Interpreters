@@ -8,41 +8,51 @@ var w = canvasWidth();
 var h = canvasHeight();
 
 // --- Tile definitions (8x8) ---
-var mapCols = 25;
-var mapRows = 16;
-var hudHeight = 24;
-// Dynamic tile size — fills canvas
-var tileSize = floor((h - hudHeight) / mapRows);
-if (tileSize > floor(w / mapCols)) {
-  tileSize = floor(w / mapCols);
-}
+// Wide "letterbox" cavern: 32 cols * 11 rows. The tile size is driven by
+// the canvas WIDTH so the play area fills the screen horizontally; we
+// then center it vertically with letterbox bars above (title) and below
+// (HUD).
+var mapCols    = 32;
+var mapRows    = 11;
+var hudReserve = 84;             // total vertical pixels reserved for HUD + letterbox
+var tileSize   = floor(w / mapCols);
+var maxByH     = floor((h - hudReserve) / mapRows);
+if (tileSize > maxByH) tileSize = maxByH;
+var playAreaW = mapCols * tileSize;
+var playAreaH = mapRows * tileSize;
+var playAreaX = floor((w - playAreaW) / 2);
+var topBarH   = 30;
+var playAreaY = topBarH;
+var bottomBarY = playAreaY + playAreaH;
+var bottomBarH = h - bottomBarY;
 
-// Brick wall (red)
-setPaletteColor("R", 180, 40, 30);
-setPaletteColor("D", 120, 25, 20);
+// Brick wall (red) - solid bricks with mortar lines, no holes.
+setPaletteColor("R", 190, 60, 50);
+setPaletteColor("D", 130, 35, 30);
+setPaletteColor("M",  70, 25, 20);
 var WALL = createPaletteSprite(8, 8,
-  "RRRRRRRR" +
-  "RRRD.RRR" +
-  "RRRRRRRR" +
-  "........" +
-  "RRRRRRRR" +
-  "R.RRRRRR" +
-  "RRRRRRRR" +
-  "........"
+  "RRRDRRRD" +
+  "RRRDRRRD" +
+  "RRRDRRRD" +
+  "MMMMMMMM" +
+  "DRRRDRRR" +
+  "DRRRDRRR" +
+  "DRRRDRRR" +
+  "MMMMMMMM"
 );
 
-// Platform (red crumbly)
-setPaletteColor("R", 200, 50, 40);
-setPaletteColor("D", 140, 30, 25);
+// Platform (red crumbly) - tighter checker, less dazzle
+setPaletteColor("R", 210, 70, 50);
+setPaletteColor("D", 150, 40, 30);
 var PLATFORM = createPaletteSprite(8, 8,
-  "RDRDRDRD" +
-  "DRDRDRDR" +
-  "RDRDRDRD" +
-  "DRDRDRDR" +
-  "RDRDRDRD" +
-  "DRDRDRDR" +
-  "RDRDRDRD" +
-  "DRDRDRDR"
+  "RRDDRRDD" +
+  "RRDDRRDD" +
+  "DDRRDDRR" +
+  "DDRRDDRR" +
+  "RRDDRRDD" +
+  "RRDDRRDD" +
+  "DDRRDDRR" +
+  "DDRRDDRR"
 );
 
 // Grass top (green tufts)
@@ -86,17 +96,18 @@ var DOOR = createPaletteSprite(8, 8,
   "YBYBYBYB"
 );
 
-// Key collectible (yellow)
-setPaletteColor("Y", 255, 220, 0);
-setPaletteColor("O", 200, 160, 0);
+// Key collectible (yellow with bow handle)
+setPaletteColor("Y", 255, 220, 60);
+setPaletteColor("O", 200, 150,  0);
+setPaletteColor("W", 255, 255, 200);
 var KEY = createPaletteSprite(8, 8,
-  "..YYYY.." +
-  ".Y....Y." +
-  ".Y....Y." +
-  "..YYYY.." +
+  "..YYY..." +
+  ".YOWOY.." +
+  ".YOOOY.." +
+  "..YYY..." +
+  "...Y...." +
   "...YY..." +
-  "...YO..." +
-  "...YO..." +
+  "...Y...." +
   "...YY..."
 );
 
@@ -125,71 +136,71 @@ setPaletteColor("W", 60, 60, 60);      // boots
 setPaletteColor("E", 255, 255, 255);   // eyes
 
 var playerStand = createPaletteSprite(10, 14,
-  "..HHHH...." +
-  ".HHHHHH..." +
-  "..SSSS...." +
-  ".SESSSES.." +
-  ".SSSSSS..." +
-  "..SSSS...." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  "..RRRR...." +
-  "..RRRR...." +
-  "..RR.RR..." +
-  "..RR.RR..." +
-  ".WW...WW.."
+  "...HHHH..." +
+  "..HHHHHH.." +
+  "...SSSS..." +
+  "..SESSES.." +
+  "..SSSSSS.." +
+  "...SSSS..." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "...RRRR..." +
+  "...RRRR..." +
+  "...RR.RR.." +
+  "..RR..RR.." +
+  "..WW..WW.."
 );
 
 var playerWalk1 = createPaletteSprite(10, 14,
-  "..HHHH...." +
-  ".HHHHHH..." +
-  "..SSSS...." +
-  ".SESSSES.." +
-  ".SSSSSS..." +
-  "..SSSS...." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  "..RRRR...." +
-  ".RR..RR..." +
-  "RR....RR.." +
-  "WW....WW.." +
-  "WW.....WW."
+  "...HHHH..." +
+  "..HHHHHH.." +
+  "...SSSS..." +
+  "..SESSES.." +
+  "..SSSSSS.." +
+  "...SSSS..." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "...RRRR..." +
+  "..RR..RR.." +
+  ".RR....RR." +
+  ".WW....WW." +
+  "WW......WW"
 );
 
 var playerWalk2 = createPaletteSprite(10, 14,
-  "..HHHH...." +
-  ".HHHHHH..." +
-  "..SSSS...." +
-  ".SESSSES.." +
-  ".SSSSSS..." +
-  "..SSSS...." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  "..RRRR...." +
-  "..RRRR...." +
+  "...HHHH..." +
+  "..HHHHHH.." +
+  "...SSSS..." +
+  "..SESSES.." +
+  "..SSSSSS.." +
+  "...SSSS..." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "..BBBBBB.." +
+  "...RRRR..." +
+  "...RRRR..." +
   "..RR.RR..." +
   ".WW...WW.." +
   "WW.....WW."
 );
 
 var playerJump = createPaletteSprite(10, 14,
-  "..HHHH...." +
-  ".HHHHHH..." +
-  "..SSSS...." +
-  ".SESSSES.." +
-  "S.SSSS.S.." +
-  "..SSSS...." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  ".BBBBBB..." +
-  "..RRRR...." +
-  "..RRRR...." +
-  ".WW..WW..." +
-  "..WW.WW..." +
-  ".........."
+  "...HHHH..." +
+  "..HHHHHH.." +
+  "...SSSS..." +
+  "..SESSES.." +
+  "..SSSSSS.." +
+  "...SSSS..." +
+  ".BBBBBBB.." +
+  "..BBBBBB.." +
+  "..BBBBBB.B" +
+  "...RRRR..." +
+  "...RRRR..." +
+  "..RR.RR..." +
+  "..W...W..." +
+  ".WW...WW.."
 );
 
 clearPalette();
@@ -247,79 +258,64 @@ while (col < mapCols) {
   col = col + 1;
 }
 
-// --- Ground floor (rows 13-15) with grass ---
+// --- Ground floor (rows 9-10) with grass on top ---
 col = 1;
 while (col < mapCols - 1) {
-  setTile(map, col, 13, GRASS);
-  setTile(map, col, 14, PLATFORM);
-  setTile(map, col, 15, PLATFORM);
+  setTile(map, col, 9, GRASS);
+  setTile(map, col, 10, PLATFORM);
   col = col + 1;
 }
 
 // --- Platforms ---
-// Platform 1: left mid (row 10)
+// Upper-left platform (row 3, cols 2..9)
 col = 2;
-while (col <= 8) {
-  setTile(map, col, 10, GRASS);
-  col = col + 1;
-}
+while (col <= 9) { setTile(map, col, 3, GRASS); col = col + 1; }
 
-// Platform 2: center (row 7)
-col = 9;
-while (col <= 16) {
-  setTile(map, col, 7, GRASS);
-  col = col + 1;
-}
+// Upper-right platform - the door sits here (row 2, cols 22..30)
+col = 22;
+while (col <= 30) { setTile(map, col, 2, GRASS); col = col + 1; }
 
-// Platform 3: right mid (row 10)
-col = 16;
-while (col <= 23) {
-  setTile(map, col, 10, GRASS);
-  col = col + 1;
-}
+// Center platform (row 5, cols 12..20)
+col = 12;
+while (col <= 20) { setTile(map, col, 5, GRASS); col = col + 1; }
 
-// Platform 4: upper left (row 4)
+// Mid-left platform (row 7, cols 2..10)
 col = 2;
-while (col <= 7) {
-  setTile(map, col, 4, GRASS);
-  col = col + 1;
-}
+while (col <= 10) { setTile(map, col, 7, GRASS); col = col + 1; }
 
-// Platform 5: upper right (row 3)
-col = 17;
-while (col <= 23) {
-  setTile(map, col, 3, GRASS);
-  col = col + 1;
-}
+// Mid-right platform (row 7, cols 22..30)
+col = 22;
+while (col <= 30) { setTile(map, col, 7, GRASS); col = col + 1; }
 
-// Small stepping stones
-setTile(map, 12, 11, PLATFORM);
-setTile(map, 13, 11, PLATFORM);
+// Stepping stones (row 8, cols 15..16) - bridge between mid platforms
+setTile(map, 15, 8, PLATFORM);
+setTile(map, 16, 8, PLATFORM);
 
-// Stalactites (hazards along top)
-setTile(map, 5, 1, STALACTITE);
-setTile(map, 10, 1, STALACTITE);
-setTile(map, 15, 1, STALACTITE);
-setTile(map, 20, 1, STALACTITE);
+// Stalactites (row 1) - only above ground/gap areas, never above the
+// upper-right platform where the player's head would clip into them.
+setTile(map,  5, 1, STALACTITE);
+setTile(map, 11, 1, STALACTITE);
+setTile(map, 17, 1, STALACTITE);
+setTile(map, 21, 1, STALACTITE);
 
-// Exit door (upper right platform)
-setTile(map, 22, 2, DOOR);
+// Exit door (sits on the upper-right platform, row 1 col 29)
+setTile(map, 29, 1, DOOR);
 
-// --- Key positions (world pixel coords) ---
+// --- Key positions (world pixel coords, relative to play area top-left) ---
 var maxKeys = 5;
 var keyX = newArray();
 var keyY = newArray();
 var keyCollected = newArray();
-// Key 1: ground floor right
-arrayPush(keyX, 18 * tileSize); arrayPush(keyY, 12 * tileSize); arrayPush(keyCollected, false);
-// Key 2: left mid platform
-arrayPush(keyX, 5 * tileSize); arrayPush(keyY, 9 * tileSize); arrayPush(keyCollected, false);
+// Key 1: ground floor, right side
+arrayPush(keyX, 26 * tileSize); arrayPush(keyY,  8 * tileSize); arrayPush(keyCollected, false);
+// Key 2: mid-left platform
+arrayPush(keyX,  5 * tileSize); arrayPush(keyY,  6 * tileSize); arrayPush(keyCollected, false);
 // Key 3: center platform
-arrayPush(keyX, 12 * tileSize); arrayPush(keyY, 6 * tileSize); arrayPush(keyCollected, false);
-// Key 4: right mid platform
-arrayPush(keyX, 20 * tileSize); arrayPush(keyY, 9 * tileSize); arrayPush(keyCollected, false);
-// Key 5: upper left
-arrayPush(keyX, 4 * tileSize); arrayPush(keyY, 3 * tileSize); arrayPush(keyCollected, false);
+arrayPush(keyX, 16 * tileSize); arrayPush(keyY,  4 * tileSize); arrayPush(keyCollected, false);
+// Key 4: mid-right platform
+arrayPush(keyX, 27 * tileSize); arrayPush(keyY,  6 * tileSize); arrayPush(keyCollected, false);
+// Key 5: upper-left platform
+arrayPush(keyX,  5 * tileSize); arrayPush(keyY,  2 * tileSize); arrayPush(keyCollected, false);
 
 var keysCollected = 0;
 var doorOpen = false;
@@ -333,36 +329,36 @@ var enemyMaxX = newArray();
 var enemySpeed = newArray();
 var enemyDir = newArray();
 
-// Enemy 0: patrols ground floor
-arrayPush(enemyX, 8 * tileSize); arrayPush(enemyY, 11.5 * tileSize);
-arrayPush(enemyMinX, 2 * tileSize); arrayPush(enemyMaxX, 14 * tileSize);
-arrayPush(enemySpeed, 50); arrayPush(enemyDir, 1);
+// Enemy 0: ground floor (rows 9 grass), patrols cols 3..20
+arrayPush(enemyX,  8 * tileSize); arrayPush(enemyY, 7.5 * tileSize);
+arrayPush(enemyMinX, 3 * tileSize); arrayPush(enemyMaxX, 20 * tileSize);
+arrayPush(enemySpeed, 30); arrayPush(enemyDir, 1);
 
-// Enemy 1: patrols center platform
-arrayPush(enemyX, 10 * tileSize); arrayPush(enemyY, 5.5 * tileSize);
-arrayPush(enemyMinX, 9 * tileSize); arrayPush(enemyMaxX, 15 * tileSize);
-arrayPush(enemySpeed, 40); arrayPush(enemyDir, -1);
+// Enemy 1: center platform (row 5), patrols cols 13..20
+arrayPush(enemyX, 14 * tileSize); arrayPush(enemyY, 3.5 * tileSize);
+arrayPush(enemyMinX, 13 * tileSize); arrayPush(enemyMaxX, 20 * tileSize);
+arrayPush(enemySpeed, 25); arrayPush(enemyDir, -1);
 
-// Enemy 2: patrols right platform
-arrayPush(enemyX, 18 * tileSize); arrayPush(enemyY, 8.5 * tileSize);
-arrayPush(enemyMinX, 16 * tileSize); arrayPush(enemyMaxX, 22 * tileSize);
-arrayPush(enemySpeed, 55); arrayPush(enemyDir, 1);
-
-// Enemy 3: patrols upper area
-arrayPush(enemyX, 9 * tileSize); arrayPush(enemyY, 1.5 * tileSize);
-arrayPush(enemyMinX, 6 * tileSize); arrayPush(enemyMaxX, 14 * tileSize);
+// Enemy 2: mid-right platform (row 7), patrols cols 22..30
+arrayPush(enemyX, 24 * tileSize); arrayPush(enemyY, 5.5 * tileSize);
+arrayPush(enemyMinX, 22 * tileSize); arrayPush(enemyMaxX, 30 * tileSize);
 arrayPush(enemySpeed, 35); arrayPush(enemyDir, 1);
 
+// Enemy 3: upper-left platform (row 3), patrols cols 3..9
+arrayPush(enemyX,  5 * tileSize); arrayPush(enemyY, 1.5 * tileSize);
+arrayPush(enemyMinX, 3 * tileSize); arrayPush(enemyMaxX,  9 * tileSize);
+arrayPush(enemySpeed, 22); arrayPush(enemyDir, 1);
+
 // --- Player state ---
-var playerX = 2 * tileSize;
-var playerY = 11 * tileSize;
-var playerVX = 0;
-var playerVY = 0;
 var playerW = 14;
 var playerH = 20;
+var playerX = 2 * tileSize;
+var playerY = 9 * tileSize - playerH;     // standing on top of ground (row 9)
+var playerVX = 0;
+var playerVY = 0;
 var gravity = 500;
-var jumpSpeed = -250;
-var moveSpeed = 100;
+var jumpSpeed = -290;
+var moveSpeed = 135;
 var onGround = false;
 var facingRight = true;
 var leftHeld = false;
@@ -370,19 +366,22 @@ var rightHeld = false;
 var walkTimer = 0;
 var walkFrame = 0;
 var walkInterval = 0.12;
+var invulnTimer = 0;       // seconds of post-respawn safety + flicker
+var coyoteTimer = 0;       // grace period after walking off a ledge
+var jumpBuffer  = 0;       // remembered space press just before landing
 
 // --- Game state ---
-var lives = 3;
+var lives = 5;
 var score = 0;
 var airMax = 100;
 var air = airMax;
-var airDrainRate = 3.5;  // per second
+var airDrainRate = 1.5;  // per second (~66s of air)
 var running = true;
 var gameOver = false;
 var levelComplete = false;
 var lastTime = clock();
 var spawnX = 2 * tileSize;
-var spawnY = 11 * tileSize;
+var spawnY = 9 * tileSize - playerH;
 
 // --- Collision helpers ---
 fun solidAt(px, py) {
@@ -413,6 +412,7 @@ fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
 }
 
 fun killPlayer() {
+  if (invulnTimer > 0) return;   // ignore hits during respawn grace
   lives = lives - 1;
   playNoise(400);
   if (lives <= 0) {
@@ -424,6 +424,7 @@ fun killPlayer() {
     playerVY = 0;
     onGround = false;
     air = airMax;
+    invulnTimer = 1.8;          // ~1.8s safety + flicker
   }
 }
 
@@ -446,18 +447,17 @@ while (running) {
     if (e == "keyup:right") rightHeld = false;
     if (e == "keydown:escape") running = false;
     if (e == "keydown:space") {
-      if (onGround and !gameOver and !levelComplete) {
-        playerVY = jumpSpeed;
-        onGround = false;
-        playSweep(200, 400, 60);
-      }
+      // Buffer the press; the movement code consumes it if we can jump
+      // now (onGround) or in the next few frames (coyote time after
+      // walking off a ledge). Forgiving jumps make this MUCH less brutal.
+      jumpBuffer = 0.12;
     }
     if (e == "keydown:enter") {
       if (gameOver or levelComplete) {
         // Restart
         gameOver = false;
         levelComplete = false;
-        lives = 3;
+        lives = 5;
         score = 0;
         air = airMax;
         keysCollected = 0;
@@ -471,15 +471,30 @@ while (running) {
         playerY = spawnY;
         playerVX = 0;
         playerVY = 0;
+        invulnTimer = 1.0;
       }
     }
   }
 
   if (!gameOver and !levelComplete) {
+    // Decay invuln + jump-buffer + coyote timers
+    if (invulnTimer > 0) invulnTimer = invulnTimer - dt;
+    if (jumpBuffer  > 0) jumpBuffer  = jumpBuffer  - dt;
+    if (coyoteTimer > 0) coyoteTimer = coyoteTimer - dt;
+
     // --- Player movement ---
     playerVX = 0;
     if (leftHeld) { playerVX = -moveSpeed; facingRight = false; }
     if (rightHeld) { playerVX = moveSpeed; facingRight = true; }
+
+    // Buffered jump: fires if we're on the ground OR within coyote window.
+    if (jumpBuffer > 0 and (onGround or coyoteTimer > 0)) {
+      playerVY = jumpSpeed;
+      onGround = false;
+      coyoteTimer = 0;
+      jumpBuffer  = 0;
+      playSweep(200, 400, 60);
+    }
 
     // Walk animation
     if (playerVX != 0 and onGround) {
@@ -506,6 +521,7 @@ while (running) {
 
     // Move Y
     var newY = playerY + playerVY * dt;
+    var wasOnGround = onGround;
     if (playerVY >= 0) {
       if (solidAt(playerX + 2, newY + playerH) or solidAt(playerX + playerW - 2, newY + playerH)) {
         playerY = floor((newY + playerH) / tileSize) * tileSize - playerH;
@@ -514,6 +530,8 @@ while (running) {
       } else {
         playerY = newY;
         onGround = false;
+        // Grant coyote time the instant we walk off a ledge.
+        if (wasOnGround) coyoteTimer = 0.10;
       }
     } else {
       if (solidAt(playerX + 2, newY) or solidAt(playerX + playerW - 2, newY)) {
@@ -578,8 +596,8 @@ while (running) {
 
     // --- Check exit door ---
     if (doorOpen) {
-      var doorPx = 22 * tileSize;
-      var doorPy = 2 * tileSize;
+      var doorPx = 29 * tileSize;
+      var doorPy = 1 * tileSize;
       if (rectsOverlap(playerX, playerY, playerW, playerH, doorPx, doorPy, tileSize, tileSize)) {
         levelComplete = true;
         score = score + floor(air) * 10;
@@ -601,14 +619,14 @@ while (running) {
   // ============================================================
   clearCanvas();
 
-  // --- Draw tilemap ---
-  drawTilemap(map, 0, 0);
+  // --- Draw tilemap (offset into letterbox region) ---
+  drawTilemap(map, playAreaX, playAreaY);
 
   // --- Draw keys (that haven't been collected) ---
   var ki = 0;
   while (ki < maxKeys) {
     if (!arrayGet(keyCollected, ki)) {
-      drawSpriteScaled(KEY, arrayGet(keyX, ki), arrayGet(keyY, ki), 2);
+      drawSpriteScaled(KEY, playAreaX + arrayGet(keyX, ki), playAreaY + arrayGet(keyY, ki), 2);
     }
     ki = ki + 1;
   }
@@ -616,7 +634,7 @@ while (running) {
   // --- Draw exit door glow when open ---
   if (doorOpen) {
     setColor(100, 255, 100);
-    fillRect(22 * tileSize - 2, 2 * tileSize - 2, tileSize + 4, tileSize + 4);
+    fillRect(playAreaX + 29 * tileSize - 2, playAreaY + 1 * tileSize - 2, tileSize + 4, tileSize + 4);
   }
 
   // --- Draw enemies ---
@@ -626,76 +644,91 @@ while (running) {
     var ey = floor(arrayGet(enemyY, ei));
     var edir = arrayGet(enemyDir, ei);
     if (edir > 0) {
-      drawSpriteScaled(enemySprite, ex, ey, 2);
+      drawSpriteScaled(enemySprite, playAreaX + ex, playAreaY + ey, 2);
     } else {
-      drawSpriteScaled(enemySpriteL, ex, ey, 2);
+      drawSpriteScaled(enemySpriteL, playAreaX + ex, playAreaY + ey, 2);
     }
     ei = ei + 1;
   }
 
   // --- Draw player ---
-  var spr = playerStand;
-  if (!facingRight) spr = playerStandL;
-  if (!onGround) {
-    if (facingRight) spr = playerJump;
-    if (!facingRight) spr = playerJumpL;
-  } else {
-    if (walkFrame == 1) {
-      if (facingRight) spr = playerWalk1;
-      if (!facingRight) spr = playerWalk1L;
-    }
-    if (walkFrame == 2) {
-      if (facingRight) spr = playerWalk2;
-      if (!facingRight) spr = playerWalk2L;
-    }
+  // Flicker during invuln: skip every other frame's draw.
+  var drawPlayer = true;
+  if (invulnTimer > 0) {
+    // 10Hz blink while invulnerable
+    if (floor(invulnTimer * 10) - floor(invulnTimer * 10 / 2) * 2 == 0) drawPlayer = false;
   }
-  drawSpriteScaled(spr, floor(playerX) - 3, floor(playerY) - 8, 2);
+  if (drawPlayer) {
+    var spr = playerStand;
+    if (!facingRight) spr = playerStandL;
+    if (!onGround) {
+      if (facingRight) spr = playerJump;
+      if (!facingRight) spr = playerJumpL;
+    } else {
+      if (walkFrame == 1) {
+        if (facingRight) spr = playerWalk1;
+        if (!facingRight) spr = playerWalk1L;
+      }
+      if (walkFrame == 2) {
+        if (facingRight) spr = playerWalk2;
+        if (!facingRight) spr = playerWalk2L;
+      }
+    }
+    drawSpriteScaled(spr, playAreaX + floor(playerX) - 3, playAreaY + floor(playerY) - 8, 2);
+  }
 
   // ============================================================
-  // HUD (bottom area)
+  // HUD - top title bar + bottom stats strip (letterbox)
   // ============================================================
-  var hudY = mapRows * tileSize + 2;
 
-  // Level name bar
-  setColor(180, 180, 40);
-  fillRect(0, hudY, w, 18);
+  // Top letterbox bar - cavern name + game title
   setColor(0, 0, 0);
-  drawText(w / 2 - 60, hudY + 2, "Central Cavern");
+  fillRect(0, 0, w, playAreaY);
+  setColor(180, 180, 40);
+  drawText(playAreaX + 4, 4, "MANIC CAVERN", 2);
+  setColor(255, 220, 0);
+  drawText(playAreaX + playAreaW - 120, 6, "Central Cavern");
 
-  // Air bar
-  var airBarY = hudY + 20;
-  setColor(150, 150, 170);
-  drawText(4, airBarY, "AIR");
-  // Background
+  // Thin divider above and below the play area for that arcade-cabinet look
+  setColor(180, 180, 40);
+  fillRect(0, playAreaY - 2, w, 2);
+  fillRect(0, bottomBarY,    w, 2);
+
+  // Bottom letterbox bar - black background
+  setColor(0, 0, 0);
+  fillRect(0, bottomBarY + 2, w, bottomBarH - 2);
+
+  // AIR bar (top of bottom strip, spans most of the width)
+  var airBarY = bottomBarY + 8;
+  setColor(180, 180, 200);
+  drawText(playAreaX, airBarY, "AIR");
+  var airBarX = playAreaX + 32;
+  var airBarW = playAreaW - 40;
   setColor(60, 60, 80);
-  fillRect(36, airBarY, 200, 12);
-  // Fill (green -> red as it depletes)
+  fillRect(airBarX, airBarY, airBarW, 8);
   var airPct = air / airMax;
   var airR = floor((1 - airPct) * 255);
   var airG = floor(airPct * 200);
   setColor(airR, airG, 40);
-  fillRect(36, airBarY, floor(200 * airPct), 12);
+  fillRect(airBarX, airBarY, floor(airBarW * airPct), 8);
 
-  // Score
-  var scoreY = airBarY + 16;
-  setColor(200, 200, 50);
-  drawText(4, scoreY, "High Score 000200");
-  drawText(w / 2, scoreY, "Score " + str(score));
+  // Stats line below the AIR bar: lives, keys, score (left to right)
+  var statsY = airBarY + 14;
 
-  // Lives
-  var livesY = scoreY + 18;
   setColor(200, 200, 220);
-  drawText(4, livesY, "Lives:");
+  drawText(playAreaX, statsY, "LIVES");
   var li = 0;
   while (li < lives) {
     setColor(255, 150, 100);
-    fillRect(56 + li * 18, livesY, 10, 12);
+    fillRect(playAreaX + 40 + li * 10, statsY + 1, 6, 8);
     li = li + 1;
   }
 
-  // Keys remaining
   setColor(255, 220, 0);
-  drawText(w - 120, livesY, "Keys: " + str(keysCollected) + "/" + str(maxKeys));
+  drawText(playAreaX + 120, statsY, "KEYS " + str(keysCollected) + "/" + str(maxKeys));
+
+  setColor(200, 200, 50);
+  drawText(playAreaX + playAreaW - 120, statsY, "SCORE " + str(score));
 
   // --- Game over / level complete overlays ---
   if (gameOver) {
