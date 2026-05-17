@@ -1970,6 +1970,13 @@ begin
 end;
 
 function createPaletteSpriteNative(argCount: integer; args: pValue): TValue;
+const
+  // Fixed, opaque-white fallback for palette characters that haven't been
+  // defined via setPaletteColor(). Using a constant (rather than
+  // FCurrentPixel) keeps the sprite's appearance deterministic and
+  // independent of whatever setColor() value happens to be active when
+  // the sprite is created.
+  PALETTE_FALLBACK_PIXEL: Cardinal = $FFFFFFFF;
 var
   w, h, x, y, i: Integer;
   s: AnsiString;
@@ -2022,7 +2029,7 @@ begin
         else if FPaletteUsed[ch] then
           PCardinal(@row[x])^ := FPalette[ch]
         else
-          PCardinal(@row[x])^ := FCurrentPixel;  // fallback to current color
+          PCardinal(@row[x])^ := PALETTE_FALLBACK_PIXEL;  // undefined char -> opaque white
         Inc(i);
       end;
     end;
@@ -2755,6 +2762,7 @@ begin
     FTilemaps.Clear;
   FillChar(FPalette, SizeOf(FPalette), 0);
   FillChar(FPaletteUsed, SizeOf(FPaletteUsed), 0);
+  FCurrentPixel := $FFFFFFFF;  // opaque white; safe default if InitCanvas wasn't run
   FCameraX := 0;
   FCameraY := 0;
   FRenderTargetId := -1;
