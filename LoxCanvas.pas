@@ -66,6 +66,11 @@ procedure DetachCanvasFromHost;
 procedure RegisterCanvasNatives;
 procedure SetKeyState(const KeyName: string; Down: Boolean);
 procedure ClearAllKeyState;
+// Reset the per-frame edge-trigger state (FKeysPressed,
+// FMouseBtnClicked). Called by processMessagesNative immediately before
+// pumping Windows messages so that keyPressed() / mouseClicked() report
+// only transitions that occurred during the current frame's pump.
+procedure ClearFrameEdges;
 function GameCanvas: TLoxGameCanvas;
 
 implementation
@@ -154,6 +159,12 @@ var
   FPalette: array[0..255] of Cardinal;   // char -> BGRA color
   FPaletteUsed: array[0..255] of Boolean;
   FKeysHeld: TDictionary<string, Boolean>;
+  // Edge-trigger set: keys that transitioned from up -> down since the
+  // last ClearFrameEdges. Cleared at the top of each processMessages()
+  // tick so keyPressed(name) returns true exactly once per physical
+  // key press, no matter how many times the script polls it within
+  // that frame.
+  FKeysPressed: TDictionary<string, Boolean>;
   // Latest known mouse position in LOGICAL pixel coords (clamped to the
   // 320x240 playfield) and held state for the three primary buttons.
   // Updated by TLoxGameCanvas.MouseMove/Down/Up and queried by the
@@ -161,6 +172,10 @@ var
   FMouseX: Integer;
   FMouseY: Integer;
   FMouseBtn: array[0..2] of Boolean;
+  // Edge-trigger flags for the three mouse buttons. Set in MouseDown
+  // when the button transitions from up -> down; cleared in
+  // ClearFrameEdges. mouseClicked(btn) reads these.
+  FMouseBtnClicked: array[0..2] of Boolean;
   // -- Glyph cache for drawText() --
   // Built once from the 5x7 font table. For each printable ASCII char
   // (32..126) and each of the 7 rows, we pre-extract which of the 5
@@ -386,7 +401,14 @@ begin
   FMouseY := ly;
   btnIdx := MouseTButtonToIndex(Button);
   if (btnIdx >= 0) and (btnIdx <= 2) then
+  begin
+    // Edge-detect: only the up->down transition counts as a click.
+    // Spurious repeat-downs (e.g. WM_LBUTTONDOWN delivered twice) won't
+    // re-fire mouseClicked() within the same frame.
+    if not FMouseBtn[btnIdx] then
+      FMouseBtnClicked[btnIdx] := True;
     FMouseBtn[btnIdx] := True;
+  end;
   if Assigned(FOnGameMouseDown) and (btnIdx >= 0) then
     FOnGameMouseDown(Self, btnIdx, lx, ly);
   inherited;
@@ -542,6 +564,8 @@ begin
   FreeAndNil(FPresentBuffer);
   FreeAndNil(FKeysHeld);
   FKeysHeld := TDictionary<string, Boolean>.Create;
+  FreeAndNil(FKeysPressed);
+  FKeysPressed := TDictionary<string, Boolean>.Create;
 end;
 
 procedure DetachCanvasFromHost;
@@ -569,6 +593,7 @@ begin
   FRenderTarget := nil;
   FRenderTargetId := -1;
   FreeAndNil(FKeysHeld);
+  FreeAndNil(FKeysPressed);
   FreeAndNil(FGameSurface);
 end;
 
@@ -1223,16 +1248,47 @@ begin
 end;
 
 procedure SetKeyState(const KeyName: string; Down: Boolean);
+var
+  was: Boolean;
 begin
   if FKeysHeld = nil then
     FKeysHeld := TDictionary<string, Boolean>.Create;
+  was := False;
+  FKeysHeld.TryGetValue(KeyName, was);
   FKeysHeld.AddOrSetValue(KeyName, Down);
+  // Edge-detect up->down so that auto-repeat (Windows resends WM_KEYDOWN
+  // while a key is held) doesn't keep re-flagging keyPressed.
+  if Down and not was then
+  begin
+    if FKeysPressed = nil then
+      FKeysPressed := TDictionary<string, Boolean>.Create;
+    FKeysPressed.AddOrSetValue(KeyName, True);
+  end;
 end;
 
 procedure ClearAllKeyState;
+var
+  i: Integer;
 begin
   if FKeysHeld <> nil then
     FKeysHeld.Clear;
+  if FKeysPressed <> nil then
+    FKeysPressed.Clear;
+  for i := 0 to High(FMouseBtn) do
+  begin
+    FMouseBtn[i] := False;
+    FMouseBtnClicked[i] := False;
+  end;
+end;
+
+procedure ClearFrameEdges;
+var
+  i: Integer;
+begin
+  if FKeysPressed <> nil then
+    FKeysPressed.Clear;
+  for i := 0 to High(FMouseBtnClicked) do
+    FMouseBtnClicked[i] := False;
 end;
 
 function keyHeldNative(argCount: integer; args: pValue): TValue;
@@ -1255,6 +1311,28 @@ begin
   if (FKeysHeld <> nil) then
     FKeysHeld.TryGetValue(name, held);
   Result := CreateBoolean(held);
+end;
+
+function keyPressedNative(argCount: integer; args: pValue): TValue;
+var
+  name: string;
+  pressed: Boolean;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('keyPressed() takes 1 argument (key name).');
+    Exit(CreateNilValue);
+  end;
+  if args[0].ValueKind <> vkObject then
+  begin
+    RuntimeError('keyPressed() argument must be a string.');
+    Exit(CreateNilValue);
+  end;
+  name := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  pressed := False;
+  if (FKeysPressed <> nil) then
+    FKeysPressed.TryGetValue(name, pressed);
+  Result := CreateBoolean(pressed);
 end;
 
 function mouseXNative(argCount: integer; args: pValue): TValue;
@@ -1298,6 +1376,29 @@ begin
     Exit(CreateNilValue);
   end;
   Result := CreateBoolean(FMouseBtn[btn]);
+end;
+
+function mouseClickedNative(argCount: integer; args: pValue): TValue;
+var
+  btn: Integer;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('mouseClicked() takes 1 argument (button 0=left, 1=right, 2=middle).');
+    Exit(CreateNilValue);
+  end;
+  if args[0].ValueKind <> vkNumber then
+  begin
+    RuntimeError('mouseClicked() argument must be a number.');
+    Exit(CreateNilValue);
+  end;
+  btn := Trunc(args[0].NumberValue);
+  if (btn < 0) or (btn > 2) then
+  begin
+    RuntimeError('mouseClicked() button must be 0..2.');
+    Exit(CreateNilValue);
+  end;
+  Result := CreateBoolean(FMouseBtnClicked[btn]);
 end;
 
 function spriteWidthNative(argCount: integer; args: pValue): TValue;
@@ -3167,9 +3268,11 @@ begin
   defineNative('clearClipRect', clearClipRectNative, 0);
   defineNative('measureText', measureTextNative, -1);
   defineNative('keyHeld', keyHeldNative, 1);
+  defineNative('keyPressed', keyPressedNative, 1);
   defineNative('mouseX', mouseXNative, 0);
   defineNative('mouseY', mouseYNative, 0);
   defineNative('mouseDown', mouseDownNative, 1);
+  defineNative('mouseClicked', mouseClickedNative, 1);
   defineNative('spriteWidth', spriteWidthNative, 1);
   defineNative('spriteHeight', spriteHeightNative, 1);
 end;

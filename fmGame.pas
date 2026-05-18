@@ -78,8 +78,11 @@ begin
   begin
     Form4.Memo2.Lines.Add(VM.PrintOutput);
     VM.PrintOutput := '';
-  end;
-  Application.ProcessMessages;
+  end;  // Wipe last frame's edge-trigger state BEFORE pumping. Any
+  // up->down transitions delivered by the pump below will repopulate
+  // FKeysPressed / FMouseBtnClicked so the script's keyPressed() /
+  // mouseClicked() polls see only this frame's new presses.
+  ClearFrameEdges;  Application.ProcessMessages;
   if Form4.FClosing or frmGame.FAbortScript then    //TODO - this feels a bit shonky tbh
   begin
     if frmGame.FAbortScript then
