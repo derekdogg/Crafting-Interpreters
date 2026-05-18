@@ -143,8 +143,8 @@ object Form4: TForm4
       BevelOuter = bvNone
       TabOrder = 0
       object Button1: TButton
-        Left = 4
-        Top = 4
+        Left = 6
+        Top = 5
         Width = 90
         Height = 25
         Caption = 'Run Script'

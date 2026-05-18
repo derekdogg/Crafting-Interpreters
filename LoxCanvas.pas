@@ -469,9 +469,10 @@ begin
     end
     else
     begin
-      // No frame yet — fill black so we don't show garbage.
-      Canvas.Brush.Color := clBlack;
-      Canvas.FillRect(ClientRect);
+      // No frame yet — fill black so we don't show garbage. Use the
+      // BeginPaint DC directly (not the VCL Canvas wrapper, which can
+      // lazily acquire its own DC and drift from the paint lifecycle).
+      Winapi.Windows.FillRect(DC, ClientRect, HBRUSH(GetStockObject(BLACK_BRUSH)));
     end;
   finally
     EndPaint(Handle, PS);

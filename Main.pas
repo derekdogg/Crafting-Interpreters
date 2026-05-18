@@ -9,7 +9,7 @@ uses
   Chunk_Types,
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait,
-  System.ImageList,NativeObjects, LoxCanvas,
+  System.ImageList,NativeObjects,
   System.Generics.Collections;
 
 type
@@ -54,11 +54,6 @@ type
       Recurse: Boolean);
     procedure SetAllChecked(Node: TTreeNode; Checked: Boolean);
     procedure ToggleCheck(Node: TTreeNode);
-    procedure GameCanvasKeyDown(Sender: TObject; const KeyName: string);
-    procedure GameCanvasKeyUp(Sender: TObject; const KeyName: string);
-    procedure GameCanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
-    procedure GameCanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
-    procedure GameCanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
     procedure UpdateParentCheck(Node: TTreeNode);
     procedure CollectCheckedFiles(Node: TTreeNode; Files: TStringList);
     function CountChecked(Node: TTreeNode): Integer;
@@ -67,20 +62,9 @@ type
     procedure BuildStateImages;
   private
     FLoxSyn: TSynLoxSyn;
-    FEventQueue: TLoxQueue;
-    // Lazy caches mapping a key name ('left', 'a', ...) to its fully
-    // formed event string ('keydown:left'). Built on first miss so we
-    // pay the concat allocation once per (key, direction) pair instead
-    // of once per keystroke.
-    FKeyDownCache: TDictionary<string, string>;
-    FKeyUpCache: TDictionary<string, string>;
     FScriptRunning: Boolean;
-    FClosing: Boolean;
   public
-    // Set by frmGame.FormCloseQuery when the user tries to close the
-    // game window mid-script. processMessagesNative observes it and
-    // raises a runtime error so the Lox while-loop unwinds cleanly.
-    FAbortScript: Boolean;
+    FClosing: Boolean;
   end;
 
 var
@@ -88,7 +72,7 @@ var
 
 implementation
 uses
-  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, LoxSound, fmGame;
+  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, fmGame;
 
 {$R *.dfm}
 
@@ -212,63 +196,8 @@ begin
   // See FormKeyDown — no form-level handling for gameplay keys.
 end;
 
-procedure TForm4.GameCanvasKeyDown(Sender: TObject; const KeyName: string);
-var
-  Msg: string;
-begin
-  if not FKeyDownCache.TryGetValue(KeyName, Msg) then
-  begin
-    Msg := 'keydown:' + KeyName;
-    FKeyDownCache.Add(KeyName, Msg);
-  end;
-  FEventQueue.Enqueue(Msg);
-end;
-
-procedure TForm4.GameCanvasKeyUp(Sender: TObject; const KeyName: string);
-var
-  Msg: string;
-begin
-  if not FKeyUpCache.TryGetValue(KeyName, Msg) then
-  begin
-    Msg := 'keyup:' + KeyName;
-    FKeyUpCache.Add(KeyName, Msg);
-  end;
-  FEventQueue.Enqueue(Msg);
-end;
-
-procedure TForm4.GameCanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
-begin
-  // Manual concat (~10x faster than Format with VarRec marshalling).
-  FEventQueue.Enqueue('mousedown:' + IntToStr(Button) + ':' +
-    IntToStr(LX) + ':' + IntToStr(LY));
-end;
-
-procedure TForm4.GameCanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
-begin
-  FEventQueue.Enqueue('mouseup:' + IntToStr(Button) + ':' +
-    IntToStr(LX) + ':' + IntToStr(LY));
-end;
-
-procedure TForm4.GameCanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
-var
-  Msg: string;
-begin
-  // Button is unused for moves (caller passes -1). We still emit logical
-  // coords so scripts can drive hover/drag UI without polling mouseX/Y.
-  Msg := 'mousemove:' + IntToStr(LX) + ':' + IntToStr(LY);
-  // Coalesce consecutive mouse-move events: WM_MOUSEMOVE can fire 100+
-  // times per second, but only the latest position matters for typical
-  // hover/drag logic. Overwriting the tail caps queue growth between
-  // processMessages() calls.
-  if not FEventQueue.ReplaceTailIfPrefix('mousemove:', Msg) then
-    FEventQueue.Enqueue(Msg);
-end;
-
 procedure TForm4.FormCreate(Sender: TObject);
 begin
-  FEventQueue := TLoxQueue.Create;
-  FKeyDownCache := TDictionary<string, string>.Create;
-  FKeyUpCache := TDictionary<string, string>.Create;
   FLoxSyn := TSynLoxSyn.Create(Self);
   Memo1.Highlighter := FLoxSyn;
 
@@ -313,31 +242,20 @@ begin
   FLoxSyn.IdentifierAttri.Foreground := $009CDCFE;  // light blue (variables)
   FLoxSyn.SymbolAttri.Foreground     := $00D4D4D4;  // match default text
 
-  // The game canvas lives on the dedicated game form (frmGame). Parent
-  // it there and let its client dimensions drive LOGICAL_W / LOGICAL_H.
-  // Form4 is created first by the .dpr so frmGame may not exist yet —
-  // construct it now if needed.
+  // The game window owns the canvas, the input-event queue, and the
+  // game-input plumbing. Form4 is created first by the .dpr so the
+  // game form may not exist yet — construct it now if needed. Its
+  // OnCreate handler sets up everything else.
   if frmGame = nil then
     frmGame := TfrmGame.Create(Application);
-  InitCanvas(frmGame);
-  // The game canvas is the only place gameplay keys are handled. Hook
-  // its events here so the form can enqueue them for the Lox event
-  // queue without the editor or other VCL controls intercepting them.
-  GameCanvas.OnGameKeyDown := GameCanvasKeyDown;
-  GameCanvas.OnGameKeyUp := GameCanvasKeyUp;
-  GameCanvas.OnGameMouseDown := GameCanvasMouseDown;
-  GameCanvas.OnGameMouseUp := GameCanvasMouseUp;
-  GameCanvas.OnGameMouseMove := GameCanvasMouseMove;
 end;
 
 procedure TForm4.FormDestroy(Sender: TObject);
 var
   N: TTreeNode;
 begin
-  FreeCanvas;
-  FEventQueue.Free;
-  FKeyDownCache.Free;
-  FKeyUpCache.Free;
+  // Canvas + event queue are owned by frmGame and freed in its
+  // FormDestroy.
   N := TestTree.Items.GetFirstNode;
   while N <> nil do
   begin
@@ -350,26 +268,6 @@ begin
   end;
 end;
 
-function processMessagesNative(argCount: integer; args: pValue): TValue;
-begin
-  // Flush any pending print output to the output memo
-  if VM.PrintOutput <> '' then
-  begin
-    Form4.Memo2.Lines.Add(VM.PrintOutput);
-    VM.PrintOutput := '';
-  end;
-  Application.ProcessMessages;
-  if Form4.FClosing or Form4.FAbortScript then
-  begin
-    if Form4.FAbortScript then
-      RuntimeError('Script aborted: game window closed.')
-    else
-      RuntimeError('Script aborted: application closing.');
-    Exit(CreateNilValue);
-  end;
-  Result := CreateNilValue;
-end;
-
 procedure TForm4.Button1Click(Sender: TObject);
 var
   IR : TInterpretResult;
@@ -377,38 +275,22 @@ var
 begin
   Memo2.Lines.Clear;
   txt := AnsiString(Memo1.Lines.Text);
-  FEventQueue.clear;
   FScriptRunning := True;
-  FAbortScript := False;
   Button1.Enabled := False;
   BtnRunSelected.Enabled := False;
   BtnRunAll.Enabled := False;
   Memo1.ReadOnly := True;
-  // Show the game window and let it know a script is starting so it
-  // refuses to close while drawing is live.
-  frmGame.NotifyScriptStarted;
-  // Give the game canvas keyboard focus so it owns gameplay input from
-  // the moment the script starts. Otherwise the first key event would
-  // still go to whichever control happened to be focused.
-  if (GameCanvas <> nil) and GameCanvas.CanFocus then
-    GameCanvas.SetFocus;
-  InitVM;
   try
-    defineNative('processMessages', processMessagesNative, 0);
-    RegisterCanvasNatives;
-    RegisterSoundNatives;
-    registerNativeClassRTTI('LoxQueue', TLoxQueue);
-    InjectNativeObject('events', Pointer(FEventQueue), 'LoxQueue');
-    IR := CompileAndRun(PAnsiChar(txt));
+    // The game form owns the canvas, the input-event queue, and the
+    // whole VM lifecycle. It shows itself, sets up natives, runs the
+    // script to completion, then tears the VM down again.
+    IR := frmGame.RunScript(txt);
   finally
-    FreeVM;
-    StopAllSound;
     FScriptRunning := False;
     Button1.Enabled := True;
     BtnRunSelected.Enabled := True;
     BtnRunAll.Enabled := True;
     Memo1.ReadOnly := False;
-    frmGame.NotifyScriptStopped;
   end;
 
   case IR.code of
@@ -434,14 +316,14 @@ end;
 
 procedure TForm4.Button2Click(Sender: TObject);
 begin
-  FEventQueue.Enqueue('click:TestButton');
+  frmGame.FEventQueue.Enqueue('click:TestButton');
 
 
 end;
 
 procedure TForm4.Button3Click(Sender: TObject);
 begin
- FEventQueue.Enqueue('keydown:escape');
+  frmGame.FEventQueue.Enqueue('keydown:escape');
 end;
 
 procedure TForm4.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
