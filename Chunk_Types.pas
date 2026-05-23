@@ -1948,11 +1948,21 @@ begin
 end;
 
 function CreateObject(value : pObj) : TValue;
+var
+  ptr: UInt64;
 begin
   AssertPointerIsNotNil(value, 'CreateObject - object value');
-  Assert(UInt64(NativeUInt(value)) and OBJ_TAG = 0,
-    'CreateObject: pointer has bits in tag region - platform incompatible with NaN boxing');
-  result := OBJ_TAG or (UInt64(NativeUInt(value)) and not OBJ_TAG);
+
+  ptr := UInt64(NativeUInt(value));
+
+  // NaN-boxing assumes canonical lower-half userspace pointers (lower 48 bits).
+  // Object pointers must not overlap the reserved tag region (upper 16 bits).
+  if (ptr and OBJ_TAG) <> 0 then
+    raise ELoxRuntimeError.Create(
+      'CreateObject: pointer incompatible with NaN boxing ($' +
+      IntToHex(ptr, 16) + ')');
+
+  Result := OBJ_TAG or ptr;
 end;
 
 
@@ -3294,7 +3304,7 @@ function CreateNumber(Value: Double): TValue; inline;
 var
   bits: UInt64;
 begin
-  bits := PUInt64(@Value)^;
+  Move(Value, bits, SizeOf(UInt64));
   // If raw bits collide with tag space, canonicalize to a safe NaN.
   // Without this, 0/0 or NaN-propagation could produce payloads that
   // satisfy (bits & QNAN) = QNAN, causing misclassification as
@@ -3307,7 +3317,7 @@ end;
 
 function GetNumber(Value : TValue) : double; inline;
 begin
-  Result := PDouble(@Value)^;
+  Move(Value, Result, SizeOf(Double));
 end;
 
 function CreateNilValue : TValue; inline;
