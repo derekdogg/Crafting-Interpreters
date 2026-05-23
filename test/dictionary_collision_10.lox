@@ -1,0 +1,65 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 10: Dense small-integer collision cluster
+// Integers 0-7 as doubles have very specific bit patterns. At capacity 8,
+// their hashes mod 8 will cluster. Insert them, delete specific ones to
+// create tombstones within the cluster, then verify lookups and re-inserts.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Phase 1: Insert 0-7 (fills to threshold, forces resize to 16)
+  for (var i = 0; i < 8; i = i + 1) {
+    d.Set(i, "v" + str(i));
+  }
+  assert(d.Size() == 8);
+
+  // Phase 2: Delete 0, 2, 4, 6 â€” tombstones in the cluster
+  d.Delete(0);
+  d.Delete(2);
+  d.Delete(4);
+  d.Delete(6);
+  assert(d.Size() == 4);
+
+  // Phase 3: Verify odd keys survive
+  assert(d.Get(1) == "v1");
+  assert(d.Get(3) == "v3");
+  assert(d.Get(5) == "v5");
+  assert(d.Get(7) == "v7");
+
+  // Phase 4: Insert 8-15 â€” new entries sharing the expanded table
+  for (var i = 8; i < 16; i = i + 1) {
+    d.Set(i, "v" + str(i));
+  }
+  assert(d.Size() == 12);
+
+  // Phase 5: Delete odd originals
+  d.Delete(1);
+  d.Delete(3);
+  d.Delete(5);
+  d.Delete(7);
+  assert(d.Size() == 8);
+
+  // Phase 6: Only 8-15 should remain
+  for (var i = 0; i < 8; i = i + 1) {
+    assert(d.Has(i) == false);
+  }
+  for (var i = 8; i < 16; i = i + 1) {
+    assert(d.Get(i) == "v" + str(i));
+  }
+}
+print "pass: dense integer cluster"; // expect: pass: dense integer cluster
+

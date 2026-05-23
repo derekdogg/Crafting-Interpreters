@@ -1,6 +1,6 @@
-unit Chunk_Types;
+﻿unit Chunk_Types;
 {$POINTERMATH ON}
-{$ASSERTIONS OFF}
+{$ASSERTIONS ON}
 {..$DEFINE DEBUG_LOG_GC}
 {..$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
@@ -109,8 +109,9 @@ const
   OP_SET_LOCAL_5 = 62;
   OP_SET_LOCAL_6 = 63;
   OP_SET_LOCAL_7 = 64;
+  OP_LESS_JUMP_IF_FALSE = 65;  // Fused OP_LESS + OP_JUMP_IF_FALSE_POP. 2-byte offset operand. Pops both number operands, jumps if NOT (a < b).
 
-  OP_STRINGS : array[0..64] of string = (
+  OP_STRINGS : array[0..65] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -163,7 +164,8 @@ const
     'OP_GET_LOCAL_0','OP_GET_LOCAL_1','OP_GET_LOCAL_2','OP_GET_LOCAL_3',
     'OP_GET_LOCAL_4','OP_GET_LOCAL_5','OP_GET_LOCAL_6','OP_GET_LOCAL_7',
     'OP_SET_LOCAL_0','OP_SET_LOCAL_1','OP_SET_LOCAL_2','OP_SET_LOCAL_3',
-    'OP_SET_LOCAL_4','OP_SET_LOCAL_5','OP_SET_LOCAL_6','OP_SET_LOCAL_7');
+    'OP_SET_LOCAL_4','OP_SET_LOCAL_5','OP_SET_LOCAL_6','OP_SET_LOCAL_7',
+    'OP_LESS_JUMP_IF_FALSE');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 256;
@@ -942,6 +944,7 @@ var
   Scanner : TScanner;
   Parser  : TParser;
   Current : pCompiler;
+  lastPatchTarget : integer = -1;
   //Output : TStrings;
   {$IFDEF DEBUG_LOG_GC}
   GCLogFile : TextFile;
@@ -1585,7 +1588,7 @@ begin
   begin
     pushStack(VM.Stack, StringToValue(Result), VM.MemTracker);
     TableSet(VM.Strings, Result, CreateNilValue, MemTracker);
-    popStack(VM.Stack);
+    Dec(VM.Stack.StackTop);
   end;
   
   // ---- Exit assertions ----
@@ -1838,10 +1841,10 @@ begin
   OldValues := Stack.Values;
   ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
   AssertStackValuesIsAssigned(Stack);
-  AssertStackCapacityIsGreaterThanZero(Stack);
   // Zero new portion
   FillChar(Stack.Values[OldCapacity], (NewCapacity - OldCapacity) * SizeOf(TValue), 0);
   Stack.CapacityEnd := Stack.Values + NewCapacity;
+  AssertStackCapacityIsGreaterThanZero(Stack);
   // If the buffer moved, rebase StackTop, frame.slots and open upvalue locations
   if Stack.Values <> OldValues then
   begin
@@ -2115,7 +2118,7 @@ begin
         okString: Result := pObjString(value.ObjValue)^.hash;
       else
         // Identity hash for other objects (pointer-based)
-        Result := UInt32(NativeUInt(value.ObjValue));
+        Result := UInt32(NativeUInt(value.ObjValue) xor (NativeUInt(value.ObjValue) shr 32));
       end;
     end;
   else
@@ -2524,7 +2527,7 @@ begin
         end;
       end;
 
-      popStack(VM.Stack); // pop GC protection
+      Dec(VM.Stack.StackTop); // pop GC protection
       Result := CreateObject(pObj(arr));
     end;
     tkDynArray:
@@ -2543,7 +2546,7 @@ begin
         Inc(dynArr^.Count);
       end;
 
-      popStack(VM.Stack); // pop GC protection
+      Dec(VM.Stack.StackTop); // pop GC protection
       Result := CreateObject(pObj(dynArr));
     end;
     tkString, tkLString, tkWString, tkUString:
@@ -2600,7 +2603,7 @@ var
   setBuf: array[0..31] of Byte;  // 256 bits max
   // Dynamic array marshaling
   srcArr: pObjArray;
-  dynArrLen: Integer;
+  dynArrLen: NativeInt;
   dynResult: System.Rtti.TValue;
   dynElemType: PTypeInfo;
   dynJ: Integer;
@@ -3392,7 +3395,7 @@ begin
   // Add the value to the ValueArray -- note here the value array can grow
   writeValueArray(ValueArray, value,Memtracker);
 
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
 
   // Return the index of the newly added value
   Result := ValueArray.Count - 1;
@@ -3645,7 +3648,7 @@ begin
           Inc(arr^.Count);
         end;
       end;
-      PopStack(vm.stack);
+      Dec(VM.Stack.StackTop);
     end;
     outResult := CreateObject(pObj(arr));
   end
@@ -3673,7 +3676,7 @@ begin
           Inc(arr^.Count);
         end;
       end;
-      PopStack(vm.stack);
+      Dec(VM.Stack.StackTop);
     end;
     outResult := CreateObject(pObj(arr));
   end
@@ -3699,11 +3702,18 @@ var
                         // Derived from VM.Frames[VM.FrameCount - 1].
                         // Never authoritative state ? recomputed after call/return.
 
-  instructionPtr      : pByte;
+  ip : pByte;           // Cached frame^.ip. Eliminates one pointer indirection
+                        // on every byte read (hottest path in the VM).
+                        // Stored back to frame^.ip before OP_CALL (so the
+                        // caller's return address is preserved) and reloaded
+                        // from the new frame after OP_CALL / OP_RETURN.
 
   constants : pValue;  // Cached frame^.closure^.func^.chunk^.Constants^.Values.
                         // Eliminates 5-deep pointer chain on every constant load.
                         // Rebased alongside `frame` after OP_CALL / OP_RETURN.
+  stack : pStack;      // Cached vm.Stack. Never changes during execution
+                        // (allocated once in InitVM). Saves one pointer load
+                        // on every stack access vs going through the global `vm`.
   instruction: Byte;
   slot : Byte;
   offset : Word;
@@ -3807,8 +3817,8 @@ var
 
   (*function ReadByteFr(): Byte;
   begin
-    Result := frame^.ip^;
-    Inc(frame^.ip);
+    Result := ip^;
+    Inc(ip);
   end; *)
 
   // CallValue: Pushes a new call frame or executes a native/record call.
@@ -3839,7 +3849,7 @@ var
       VM.Frames[VM.FrameCount].closure := pObjClosure(callee.ObjValue);
       VM.Frames[VM.FrameCount].ip := pObjClosure(callee.ObjValue)^.func^.chunk^.Code;
       // slots points to the function value on the stack (argCnt args above it)
-      VM.Frames[VM.FrameCount].slots := VM.Stack.StackTop;
+      VM.Frames[VM.FrameCount].slots := stack.StackTop;
       Dec(VM.Frames[VM.FrameCount].slots, argCnt + 1);
       Inc(VM.FrameCount);
       Result := true;
@@ -3860,7 +3870,7 @@ var
         Exit(false);
       end;
       native := pObjNative(callee.ObjValue)^.func;
-      // NOTE: `args` points into VM.Stack.Values at StackTop - argCnt. Any
+      // NOTE: `args` points into stack.Values at StackTop - argCnt. Any
       // operation inside the native that calls pushStack with growth (directly,
       // or transitively via CreateString / DictSet / newArray-grow / etc.) can
       // ReallocMem the stack buffer, which makes this `args` pointer dangle.
@@ -3868,7 +3878,7 @@ var
       // you need into Pascal locals BEFORE the first pushStack/CreateString/
       // allocation call, and do not touch args after that point. (Audited
       // 2026-05; all in-tree natives comply.)
-      nativeResult := native(argCnt, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt) * SizeOf(TValue)));
+      nativeResult := native(argCnt, pValue(NativeUInt(stack.StackTop) - NativeUInt(argCnt) * SizeOf(TValue)));
       // Check if native signalled a runtime error
       if VM.RuntimeErrorStr <> '' then
       begin
@@ -3876,8 +3886,8 @@ var
         Exit;
       end;
       // pop args + callee
-      VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
-      pushStack(VM.Stack, nativeResult, VM.MemTracker);
+      stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
+      pushStack(stack, nativeResult, VM.MemTracker);
       Result := true;
     end
     else if isRecordType(callee) then
@@ -3891,16 +3901,16 @@ var
       end;
       // Create the record instance ? push onto stack to protect from GC
       value := CreateObject(pObj(newRecord(pObjRecordType(callee.ObjValue), VM.MemTracker)));
-      pushStack(VM.Stack, value, VM.MemTracker);
+      pushStack(stack, value, VM.MemTracker);
       // Copy arguments into the record's fields (args are on stack below the new record)
       for j := 0 to argCnt - 1 do
         pObjRecord(value.ObjValue)^.fields[j] :=
-          (VM.Stack.StackTop - 1 - argCnt + j)^;
+          (stack.StackTop - 1 - argCnt + j)^;
       // Pop the record instance we just pushed for protection
-      popStack(VM.Stack);
+      Dec(stack.StackTop);
       // Pop args + callee, push result
-      VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
-      pushStack(VM.Stack, value, VM.MemTracker);
+      stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
+      pushStack(stack, value, VM.MemTracker);
       Result := true;
     end
     else
@@ -3918,12 +3928,13 @@ begin
     AssertMemTrackerIsNotNil(vm.MemTracker);
     Assert(VM.FrameCount > 0, 'Run: no call frames');
 
+    stack := vm.Stack;
     frame := CurrentFrame;
-    instructionPtr := frame.ip;
+    ip := frame^.ip;
 
     constants := frame^.closure^.func^.chunk^.Constants^.Values;
     Assert(frame^.closure <> nil, 'Run: initial frame closure is nil');
-    Assert(frame^.ip <> nil, 'Run: initial frame ip is nil');
+    Assert(ip <> nil, 'Run: initial frame ip is nil');
 
     // FRAME OWNERSHIP:
     // `frame` always points to VM.Frames[VM.FrameCount - 1] (the current executing frame).
@@ -3937,91 +3948,92 @@ begin
     begin
       Assert(VM.FrameCount > 0,'Run dispatch: FrameCount <= 0');
       Assert(frame = CurrentFrame, 'Run dispatch: frame is out of sync with FrameCount');
-      instruction := frame^.ip^; Inc(frame^.ip);
+      instruction := ip^; Inc(ip);
       case instruction of
 
         OP_CONSTANT : begin
-          // Pass the constants-array slot directly to pushStack's `const value`
-          // parameter to avoid the 16-byte TValue temp copy.
-          pushStack(vm.Stack,
-                    constants[frame^.ip^],
-                    vm.MemTracker);
-          Inc(frame^.ip);
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, constants[ip^], vm.MemTracker)
+          else begin
+            stack.StackTop^ := constants[ip^];
+            Inc(stack.StackTop);
+          end;
+          Inc(ip);
         end;
 
         OP_CONSTANT_LONG : begin
           // 3-byte constant index (little-endian: byte0 | byte1<<8 | byte2<<16)
-          i := frame^.ip^; Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 8); Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 16); Inc(frame^.ip);
+          i := ip^; Inc(ip);
+          i := i or (ip^ shl 8); Inc(ip);
+          i := i or (ip^ shl 16); Inc(ip);
           AssertConstantIndex(i, 'OP_CONSTANT_LONG');
           AssertFrameValues('OP_CONSTANT_LONG');
           value := constants[i];
-          pushStack(vm.Stack,value,vm.MemTracker);
+          pushStack(stack,value,vm.MemTracker);
         end;
 
         OP_NEGATE : begin
           // In-place negation: rewrite the top slot, no pop/push.
-          if vm.Stack.StackTop[-1].ValueKind <> vkNumber then
+          if stack.StackTop[-1].ValueKind <> vkNumber then
           begin
              result.code := INTERPRET_RUNTIME_ERROR;
              runtimeError('Operand must be a number.');
              exit;
           end;
-          vm.Stack.StackTop[-1].NumberValue := -vm.Stack.StackTop[-1].NumberValue;
+          stack.StackTop[-1].NumberValue := -stack.StackTop[-1].NumberValue;
         end;
 
         OP_NIL      : pushStack(vm.stack, CreateNilValue,vm.MemTracker);
-        OP_TRUE     : pushStack(vm.Stack, CreateBoolean(true),vm.MemTracker);
+        OP_TRUE     : pushStack(stack, CreateBoolean(true),vm.MemTracker);
         OP_FALSE    : pushStack(vm.stack, CreateBoolean(false),vm.MemTracker);
 
         OP_EQUAL: begin
-         // Value := popStack(vm.Stack);
-         // ValueB := popStack(vm.Stack);
+         // Value := Dec(stack.StackTop);
+         // ValueB := Dec(stack.StackTop);
          // pushStack(vm.stack,CreateBoolean(valuesEqual(Value, ValueB)),vm.MemTracker);
-          vm.Stack.StackTop[-2] := CreateBoolean(valuesEqual(vm.Stack.StackTop[-2], vm.Stack.StackTop[-1]));
-          Dec(vm.Stack.StackTop);
+          stack.StackTop[-2] := CreateBoolean(valuesEqual(stack.StackTop[-2], stack.StackTop[-1]));
+          Dec(stack.StackTop);
         end;
 
         OP_GREATER  : begin
                         // Inlined: peek-peek-typecheck, write boolean result, pop 2 push 1.
                         // Stack before: [..., A, B]   StackTop[-2]=A, StackTop[-1]=B
                         // Stack after:  [..., A>B]    boolean in old A slot
-                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
+                        if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        vm.Stack.StackTop[-2].ValueKind := vkBoolean;
-                        vm.Stack.StackTop[-2].BooleanValue :=
-                          vm.Stack.StackTop[-2].NumberValue > vm.Stack.StackTop[-1].NumberValue;
-                        Dec(vm.Stack.StackTop);
+                        stack.StackTop[-2].ValueKind := vkBoolean;
+                        stack.StackTop[-2].BooleanValue :=
+                          stack.StackTop[-2].NumberValue > stack.StackTop[-1].NumberValue;
+                        Dec(stack.StackTop);
                       end;
 
         OP_LESS     : begin
-                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
+                        if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        vm.Stack.StackTop[-2].ValueKind := vkBoolean;
-                        vm.Stack.StackTop[-2].BooleanValue :=
-                          vm.Stack.StackTop[-2].NumberValue < vm.Stack.StackTop[-1].NumberValue;
-                        Dec(vm.Stack.StackTop);
+                        stack.StackTop[-2].ValueKind := vkBoolean;
+                        stack.StackTop[-2].BooleanValue :=
+                          stack.StackTop[-2].NumberValue < stack.StackTop[-1].NumberValue;
+                        Dec(stack.StackTop);
                       end;
 
         OP_ADD      : begin
                         // Fast path: both numbers ? direct in-place add, no pop/push.
-                        if isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2]) then
+                        if isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2]) then
                         begin
-                          vm.Stack.StackTop[-2].NumberValue :=
-                            vm.Stack.StackTop[-2].NumberValue + vm.Stack.StackTop[-1].NumberValue;
+                          stack.StackTop[-2].NumberValue :=
+                            stack.StackTop[-2].NumberValue + stack.StackTop[-1].NumberValue;
                           // ValueKind already vkNumber, no rewrite needed.
-                          Dec(vm.Stack.StackTop);
+                          Dec(stack.StackTop);
                         end
-                        else if isString(vm.Stack.StackTop[-1]) and isString(vm.Stack.StackTop[-2]) then
+                        else if isString(stack.StackTop[-1]) and isString(stack.StackTop[-2]) then
                         begin
                           Concatenate(vm.stack, vm.MemTracker);
                         end
@@ -4034,64 +4046,66 @@ begin
                       end;
 
         OP_SUBTRACT : begin
-                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
+                        if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        vm.Stack.StackTop[-2].NumberValue :=
-                          vm.Stack.StackTop[-2].NumberValue - vm.Stack.StackTop[-1].NumberValue;
-                        Dec(vm.Stack.StackTop);
+                        stack.StackTop[-2].NumberValue :=
+                          stack.StackTop[-2].NumberValue - stack.StackTop[-1].NumberValue;
+                        Dec(stack.StackTop);
                       end;
 
         OP_MULTIPLY : begin
-                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
+                        if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        vm.Stack.StackTop[-2].NumberValue :=
-                          vm.Stack.StackTop[-2].NumberValue * vm.Stack.StackTop[-1].NumberValue;
-                        Dec(vm.Stack.StackTop);
+                        stack.StackTop[-2].NumberValue :=
+                          stack.StackTop[-2].NumberValue * stack.StackTop[-1].NumberValue;
+                        Dec(stack.StackTop);
                       end;
 
         OP_DIVIDE   : begin
-                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
+                        if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        vm.Stack.StackTop[-2].NumberValue :=
-                          vm.Stack.StackTop[-2].NumberValue / vm.Stack.StackTop[-1].NumberValue;
-                        Dec(vm.Stack.StackTop);
+                        stack.StackTop[-2].NumberValue :=
+                          stack.StackTop[-2].NumberValue / stack.StackTop[-1].NumberValue;
+                        Dec(stack.StackTop);
                       end;
 
         OP_MODULO   : begin
-                        if not (isNumber(vm.Stack.StackTop[-1]) and isNumber(vm.Stack.StackTop[-2])) then
+                        if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                         // Match prior semantics: A - Trunc(A/B)*B
-                        vm.Stack.StackTop[-2].NumberValue :=
-                          vm.Stack.StackTop[-2].NumberValue -
-                          Trunc(vm.Stack.StackTop[-2].NumberValue / vm.Stack.StackTop[-1].NumberValue) *
-                          vm.Stack.StackTop[-1].NumberValue;
-                        Dec(vm.Stack.StackTop);
+                        stack.StackTop[-2].NumberValue :=
+                          stack.StackTop[-2].NumberValue -
+                          Trunc(stack.StackTop[-2].NumberValue / stack.StackTop[-1].NumberValue) *
+                          stack.StackTop[-1].NumberValue;
+                        Dec(stack.StackTop);
                       end;
 
         OP_NOT      : begin
           // In-place: rewrite top slot to boolean(isFalsey(top)).
-          vm.Stack.StackTop[-1].BooleanValue := isFalsey(vm.Stack.StackTop[-1]);
-          vm.Stack.StackTop[-1].ValueKind := vkBoolean;
+          stack.StackTop[-1].BooleanValue := isFalsey(stack.StackTop[-1]);
+          stack.StackTop[-1].ValueKind := vkBoolean;
         end;
 
         OP_PRINT: begin
-          value := popStack(vm.Stack);
+          Dec(stack.StackTop);
+
+          value := stack.StackTop^;
           if VM.PrintBuilder.Length > 0 then
             VM.PrintBuilder.Append(sLineBreak);
           VM.PrintBuilder.Append(ValueToStr(value));
@@ -4099,21 +4113,21 @@ begin
 
         OP_POP: begin
           // Inlined popStack: just shrink top, no asserts.
-          Dec(vm.Stack.StackTop);
+          Dec(stack.StackTop);
         end;
 
         OP_POP_N: begin
           // Bulk discard. 1-byte operand N (1..255). Emitted by endScope to
           // collapse runs of locals leaving scope into a single dispatch.
-          argCount := frame^.ip^; Inc(frame^.ip);
+          argCount := ip^; Inc(ip);
           Assert(argCount > 0, 'OP_POP_N: operand is zero');
-          Assert(vm.Stack.StackTop - vm.Stack.Values >= argCount, 'OP_POP_N: stack underflow');
-          Dec(vm.Stack.StackTop, argCount);
+          Assert(stack.StackTop - stack.Values >= argCount, 'OP_POP_N: stack underflow');
+          Dec(stack.StackTop, argCount);
         end;
 
         OP_GET_GLOBAL: begin
-          value := constants[frame^.ip^];
-          Inc(frame^.ip);
+          value := constants[ip^];
+          Inc(ip);
           AssertValueIsString(value);
           if not TableGet(vm.Globals, ValueToString(value), ValueB) then
           begin
@@ -4121,14 +4135,14 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          pushStack(vm.Stack, ValueB, vm.MemTracker);
+          pushStack(stack, ValueB, vm.MemTracker);
         end;
 
         OP_SET_GLOBAL: begin
-          value := constants[frame^.ip^];
-          Inc(frame^.ip);
+          value := constants[ip^];
+          Inc(ip);
           AssertValueIsString(value);
-          if TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker) then
+          if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
           begin
             TableDelete(vm.Globals, ValueToString(value));
             runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
@@ -4138,98 +4152,152 @@ begin
         end;
 
         OP_GET_LOCAL: begin
-          slot := frame^.ip^; Inc(frame^.ip);
-          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop), 'OP_GET_LOCAL: slot out of stack bounds');
-          pushStack(vm.Stack, frame^.slots[slot], vm.MemTracker);
+          slot := ip^; Inc(ip);
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop), 'OP_GET_LOCAL: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[slot], vm.MemTracker)
+          else begin
+            stack.StackTop^ := frame^.slots[slot];
+            Inc(stack.StackTop);
+          end;
         end;
 
         OP_GET_LOCAL_0..OP_GET_LOCAL_7: begin
           // Fast-slot get: no operand byte, slot encoded in opcode.
           slot := instruction - OP_GET_LOCAL_0;
-          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop),
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_N: slot out of stack bounds');
-          pushStack(vm.Stack, frame^.slots[slot], vm.MemTracker);
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[slot], vm.MemTracker)
+          else begin
+            stack.StackTop^ := frame^.slots[slot];
+            Inc(stack.StackTop);
+          end;
         end;
 
         OP_SET_LOCAL: begin
-          slot := frame^.ip^; Inc(frame^.ip);
-          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop), 'OP_SET_LOCAL: slot out of stack bounds');
-          frame^.slots[slot] := peekStack(vm.Stack);
+          slot := ip^; Inc(ip);
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop), 'OP_SET_LOCAL: slot out of stack bounds');
+          frame^.slots[slot] := stack.StackTop[-1];
         end;
 
         OP_SET_LOCAL_0..OP_SET_LOCAL_7: begin
           // Fast-slot set: no operand byte; leaves value on stack (assignment
           // expression semantics, identical to OP_SET_LOCAL).
           slot := instruction - OP_SET_LOCAL_0;
-          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(VM.Stack.StackTop),
+          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop),
             'OP_SET_LOCAL_N: slot out of stack bounds');
-          frame^.slots[slot] := peekStack(vm.Stack);
+          frame^.slots[slot] := stack.StackTop[-1];
         end;
 
         OP_JUMP: begin
-          offset := frame^.ip^ shl 8; Inc(frame^.ip);
-          offset := offset or frame^.ip^; Inc(frame^.ip);
-          Inc(frame^.ip, offset);
+          offset := ip^ shl 8; Inc(ip);
+          offset := offset or ip^; Inc(ip);
+          Inc(ip, offset);
           AssertFrameCode('OP_JUMP');
-          Assert(NativeUInt(frame^.ip) <= NativeUInt(frame^.closure^.func^.chunk^.Code) + NativeUInt(frame^.closure^.func^.chunk^.Count), 'OP_JUMP: ip past end of code');
+          Assert(NativeUInt(ip) <= NativeUInt(frame^.closure^.func^.chunk^.Code) + NativeUInt(frame^.closure^.func^.chunk^.Count), 'OP_JUMP: ip past end of code');
         end;
 
         OP_JUMP_IF_FALSE: begin
-          offset := frame^.ip^ shl 8; Inc(frame^.ip);
-          offset := offset or frame^.ip^; Inc(frame^.ip);
-          if isFalsey(vm.Stack.StackTop[-1]) then
-            Inc(frame^.ip, offset);
+          offset := ip^ shl 8; Inc(ip);
+          offset := offset or ip^; Inc(ip);
+          if isFalsey(stack.StackTop[-1]) then
+            Inc(ip, offset);
         end;
 
         OP_JUMP_IF_FALSE_POP: begin
           // Fused: pop top, then jump if popped value was falsy.
           // Replaces OP_JUMP_IF_FALSE + OP_POP pair in if/while/for.
-          offset := frame^.ip^ shl 8; Inc(frame^.ip);
-          offset := offset or frame^.ip^; Inc(frame^.ip);
+          offset := ip^ shl 8; Inc(ip);
+          offset := offset or ip^; Inc(ip);
           AssertStackIsNotEmpty(vm.Stack);
-          Dec(vm.Stack.StackTop);
-          if isFalsey(vm.Stack.StackTop^) then
-            Inc(frame^.ip, offset);
+          Dec(stack.StackTop);
+          if isFalsey(stack.StackTop^) then
+            Inc(ip, offset);
+        end;
+
+        OP_LESS_JUMP_IF_FALSE: begin
+          // Fused OP_LESS + OP_JUMP_IF_FALSE_POP: compare two numbers,
+          // pop both, jump if NOT (a < b). Saves one dispatch cycle.
+          offset := ip^ shl 8; Inc(ip);
+          offset := offset or ip^; Inc(ip);
+          if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
+          begin
+            runtimeError('Operands must be numbers.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          if not (stack.StackTop[-2].NumberValue < stack.StackTop[-1].NumberValue) then
+            Inc(ip, offset);
+          Dec(stack.StackTop, 2);
         end;
 
         OP_LOOP: begin
-          offset := frame^.ip^ shl 8; Inc(frame^.ip);
-          offset := offset or frame^.ip^; Inc(frame^.ip);
-          Dec(frame^.ip, offset);
+          offset := ip^ shl 8; Inc(ip);
+          offset := offset or ip^; Inc(ip);
+          Dec(ip, offset);
           AssertFrameCode('OP_LOOP');
-          Assert(NativeUInt(frame^.ip) >= NativeUInt(frame^.closure^.func^.chunk^.Code), 'OP_LOOP: ip before start of code');
+          Assert(NativeUInt(ip) >= NativeUInt(frame^.closure^.func^.chunk^.Code), 'OP_LOOP: ip before start of code');
         end;
 
         OP_DEFINE_GLOBAL: begin
-          value := constants[frame^.ip^];
-          Inc(frame^.ip);
+          value := constants[ip^];
+          Inc(ip);
           AssertValueIsString(value);
-          TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker);
-          popStack(vm.Stack);
+          TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker);
+          Dec(stack.StackTop);
         end;
 
         OP_CALL: begin
-          argCount := frame^.ip^; Inc(frame^.ip);
-          if not CallValue(peekStack(vm.Stack, argCount), argCount) then
+          argCount := ip^; Inc(ip);
+          // Store ip back to frame before entering new frame (preserves return address)
+          frame^.ip := ip;
+          value := stack.StackTop[-1-argCount];
+          // Inline closure fast-path: avoids nested-function call overhead (331M calls for fib(40))
+          if isClosure(value) then
+          begin
+            closure := pObjClosure(value.ObjValue);
+            if argCount <> closure^.func^.arity then
+            begin
+              runtimeError('Expected ' + IntToStr(closure^.func^.arity) +
+                ' arguments but got ' + IntToStr(argCount) + '.');
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            if VM.FrameCount = FRAMES_MAX then
+            begin
+              runtimeError('Stack overflow (max ' + IntToStr(FRAMES_MAX) +
+                ' frames). Last call: ' + String(ObjStringToAnsiString(closure^.func^.name)));
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            VM.Frames[VM.FrameCount].closure := closure;
+            VM.Frames[VM.FrameCount].ip := closure^.func^.chunk^.Code;
+            VM.Frames[VM.FrameCount].slots := stack.StackTop;
+            Dec(VM.Frames[VM.FrameCount].slots, argCount + 1);
+            Inc(VM.FrameCount);
+          end
+          else if not CallValue(value, argCount) then
           begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          frame := CurrentFrame;
+          frame := @VM.Frames[VM.FrameCount - 1];
+          ip := frame^.ip;
           constants := frame^.closure^.func^.chunk^.Constants^.Values;
         end;
 
         OP_CLOSURE: begin
-          value := constants[frame^.ip^];
-          Inc(frame^.ip);
+          value := constants[ip^];
+          Inc(ip);
           Assert(isFunction(value), 'OP_CLOSURE: constant is not a function');
           func := pObjFunction(value.ObjValue);
           closure := newClosure(func, VM.MemTracker);
-          pushStack(vm.Stack, CreateObject(pObj(closure)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(closure)), vm.MemTracker);
           for i := 0 to closure^.upvalueCount - 1 do
           begin
-            isLocal := frame^.ip^; Inc(frame^.ip);
-            index := frame^.ip^; Inc(frame^.ip);
+            isLocal := ip^; Inc(ip);
+            index := ip^; Inc(ip);
             if isLocal = 1 then
               closure^.upvalues^[i] := captureUpvalue(
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
@@ -4242,60 +4310,67 @@ begin
         end;
 
         OP_GET_UPVALUE: begin
-          slot := frame^.ip^; Inc(frame^.ip);
+          slot := ip^; Inc(ip);
           AssertUpvalueIndex(slot, 'OP_GET_UPVALUE');
           Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_GET_UPVALUE: upvalue is nil');
-          pushStack(vm.Stack, frame^.closure^.upvalues^[slot]^.location^, vm.MemTracker);
+          pushStack(stack, frame^.closure^.upvalues^[slot]^.location^, vm.MemTracker);
         end;
 
         OP_SET_UPVALUE: begin
-          slot := frame^.ip^; Inc(frame^.ip);
+          slot := ip^; Inc(ip);
           AssertUpvalueIndex(slot, 'OP_SET_UPVALUE');
           Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_SET_UPVALUE: upvalue is nil');
-          frame^.closure^.upvalues^[slot]^.location^ := peekStack(vm.Stack);
+          frame^.closure^.upvalues^[slot]^.location^ := stack.StackTop[-1];
         end;
 
         OP_CLOSE_UPVALUE: begin
-          closeUpvalues(pValue(NativeUInt(VM.Stack.StackTop) - SizeOf(TValue)));
-          popStack(vm.Stack);
+          closeUpvalues(pValue(NativeUInt(stack.StackTop) - SizeOf(TValue)));
+          Dec(stack.StackTop);
         end;
 
         OP_RETURN: begin
-          value := popStack(vm.Stack);
-          closeUpvalues(frame^.slots);
+          Dec(stack.StackTop);
+
+          value := stack.StackTop^;
+          if VM.OpenUpvalues <> nil then
+            closeUpvalues(frame^.slots);
 
           Dec(VM.FrameCount);
           if VM.FrameCount = 0 then
           begin
-            popStack(vm.Stack); // pop the script function
+            Dec(stack.StackTop); // pop the script function
             Result.Code := INTERPRET_OK;
             Result.value := value;
             Exit(Result);
           end;
 
           // Discard the returning function's stack window
-          VM.Stack.StackTop := frame^.slots;
-          Assert(NativeUInt(VM.Stack.StackTop) >= NativeUInt(VM.Stack.Values), 'OP_RETURN: StackTop before Values');
-          pushStack(vm.Stack, value, vm.MemTracker);
+          stack.StackTop := frame^.slots;
+          Assert(NativeUInt(stack.StackTop) >= NativeUInt(stack.Values), 'OP_RETURN: StackTop before Values');
+          // Push return value directly — safe because we just shrunk StackTop
+          // to frame^.slots, which is well below CapacityEnd.
+          stack.StackTop^ := value;
+          Inc(stack.StackTop);
 
-          frame := CurrentFrame;
+          frame := @VM.Frames[VM.FrameCount - 1];
+          ip := frame^.ip;
           constants := frame^.closure^.func^.chunk^.Constants^.Values;
         end;
 
         OP_DEFINE_GLOBAL_LONG: begin
-          i := frame^.ip^; Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 8); Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 16); Inc(frame^.ip);
+          i := ip^; Inc(ip);
+          i := i or (ip^ shl 8); Inc(ip);
+          i := i or (ip^ shl 16); Inc(ip);
           value := constants[i];
           AssertValueIsString(value);
-          TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker);
-          popStack(vm.Stack);
+          TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker);
+          Dec(stack.StackTop);
         end;
 
         OP_GET_GLOBAL_LONG: begin
-          i := frame^.ip^; Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 8); Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 16); Inc(frame^.ip);
+          i := ip^; Inc(ip);
+          i := i or (ip^ shl 8); Inc(ip);
+          i := i or (ip^ shl 16); Inc(ip);
           value := constants[i];
           AssertValueIsString(value);
           if not TableGet(vm.Globals, ValueToString(value), ValueB) then
@@ -4304,16 +4379,16 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          pushStack(vm.Stack, ValueB, vm.MemTracker);
+          pushStack(stack, ValueB, vm.MemTracker);
         end;
 
         OP_SET_GLOBAL_LONG: begin
-          i := frame^.ip^; Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 8); Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 16); Inc(frame^.ip);
+          i := ip^; Inc(ip);
+          i := i or (ip^ shl 8); Inc(ip);
+          i := i or (ip^ shl 16); Inc(ip);
           value := constants[i];
           AssertValueIsString(value);
-          if TableSet(vm.Globals, ValueToString(value), peekStack(vm.Stack), vm.MemTracker) then
+          if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
           begin
             TableDelete(vm.Globals, ValueToString(value));
             runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
@@ -4323,18 +4398,18 @@ begin
         end;
 
         OP_CLOSURE_LONG: begin
-          i := frame^.ip^; Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 8); Inc(frame^.ip);
-          i := i or (frame^.ip^ shl 16); Inc(frame^.ip);
+          i := ip^; Inc(ip);
+          i := i or (ip^ shl 8); Inc(ip);
+          i := i or (ip^ shl 16); Inc(ip);
           value := constants[i];
           Assert(isFunction(value), 'OP_CLOSURE_LONG: constant is not a function');
           func := pObjFunction(value.ObjValue);
           closure := newClosure(func, VM.MemTracker);
-          pushStack(vm.Stack, CreateObject(pObj(closure)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(closure)), vm.MemTracker);
           for i := 0 to closure^.upvalueCount - 1 do
           begin
-            isLocal := frame^.ip^; Inc(frame^.ip);
-            index := frame^.ip^; Inc(frame^.ip);
+            isLocal := ip^; Inc(ip);
+            index := ip^; Inc(ip);
             if isLocal = 1 then
               closure^.upvalues^[i] := captureUpvalue(
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
@@ -4348,10 +4423,10 @@ begin
 
         OP_RECORD: begin
           // Read field count and field name constant indices (1 byte each)
-          argCount := frame^.ip^; Inc(frame^.ip); // fieldCount
+          argCount := ip^; Inc(ip); // fieldCount
           for i := 0 to argCount - 1 do
           begin
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
+            recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_RECORD field name');
             AssertFrameValues('OP_RECORD field name');
             value := constants[recNameIdx];
@@ -4359,7 +4434,7 @@ begin
             recFieldNames[i] := ValueToString(value);
           end;
           // Read the record type name (1 byte)
-          recNameIdx := frame^.ip^; Inc(frame^.ip);
+          recNameIdx := ip^; Inc(ip);
           AssertConstantIndex(recNameIdx, 'OP_RECORD type name');
           AssertFrameValues('OP_RECORD type name');
           value := constants[recNameIdx];
@@ -4374,17 +4449,17 @@ begin
               recFieldNamesCopy[i] := recFieldNames[i];
           end;
           recType := newRecordType(recTypeName, argCount, recFieldNamesCopy, VM.MemTracker);
-          pushStack(vm.Stack, CreateObject(pObj(recType)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(recType)), vm.MemTracker);
         end;
 
         OP_RECORD_LONG: begin
           // Read field count and field name constant indices (3 bytes each, 24-bit LE)
-          argCount := frame^.ip^; Inc(frame^.ip); // fieldCount
+          argCount := ip^; Inc(ip); // fieldCount
           for i := 0 to argCount - 1 do
           begin
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+            recNameIdx := ip^; Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG field name');
             AssertFrameValues('OP_RECORD_LONG field name');
             value := constants[recNameIdx];
@@ -4392,9 +4467,9 @@ begin
             recFieldNames[i] := ValueToString(value);
           end;
           // Read the record type name (3 bytes, 24-bit LE)
-          recNameIdx := frame^.ip^; Inc(frame^.ip);
-          recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-          recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+          recNameIdx := ip^; Inc(ip);
+          recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+          recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
           AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG type name');
           AssertFrameValues('OP_RECORD_LONG type name');
           value := constants[recNameIdx];
@@ -4409,14 +4484,14 @@ begin
               recFieldNamesCopy[i] := recFieldNames[i];
           end;
           recType := newRecordType(recTypeName, argCount, recFieldNamesCopy, VM.MemTracker);
-          pushStack(vm.Stack, CreateObject(pObj(recType)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(recType)), vm.MemTracker);
         end;
 
         OP_GET_PROPERTY: begin
-          if isRecord(peekStack(vm.Stack)) then
+          if isRecord(stack.StackTop[-1]) then
           begin
-            rec := pObjRecord(peekStack(vm.Stack).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
+            rec := pObjRecord(stack.StackTop[-1].ObjValue);
+            recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
             AssertFrameValues('OP_GET_PROPERTY');
             value := constants[recNameIdx];
@@ -4429,13 +4504,13 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            popStack(vm.Stack);
-            pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+            Dec(stack.StackTop);
+            pushStack(stack, rec^.fields[fieldIdx], vm.MemTracker);
           end
-          else if isNativeObject(peekStack(vm.Stack)) then
+          else if isNativeObject(stack.StackTop[-1]) then
           begin
-            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
+            nativeObj := pObjNativeObject(stack.StackTop[-1].ObjValue);
+            recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
             AssertFrameValues('OP_GET_PROPERTY');
             value := constants[recNameIdx];
@@ -4448,12 +4523,12 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            popStack(vm.Stack);
-            pushStack(vm.Stack, rttiResult, vm.MemTracker);
+            Dec(stack.StackTop);
+            pushStack(stack, rttiResult, vm.MemTracker);
           end
           else
           begin
-            recNameIdx := frame^.ip^; Inc(frame^.ip); // consume operand
+            recNameIdx := ip^; Inc(ip); // consume operand
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
@@ -4461,10 +4536,10 @@ begin
         end;
 
         OP_SET_PROPERTY: begin
-          if isRecord(peekStack(vm.Stack, 1)) then
+          if isRecord(stack.StackTop[-2]) then
           begin
-            rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
+            rec := pObjRecord(stack.StackTop[-2].ObjValue);
+            recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
             AssertFrameValues('OP_SET_PROPERTY');
             value := constants[recNameIdx];
@@ -4477,34 +4552,38 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            rec^.fields[fieldIdx] := peekStack(vm.Stack);
-            value := popStack(vm.Stack);
-            popStack(vm.Stack);
-            pushStack(vm.Stack, value, vm.MemTracker);
+            rec^.fields[fieldIdx] := stack.StackTop[-1];
+            Dec(stack.StackTop);
+
+            value := stack.StackTop^;
+            Dec(stack.StackTop);
+            pushStack(stack, value, vm.MemTracker);
           end
-          else if isNativeObject(peekStack(vm.Stack, 1)) then
+          else if isNativeObject(stack.StackTop[-2]) then
           begin
-            nativeObj := pObjNativeObject(peekStack(vm.Stack, 1).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
+            nativeObj := pObjNativeObject(stack.StackTop[-2].ObjValue);
+            recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
             AssertFrameValues('OP_SET_PROPERTY');
             value := constants[recNameIdx];
             Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
             rttiPropName := ValueToString(value);
-            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
+            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, stack.StackTop[-1]) then
             begin
               if VM.RuntimeErrorStr = '' then
                 runtimeError('Undefined or read-only property ''' + ObjStringToWideStr(rttiPropName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            value := popStack(vm.Stack);
-            popStack(vm.Stack);
-            pushStack(vm.Stack, value, vm.MemTracker);
+            Dec(stack.StackTop);
+
+            value := stack.StackTop^;
+            Dec(stack.StackTop);
+            pushStack(stack, value, vm.MemTracker);
           end
           else
           begin
-            recNameIdx := frame^.ip^; Inc(frame^.ip); // consume operand
+            recNameIdx := ip^; Inc(ip); // consume operand
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
@@ -4512,12 +4591,12 @@ begin
         end;
 
         OP_INVOKE: begin
-          invokeNameIdx := frame^.ip^; Inc(frame^.ip);
-          invokeArgCount := frame^.ip^; Inc(frame^.ip);
+          invokeNameIdx := ip^; Inc(ip);
+          invokeArgCount := ip^; Inc(ip);
           AssertConstantIndex(invokeNameIdx, 'OP_INVOKE');
           AssertFrameValues('OP_INVOKE');
           // The receiver is on the stack below the arguments
-          value := peekStack(vm.Stack, invokeArgCount);
+          value := stack.StackTop[-1-invokeArgCount];
           // Get method name from constant pool
           ValueB := constants[invokeNameIdx];
           Assert(isString(ValueB), 'OP_INVOKE: method name constant is not a string');
@@ -4525,13 +4604,13 @@ begin
           if isDictionary(value) then
           begin
             if not InvokeDictMethod(pObjDictionary(value.ObjValue), invokeMethodName,
-              invokeArgCount, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
+              invokeArgCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
             begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+            stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            pushStack(stack, nativeResult, VM.MemTracker);
           end
           else if isNativeObject(value) then
           begin
@@ -4540,7 +4619,7 @@ begin
             begin
               // Call manual wrapper method
               nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
-                pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+                pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
               if VM.RuntimeErrorStr <> '' then
               begin
                 Result.code := INTERPRET_RUNTIME_ERROR;
@@ -4549,7 +4628,7 @@ begin
             end
             else if RttiInvokeMethod(nativeObj^.instance, nativeObj^.classInfo,
               invokeMethodName, invokeArgCount,
-              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
+              pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
               VM.MemTracker, nativeResult) then
             begin
               // RTTI method call succeeded
@@ -4562,8 +4641,8 @@ begin
               exit;
             end;
             // Pop args + receiver, push result
-            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+            stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            pushStack(stack, nativeResult, VM.MemTracker);
           end
           else
           begin
@@ -4574,26 +4653,26 @@ begin
         end;
 
         OP_INVOKE_LONG: begin
-          invokeNameIdx := frame^.ip^; Inc(frame^.ip);
-          invokeNameIdx := invokeNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-          invokeNameIdx := invokeNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
-          invokeArgCount := frame^.ip^; Inc(frame^.ip);
+          invokeNameIdx := ip^; Inc(ip);
+          invokeNameIdx := invokeNameIdx or (ip^ shl 8); Inc(ip);
+          invokeNameIdx := invokeNameIdx or (ip^ shl 16); Inc(ip);
+          invokeArgCount := ip^; Inc(ip);
           AssertConstantIndex(invokeNameIdx, 'OP_INVOKE_LONG');
           AssertFrameValues('OP_INVOKE_LONG');
-          value := peekStack(vm.Stack, invokeArgCount);
+          value := stack.StackTop[-1-invokeArgCount];
           ValueB := constants[invokeNameIdx];
           Assert(isString(ValueB), 'OP_INVOKE_LONG: method name constant is not a string');
           invokeMethodName := ValueToString(ValueB);
           if isDictionary(value) then
           begin
             if not InvokeDictMethod(pObjDictionary(value.ObjValue), invokeMethodName,
-              invokeArgCount, pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
+              invokeArgCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
             begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+            stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            pushStack(stack, nativeResult, VM.MemTracker);
           end
           else if isNativeObject(value) then
           begin
@@ -4601,7 +4680,7 @@ begin
             if findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
             begin
               nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
-                pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
+                pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)));
               if VM.RuntimeErrorStr <> '' then
               begin
                 Result.code := INTERPRET_RUNTIME_ERROR;
@@ -4610,7 +4689,7 @@ begin
             end
             else if RttiInvokeMethod(nativeObj^.instance, nativeObj^.classInfo,
               invokeMethodName, invokeArgCount,
-              pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
+              pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)),
               VM.MemTracker, nativeResult) then
             begin
               // RTTI method call succeeded
@@ -4622,8 +4701,8 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            VM.Stack.StackTop := pValue(NativeUInt(VM.Stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(VM.Stack, nativeResult, VM.MemTracker);
+            stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
+            pushStack(stack, nativeResult, VM.MemTracker);
           end
           else
           begin
@@ -4634,12 +4713,12 @@ begin
         end;
 
         OP_GET_PROPERTY_LONG: begin
-          if isRecord(peekStack(vm.Stack)) then
+          if isRecord(stack.StackTop[-1]) then
           begin
-            rec := pObjRecord(peekStack(vm.Stack).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+            rec := pObjRecord(stack.StackTop[-1].ObjValue);
+            recNameIdx := ip^; Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
             AssertFrameValues('OP_GET_PROPERTY_LONG');
             value := constants[recNameIdx];
@@ -4652,15 +4731,15 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            popStack(vm.Stack);
-            pushStack(vm.Stack, rec^.fields[fieldIdx], vm.MemTracker);
+            Dec(stack.StackTop);
+            pushStack(stack, rec^.fields[fieldIdx], vm.MemTracker);
           end
-          else if isNativeObject(peekStack(vm.Stack)) then
+          else if isNativeObject(stack.StackTop[-1]) then
           begin
-            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+            nativeObj := pObjNativeObject(stack.StackTop[-1].ObjValue);
+            recNameIdx := ip^; Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
             AssertFrameValues('OP_GET_PROPERTY_LONG');
             value := constants[recNameIdx];
@@ -4673,14 +4752,14 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            popStack(vm.Stack);
-            pushStack(vm.Stack, rttiResult, vm.MemTracker);
+            Dec(stack.StackTop);
+            pushStack(stack, rttiResult, vm.MemTracker);
           end
           else
           begin
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+            recNameIdx := ip^; Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
@@ -4688,12 +4767,12 @@ begin
         end;
 
         OP_SET_PROPERTY_LONG: begin
-          if isRecord(peekStack(vm.Stack, 1)) then
+          if isRecord(stack.StackTop[-2]) then
           begin
-            rec := pObjRecord(peekStack(vm.Stack, 1).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+            rec := pObjRecord(stack.StackTop[-2].ObjValue);
+            recNameIdx := ip^; Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
             AssertFrameValues('OP_SET_PROPERTY_LONG');
             value := constants[recNameIdx];
@@ -4706,38 +4785,42 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            rec^.fields[fieldIdx] := peekStack(vm.Stack);
-            value := popStack(vm.Stack);
-            popStack(vm.Stack);
-            pushStack(vm.Stack, value, vm.MemTracker);
+            rec^.fields[fieldIdx] := stack.StackTop[-1];
+            Dec(stack.StackTop);
+
+            value := stack.StackTop^;
+            Dec(stack.StackTop);
+            pushStack(stack, value, vm.MemTracker);
           end
-          else if isNativeObject(peekStack(vm.Stack, 1)) then
+          else if isNativeObject(stack.StackTop[-2]) then
           begin
-            nativeObj := pObjNativeObject(peekStack(vm.Stack, 1).ObjValue);
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+            nativeObj := pObjNativeObject(stack.StackTop[-2].ObjValue);
+            recNameIdx := ip^; Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
             AssertFrameValues('OP_SET_PROPERTY_LONG');
             value := constants[recNameIdx];
             Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
             rttiPropName := ValueToString(value);
-            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, peekStack(vm.Stack)) then
+            if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, stack.StackTop[-1]) then
             begin
               if VM.RuntimeErrorStr = '' then
                 runtimeError('Undefined or read-only property ''' + ObjStringToWideStr(rttiPropName) + '''.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            value := popStack(vm.Stack);
-            popStack(vm.Stack);
-            pushStack(vm.Stack, value, vm.MemTracker);
+            Dec(stack.StackTop);
+
+            value := stack.StackTop^;
+            Dec(stack.StackTop);
+            pushStack(stack, value, vm.MemTracker);
           end
           else
           begin
-            recNameIdx := frame^.ip^; Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 8); Inc(frame^.ip);
-            recNameIdx := recNameIdx or (frame^.ip^ shl 16); Inc(frame^.ip);
+            recNameIdx := ip^; Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
+            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
@@ -4746,8 +4829,12 @@ begin
 
         OP_GET_SUBSCRIPT: begin
           // Stack: [... object, index/key] -> [... result]
-          value := popStack(vm.Stack);   // index/key
-          ValueB := popStack(vm.Stack);  // object
+          Dec(stack.StackTop);   // index/key
+
+          value := stack.StackTop^;
+          Dec(stack.StackTop);  // object
+
+          ValueB := stack.StackTop^;
           if isArray(ValueB) then
           begin
             if not isNumber(value) then
@@ -4763,7 +4850,7 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pushStack(vm.Stack, pObjArray(ValueB.ObjValue)^.Elements[i], vm.MemTracker);
+            pushStack(stack, pObjArray(ValueB.ObjValue)^.Elements[i], vm.MemTracker);
           end
           else if isDictionary(ValueB) then
           begin
@@ -4773,7 +4860,7 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pushStack(vm.Stack, ValueC, vm.MemTracker);
+            pushStack(stack, ValueC, vm.MemTracker);
           end
           else if isNativeObject(ValueB) then
           begin
@@ -4797,7 +4884,7 @@ begin
                   idxDelphiArgs[0] := LoxValueToDelphi(value, idxParams[0].ParamType.Handle);
                   if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
                   idxDelphiVal := idxProp.GetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]]);
-                  pushStack(vm.Stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker), vm.MemTracker);
+                  pushStack(stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker), vm.MemTracker);
                 except
                   on E: Exception do
                   begin
@@ -4832,10 +4919,14 @@ begin
         OP_SET_SUBSCRIPT: begin
           // Stack: [... object, index/key, value] -> [... value]
           // Keep values on stack during DictSet which may trigger GC
-          if isArray(peekStack(vm.Stack, 2)) then
+          if isArray(stack.StackTop[-3]) then
           begin
-            value := popStack(vm.Stack);    // value to assign
-            ValueB := popStack(vm.Stack);   // index/key
+            Dec(stack.StackTop);    // value to assign
+
+            value := stack.StackTop^;
+            Dec(stack.StackTop);   // index/key
+
+            ValueB := stack.StackTop^;
             if not isNumber(ValueB) then
             begin
               runtimeError('Array index must be a number.');
@@ -4843,35 +4934,39 @@ begin
               exit;
             end;
             i := Trunc(ValueB.NumberValue);
-            if (i < 0) or (i >= pObjArray(peekStack(vm.Stack).ObjValue)^.Count) then
+            if (i < 0) or (i >= pObjArray(stack.StackTop[-1].ObjValue)^.Count) then
             begin
-              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(peekStack(vm.Stack).ObjValue)^.Count - 1) + '].');
+              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(stack.StackTop[-1].ObjValue)^.Count - 1) + '].');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pObjArray(peekStack(vm.Stack).ObjValue)^.Elements[i] := value;
-            popStack(vm.Stack); // pop the array
-            pushStack(vm.Stack, value, vm.MemTracker); // leave the assigned value
+            pObjArray(stack.StackTop[-1].ObjValue)^.Elements[i] := value;
+            Dec(stack.StackTop); // pop the array
+            pushStack(stack, value, vm.MemTracker); // leave the assigned value
           end
-          else if isDictionary(peekStack(vm.Stack, 2)) then
+          else if isDictionary(stack.StackTop[-3]) then
           begin
             // Stack: [... dict, key, value]
             // Leave all on stack during DictSet to protect from GC
-            value := peekStack(vm.Stack, 0);   // value
-            ValueB := peekStack(vm.Stack, 1);  // key
-            DictSet(pObjDictionary(peekStack(vm.Stack, 2).ObjValue), ValueB, value, vm.MemTracker);
+            value := stack.StackTop[-1];   // value
+            ValueB := stack.StackTop[-2];  // key
+            DictSet(pObjDictionary(stack.StackTop[-3].ObjValue), ValueB, value, vm.MemTracker);
             // Pop value, key, dict; push value as result
-            popStack(vm.Stack);
-            popStack(vm.Stack);
-            popStack(vm.Stack);
-            pushStack(vm.Stack, value, vm.MemTracker);
+            Dec(stack.StackTop);
+            Dec(stack.StackTop);
+            Dec(stack.StackTop);
+            pushStack(stack, value, vm.MemTracker);
           end
-          else if isNativeObject(peekStack(vm.Stack, 2)) then
+          else if isNativeObject(stack.StackTop[-3]) then
           begin
             // Stack: [... nativeObj, index, value]
-            value := popStack(vm.Stack);     // value to assign
-            ValueB := popStack(vm.Stack);    // index
-            nativeObj := pObjNativeObject(peekStack(vm.Stack).ObjValue);
+            Dec(stack.StackTop);     // value to assign
+
+            value := stack.StackTop^;
+            Dec(stack.StackTop);    // index
+
+            ValueB := stack.StackTop^;
+            nativeObj := pObjNativeObject(stack.StackTop[-1].ObjValue);
             if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled then
             begin
               idxProp := nil;
@@ -4894,8 +4989,8 @@ begin
                   idxDelphiVal := LoxValueToDelphi(value, idxProp.PropertyType.Handle);
                   if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
                   idxProp.SetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]], idxDelphiVal);
-                  popStack(vm.Stack); // pop the native object
-                  pushStack(vm.Stack, value, vm.MemTracker); // leave the assigned value
+                  Dec(stack.StackTop); // pop the native object
+                  pushStack(stack, value, vm.MemTracker); // leave the assigned value
                 except
                   on E: Exception do
                   begin
@@ -4930,10 +5025,10 @@ begin
         OP_ARRAY_LITERAL: begin
           // Operand: 1-byte element count
           // Stack before: [... elem0, elem1, ..., elemN-1] -> [... array]
-          argCount := frame^.ip^; Inc(frame^.ip);
+          argCount := ip^; Inc(ip);
           // Create the array and push it to protect from GC during Allocate
           value := CreateObject(pObj(newArray(vm.MemTracker)));
-          pushStack(vm.Stack, value, vm.MemTracker);
+          pushStack(stack, value, vm.MemTracker);
           // Pre-grow the array elements and copy in. Both the array (top of
           // stack) and the source elements (below it) are GC-rooted via Stack.
           if argCount > 0 then
@@ -4943,34 +5038,34 @@ begin
             pObjArray(value.ObjValue)^.Count := argCount;
             // Elements live at StackTop[-1-argCount .. -2]; array is at [-1].
             for i := 0 to argCount - 1 do
-              pObjArray(value.ObjValue)^.Elements[i] := vm.Stack.StackTop[-1 - argCount + i];
+              pObjArray(value.ObjValue)^.Elements[i] := stack.StackTop[-1 - argCount + i];
           end;
           // Bulk-collapse the window: overwrite the first element slot with
           // the array and drop the remaining argCount slots in one step.
           // Replaces popStack x (argCount + 1) + pushStack with N+2 pointer/asserts.
-          vm.Stack.StackTop[-1 - argCount] := value;
-          Dec(vm.Stack.StackTop, argCount);
+          stack.StackTop[-1 - argCount] := value;
+          Dec(stack.StackTop, argCount);
         end;
 
         OP_DICT_LITERAL: begin
           // Operand: 1-byte pair count
           // Stack before: [... key0, val0, key1, val1, ..., keyN-1, valN-1] -> [... dict]
-          argCount := frame^.ip^; Inc(frame^.ip);
+          argCount := ip^; Inc(ip);
           // Create dictionary and push to stack for GC safety during DictSet.
           value := CreateObject(pObj(newDictionary(vm.MemTracker)));
-          pushStack(vm.Stack, value, vm.MemTracker);
+          pushStack(stack, value, vm.MemTracker);
           // Insert pairs from below the dict on the stack.
           // Pairs occupy StackTop[-1-2*argCount .. -2]; dict is at [-1].
           for i := 0 to argCount - 1 do
           begin
-            ValueB := vm.Stack.StackTop[-1 - 2 * argCount + 2 * i];     // key
-            ValueC := vm.Stack.StackTop[-1 - 2 * argCount + 2 * i + 1]; // value
+            ValueB := stack.StackTop[-1 - 2 * argCount + 2 * i];     // key
+            ValueC := stack.StackTop[-1 - 2 * argCount + 2 * i + 1]; // value
             DictSet(pObjDictionary(value.ObjValue), ValueB, ValueC, vm.MemTracker);
           end;
           // Bulk-collapse: overwrite the first pair slot with the dict and
           // drop the remaining 2*argCount slots in one step.
-          vm.Stack.StackTop[-1 - 2 * argCount] := value;
-          Dec(vm.Stack.StackTop, 2 * argCount);
+          stack.StackTop[-1 - 2 * argCount] := value;
+          Dec(stack.StackTop, 2 * argCount);
         end;
 
       else
@@ -5636,8 +5731,8 @@ begin
   native := newNative(func, arity, PAnsiChar(name), VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(native)), VM.MemTracker);
   TableSet(VM.Globals, nameStr, CreateObject(pObj(native)), VM.MemTracker);
-  popStack(VM.Stack);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
+  Dec(VM.Stack.StackTop);
 end;
 
 function clockNative(argCount: integer; args: pValue): TValue;
@@ -5756,20 +5851,20 @@ begin
   keyStr := CreateString('liveStrings', VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(liveCount), VM.MemTracker);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
 
   keyStr := CreateString('slots', VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(capacity), VM.MemTracker);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
 
   keyStr := CreateString('tombstones', VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(tombstones), VM.MemTracker);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
 
   // Pop the dict protection slot ? caller will push result onto stack
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
   Result := dictVal;
 end;
 
@@ -6373,7 +6468,7 @@ var
     EnsureArrayCapacity(arr, VM.MemTracker);
     arr^.Elements[arr^.Count] := val;
     Inc(arr^.Count);
-    popStack(VM.Stack);
+    Dec(VM.Stack.StackTop);
   end;
 
 begin
@@ -6405,7 +6500,7 @@ begin
       objStr := CreateString(AnsiString(s[start]), VM.MemTracker);
       ArrayAppendStr(objStr);
     end;
-    popStack(VM.Stack); // remove GC protection
+    Dec(VM.Stack.StackTop); // remove GC protection
     Result := CreateObject(pObj(arr));
     Exit;
   end;
@@ -6415,7 +6510,7 @@ begin
   begin
     objStr := CreateString('', VM.MemTracker);
     ArrayAppendStr(objStr);
-    popStack(VM.Stack);
+    Dec(VM.Stack.StackTop);
     Result := CreateObject(pObj(arr));
     Exit;
   end;
@@ -6447,7 +6542,7 @@ begin
     ArrayAppendStr(objStr);
   end;
 
-  popStack(VM.Stack); // remove GC protection
+  Dec(VM.Stack.StackTop); // remove GC protection
   Result := CreateObject(pObj(arr));
 end;
 
@@ -6788,7 +6883,7 @@ begin
         Inc(arr^.Count);
       end;
     end;
-    PopStack(vm.stack);
+    Dec(VM.Stack.StackTop);
   end;
   Result := CreateObject(pObj(arr));
 end;
@@ -6849,7 +6944,7 @@ begin
         Inc(arr^.Count);
       end;
     end;
-    PopStack(vm.stack);
+    Dec(VM.Stack.StackTop);
   end;
   Result := CreateObject(pObj(arr));
 end;
@@ -6929,8 +7024,8 @@ begin
   obj^.ownsInstance := false;  // Delphi owns this object
   pushStack(VM.Stack, CreateObject(pObj(obj)), VM.MemTracker);
   TableSet(VM.Globals, nameStr, CreateObject(pObj(obj)), VM.MemTracker);
-  popStack(VM.Stack);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
+  Dec(VM.Stack.StackTop);
 end;
 
 procedure InjectObject(const name : AnsiString; instance : TObject);
@@ -7057,9 +7152,9 @@ begin
       EnsureArrayCapacity(arr, VM.MemTracker);
       arr^.Elements[arr^.Count] := StringToValue(nameStr);
       Inc(arr^.Count);
-      popStack(VM.Stack);
+      Dec(VM.Stack.StackTop);
     end;
-    popStack(VM.Stack); // pop the array guard
+    Dec(VM.Stack.StackTop); // pop the array guard
     Result := CreateObject(pObj(arr));
   finally
     names.Free;
@@ -7140,7 +7235,7 @@ begin
         EnsureArrayCapacity(propsArr, VM.MemTracker);
         propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
         Inc(propsArr^.Count);
-        popStack(VM.Stack);
+        Dec(VM.Stack.StackTop);
       end;
     finally
       seen.Free;
@@ -7149,8 +7244,8 @@ begin
     keyStr := CreateString('properties', VM.MemTracker);
     pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
     DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(propsArr)), VM.MemTracker);
-    popStack(VM.Stack);
-    popStack(VM.Stack); // pop propsArr guard
+    Dec(VM.Stack.StackTop);
+    Dec(VM.Stack.StackTop); // pop propsArr guard
 
     // --- Methods array (attribute-filtered, deduplicated, sorted) ---
     methodsArr := newArray(VM.MemTracker);
@@ -7175,7 +7270,7 @@ begin
         EnsureArrayCapacity(methodsArr, VM.MemTracker);
         methodsArr^.Elements[methodsArr^.Count] := StringToValue(nameStr);
         Inc(methodsArr^.Count);
-        popStack(VM.Stack);
+        Dec(VM.Stack.StackTop);
       end;
     finally
       seen.Free;
@@ -7184,10 +7279,10 @@ begin
     keyStr := CreateString('methods', VM.MemTracker);
     pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
     DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(methodsArr)), VM.MemTracker);
-    popStack(VM.Stack);
-    popStack(VM.Stack); // pop methodsArr guard
+    Dec(VM.Stack.StackTop);
+    Dec(VM.Stack.StackTop); // pop methodsArr guard
 
-    popStack(VM.Stack); // pop dict guard
+    Dec(VM.Stack.StackTop); // pop dict guard
     Result := dictVal;
   finally
     ctx.Free;
@@ -7223,9 +7318,9 @@ begin
       EnsureArrayCapacity(arr, VM.MemTracker);
       arr^.Elements[arr^.Count] := StringToValue(nameStr);
       Inc(arr^.Count);
-      popStack(VM.Stack);
+      Dec(VM.Stack.StackTop);
     end;
-    popStack(VM.Stack); // pop arr guard
+    Dec(VM.Stack.StackTop); // pop arr guard
     Result := CreateObject(pObj(arr));
   finally
     names.Free;
@@ -7312,8 +7407,8 @@ begin
   keyStr := CreateString('class', VM.MemTracker);
   pushStack(VM.Stack, StringToValue(keyStr), VM.MemTracker);
   DictSet(dict, StringToValue(keyStr), StringToValue(classNameStr), VM.MemTracker);
-  popStack(VM.Stack);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
+  Dec(VM.Stack.StackTop);
 
   // --- Properties array ---
   propsArr := newArray(VM.MemTracker);
@@ -7331,13 +7426,13 @@ begin
     EnsureArrayCapacity(propsArr, VM.MemTracker);
     propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
     Inc(propsArr^.Count);
-    popStack(VM.Stack);
+    Dec(VM.Stack.StackTop);
   end;
   keyStr := CreateString('properties', VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(propsArr)), VM.MemTracker);
-  popStack(VM.Stack);
-  popStack(VM.Stack); // pop propsArr guard
+  Dec(VM.Stack.StackTop);
+  Dec(VM.Stack.StackTop); // pop propsArr guard
 
   // --- Methods array ---
   methodsArr := newArray(VM.MemTracker);
@@ -7379,7 +7474,7 @@ begin
       EnsureArrayCapacity(methodsArr, VM.MemTracker);
       methodsArr^.Elements[methodsArr^.Count] := StringToValue(nameStr);
       Inc(methodsArr^.Count);
-      popStack(VM.Stack);
+      Dec(VM.Stack.StackTop);
     end;
   finally
     seen.Free;
@@ -7387,10 +7482,10 @@ begin
   keyStr := CreateString('methods', VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
   DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(methodsArr)), VM.MemTracker);
-  popStack(VM.Stack);
-  popStack(VM.Stack); // pop methodsArr guard
+  Dec(VM.Stack.StackTop);
+  Dec(VM.Stack.StackTop); // pop methodsArr guard
 
-  popStack(VM.Stack); // pop dict guard
+  Dec(VM.Stack.StackTop); // pop dict guard
   Result := dictVal;
 end;
 
@@ -7461,13 +7556,13 @@ begin
   // Required: server
   if not DictGet(dict, serverKey, serverVal) then
   begin
-    while VM.Stack.StackTop > stackBase do popStack(VM.Stack);
+    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
     RuntimeError('sqlConnect() config missing "server" key.');
     Exit(CreateNilValue);
   end;
   if not isString(serverVal) then
   begin
-    while VM.Stack.StackTop > stackBase do popStack(VM.Stack);
+    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
     RuntimeError('sqlConnect() "server" must be a string.');
     Exit(CreateNilValue);
   end;
@@ -7476,13 +7571,13 @@ begin
   // Required: database
   if not DictGet(dict, dbKey, dbVal) then
   begin
-    while VM.Stack.StackTop > stackBase do popStack(VM.Stack);
+    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
     RuntimeError('sqlConnect() config missing "database" key.');
     Exit(CreateNilValue);
   end;
   if not isString(dbVal) then
   begin
-    while VM.Stack.StackTop > stackBase do popStack(VM.Stack);
+    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
     RuntimeError('sqlConnect() "database" must be a string.');
     Exit(CreateNilValue);
   end;
@@ -7507,7 +7602,7 @@ begin
       pass := ObjStringToAnsiString(pObjString(passVal.ObjValue));
 
   // Keys no longer needed ? unwind stack
-  while VM.Stack.StackTop > stackBase do popStack(VM.Stack);
+  while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
 
   // Create and configure the connection
   conn := TFDConnection.Create(nil);
@@ -7660,8 +7755,8 @@ begin
         // Protect valVal from GC during DictSet (which may trigger table growth)
         pushStack(VM.Stack, valVal, VM.MemTracker);
         DictSet(dict, keyVal, valVal, VM.MemTracker);
-        popStack(VM.Stack); // pop valVal
-        popStack(VM.Stack); // pop keyVal
+        Dec(VM.Stack.StackTop); // pop valVal
+        Dec(VM.Stack.StackTop); // pop keyVal
       end;
 
       // Append dict to array (GC-safe growth)
@@ -7670,7 +7765,7 @@ begin
       Inc(arr^.Count);
 
       // Pop dict from GC protection
-      popStack(VM.Stack);
+      Dec(VM.Stack.StackTop);
 
       query.Next;
     end;
@@ -7682,7 +7777,7 @@ begin
       query.Free;
       // Unwind stack to saved depth
       while VM.Stack.StackTop > stackBase do
-        popStack(VM.Stack);
+        Dec(VM.Stack.StackTop);
       RuntimeError('sqlQuery() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
@@ -7690,7 +7785,7 @@ begin
   query.Free;
 
   // Pop array from GC protection
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
   Result := CreateObject(pObj(arr));
 end;
 
@@ -7777,7 +7872,7 @@ begin
             RuntimeError('sqlQueryParams() parameter ' + IntToStr(p) + ' must be a string, number, boolean, or nil.');
             query.Free;
             while VM.Stack.StackTop > stackBase do
-              popStack(VM.Stack);
+              Dec(VM.Stack.StackTop);
             Exit(CreateNilValue);
           end;
       end;
@@ -7811,15 +7906,15 @@ begin
         // Protect valVal from GC during DictSet (which may trigger table growth)
         pushStack(VM.Stack, valVal, VM.MemTracker);
         DictSet(dict, keyVal, valVal, VM.MemTracker);
-        popStack(VM.Stack); // pop valVal
-        popStack(VM.Stack); // pop keyVal
+        Dec(VM.Stack.StackTop); // pop valVal
+        Dec(VM.Stack.StackTop); // pop keyVal
       end;
 
       EnsureArrayCapacity(arr, VM.MemTracker);
       arr^.Elements[arr^.Count] := CreateObject(pObj(dict));
       Inc(arr^.Count);
 
-      popStack(VM.Stack); // pop dict
+      Dec(VM.Stack.StackTop); // pop dict
       query.Next;
     end;
 
@@ -7830,14 +7925,14 @@ begin
       query.Free;
       // Unwind stack to saved depth
       while VM.Stack.StackTop > stackBase do
-        popStack(VM.Stack);
+        Dec(VM.Stack.StackTop);
       RuntimeError('sqlQueryParams() failed: ' + E.Message);
       Exit(CreateNilValue);
     end;
   end;
   query.Free;
 
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
   Result := CreateObject(pObj(arr));
 end;
 
@@ -8679,7 +8774,7 @@ begin
   pushStack(VM.Stack, StringToValue(strObj), VM.MemTracker);
   value := StringToValue(strObj);
   emitConstant(value);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
 end;
 
 procedure binary(canAssign: Boolean);
@@ -8771,6 +8866,20 @@ end;
 
 function emitJump(instruction : byte) : integer;
 begin
+  // Peephole: fuse OP_LESS + OP_JUMP_IF_FALSE_POP into OP_LESS_JUMP_IF_FALSE
+  // Guard: don't fuse if a jump was just patched to target this position
+  // (e.g. and_ short-circuit lands here — fusing would corrupt the target)
+  if (instruction = OP_JUMP_IF_FALSE_POP) and (CurrentChunk.count > 0)
+     and (CurrentChunk.code[CurrentChunk.count - 1] = OP_LESS)
+     and (lastPatchTarget <> CurrentChunk.count) then
+  begin
+    // Overwrite the OP_LESS we already emitted with the fused opcode
+    CurrentChunk.code[CurrentChunk.count - 1] := OP_LESS_JUMP_IF_FALSE;
+    emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
+    Result := CurrentChunk.count - 2;
+    Exit;
+  end;
   emitByte(instruction, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8797,6 +8906,7 @@ begin
     Error('Too much code to jump over.');
   CurrentChunk.code[offset]     := (jump shr 8) and $FF;
   CurrentChunk.code[offset + 1] := jump and $FF;
+  lastPatchTarget := CurrentChunk.count;
 end;
 
 procedure emitLoop(loopStart : integer);
@@ -9156,7 +9266,7 @@ begin
   strObj := CreateString(TokenToString(name), VM.MemTracker);
   pushStack(VM.Stack, StringToValue(strObj), VM.MemTracker);
   idx := AddValueConstant(CurrentChunk.Constants, StringToValue(strObj), VM.MemTracker);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
   Result := idx;
 end;
 
@@ -9540,7 +9650,7 @@ begin
     emitByte(compiler^.upvalues[j].index, CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
 
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
 
   Dispose(compiler);
 end;
@@ -9585,7 +9695,7 @@ begin
       pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
       fieldNameIndices[fieldCount] := AddValueConstant(CurrentChunk.Constants,
         StringToValue(nameStr), VM.MemTracker);
-      popStack(VM.Stack);
+      Dec(VM.Stack.StackTop);
       Inc(fieldCount);
     until not matchToken(TOKEN_COMMA);
   end;
@@ -9597,7 +9707,7 @@ begin
   pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
   var typeNameIdx : integer := AddValueConstant(CurrentChunk.Constants,
     StringToValue(nameStr), VM.MemTracker);
-  popStack(VM.Stack);
+  Dec(VM.Stack.StackTop);
 
   // Determine whether any constant index exceeds a single byte
   var needsLong : Boolean := (typeNameIdx > High(Byte));
@@ -9758,7 +9868,7 @@ begin
     // Push func onto stack to protect from GC during newClosure allocation.
     pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
     Result := newClosure(func, VM.MemTracker);
-    popStack(VM.Stack);
+    Dec(VM.Stack.StackTop);
   end;
 
   // ---- Exit assertions ----

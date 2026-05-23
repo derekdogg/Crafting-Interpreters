@@ -1,0 +1,48 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 1: Fill to exact load factor threshold
+// Capacity 8, load factor 0.75 = 6 entries before resize.
+// Insert exactly 6 entries, verify all, then insert 1 more to trigger resize,
+// verify all survive the rehash.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Set("c", 3);
+  d.Set("d", 4);
+  d.Set("e", 5);
+  d.Set("f", 6);
+  // At capacity 8, 6 entries = 75% load â€” right at threshold
+  assert(d.Size() == 6);
+  assert(d.Get("a") == 1);
+  assert(d.Get("f") == 6);
+
+  // This insert triggers resize to 16
+  d.Set("g", 7);
+  assert(d.Size() == 7);
+  // Verify every entry survived rehash
+  assert(d.Get("a") == 1);
+  assert(d.Get("b") == 2);
+  assert(d.Get("c") == 3);
+  assert(d.Get("d") == 4);
+  assert(d.Get("e") == 5);
+  assert(d.Get("f") == 6);
+  assert(d.Get("g") == 7);
+}
+print "pass: load factor boundary"; // expect: pass: load factor boundary
+

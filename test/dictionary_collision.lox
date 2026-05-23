@@ -26,7 +26,7 @@
   d.Set("d", 4);
   d.Set("e", 5);
   d.Set("f", 6);
-  // At capacity 8, 6 entries = 75% load — right at threshold
+  // At capacity 8, 6 entries = 75% load â€” right at threshold
   assert(d.Size() == 6);
   assert(d.Get("a") == 1);
   assert(d.Get("f") == 6);
@@ -61,13 +61,13 @@ print "pass: load factor boundary"; // expect: pass: load factor boundary
   }
   assert(d.Size() == 6);
 
-  // Delete all 6 — creates 6 tombstones in the backing array
+  // Delete all 6 â€” creates 6 tombstones in the backing array
   for (var i = 0; i < 6; i = i + 1) {
     assert(d.Delete(arrayGet(keys, i)) == true);
   }
   assert(d.Size() == 0);
 
-  // Insert 6 new keys — they must navigate the tombstone field
+  // Insert 6 new keys â€” they must navigate the tombstone field
   for (var i = 0; i < 6; i = i + 1) {
     d.Set("new_" + str(i), i * 100);
   }
@@ -125,7 +125,7 @@ print "pass: delete mid-chain"; // expect: pass: delete mid-chain
   d.Set(true, "bool_true");
   d.Set(false, "bool_false");
   d.Set(nil, "nil_val");
-  // Add number keys with small values — their hashes may collide with 0,1,2
+  // Add number keys with small values â€” their hashes may collide with 0,1,2
   d.Set(0, "zero");
   d.Set(1, "one");
   d.Set(2, "two");
@@ -166,7 +166,7 @@ print "pass: delete mid-chain"; // expect: pass: delete mid-chain
 print "pass: low-hash collisions"; // expect: pass: low-hash collisions
 
 // ---------------------------------------------------------------------------
-// Test 5: Worst-case linear probe — all keys map to same slot mod capacity
+// Test 5: Worst-case linear probe â€” all keys map to same slot mod capacity
 // Use number keys whose IEEE 754 double XOR-hash produces the same value
 // mod 8 (initial capacity). We use multiples that collide: since the hash
 // of integer N as a double is (bits xor (bits >> 32)), small integers with
@@ -175,7 +175,7 @@ print "pass: low-hash collisions"; // expect: pass: low-hash collisions
 // ---------------------------------------------------------------------------
 {
   var d = [:];
-  // Insert 200 sequential number keys — many will share hash mod capacity
+  // Insert 200 sequential number keys â€” many will share hash mod capacity
   // at each resize boundary (8, 16, 32, 64, 128, 256), creating dense
   // probe chains at every capacity level.
   for (var i = 0; i < 200; i = i + 1) {
@@ -183,7 +183,7 @@ print "pass: low-hash collisions"; // expect: pass: low-hash collisions
   }
   assert(d.Size() == 200);
 
-  // Delete every other key — scatters tombstones through probe chains
+  // Delete every other key â€” scatters tombstones through probe chains
   for (var i = 0; i < 200; i = i + 2) {
     d.Delete(i);
   }
@@ -198,7 +198,7 @@ print "pass: low-hash collisions"; // expect: pass: low-hash collisions
     assert(d.Has(i) == false);
   }
 
-  // Re-insert even keys with new values — reuses tombstone slots
+  // Re-insert even keys with new values â€” reuses tombstone slots
   for (var i = 0; i < 200; i = i + 2) {
     d.Set(i, i * 7);
   }
@@ -228,7 +228,7 @@ print "pass: number key probe chains"; // expect: pass: number key probe chains
     for (var i = 0; i < 50; i = i + 1) {
       d.Set("c" + str(cycle) + "_" + str(i), cycle * 50 + i);
     }
-    // Delete 40 of them — leaves 10 per cycle, creates 40 tombstones
+    // Delete 40 of them â€” leaves 10 per cycle, creates 40 tombstones
     for (var i = 0; i < 40; i = i + 1) {
       d.Delete("c" + str(cycle) + "_" + str(i));
     }
@@ -257,7 +257,7 @@ print "pass: resize tombstone cleanup"; // expect: pass: resize tombstone cleanu
 // ---------------------------------------------------------------------------
 {
   var d = [:];
-  // Generate 100 keys of form "AAAA...X" where X varies — same length,
+  // Generate 100 keys of form "AAAA...X" where X varies â€” same length,
   // minimal character difference, maximizes collision chance at small capacity
   for (var i = 0; i < 100; i = i + 1) {
     var k = "collision_pad_" + str(i);
@@ -293,7 +293,7 @@ print "pass: same-length string collisions"; // expect: pass: same-length string
   d.Set("base3", 3);
   d.Set("base4", 4);
   d.Set("base5", 5);
-  // 5 entries in capacity 8 — one below threshold
+  // 5 entries in capacity 8 â€” one below threshold
 
   for (var i = 0; i < 200; i = i + 1) {
     // Insert 6th entry (hits threshold)
@@ -361,7 +361,7 @@ print "pass: reverse deletion"; // expect: pass: reverse deletion
   }
   assert(d.Size() == 8);
 
-  // Phase 2: Delete 0, 2, 4, 6 — tombstones in the cluster
+  // Phase 2: Delete 0, 2, 4, 6 â€” tombstones in the cluster
   d.Delete(0);
   d.Delete(2);
   d.Delete(4);
@@ -374,7 +374,7 @@ print "pass: reverse deletion"; // expect: pass: reverse deletion
   assert(d.Get(5) == "v5");
   assert(d.Get(7) == "v7");
 
-  // Phase 4: Insert 8-15 — new entries sharing the expanded table
+  // Phase 4: Insert 8-15 â€” new entries sharing the expanded table
   for (var i = 8; i < 16; i = i + 1) {
     d.Set(i, "v" + str(i));
   }
@@ -451,10 +451,10 @@ print "pass: dense integer cluster"; // expect: pass: dense integer cluster
     }
   }
 
-  // Invariant 2c: Keys() contains exactly the keys we expect —
+  // Invariant 2c: Keys() contains exactly the keys we expect â€”
   // every key in our expected set appears in Keys(), and vice versa.
-  // (Forward direction: expected→Keys is checked in invariant 3 below.
-  //  Reverse direction: Keys→expected checked here.)
+  // (Forward direction: expectedâ†’Keys is checked in invariant 3 below.
+  //  Reverse direction: Keysâ†’expected checked here.)
   for (var i = 0; i < arrayLen(keys); i = i + 1) {
     // Every key from Keys() must be one of our expected "inv_N" keys
     // and must not be one of the deleted-and-not-reinserted keys.
@@ -506,10 +506,10 @@ print "pass: cross-API invariant"; // expect: pass: cross-API invariant
 // through every individual mutation.
 
 // ---------------------------------------------------------------------------
-// Test 12: Full tombstone traversal — lookup non-existent key
+// Test 12: Full tombstone traversal â€” lookup non-existent key
 // Fill the table, delete every entry (maximizing tombstones), then look up
 // keys that were never inserted. The probe must scan past every tombstone
-// and terminate at an empty slot — not loop forever.
+// and terminate at an empty slot â€” not loop forever.
 // ---------------------------------------------------------------------------
 {
   var d = [:];
@@ -517,7 +517,7 @@ print "pass: cross-API invariant"; // expect: pass: cross-API invariant
   for (var i = 0; i < 6; i = i + 1) {
     d.Set("fill_" + str(i), i);
   }
-  // Delete all — table is now 6 tombstones + 2 empty slots
+  // Delete all â€” table is now 6 tombstones + 2 empty slots
   for (var i = 0; i < 6; i = i + 1) {
     d.Delete("fill_" + str(i));
   }
@@ -551,7 +551,7 @@ print "pass: tombstone traversal termination"; // expect: pass: tombstone traver
 // Insert keys that hash near the end of the backing array so the linear
 // probe wraps from the last slot back to slot 0. Then delete keys at the
 // wraparound boundary and verify lookups across the seam still work.
-// We use number keys — at capacity 16, key N lands at slot hash(N) mod 16.
+// We use number keys â€” at capacity 16, key N lands at slot hash(N) mod 16.
 // By inserting many keys, some will inevitably probe across the boundary.
 // ---------------------------------------------------------------------------
 {
@@ -568,7 +568,7 @@ print "pass: tombstone traversal termination"; // expect: pass: tombstone traver
   }
   assert(d.Size() == 8);
 
-  // Insert new keys — these probe past the tombstones and may wrap
+  // Insert new keys â€” these probe past the tombstones and may wrap
   for (var i = 100; i < 108; i = i + 1) {
     d.Set(i, "w" + str(i));
   }
@@ -585,7 +585,7 @@ print "pass: tombstone traversal termination"; // expect: pass: tombstone traver
     assert(d.Get(i) == "w" + str(i));
   }
 
-  // Look up keys that never existed — probe must terminate even when
+  // Look up keys that never existed â€” probe must terminate even when
   // wrapping around a table with tombstones at the seam
   for (var i = 200; i < 220; i = i + 1) {
     assert(d.Has(i) == false);
@@ -597,7 +597,7 @@ print "pass: wraparound probe"; // expect: pass: wraparound probe
 // Test 14: Size() consistency through every single mutation
 // Perform a complex interleaved sequence of inserts, overwrites, deletes,
 // and failed deletes, asserting Size() after EVERY operation. This catches
-// any off-by-one in count tracking — a count that drifts by even 1 will
+// any off-by-one in count tracking â€” a count that drifts by even 1 will
 // be caught immediately at the mutation that caused it.
 // ---------------------------------------------------------------------------
 {
@@ -611,7 +611,7 @@ print "pass: wraparound probe"; // expect: pass: wraparound probe
     assert(d.Size() == expected);
   }
 
-  // Overwrite 10 keys — size must not change
+  // Overwrite 10 keys â€” size must not change
   for (var i = 0; i < 10; i = i + 1) {
     d.Set("s_" + str(i), i * 999);
     assert(d.Size() == expected);
@@ -624,13 +624,13 @@ print "pass: wraparound probe"; // expect: pass: wraparound probe
     assert(d.Size() == expected);
   }
 
-  // Delete same 15 again — all should return false, size unchanged
+  // Delete same 15 again â€” all should return false, size unchanged
   for (var i = 0; i < 15; i = i + 1) {
     assert(d.Delete("s_" + str(i)) == false);
     assert(d.Size() == expected);
   }
 
-  // Delete keys that never existed — size unchanged
+  // Delete keys that never existed â€” size unchanged
   for (var i = 0; i < 10; i = i + 1) {
     assert(d.Delete("phantom_" + str(i)) == false);
     assert(d.Size() == expected);
@@ -653,7 +653,7 @@ print "pass: size tracking per-mutation"; // expect: pass: size tracking per-mut
 // Test 15: Probe after near-full tombstone saturation
 // Create a table where almost every slot is a tombstone, leaving only 1-2
 // empty slots. Then perform lookups, inserts, and deletes. This is the
-// worst case for probe length — the loop must visit nearly every slot
+// worst case for probe length â€” the loop must visit nearly every slot
 // before finding an empty one.
 // ---------------------------------------------------------------------------
 {
@@ -663,20 +663,20 @@ print "pass: size tracking per-mutation"; // expect: pass: size tracking per-mut
     d.Set(i, i);
   }
 
-  // Delete 99 of them — leaves 1 entry and 99 tombstones
+  // Delete 99 of them â€” leaves 1 entry and 99 tombstones
   for (var i = 1; i < 100; i = i + 1) {
     d.Delete(i);
   }
   assert(d.Size() == 1);
   assert(d.Get(0) == 0);
 
-  // Look up 100 keys that don't exist — each probe must traverse the
+  // Look up 100 keys that don't exist â€” each probe must traverse the
   // near-full tombstone field and terminate
   for (var i = 100; i < 200; i = i + 1) {
     assert(d.Has(i) == false);
   }
 
-  // Insert 1 new key — must find a slot through the tombstones
+  // Insert 1 new key â€” must find a slot through the tombstones
   d.Set(999, "found_a_slot");
   assert(d.Size() == 2);
   assert(d.Get(999) == "found_a_slot");
@@ -688,7 +688,7 @@ print "pass: size tracking per-mutation"; // expect: pass: size tracking per-mut
   assert(d.Get(999) == "found_a_slot");
   assert(d.Has(0) == false);
 
-  // Bulk re-insert — all must probe through the tombstone graveyard
+  // Bulk re-insert â€” all must probe through the tombstone graveyard
   for (var i = 0; i < 50; i = i + 1) {
     d.Set(i, i * 13);
   }
@@ -703,7 +703,7 @@ print "pass: near-full tombstone saturation"; // expect: pass: near-full tombsto
 // ---------------------------------------------------------------------------
 // Test 16: Has/Get/Delete on completely empty table (zero capacity)
 // Before any insert, the backing array is nil and capacity is 0.
-// Every lookup, Has, and Delete must terminate immediately — not attempt
+// Every lookup, Has, and Delete must terminate immediately â€” not attempt
 // to probe a zero-length array.
 // ---------------------------------------------------------------------------
 {
@@ -718,12 +718,12 @@ print "pass: near-full tombstone saturation"; // expect: pass: near-full tombsto
   assert(d.Delete(nil) == false);
   assert(d.Delete(true) == false);
 
-  // Now insert one key — table must transition from zero-capacity correctly
+  // Now insert one key â€” table must transition from zero-capacity correctly
   d.Set("first", 1);
   assert(d.Size() == 1);
   assert(d.Get("first") == 1);
 
-  // Delete it — back to empty (but now has backing array with tombstone)
+  // Delete it â€” back to empty (but now has backing array with tombstone)
   d.Delete("first");
   assert(d.Size() == 0);
   assert(d.Has("first") == false);
@@ -754,7 +754,7 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
 //   [sign:1][exponent:11][mantissa_high:20]
 //
 // The mantissa bits are LEFT-aligned in the 20-bit field. An integer N
-// with binary representation 1.bbb...b × 2^e stores k significant
+// with binary representation 1.bbb...b Ã— 2^e stores k significant
 // mantissa bits in positions 19..(20-k), leaving (20-k) trailing zeros.
 // The number of trailing zeros in hash(N) is therefore:
 //
@@ -770,19 +770,19 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
 //   49: hash = 0x40488000  (15 trailing zeros)
 //
 // Key consequences for the integer ranges used below:
-//   Integers 0-5:  ≥18 trailing zeros → all hash to 0 mod 2^18
-//   Integers 0-9:  ≥17 trailing zeros → all hash to 0 mod 2^17
-//   Integers 0-49: ≥15 trailing zeros → all hash to 0 mod 2^15
+//   Integers 0-5:  â‰¥18 trailing zeros â†’ all hash to 0 mod 2^18
+//   Integers 0-9:  â‰¥17 trailing zeros â†’ all hash to 0 mod 2^17
+//   Integers 0-49: â‰¥15 trailing zeros â†’ all hash to 0 mod 2^15
 //
 // At capacity 8 (mod 8) or 64 (mod 64), all integers 0-49 land on slot 0.
 // This is a mathematically guaranteed worst case: every integer key in
 // these ranges maps to the same slot, creating a maximal-length probe chain.
 //
-// Additionally: false hashes to 0, same as number 0 — an exact collision.
+// Additionally: false hashes to 0, same as number 0 â€” an exact collision.
 
 // ---------------------------------------------------------------------------
-// Test 17: Proven same-slot collision — integers 0-5 all land on slot 0
-// Integers 0-5 have ≥18 trailing zeros in their hash (see table above),
+// Test 17: Proven same-slot collision â€” integers 0-5 all land on slot 0
+// Integers 0-5 have â‰¥18 trailing zeros in their hash (see table above),
 // so all 6 hash to slot 0 mod 8. This creates a guaranteed probe chain
 // of length 6 starting at slot 0. Then selectively delete entries from
 // the chain and verify that entries beyond the tombstones are still
@@ -790,7 +790,7 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
 // ---------------------------------------------------------------------------
 {
   var d = [:];
-  // Integers 0-5: hash mod 8 = 0 (proven) — guaranteed maximal probe chain
+  // Integers 0-5: hash mod 8 = 0 (proven) â€” guaranteed maximal probe chain
   d.Set(0, "zero");   // slot 0
   d.Set(1, "one");    // probes to slot 1
   d.Set(2, "two");    // probes to slot 2
@@ -807,7 +807,7 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
   assert(d.Get(4) == "four");
   assert(d.Get(5) == "five");
 
-  // Delete from the HEAD of the chain (slot 0) — key 0
+  // Delete from the HEAD of the chain (slot 0) â€” key 0
   d.Delete(0);
   // Keys 1-5 must still be found (probe must skip the tombstone at slot 0)
   assert(d.Get(1) == "one");
@@ -817,14 +817,14 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
   assert(d.Get(5) == "five");
   assert(d.Has(0) == false);
 
-  // Delete from the MIDDLE of the chain — key 3 (slot 3)
+  // Delete from the MIDDLE of the chain â€” key 3 (slot 3)
   d.Delete(3);
   // Keys 4 and 5 must still be found (probe skips tombstones at slots 0 and 3)
   assert(d.Get(4) == "four");
   assert(d.Get(5) == "five");
   assert(d.Has(3) == false);
 
-  // Delete from the TAIL of the chain — key 5 (slot 5)
+  // Delete from the TAIL of the chain â€” key 5 (slot 5)
   d.Delete(5);
   // Remaining keys 1, 2, 4 must still work
   assert(d.Get(1) == "one");
@@ -832,7 +832,7 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
   assert(d.Get(4) == "four");
   assert(d.Size() == 3);
 
-  // Re-insert deleted keys — they should reuse tombstone slots
+  // Re-insert deleted keys â€” they should reuse tombstone slots
   d.Set(0, "new_zero");
   d.Set(3, "new_three");
   d.Set(5, "new_five");
@@ -844,20 +844,20 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
 print "pass: proven slot-0 chain"; // expect: pass: proven slot-0 chain
 
 // ---------------------------------------------------------------------------
-// Test 18: Exact hash collision — false and 0 both hash to 0
+// Test 18: Exact hash collision â€” false and 0 both hash to 0
 // These are different types (boolean vs number) but produce identical hash
 // values. DictFindEntry must distinguish them via ValuesEqual, not hash.
 // ---------------------------------------------------------------------------
 {
   var d = [:];
   d.Set(false, "bool_false");  // hash = 0
-  d.Set(0, "num_zero");        // hash = 0 — exact collision
+  d.Set(0, "num_zero");        // hash = 0 â€” exact collision
 
   assert(d.Size() == 2);
   assert(d.Get(false) == "bool_false");
   assert(d.Get(0) == "num_zero");
 
-  // Delete false — 0 must survive (they share hash but differ by ValuesEqual)
+  // Delete false â€” 0 must survive (they share hash but differ by ValuesEqual)
   d.Delete(false);
   assert(d.Has(false) == false);
   assert(d.Get(0) == "num_zero");
@@ -883,16 +883,16 @@ print "pass: exact hash collision (false vs 0)"; // expect: pass: exact hash col
 // ---------------------------------------------------------------------------
 // Test 19: Three-way low-hash collision cluster
 // false(hash=0), true(hash=1), nil(hash=2) occupy slots 0,1,2.
-// Integers 0-3 all have ≥18 trailing zeros → hash to slot 0 mod 8.
+// Integers 0-3 all have â‰¥18 trailing zeros â†’ hash to slot 0 mod 8.
 // So keys 0,1,2,3 must probe past the bool/nil entries. This creates
 // a guaranteed 7-entry cluster in slots 0-6:
 //   slot 0: false  (hash=0, lands directly)
 //   slot 1: true   (hash=1, lands directly)
 //   slot 2: nil    (hash=2, lands directly)
-//   slot 3: 0      (hash=0, probes past false→true→nil)
+//   slot 3: 0      (hash=0, probes past falseâ†’trueâ†’nil)
 //   slot 4: 1      (hash=0x3FF00000, mod 8=0, probes to slot 4)
 //   slot 5: 2      (hash=0x40000000, mod 8=0, probes to slot 5)
-//   slot 6: 3      (hash=0x40080000, mod 8=0, probes to slot 6 → resize)
+//   slot 6: 3      (hash=0x40080000, mod 8=0, probes to slot 6 â†’ resize)
 // ---------------------------------------------------------------------------
 {
   var d = [:];
@@ -956,9 +956,9 @@ print "pass: exact hash collision (false vs 0)"; // expect: pass: exact hash col
 print "pass: three-way hash cluster"; // expect: pass: three-way hash cluster
 
 // ---------------------------------------------------------------------------
-// Test 20: Guaranteed collision chain at scale — 50 integers
-// Insert integers 0-49. All have ≥15 trailing zeros in their hash
-// (worst case: 49 = 110001₂ → 5 mantissa bits → 15 trailing zeros).
+// Test 20: Guaranteed collision chain at scale â€” 50 integers
+// Insert integers 0-49. All have â‰¥15 trailing zeros in their hash
+// (worst case: 49 = 110001â‚‚ â†’ 5 mantissa bits â†’ 15 trailing zeros).
 // So all 50 hash to 0 mod 8, mod 16, mod 32, and mod 64.
 // After resizes to capacity 64, they still all land on slot 0.
 // This forces a probe chain of length 50.
@@ -976,14 +976,14 @@ print "pass: three-way hash cluster"; // expect: pass: three-way hash cluster
     assert(d.Get(i) == i * 7);
   }
 
-  // Delete even keys — creates tombstones at every other position
+  // Delete even keys â€” creates tombstones at every other position
   // in the guaranteed collision chain
   for (var i = 0; i < 50; i = i + 2) {
     d.Delete(i);
   }
   assert(d.Size() == 25);
 
-  // Odd keys must survive — all hash to slot 0, probe must skip
+  // Odd keys must survive â€” all hash to slot 0, probe must skip
   // 25 tombstones interspersed through the chain to reach each one
   for (var i = 1; i < 50; i = i + 2) {
     assert(d.Get(i) == i * 7);
@@ -1016,9 +1016,9 @@ print "pass: guaranteed 50-key collision chain"; // expect: pass: guaranteed 50-
 
 // ---------------------------------------------------------------------------
 // Test 21: Overwrite within a guaranteed collision chain
-// Integer keys 0-9 all hash to 0 mod 8 (≥17 trailing zeros, see table).
+// Integer keys 0-9 all hash to 0 mod 8 (â‰¥17 trailing zeros, see table).
 // Overwriting a key in the middle of the resulting probe chain must update
-// the correct entry — not a different one that happens to be adjacent in
+// the correct entry â€” not a different one that happens to be adjacent in
 // the probe sequence.
 // ---------------------------------------------------------------------------
 {
@@ -1033,7 +1033,7 @@ print "pass: guaranteed 50-key collision chain"; // expect: pass: guaranteed 50-
   }
   assert(d.Size() == 10);
 
-  // Every key must have its own updated value — no cross-contamination
+  // Every key must have its own updated value â€” no cross-contamination
   for (var i = 0; i < 10; i = i + 1) {
     assert(d.Get(i) == "upd_" + str(i));
   }
@@ -1048,7 +1048,7 @@ print "pass: guaranteed 50-key collision chain"; // expect: pass: guaranteed 50-
 print "pass: overwrite in collision chain"; // expect: pass: overwrite in collision chain
 
 // ---------------------------------------------------------------------------
-// Test 22: Tombstone saturation — maximise tombstone-to-capacity ratio
+// Test 22: Tombstone saturation â€” maximise tombstone-to-capacity ratio
 //
 // The classic infinite-loop killer for linear probing is a table with NO
 // empty slots (all occupied or all tombstones). If probe termination relies
@@ -1075,7 +1075,7 @@ print "pass: overwrite in collision chain"; // expect: pass: overwrite in collis
   d.Set("d", 4);
   d.Set("e", 5);
   d.Set("f", 6);
-  // 6 entries in capacity 8 — right at threshold
+  // 6 entries in capacity 8 â€” right at threshold
 
   d.Delete("a");
   d.Delete("b");
@@ -1086,7 +1086,7 @@ print "pass: overwrite in collision chain"; // expect: pass: overwrite in collis
   assert(d.Size() == 0);
 
   // 6 of 8 slots are tombstones. 2 slots are empty.
-  // Lookups for non-existent keys MUST terminate — the probe will skip
+  // Lookups for non-existent keys MUST terminate â€” the probe will skip
   // 6 tombstones and find one of the 2 empty slots.
   assert(d.Has("x") == false);
   assert(d.Has("y") == false);
@@ -1097,7 +1097,7 @@ print "pass: overwrite in collision chain"; // expect: pass: overwrite in collis
   assert(d.Has(false) == false);
   assert(d.Delete("nope") == false);
 
-  // Inserting 1 key: (0 + 6 + 1) = 7 > 6 threshold → triggers resize.
+  // Inserting 1 key: (0 + 6 + 1) = 7 > 6 threshold â†’ triggers resize.
   // Resize discards all tombstones.
   d.Set("alive", 42);
   assert(d.Size() == 1);
@@ -1136,19 +1136,19 @@ print "pass: overwrite in collision chain"; // expect: pass: overwrite in collis
     assert(d2.Delete("miss_" + str(i)) == false);
   }
 
-  // Insert 1 key → forces resize, cleans all 96 tombstones
+  // Insert 1 key â†’ forces resize, cleans all 96 tombstones
   d2.Set("survivor", 999);
   assert(d2.Size() == 1);
   assert(d2.Get("survivor") == 999);
 
   // --- Phase C: Repeated fill-delete cycles ---
   // Verify tombstones don't accumulate across resize boundaries.
-  // Each cycle: fill to threshold → delete all → insert 1 (triggers resize).
+  // Each cycle: fill to threshold â†’ delete all â†’ insert 1 (triggers resize).
   // After 10 cycles the table must still function correctly.
   var d3 = [:];
   for (var cycle = 0; cycle < 10; cycle = cycle + 1) {
     // Fill 6 keys (will grow on 7th at capacity 8, but after cycle 0
-    // the capacity is larger — fill to whatever the threshold is)
+    // the capacity is larger â€” fill to whatever the threshold is)
     for (var i = 0; i < 20; i = i + 1) {
       d3.Set("cyc_" + str(i), cycle * 100 + i);
     }
@@ -1175,7 +1175,7 @@ print "pass: overwrite in collision chain"; // expect: pass: overwrite in collis
   assert(d3.Size() == 1);
   assert(d3.Get("final") == 777);
 
-  // --- Phase D: Integer keys — guaranteed collision + tombstone saturation ---
+  // --- Phase D: Integer keys â€” guaranteed collision + tombstone saturation ---
   // Integers 0-5 all hash to slot 0 mod 8 (proven in test 17).
   // After filling 6 integer keys and deleting all, the 6 tombstones
   // are in consecutive slots 0-5. Lookups for OTHER integer keys
@@ -1213,7 +1213,7 @@ print "pass: tombstone saturation (no empty slots)"; // expect: pass: tombstone 
 // ===========================================================================
 // Mutation During Iteration
 // ===========================================================================
-// Keys() and Values() return snapshot arrays — independent copies at the
+// Keys() and Values() return snapshot arrays â€” independent copies at the
 // time of the call. These tests verify that mutating the dictionary while
 // iterating over a snapshot does not corrupt the snapshot, skip entries,
 // cause double-visits, or crash. They also verify that the snapshot becomes
@@ -1441,7 +1441,7 @@ print "pass: delete-reinsert during iteration (resize)"; // expect: pass: delete
 print "pass: concurrent snapshots with mutation"; // expect: pass: concurrent snapshots with mutation
 
 // ---------------------------------------------------------------------------
-// Test 28: GC safety — snapshot survives garbage collection during iteration
+// Test 28: GC safety â€” snapshot survives garbage collection during iteration
 // Take a Keys() snapshot, trigger GC (via collectGarbage()), then continue
 // using the snapshot. If the GC incorrectly collects the snapshot array
 // while it's still reachable, this will crash or return garbage.
@@ -1455,7 +1455,7 @@ print "pass: concurrent snapshots with mutation"; // expect: pass: concurrent sn
   var snap = d.Keys();
   assert(arrayLen(snap) == 100);
 
-  // Trigger GC — snapshot must survive because it's on the stack
+  // Trigger GC â€” snapshot must survive because it's on the stack
   collectGarbage();
 
   // Verify snapshot is intact after GC
@@ -1474,12 +1474,12 @@ print "pass: concurrent snapshots with mutation"; // expect: pass: concurrent sn
   }
   collectGarbage();
 
-  // Snapshot must STILL be intact — the strings it references must
+  // Snapshot must STILL be intact â€” the strings it references must
   // not have been collected (they were in the dict when snapshot was taken,
   // and the snapshot array holds references to them)
   assert(arrayLen(snap) == 100);
   for (var i = 0; i < arrayLen(snap); i = i + 1) {
-    // Keys from snap are "gc_0" through "gc_99" — they are no longer
+    // Keys from snap are "gc_0" through "gc_99" â€” they are no longer
     // in the dict, but the snapshot array keeps them alive
     assert(d.Has(snap[i]) == false);
   }
@@ -1487,7 +1487,7 @@ print "pass: concurrent snapshots with mutation"; // expect: pass: concurrent sn
 print "pass: GC safety during iteration"; // expect: pass: GC safety during iteration
 
 // ---------------------------------------------------------------------------
-// Test 29: Full mutation storm — interleaved insert/delete/overwrite
+// Test 29: Full mutation storm â€” interleaved insert/delete/overwrite
 //          during iteration with cross-API validation afterward
 // Take a snapshot, then perform every kind of mutation (insert, delete,
 // overwrite) during iteration. Afterward, independently verify the dict
@@ -1569,25 +1569,25 @@ print "pass: mutation storm during iteration"; // expect: pass: mutation storm d
 // where the probe order is deterministic.
 
 // ---------------------------------------------------------------------------
-// Test 30: Tombstone-before-match overwrite — basic case
+// Test 30: Tombstone-before-match overwrite â€” basic case
 // Insert A, B, C into a guaranteed collision chain (slots 0, 1, 2).
-// Delete B (tombstone at slot 1). Overwrite C — the probe for C starts
+// Delete B (tombstone at slot 1). Overwrite C â€” the probe for C starts
 // at slot 0 (occupied by A), hits tombstone at slot 1, then finds C at
 // slot 2. The overwrite MUST happen at slot 2, not slot 1.
 // ---------------------------------------------------------------------------
 {
   var d = [:];
-  // Integers 0-2 all hash to slot 0 mod 8 (proven: ≥18 trailing zeros)
+  // Integers 0-2 all hash to slot 0 mod 8 (proven: â‰¥18 trailing zeros)
   d.Set(0, "A");  // slot 0
   d.Set(1, "B");  // slot 1
   d.Set(2, "C");  // slot 2
   assert(d.Size() == 3);
 
-  // Delete key 1 → tombstone at slot 1
+  // Delete key 1 â†’ tombstone at slot 1
   d.Delete(1);
   assert(d.Size() == 2);
 
-  // Overwrite key 2: probe path is slot 0 (A) → slot 1 (tombstone) → slot 2 (match)
+  // Overwrite key 2: probe path is slot 0 (A) â†’ slot 1 (tombstone) â†’ slot 2 (match)
   // Must update at slot 2, NOT create duplicate at slot 1
   d.Set(2, "C_updated");
 
@@ -1615,7 +1615,7 @@ print "pass: tombstone-before-match overwrite (basic)"; // expect: pass: tombsto
 // ---------------------------------------------------------------------------
 // Test 31: Tombstone-before-match with multiple tombstones in chain
 // Insert keys 0-5 (all slot 0). Delete keys 1, 2, 3 (three tombstones).
-// Overwrite key 4 — probe must skip A at slot 0, three tombstones at
+// Overwrite key 4 â€” probe must skip A at slot 0, three tombstones at
 // slots 1-3, and find key 4 at slot 4. Must NOT place at any tombstone.
 // ---------------------------------------------------------------------------
 {
@@ -1625,21 +1625,21 @@ print "pass: tombstone-before-match overwrite (basic)"; // expect: pass: tombsto
   }
   assert(d.Size() == 6);
 
-  // Delete 1, 2, 3 → tombstones at slots 1, 2, 3
+  // Delete 1, 2, 3 â†’ tombstones at slots 1, 2, 3
   d.Delete(1);
   d.Delete(2);
   d.Delete(3);
   assert(d.Size() == 3);
 
-  // Overwrite key 4: probe = slot 0 (key 0) → slot 1 (tomb) → slot 2 (tomb)
-  //                         → slot 3 (tomb) → slot 4 (key 4 — match)
+  // Overwrite key 4: probe = slot 0 (key 0) â†’ slot 1 (tomb) â†’ slot 2 (tomb)
+  //                         â†’ slot 3 (tomb) â†’ slot 4 (key 4 â€” match)
   d.Set(4, "v4_updated");
   assert(d.Size() == 3);          // Must NOT increase
   assert(d.Get(4) == "v4_updated");
   assert(d.Get(0) == "v0");
   assert(d.Get(5) == "v5");
 
-  // Overwrite key 5: probe = slot 0 → slots 1-3 (tombs) → slot 4 → slot 5 (match)
+  // Overwrite key 5: probe = slot 0 â†’ slots 1-3 (tombs) â†’ slot 4 â†’ slot 5 (match)
   d.Set(5, "v5_updated");
   assert(d.Size() == 3);
   assert(d.Get(5) == "v5_updated");
@@ -1759,7 +1759,7 @@ print "pass: overwrite through growing tombstone field"; // expect: pass: overwr
     d.Set(i, "v" + str(i));
   }
 
-  // Delete 1 and 3 → tombstones at slots 1 and 3
+  // Delete 1 and 3 â†’ tombstones at slots 1 and 3
   d.Delete(1);
   d.Delete(3);
   assert(d.Size() == 3);

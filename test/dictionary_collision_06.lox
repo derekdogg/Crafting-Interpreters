@@ -1,0 +1,50 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 6: Repeated resize with tombstone carryover
+// Fill dict, delete 80%, insert new keys to trigger resize.
+// The resize should discard tombstones. Repeat multiple cycles to verify
+// tombstones are properly cleaned up during rehash.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var cycle = 0; cycle < 8; cycle = cycle + 1) {
+    // Insert 50 keys per cycle
+    for (var i = 0; i < 50; i = i + 1) {
+      d.Set("c" + str(cycle) + "_" + str(i), cycle * 50 + i);
+    }
+    // Delete 40 of them â€” leaves 10 per cycle, creates 40 tombstones
+    for (var i = 0; i < 40; i = i + 1) {
+      d.Delete("c" + str(cycle) + "_" + str(i));
+    }
+  }
+  // 8 cycles * 10 survivors = 80
+  assert(d.Size() == 80);
+
+  // Verify every survivor and every deletion exhaustively
+  for (var cycle = 0; cycle < 8; cycle = cycle + 1) {
+    for (var i = 0; i < 50; i = i + 1) {
+      var key = "c" + str(cycle) + "_" + str(i);
+      if (i < 40) {
+        assert(d.Has(key) == false);
+      } else {
+        assert(d.Get(key) == cycle * 50 + i);
+      }
+    }
+  }
+}
+print "pass: resize tombstone cleanup"; // expect: pass: resize tombstone cleanup
+

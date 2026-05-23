@@ -1,0 +1,115 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 11: Cross-API invariant check after heavy mutation
+// After a complex sequence of inserts, deletes, and overwrites, verify that
+// Size(), Keys(), Values(), Has(), and Get() all agree with each other.
+// This catches any internal state desync (count drift, phantom entries,
+// missing keys in iteration, tombstones leaking into Keys/Values, etc.)
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+
+  // Phase 1: Insert 150 keys
+  for (var i = 0; i < 150; i = i + 1) {
+    d.Set("inv_" + str(i), i);
+  }
+
+  // Phase 2: Delete every 3rd key (50 deletions)
+  for (var i = 0; i < 150; i = i + 3) {
+    d.Delete("inv_" + str(i));
+  }
+
+  // Phase 3: Overwrite every 5th surviving key with a new value
+  for (var i = 0; i < 150; i = i + 1) {
+    if (i % 3 != 0 and i % 5 == 0) {
+      d.Set("inv_" + str(i), i * 1000);
+    }
+  }
+
+  // Phase 4: Re-insert 20 of the deleted keys with different values
+  for (var i = 0; i < 60; i = i + 3) {
+    d.Set("inv_" + str(i), -(i + 1));
+  }
+
+  // --- Invariant checks ---
+
+  var keys = d.Keys();
+  var vals = d.Values();
+  var size = d.Size();
+
+  // Invariant 1: Keys().length == Values().length == Size()
+  assert(arrayLen(keys) == size, "inv1: keys.len != size: " + str(arrayLen(keys)) + " vs " + str(size));
+  assert(arrayLen(vals) == size, "inv1: vals.len != size: " + str(arrayLen(vals)) + " vs " + str(size));
+
+  // Invariant 2: Every key from Keys() must have Has()==true
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    assert(d.Has(keys[i]) == true, "inv2: Has() false for key at index " + str(i) + " = " + str(keys[i]));
+  }
+
+  // Invariant 2b: No duplicate keys in Keys()
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    for (var j = i + 1; j < arrayLen(keys); j = j + 1) {
+      assert(keys[i] != keys[j], "inv2b: duplicate key " + str(keys[i]) + " at indices " + str(i) + " and " + str(j));
+    }
+  }
+
+  // Invariant 2c: Keys() contains exactly the keys we expect â€”
+  // every key in our expected set appears in Keys(), and vice versa.
+  // (Forward direction: expectedâ†’Keys is checked in invariant 3 below.
+  //  Reverse direction: Keysâ†’expected checked here.)
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    // Every key from Keys() must be one of our expected "inv_N" keys
+    // and must not be one of the deleted-and-not-reinserted keys.
+    // We verify this by checking Get() succeeds (already guaranteed by
+    // Has above) and that the value matches our expected state.
+    // The full cross-check happens in invariant 3.
+    var getVal = d.Get(keys[i]);
+    // Verify Get() on this key returns the same thing if called again
+    // (consistency under repeated access)
+    assert(d.Get(keys[i]) == getVal);
+  }
+
+  // Invariant 3: Build expected state independently and cross-check.
+  // Reconstruct what should be in the dict by replaying the logic:
+  //   - Keys where i%3==0 AND i<60: re-inserted with value -(i+1)
+  //   - Keys where i%3==0 AND i>=60: deleted, should be absent
+  //   - Keys where i%3!=0 AND i%5==0: overwritten with i*1000
+  //   - Keys where i%3!=0 AND i%5!=0: original value i
+  var expectedCount = 0;
+  for (var i = 0; i < 150; i = i + 1) {
+    var key = "inv_" + str(i);
+    if (i % 3 == 0 and i >= 60) {
+      // Deleted and not re-inserted
+      assert(d.Has(key) == false, "inv3: key " + key + " should be absent but Has()==true");
+    } else {
+      assert(d.Has(key) == true, "inv3: key " + key + " should exist but Has()==false");
+      expectedCount = expectedCount + 1;
+      if (i % 3 == 0 and i < 60) {
+        assert(d.Get(key) == -(i + 1), "inv3: key " + key + " expected " + str(-(i+1)) + " got " + str(d.Get(key)));
+      } else if (i % 3 != 0 and i % 5 == 0) {
+        assert(d.Get(key) == i * 1000, "inv3: key " + key + " expected " + str(i*1000) + " got " + str(d.Get(key)));
+      } else {
+        assert(d.Get(key) == i, "inv3: key " + key + " expected " + str(i) + " got " + str(d.Get(key)));
+      }
+    }
+  }
+
+  // Invariant 4: Our independently computed count must match Size()
+  assert(size == expectedCount, "inv4: size=" + str(size) + " expected=" + str(expectedCount));
+}
+print "pass: cross-API invariant"; // expect: pass: cross-API invariant
+

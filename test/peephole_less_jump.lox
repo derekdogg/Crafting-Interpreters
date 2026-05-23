@@ -1,0 +1,273 @@
+// Tests for the OP_LESS_JUMP_IF_FALSE peephole optimization.
+// The compiler fuses OP_LESS + OP_JUMP_IF_FALSE_POP into a single opcode
+// when a < comparison directly controls a conditional jump (for loops, if).
+// These tests verify correctness in all cases, including the tricky
+// interaction with `and`/`or` short-circuit operators.
+
+// ---------------------------------------------------------------------------
+// Test 1: Basic for-loop — the peephole's primary target
+// ---------------------------------------------------------------------------
+{
+  var sum = 0;
+  for (var i = 0; i < 10; i = i + 1) {
+    sum = sum + i;
+  }
+  assert(sum == 45, "T1: basic for loop sum");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Nested for-loops — both should get the optimization
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  for (var i = 0; i < 5; i = i + 1) {
+    for (var j = 0; j < 5; j = j + 1) {
+      count = count + 1;
+    }
+  }
+  assert(count == 25, "T2: nested for loops");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: if (x < y) — peephole fires for simple if condition
+// ---------------------------------------------------------------------------
+{
+  var a = 3;
+  var b = 7;
+  var result = "none";
+  if (a < b) {
+    result = "less";
+  }
+  assert(result == "less", "T3a: simple if less (true)");
+
+  if (b < a) {
+    result = "wrong";
+  }
+  assert(result == "less", "T3b: simple if less (false)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: and with < on the RIGHT side — the bug that was fixed
+// When `and` short-circuits (left is false), execution must skip past the
+// fused instruction correctly.
+// ---------------------------------------------------------------------------
+{
+  var x = 5;
+  var result = "default";
+
+  // Left side false, right side has <
+  if (false and x < 10) {
+    result = "wrong";
+  }
+  assert(result == "default", "T4a: false and x<10 should not enter then-branch");
+
+  // Left side true, right side true
+  if (true and x < 10) {
+    result = "entered";
+  }
+  assert(result == "entered", "T4b: true and x<10 should enter then-branch");
+
+  // Left side true, right side false
+  result = "default";
+  if (true and x < 3) {
+    result = "wrong";
+  }
+  assert(result == "default", "T4c: true and x<3 should not enter");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: and with < on the right, complex left expression
+// Matches the exact pattern from dictionary_collision_11: i % 3 == 0 and i < 60
+// ---------------------------------------------------------------------------
+{
+  // i=1: left is false (1%3 != 0), should NOT enter branch
+  var i = 1;
+  var entered = false;
+  if (i % 3 == 0 and i < 60) {
+    entered = true;
+  }
+  assert(entered == false, "T5a: 1%3==0 is false, should short-circuit");
+
+  // i=3: left is true (3%3 == 0), right is true (3 < 60)
+  i = 3;
+  entered = false;
+  if (i % 3 == 0 and i < 60) {
+    entered = true;
+  }
+  assert(entered == true, "T5b: 3%3==0 and 3<60, should enter");
+
+  // i=60: left is true (60%3 == 0), right is false (60 < 60 is false)
+  i = 60;
+  entered = false;
+  if (i % 3 == 0 and i < 60) {
+    entered = true;
+  }
+  assert(entered == false, "T5c: 60%3==0 but 60<60 is false");
+
+  // i=61: left is false (61%3 == 1), should short-circuit
+  i = 61;
+  entered = false;
+  if (i % 3 == 0 and i < 60) {
+    entered = true;
+  }
+  assert(entered == false, "T5d: 61%3!=0, should short-circuit");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: or with < on the RIGHT side
+// When `or` short-circuits (left is true), execution must skip the right side.
+// ---------------------------------------------------------------------------
+{
+  var x = 5;
+  var result = "default";
+
+  // Left true — or short-circuits, right side (x < 10) not evaluated
+  if (true or x < 10) {
+    result = "entered";
+  }
+  assert(result == "entered", "T6a: true or x<10 enters (short-circuit)");
+
+  // Left false — must evaluate right side (x < 10 = true)
+  result = "default";
+  if (false or x < 10) {
+    result = "entered";
+  }
+  assert(result == "entered", "T6b: false or x<10 enters (right is true)");
+
+  // Left false, right false
+  result = "default";
+  if (false or x < 3) {
+    result = "wrong";
+  }
+  assert(result == "default", "T6c: false or x<3 should not enter");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Chained and/or with < — multiple short-circuit points
+// ---------------------------------------------------------------------------
+{
+  var a = 2;
+  var b = 5;
+  var c = 8;
+  var result = "none";
+
+  // a < b is true, b < c is true — all pass
+  if (a < b and b < c) {
+    result = "both";
+  }
+  assert(result == "both", "T7a: a<b and b<c both true");
+
+  // a < b is true, c < b is false
+  result = "none";
+  if (a < b and c < b) {
+    result = "wrong";
+  }
+  assert(result == "none", "T7b: a<b true but c<b false");
+
+  // c < b is false (short-circuit), b < c never evaluated
+  result = "none";
+  if (c < b and b < c) {
+    result = "wrong";
+  }
+  assert(result == "none", "T7c: c<b false, short-circuits");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: if-else if-else chain with < in conditions
+// Multiple consecutive peephole opportunities
+// ---------------------------------------------------------------------------
+{
+  var x = 15;
+  var result = "none";
+
+  if (x < 5) {
+    result = "small";
+  } else if (x < 10) {
+    result = "medium";
+  } else if (x < 20) {
+    result = "large";
+  } else {
+    result = "huge";
+  }
+  assert(result == "large", "T8: if-else-if chain with <");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: while loop with <
+// ---------------------------------------------------------------------------
+{
+  var i = 0;
+  var sum = 0;
+  while (i < 100) {
+    sum = sum + i;
+    i = i + 1;
+  }
+  assert(sum == 4950, "T9: while loop with <");
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: < in and/or within a for-loop condition
+// for (var i = 0; i < 10 and i < 5; ...) — unusual but valid
+// The for-loop itself uses < (peephole candidate), and the condition
+// also has `and` with another <.
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  for (var i = 0; i < 100; i = i + 1) {
+    if (i % 2 == 0 and i < 10) {
+      count = count + 1;
+    }
+  }
+  // Even numbers less than 10: 0, 2, 4, 6, 8 = 5
+  assert(count == 5, "T10: and with < inside for loop body");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Negated condition — < with not
+// ---------------------------------------------------------------------------
+{
+  var x = 10;
+  var result = "default";
+  if (!(x < 5)) {
+    result = "negated";
+  }
+  assert(result == "negated", "T11: negated < condition");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: < comparison result used as a value (not just control flow)
+// The peephole should NOT fire here — the result is assigned, not jumped on.
+// ---------------------------------------------------------------------------
+{
+  var a = 3;
+  var b = 7;
+  var isLess = a < b;
+  assert(isLess == true, "T12a: < as value (true)");
+
+  isLess = b < a;
+  assert(isLess == false, "T12b: < as value (false)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Multiple and clauses all using <
+// ---------------------------------------------------------------------------
+{
+  var a = 1;
+  var b = 2;
+  var c = 3;
+  var d = 4;
+
+  var result = false;
+  if (a < b and b < c and c < d) {
+    result = true;
+  }
+  assert(result == true, "T13a: three < conditions all true");
+
+  result = false;
+  if (a < b and c < b and c < d) {
+    result = true;
+  }
+  assert(result == false, "T13b: middle < false, short-circuits");
+}
+
+print "pass: peephole_less_jump"; // expect: pass: peephole_less_jump

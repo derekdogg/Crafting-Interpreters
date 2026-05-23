@@ -1,0 +1,58 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 25: Overwrite values while iterating over Values() snapshot
+// Take a Values() snapshot, then overwrite every value in the dict.
+// The snapshot must retain the old values. The dict must have the new ones.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 30; i = i + 1) {
+    d.Set("ov_" + str(i), i);
+  }
+
+  var valSnap = d.Values();
+  var keySnap = d.Keys();
+  assert(arrayLen(valSnap) == 30);
+
+  // Overwrite every value using the key snapshot
+  for (var i = 0; i < arrayLen(keySnap); i = i + 1) {
+    d.Set(keySnap[i], 9999);
+  }
+  assert(d.Size() == 30);
+
+  // Value snapshot must still hold the original values
+  // (we can't assume ordering, but we know all originals were 0..29)
+  var origSum = 0;
+  for (var i = 0; i < arrayLen(valSnap); i = i + 1) {
+    origSum = origSum + valSnap[i];
+  }
+  // Sum of 0..29 = 435
+  assert(origSum == 435);
+
+  // Dict must have all new values
+  for (var i = 0; i < 30; i = i + 1) {
+    assert(d.Get("ov_" + str(i)) == 9999);
+  }
+
+  // Fresh Values() must reflect the overwrites
+  var valSnap2 = d.Values();
+  for (var i = 0; i < arrayLen(valSnap2); i = i + 1) {
+    assert(valSnap2[i] == 9999);
+  }
+}
+print "pass: overwrite during Values() iteration"; // expect: pass: overwrite during Values() iteration
+

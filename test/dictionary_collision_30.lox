@@ -1,0 +1,81 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// ===========================================================================
+// Tombstone Reuse Ordering
+// ===========================================================================
+// When DictFindEntry probes for a key and encounters a tombstone BEFORE
+// finding the matching key, it must:
+//   - Continue probing past the tombstone
+//   - Find the existing key
+//   - Return the existing key's entry (for overwrite)
+//   - NOT return the tombstone (which would create a duplicate)
+//
+// A buggy implementation that returns the tombstone on overwrite will:
+//   - Write the key+value into the tombstone slot (creating a second copy)
+//   - Leave the original entry intact (now a phantom duplicate)
+//   - Increment count (size grows when it shouldn't)
+//   - Cause Keys() to return duplicates
+//   - Cause Get() to return the wrong value (reads the first copy, which
+//     is the tombstone-reused slot, not the original)
+//
+// These tests force this exact scenario under guaranteed collision chains
+// where the probe order is deterministic.
+
+
+// Test 30: Tombstone-before-match overwrite â€” basic case
+// Insert A, B, C into a guaranteed collision chain (slots 0, 1, 2).
+// Delete B (tombstone at slot 1). Overwrite C â€” the probe for C starts
+// at slot 0 (occupied by A), hits tombstone at slot 1, then finds C at
+// slot 2. The overwrite MUST happen at slot 2, not slot 1.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Integers 0-2 all hash to slot 0 mod 8 (proven: â‰¥18 trailing zeros)
+  d.Set(0, "A");  // slot 0
+  d.Set(1, "B");  // slot 1
+  d.Set(2, "C");  // slot 2
+  assert(d.Size() == 3);
+
+  // Delete key 1 â†’ tombstone at slot 1
+  d.Delete(1);
+  assert(d.Size() == 2);
+
+  // Overwrite key 2: probe path is slot 0 (A) â†’ slot 1 (tombstone) â†’ slot 2 (match)
+  // Must update at slot 2, NOT create duplicate at slot 1
+  d.Set(2, "C_updated");
+
+  // Critical checks:
+  assert(d.Size() == 2);          // Size must NOT increase
+  assert(d.Get(2) == "C_updated"); // Must read the updated value
+  assert(d.Get(0) == "A");         // A untouched
+  assert(d.Has(1) == false);       // 1 still deleted
+
+  // Keys() must have exactly 2 entries, no duplicates
+  var keys = d.Keys();
+  assert(arrayLen(keys) == 2);
+
+  // Verify no duplicate key 2 in Keys()
+  var count2 = 0;
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    if (keys[i] == 2) {
+      count2 = count2 + 1;
+    }
+  }
+  assert(count2 == 1);
+}
+print "pass: tombstone-before-match overwrite (basic)"; // expect: pass: tombstone-before-match overwrite (basic)
+

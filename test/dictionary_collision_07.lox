@@ -1,0 +1,45 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 7: Collision torture with same-length strings
+// Strings of the same length with single-character differences stress the
+// FNV-1a hash's distribution. At small capacities many will collide.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Generate 100 keys of form "AAAA...X" where X varies â€” same length,
+  // minimal character difference, maximizes collision chance at small capacity
+  for (var i = 0; i < 100; i = i + 1) {
+    var k = "collision_pad_" + str(i);
+    d.Set(k, i);
+  }
+  assert(d.Size() == 100);
+
+  // Delete keys 0-49 one at a time, verifying 50-99 after each delete
+  for (var del = 0; del < 50; del = del + 1) {
+    d.Delete("collision_pad_" + str(del));
+    // Verify a key beyond the deleted range is still accessible
+    assert(d.Get("collision_pad_" + str(del + 50)) == del + 50);
+  }
+  assert(d.Size() == 50);
+
+  // Full verification of survivors
+  for (var i = 50; i < 100; i = i + 1) {
+    assert(d.Get("collision_pad_" + str(i)) == i);
+  }
+}
+print "pass: same-length string collisions"; // expect: pass: same-length string collisions
+

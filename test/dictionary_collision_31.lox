@@ -1,0 +1,71 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 31: Tombstone-before-match with multiple tombstones in chain
+// Insert keys 0-5 (all slot 0). Delete keys 1, 2, 3 (three tombstones).
+// Overwrite key 4 â€” probe must skip A at slot 0, three tombstones at
+// slots 1-3, and find key 4 at slot 4. Must NOT place at any tombstone.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 6; i = i + 1) {
+    d.Set(i, "v" + str(i));
+  }
+  assert(d.Size() == 6);
+
+  // Delete 1, 2, 3 â†’ tombstones at slots 1, 2, 3
+  d.Delete(1);
+  d.Delete(2);
+  d.Delete(3);
+  assert(d.Size() == 3);
+
+  // Overwrite key 4: probe = slot 0 (key 0) â†’ slot 1 (tomb) â†’ slot 2 (tomb)
+  //                         â†’ slot 3 (tomb) â†’ slot 4 (key 4 â€” match)
+  d.Set(4, "v4_updated");
+  assert(d.Size() == 3);          // Must NOT increase
+  assert(d.Get(4) == "v4_updated");
+  assert(d.Get(0) == "v0");
+  assert(d.Get(5) == "v5");
+
+  // Overwrite key 5: probe = slot 0 â†’ slots 1-3 (tombs) â†’ slot 4 â†’ slot 5 (match)
+  d.Set(5, "v5_updated");
+  assert(d.Size() == 3);
+  assert(d.Get(5) == "v5_updated");
+
+  // Overwrite key 0: slot 0 is an immediate match, no tombstones involved
+  d.Set(0, "v0_updated");
+  assert(d.Size() == 3);
+  assert(d.Get(0) == "v0_updated");
+
+  // Keys() must have exactly 3 entries
+  var keys = d.Keys();
+  assert(arrayLen(keys) == 3);
+
+  // Verify each key appears exactly once
+  var seen0 = 0;
+  var seen4 = 0;
+  var seen5 = 0;
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    if (keys[i] == 0) seen0 = seen0 + 1;
+    if (keys[i] == 4) seen4 = seen4 + 1;
+    if (keys[i] == 5) seen5 = seen5 + 1;
+  }
+  assert(seen0 == 1);
+  assert(seen4 == 1);
+  assert(seen5 == 1);
+}
+print "pass: tombstone-before-match (multiple tombstones)"; // expect: pass: tombstone-before-match (multiple tombstones)
+

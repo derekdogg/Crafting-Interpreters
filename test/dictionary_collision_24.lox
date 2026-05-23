@@ -1,0 +1,54 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 24: Insert new keys while iterating over Keys() snapshot
+// The snapshot was taken before the inserts, so it must NOT contain
+// the newly added keys. The dict must contain both old and new keys
+// after the loop.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 20; i = i + 1) {
+    d.Set("old_" + str(i), i);
+  }
+
+  var snap = d.Keys();
+  assert(arrayLen(snap) == 20);
+
+  // Insert 20 new keys while iterating over the snapshot
+  for (var i = 0; i < arrayLen(snap); i = i + 1) {
+    d.Set("new_" + str(i), i + 100);
+    // Verify the current snapshot key is still valid
+    assert(d.Has(snap[i]) == true);
+  }
+
+  assert(d.Size() == 40);
+
+  // Snapshot must still reflect the original 20 keys, not the new ones
+  assert(arrayLen(snap) == 20);
+
+  // A fresh Keys() call must reflect all 40
+  var snap2 = d.Keys();
+  assert(arrayLen(snap2) == 40);
+
+  // Verify old and new keys independently
+  for (var i = 0; i < 20; i = i + 1) {
+    assert(d.Get("old_" + str(i)) == i);
+    assert(d.Get("new_" + str(i)) == i + 100);
+  }
+}
+print "pass: insert during Keys() iteration"; // expect: pass: insert during Keys() iteration
+

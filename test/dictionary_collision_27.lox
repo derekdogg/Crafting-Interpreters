@@ -1,0 +1,85 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 27: Multiple concurrent snapshots with interleaved mutation
+// Take two snapshots at different times with mutations between them.
+// Verify each snapshot reflects exactly the state at the time it was taken,
+// and neither is corrupted by the other or by subsequent mutations.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 10; i = i + 1) {
+    d.Set(i, "v1_" + str(i));
+  }
+
+  // Snapshot A: 10 keys (0-9)
+  var snapA = d.Keys();
+  assert(arrayLen(snapA) == 10);
+
+  // Mutate: delete 0-4, insert 10-14
+  for (var i = 0; i < 5; i = i + 1) {
+    d.Delete(i);
+    d.Set(i + 10, "v2_" + str(i + 10));
+  }
+
+  // Snapshot B: 10 keys (5-14)
+  var snapB = d.Keys();
+  assert(arrayLen(snapB) == 10);
+
+  // Mutate more: delete everything
+  for (var i = 5; i < 15; i = i + 1) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 0);
+
+  // Snapshot A must still have 10 entries (the original 0-9)
+  assert(arrayLen(snapA) == 10);
+  // Snapshot B must still have 10 entries (5-14)
+  assert(arrayLen(snapB) == 10);
+
+  // Snapshots must be independent objects
+  // Verify snapshot A contains keys 0-9 by checking each is a number 0-9
+  var foundA = newArray();
+  for (var i = 0; i < 10; i = i + 1) {
+    arrayPush(foundA, false);
+  }
+  for (var i = 0; i < arrayLen(snapA); i = i + 1) {
+    var k = snapA[i];
+    // k should be a number 0-9
+    foundA[k] = true;
+  }
+  for (var i = 0; i < 10; i = i + 1) {
+    assert(foundA[i] == true);
+  }
+
+  // Verify snapshot B contains keys 5-14
+  var foundB = newArray();
+  for (var i = 0; i < 15; i = i + 1) {
+    arrayPush(foundB, false);
+  }
+  for (var i = 0; i < arrayLen(snapB); i = i + 1) {
+    var k = snapB[i];
+    foundB[k] = true;
+  }
+  for (var i = 5; i < 15; i = i + 1) {
+    assert(foundB[i] == true);
+  }
+  for (var i = 0; i < 5; i = i + 1) {
+    assert(foundB[i] == false);
+  }
+}
+print "pass: concurrent snapshots with mutation"; // expect: pass: concurrent snapshots with mutation
+

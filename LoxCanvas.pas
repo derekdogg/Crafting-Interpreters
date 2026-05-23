@@ -192,6 +192,21 @@ procedure ResetClipToTarget; forward;
 // Fast 32-bit fill: rep stosd. Bit-identical to a scalar `for i := 0 to
 // Count-1 do P[i] := Value` loop but avoids per-pixel loop overhead on
 // the hot rasterizer paths (fillRect / clearCanvas / fillCircle.HLine).
+{$IFDEF CPUX64}
+procedure FillDWord(var Dest; Count: Integer; Value: LongWord);
+asm
+  // Win64 ABI: RCX=@Dest, EDX=Count, R8D=Value
+  PUSH RDI
+  MOV  RDI, RCX
+  MOV  EAX, R8D
+  MOV  ECX, EDX
+  TEST ECX, ECX
+  JLE  @@done
+  REP  STOSD
+@@done:
+  POP  RDI
+end;
+{$ELSE}
 procedure FillDWord(var Dest; Count: Integer; Value: LongWord);
 asm
   // Win32 fastcall: EAX=@Dest, EDX=Count, ECX=Value.
@@ -205,6 +220,7 @@ asm
 @@done:
   POP  EDI
 end;
+{$ENDIF}
 
 procedure EnsurePresentBuffer(cw, ch: Integer);
 begin

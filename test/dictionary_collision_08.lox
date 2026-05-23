@@ -1,0 +1,49 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 8: Alternating insert-delete at exact capacity boundary
+// Keep the dict at exactly the resize threshold, repeatedly inserting and
+// deleting the 6th entry (capacity 8, threshold 6). This hammers the
+// boundary condition where tombstones interact with the load factor check.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set("base1", 1);
+  d.Set("base2", 2);
+  d.Set("base3", 3);
+  d.Set("base4", 4);
+  d.Set("base5", 5);
+  // 5 entries in capacity 8 â€” one below threshold
+
+  for (var i = 0; i < 200; i = i + 1) {
+    // Insert 6th entry (hits threshold)
+    d.Set("flip_" + str(i), i);
+    assert(d.Has("flip_" + str(i)) == true);
+    // Delete it immediately
+    d.Delete("flip_" + str(i));
+    assert(d.Has("flip_" + str(i)) == false);
+  }
+
+  // Base keys must survive 200 insert/delete cycles at the boundary
+  assert(d.Size() == 5);
+  assert(d.Get("base1") == 1);
+  assert(d.Get("base2") == 2);
+  assert(d.Get("base3") == 3);
+  assert(d.Get("base4") == 4);
+  assert(d.Get("base5") == 5);
+}
+print "pass: capacity boundary thrash"; // expect: pass: capacity boundary thrash
+

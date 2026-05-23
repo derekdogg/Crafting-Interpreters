@@ -1,0 +1,45 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 3: Delete middle of probe chain, verify tail still reachable
+// Insert keys that are likely to form a probe chain (same prefix, sequential),
+// then delete entries from the middle and verify entries beyond them are
+// still accessible (tombstones must not break the chain).
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Insert 20 keys with same prefix to increase collision likelihood
+  for (var i = 0; i < 20; i = i + 1) {
+    d.Set("chain_" + str(i), i);
+  }
+  assert(d.Size() == 20);
+
+  // Delete every 3rd key (positions 0, 3, 6, 9, 12, 15, 18)
+  for (var i = 0; i < 20; i = i + 3) {
+    d.Delete("chain_" + str(i));
+  }
+
+  // Verify surviving keys are still reachable through tombstones
+  for (var i = 0; i < 20; i = i + 1) {
+    if (i % 3 == 0) {
+      assert(d.Has("chain_" + str(i)) == false);
+    } else {
+      assert(d.Get("chain_" + str(i)) == i);
+    }
+  }
+}
+print "pass: delete mid-chain"; // expect: pass: delete mid-chain
+

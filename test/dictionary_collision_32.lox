@@ -1,0 +1,92 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 32: Repeated overwrite through growing tombstone field
+// Start with keys 0-9 in a collision chain. In each round, delete one key
+// (creating a new tombstone earlier in the chain) then overwrite a key
+// deeper in the chain. Each round adds another tombstone the probe must
+// skip. The size must never change during an overwrite.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 10; i = i + 1) {
+    d.Set(i, "orig_" + str(i));
+  }
+  assert(d.Size() == 10);
+
+  // Round 1: delete key 0, overwrite key 9 (1 tombstone before match)
+  d.Delete(0);
+  d.Set(9, "r1_9");
+  assert(d.Size() == 9);
+  assert(d.Get(9) == "r1_9");
+
+  // Round 2: delete key 1, overwrite key 9 (2 tombstones before match)
+  d.Delete(1);
+  d.Set(9, "r2_9");
+  assert(d.Size() == 8);
+  assert(d.Get(9) == "r2_9");
+
+  // Round 3: delete key 2, overwrite key 9 (3 tombstones before match)
+  d.Delete(2);
+  d.Set(9, "r3_9");
+  assert(d.Size() == 7);
+  assert(d.Get(9) == "r3_9");
+
+  // Round 4: delete key 3, overwrite key 9 (4 tombstones before match)
+  d.Delete(3);
+  d.Set(9, "r4_9");
+  assert(d.Size() == 6);
+  assert(d.Get(9) == "r4_9");
+
+  // Round 5: delete key 4, overwrite key 9 (5 tombstones before match)
+  d.Delete(4);
+  d.Set(9, "r5_9");
+  assert(d.Size() == 5);
+  assert(d.Get(9) == "r5_9");
+
+  // Round 6: delete key 5, overwrite key 9 (6 tombstones before match)
+  d.Delete(5);
+  d.Set(9, "r6_9");
+  assert(d.Size() == 4);
+  assert(d.Get(9) == "r6_9");
+
+  // Round 7: delete key 6, overwrite key 9 (7 tombstones before match)
+  d.Delete(6);
+  d.Set(9, "r7_9");
+  assert(d.Size() == 3);
+  assert(d.Get(9) == "r7_9");
+
+  // Round 8: delete key 7, overwrite key 9 (8 tombstones before match)
+  d.Delete(7);
+  d.Set(9, "r8_9");
+  assert(d.Size() == 2);
+  assert(d.Get(9) == "r8_9");
+
+  // Only keys 8 and 9 remain. Key 9 was overwritten 8 times.
+  assert(d.Get(8) == "orig_8");
+  assert(d.Get(9) == "r8_9");
+
+  // No duplicates in Keys()
+  var keys = d.Keys();
+  assert(arrayLen(keys) == 2);
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    for (var j = i + 1; j < arrayLen(keys); j = j + 1) {
+      assert(keys[i] != keys[j]);
+    }
+  }
+}
+print "pass: overwrite through growing tombstone field"; // expect: pass: overwrite through growing tombstone field
+

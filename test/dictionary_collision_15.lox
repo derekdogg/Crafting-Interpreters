@@ -1,0 +1,66 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 15: Probe after near-full tombstone saturation
+// Create a table where almost every slot is a tombstone, leaving only 1-2
+// empty slots. Then perform lookups, inserts, and deletes. This is the
+// worst case for probe length â€” the loop must visit nearly every slot
+// before finding an empty one.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Insert 100 keys (capacity grows to 128 or 256)
+  for (var i = 0; i < 100; i = i + 1) {
+    d.Set(i, i);
+  }
+
+  // Delete 99 of them â€” leaves 1 entry and 99 tombstones
+  for (var i = 1; i < 100; i = i + 1) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 1);
+  assert(d.Get(0) == 0);
+
+  // Look up 100 keys that don't exist â€” each probe must traverse the
+  // near-full tombstone field and terminate
+  for (var i = 100; i < 200; i = i + 1) {
+    assert(d.Has(i) == false);
+  }
+
+  // Insert 1 new key â€” must find a slot through the tombstones
+  d.Set(999, "found_a_slot");
+  assert(d.Size() == 2);
+  assert(d.Get(999) == "found_a_slot");
+  assert(d.Get(0) == 0);
+
+  // Delete the last original key
+  d.Delete(0);
+  assert(d.Size() == 1);
+  assert(d.Get(999) == "found_a_slot");
+  assert(d.Has(0) == false);
+
+  // Bulk re-insert â€” all must probe through the tombstone graveyard
+  for (var i = 0; i < 50; i = i + 1) {
+    d.Set(i, i * 13);
+  }
+  assert(d.Size() == 51);
+  for (var i = 0; i < 50; i = i + 1) {
+    assert(d.Get(i) == i * 13);
+  }
+  assert(d.Get(999) == "found_a_slot");
+}
+print "pass: near-full tombstone saturation"; // expect: pass: near-full tombstone saturation
+

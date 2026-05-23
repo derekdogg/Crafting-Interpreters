@@ -1,0 +1,71 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 14: Size() consistency through every single mutation
+// Perform a complex interleaved sequence of inserts, overwrites, deletes,
+// and failed deletes, asserting Size() after EVERY operation. This catches
+// any off-by-one in count tracking â€” a count that drifts by even 1 will
+// be caught immediately at the mutation that caused it.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  var expected = 0;
+
+  // Insert 30 keys, check size after each
+  for (var i = 0; i < 30; i = i + 1) {
+    d.Set("s_" + str(i), i);
+    expected = expected + 1;
+    assert(d.Size() == expected);
+  }
+
+  // Overwrite 10 keys â€” size must not change
+  for (var i = 0; i < 10; i = i + 1) {
+    d.Set("s_" + str(i), i * 999);
+    assert(d.Size() == expected);
+  }
+
+  // Delete 15 keys, check size after each
+  for (var i = 0; i < 15; i = i + 1) {
+    d.Delete("s_" + str(i));
+    expected = expected - 1;
+    assert(d.Size() == expected);
+  }
+
+  // Delete same 15 again â€” all should return false, size unchanged
+  for (var i = 0; i < 15; i = i + 1) {
+    assert(d.Delete("s_" + str(i)) == false);
+    assert(d.Size() == expected);
+  }
+
+  // Delete keys that never existed â€” size unchanged
+  for (var i = 0; i < 10; i = i + 1) {
+    assert(d.Delete("phantom_" + str(i)) == false);
+    assert(d.Size() == expected);
+  }
+
+  // Re-insert deleted keys, check size after each
+  for (var i = 0; i < 15; i = i + 1) {
+    d.Set("s_" + str(i), i + 5000);
+    expected = expected + 1;
+    assert(d.Size() == expected);
+  }
+
+  // Final: size should be back to 30
+  assert(d.Size() == 30);
+  assert(expected == 30);
+}
+print "pass: size tracking per-mutation"; // expect: pass: size tracking per-mutation
+

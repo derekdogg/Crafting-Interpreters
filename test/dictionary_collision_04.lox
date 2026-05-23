@@ -1,0 +1,66 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 4: Boolean and nil key collisions
+// Booleans hash to 0 and 1, nil hashes to 2. These three keys always land
+// in adjacent slots (0, 1, 2) at any capacity. Combined with string/number
+// keys that may also land in those slots, this forces collisions.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(true, "bool_true");
+  d.Set(false, "bool_false");
+  d.Set(nil, "nil_val");
+  // Add number keys with small values â€” their hashes may collide with 0,1,2
+  d.Set(0, "zero");
+  d.Set(1, "one");
+  d.Set(2, "two");
+  d.Set(3, "three");
+  assert(d.Size() == 7);
+
+  // Verify all distinct
+  assert(d.Get(true) == "bool_true");
+  assert(d.Get(false) == "bool_false");
+  assert(d.Get(nil) == "nil_val");
+  assert(d.Get(0) == "zero");
+  assert(d.Get(1) == "one");
+  assert(d.Get(2) == "two");
+  assert(d.Get(3) == "three");
+
+  // Delete the low-hash keys and verify others survive
+  d.Delete(true);
+  d.Delete(false);
+  d.Delete(nil);
+  assert(d.Size() == 4);
+  assert(d.Get(0) == "zero");
+  assert(d.Get(1) == "one");
+  assert(d.Get(2) == "two");
+  assert(d.Get(3) == "three");
+  assert(d.Has(true) == false);
+  assert(d.Has(false) == false);
+  assert(d.Has(nil) == false);
+
+  // Re-insert the deleted keys
+  d.Set(true, "new_true");
+  d.Set(false, "new_false");
+  d.Set(nil, "new_nil");
+  assert(d.Size() == 7);
+  assert(d.Get(true) == "new_true");
+  assert(d.Get(false) == "new_false");
+  assert(d.Get(nil) == "new_nil");
+}
+print "pass: low-hash collisions"; // expect: pass: low-hash collisions
+

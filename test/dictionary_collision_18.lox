@@ -1,0 +1,52 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 18: Exact hash collision â€” false and 0 both hash to 0
+// These are different types (boolean vs number) but produce identical hash
+// values. DictFindEntry must distinguish them via ValuesEqual, not hash.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(false, "bool_false");  // hash = 0
+  d.Set(0, "num_zero");        // hash = 0 â€” exact collision
+
+  assert(d.Size() == 2);
+  assert(d.Get(false) == "bool_false");
+  assert(d.Get(0) == "num_zero");
+
+  // Delete false â€” 0 must survive (they share hash but differ by ValuesEqual)
+  d.Delete(false);
+  assert(d.Has(false) == false);
+  assert(d.Get(0) == "num_zero");
+  assert(d.Size() == 1);
+
+  // Re-insert false
+  d.Set(false, "back");
+  assert(d.Size() == 2);
+  assert(d.Get(false) == "back");
+  assert(d.Get(0) == "num_zero");
+
+  // Now delete 0 instead
+  d.Delete(0);
+  assert(d.Get(false) == "back");
+  assert(d.Has(0) == false);
+
+  // Both gone
+  d.Delete(false);
+  assert(d.Size() == 0);
+}
+print "pass: exact hash collision (false vs 0)"; // expect: pass: exact hash collision (false vs 0)
+

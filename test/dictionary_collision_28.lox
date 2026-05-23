@@ -1,0 +1,61 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 28: GC safety â€” snapshot survives garbage collection during iteration
+// Take a Keys() snapshot, trigger GC (via collectGarbage()), then continue
+// using the snapshot. If the GC incorrectly collects the snapshot array
+// while it's still reachable, this will crash or return garbage.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 100; i = i + 1) {
+    d.Set("gc_" + str(i), i);
+  }
+
+  var snap = d.Keys();
+  assert(arrayLen(snap) == 100);
+
+  // Trigger GC â€” snapshot must survive because it's on the stack
+  collectGarbage();
+
+  // Verify snapshot is intact after GC
+  assert(arrayLen(snap) == 100);
+  for (var i = 0; i < arrayLen(snap); i = i + 1) {
+    // Each key must still be a valid string
+    assert(d.Has(snap[i]) == true);
+  }
+
+  // Now mutate the dict heavily to create garbage, then GC again
+  for (var i = 0; i < 100; i = i + 1) {
+    d.Delete("gc_" + str(i));
+  }
+  for (var i = 0; i < 200; i = i + 1) {
+    d.Set("tmp_" + str(i), i);
+  }
+  collectGarbage();
+
+  // Snapshot must STILL be intact â€” the strings it references must
+  // not have been collected (they were in the dict when snapshot was taken,
+  // and the snapshot array holds references to them)
+  assert(arrayLen(snap) == 100);
+  for (var i = 0; i < arrayLen(snap); i = i + 1) {
+    // Keys from snap are "gc_0" through "gc_99" â€” they are no longer
+    // in the dict, but the snapshot array keeps them alive
+    assert(d.Has(snap[i]) == false);
+  }
+}
+print "pass: GC safety during iteration"; // expect: pass: GC safety during iteration
+
