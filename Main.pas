@@ -298,12 +298,16 @@ begin
     begin
       if IR.OutputStr <> '' then
         Memo2.Lines.Add(IR.OutputStr);
-      case IR.value.ValueKind of
-        Chunk_Types.vkNumber:  Memo2.Lines.Add(IR.value.NumberValue.ToString);
-        Chunk_Types.vkBoolean: Memo2.Lines.Add(BoolToStr(IR.value.BooleanValue, True));
-        Chunk_Types.vkNull:    ; // suppress
-        Chunk_Types.vkObject:  Memo2.Lines.Add(IR.ResultStr);
-      end;
+      if isNumber(IR.value) then
+        Memo2.Lines.Add(FloatToStr(GetNumber(IR.value)))
+      else if isBoolean(IR.value) then
+        Memo2.Lines.Add(BoolToStr(GetBoolean(IR.value), True))
+      else if isNill(IR.value) then
+      begin
+        // suppress
+      end
+      else if isObject(IR.value) then
+        Memo2.Lines.Add(IR.ResultStr);
     end;
     INTERPRET_COMPILE_ERROR: Memo2.Lines.Add(IR.ErrorStr);
     INTERPRET_RUNTIME_ERROR: Memo2.Lines.Add(IR.ErrorStr);

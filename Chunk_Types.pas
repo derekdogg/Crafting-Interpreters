@@ -171,6 +171,31 @@ const
   FRAMES_MAX = 256;
   STACK_MAX = FRAMES_MAX * UINT8_COUNT;  // 65536 slots ? hard upper bound on Stack growth
 
+  // NaN boxing constants
+  // Finite IEEE 754 doubles do not satisfy (bits & QNAN) = QNAN.
+  // Some IEEE NaN payloads CAN match this mask (e.g., NaN propagation
+  // through arithmetic can produce arbitrary payloads). CreateNumber
+  // canonicalizes such NaNs to CANON_NAN so they are never misclassified
+  // as nil/boolean/object values.
+  //
+  // Non-number Lox values are encoded as quiet NaN payloads:
+  //   Nil:    QNAN | TAG_NIL
+  //   False:  QNAN | TAG_FALSE
+  //   True:   QNAN | TAG_TRUE
+  //   Object: SIGN_BIT | QNAN | pointer  (userspace ptrs use lower 48 bits)
+  QNAN      = UInt64($7FFC000000000000);
+  SIGN_BIT  = UInt64($8000000000000000);
+  OBJ_TAG   = QNAN or SIGN_BIT;            // $FFFC000000000000
+  CANON_NAN = UInt64($7FF8000000000000);   // safe quiet NaN (bit 50 clear → passes isNumber)
+
+  TAG_NIL   = 1;
+  TAG_FALSE = 2;
+  TAG_TRUE  = 3;
+
+  NIL_VAL   = QNAN or TAG_NIL;            // $7FFC000000000001
+  FALSE_VAL = QNAN or TAG_FALSE;          // $7FFC000000000002
+  TRUE_VAL  = QNAN or TAG_TRUE;           // $7FFC000000000003
+
 
 type
 
@@ -330,14 +355,7 @@ type
      byte2 : byte;
   end;
 
-  TValue = record
-    ValueKind: TValueKind;
-    case TValueKind of
-      vkNumber:  (NumberValue: Double);
-      vkBoolean: (BooleanValue: Boolean);
-      vkNull:    (NullValue: Byte);
-      vkObject:  (ObjValue : pObj);  //note here that this pointer is to TObjectKind.However, since all objects are derived from it, we can cast the pointer to the actual object (and back).
-  end;
+  TValue = UInt64;
 
   // `args` points into VM.Stack.Values. Natives MUST read args[i] into local
   // Pascal vars before any pushStack / CreateString / allocation call ? those
@@ -709,6 +727,7 @@ procedure FreeObjects(objects: pObj);
 procedure FreeVM();
 
 //Stack
+procedure FillNilValues(p: pValue; Count: NativeInt);
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker);
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);
 procedure ResetStack(var stack : pStack);
@@ -1767,6 +1786,14 @@ begin
   AssertPointerIsNil(ValueArray, 'freeValueArray exit: ValueArray should be nil');
 end;
 
+procedure FillNilValues(p: pValue; Count: NativeInt);
+var
+  i: NativeInt;
+begin
+  for i := 0 to Count - 1 do
+    p[i] := NIL_VAL;
+end;
+
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker);
 begin
   // ---- Test MemTracker ---------------------------------------------------
@@ -1775,7 +1802,7 @@ begin
   // Use raw memory ? stack must never trigger GC (same pattern as GrayStack)
   GetMem(Stack, SizeOf(TStack));
   GetMem(Stack.Values, START_CAPACITY * SizeOf(TValue));
-  FillChar(Stack.Values^, START_CAPACITY * SizeOf(TValue), 0);
+  FillNilValues(Stack.Values, START_CAPACITY);
   Stack.StackTop := Stack.Values;
   Stack.CapacityEnd := Stack.Values + START_CAPACITY;
   
@@ -1851,7 +1878,7 @@ begin
   ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
   AssertStackValuesIsAssigned(Stack);
   // Zero new portion
-  FillChar(Stack.Values[OldCapacity], (NewCapacity - OldCapacity) * SizeOf(TValue), 0);
+  FillNilValues(@Stack.Values[OldCapacity], NewCapacity - OldCapacity);
   Stack.CapacityEnd := Stack.Values + NewCapacity;
   AssertStackCapacityIsGreaterThanZero(Stack);
   // If the buffer moved, rebase StackTop, frame.slots and open upvalue locations
@@ -1912,44 +1939,51 @@ end;
 
 function isObject(value : TValue) : boolean; inline;
 begin
-  result := value.valueKind = vkObject;
+  result := (value and OBJ_TAG) = OBJ_TAG;
 end;
 
 function GetObject(const value : TValue) : pObj; inline;
 begin
-  AssertValueIsObject(value);
-  result := value.ObjValue;
+  result := pObj(NativeUInt(value and not OBJ_TAG));
 end;
 
 function CreateObject(value : pObj) : TValue;
+var
+  ptr: UInt64;
 begin
   AssertPointerIsNotNil(value, 'CreateObject - object value');
-  result.ValueKind := vkObject;
-  result.ObjValue := value;
 
-  // ---- Exit assertions ----
-  Assert(Result.ValueKind = vkObject, 'CreateObject exit: ValueKind should be vkObject');
+  ptr := UInt64(NativeUInt(value));
+
+  // NaN-boxing assumes canonical lower-half userspace pointers (lower 48 bits).
+  // Object pointers must not overlap the reserved tag region (upper 16 bits).
+  if (ptr and OBJ_TAG) <> 0 then
+    raise ELoxRuntimeError.Create(
+      'CreateObject: pointer incompatible with NaN boxing ($' +
+      IntToHex(ptr, 16) + ')');
+
+  Result := OBJ_TAG or ptr;
 end;
 
 
 function isString(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okString);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okString);
 end;
 
 function isFunction(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okFunction);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okFunction);
 end;
 
 function isNative(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okNative);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okNative);
 end;
 
 function isClosure(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okClosure);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okClosure);
 end;
 
 function newFunction(MemTracker : pMemTracker) : pObjFunction;
@@ -2066,7 +2100,7 @@ end;
 
 function isArray(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okArray);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okArray);
 end;
 
 procedure EnsureArrayCapacity(arr : pObjArray; MemTracker : pMemTracker);
@@ -2099,40 +2133,40 @@ end;
 
 function isDictionary(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okDictionary);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okDictionary);
 end;
 
 function HashValue(const value : TValue) : UInt32;
 var
   bits : UInt64;
 begin
-  case value.ValueKind of
-    vkNumber: begin
-      // Canonicalize -0.0 to +0.0 so they hash identically (both compare equal via =)
-      if value.NumberValue = 0.0 then
-        bits := 0
-      else
-        Move(value.NumberValue, bits, SizeOf(Double));
-      Result := UInt32(bits xor (bits shr 32));
+  if isNumber(value) then
+  begin
+    // Canonicalize -0.0 to +0.0 so they hash identically (both compare equal via =)
+    if GetNumber(value) = 0.0 then
+      bits := 0
+    else
+      bits := value;  // raw bits of the double
+    Result := UInt32(bits xor (bits shr 32));
+  end
+  else if isBoolean(value) then
+  begin
+    if GetBoolean(value) then Result := 1 else Result := 0;
+  end
+  else if isNill(value) then
+    Result := 2
+  else if isObject(value) then
+  begin
+    Assert(GetObject(value) <> nil, 'HashValue: ObjValue is nil');
+    case GetObject(value)^.ObjectKind of
+      okString: Result := pObjString(GetObject(value))^.hash;
+    else
+      // Identity hash for other objects (pointer-based)
+      Result := UInt32(NativeUInt(GetObject(value)) xor (NativeUInt(GetObject(value)) shr 32));
     end;
-    vkBoolean: begin
-      if value.BooleanValue then Result := 1 else Result := 0;
-    end;
-    vkNull: begin
-      Result := 2;
-    end;
-    vkObject: begin
-      Assert(value.ObjValue <> nil, 'HashValue: ObjValue is nil');
-      case value.ObjValue^.ObjectKind of
-        okString: Result := pObjString(value.ObjValue)^.hash;
-      else
-        // Identity hash for other objects (pointer-based)
-        Result := UInt32(NativeUInt(value.ObjValue) xor (NativeUInt(value.ObjValue) shr 32));
-      end;
-    end;
+  end
   else
     Result := 0;
-  end;
 end;
 
 function DictFindEntry(entries : pDictEntry; capacity : integer; const key : TValue) : pDictEntry;
@@ -2348,12 +2382,12 @@ end;
 
 function isRecordType(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okRecordType);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okRecordType);
 end;
 
 function isRecord(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okRecord);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okRecord);
 end;
 
 function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppObjString; MemTracker : pMemTracker) : pObjRecordType;
@@ -2420,7 +2454,7 @@ end;
 
 function isNativeObject(value : TValue) : boolean; inline;
 begin
-  result := isObject(Value) and (value.ObjValue <> nil) and (value.ObjValue.ObjectKind = okNativeObject);
+  result := isObject(Value) and (GetObject(Value) <> nil) and (GetObject(Value).ObjectKind = okNativeObject);
 end;
 
 function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeObject;
@@ -2617,37 +2651,35 @@ var
   dynElemType: PTypeInfo;
   dynJ: Integer;
 begin
-  case V.ValueKind of
-    vkNumber:
-    begin
-      if TargetType = nil then
-        Exit(System.Rtti.TValue.From<Double>(GetNumber(V)));
-      case TargetType^.Kind of
-        tkInteger:
-          Result := System.Rtti.TValue.From<Integer>(Trunc(GetNumber(V)));
-        tkInt64:
-          Result := System.Rtti.TValue.From<Int64>(Trunc(GetNumber(V)));
-        tkFloat:
-          Result := System.Rtti.TValue.From<Double>(GetNumber(V));
-        tkEnumeration:
-          // Number -> enum ordinal (e.g. 2 -> TBorderStyle(2))
-          System.Rtti.TValue.Make(Trunc(GetNumber(V)), TargetType, Result);
-      else
+  if isNumber(V) then
+  begin
+    if TargetType = nil then
+      Exit(System.Rtti.TValue.From<Double>(GetNumber(V)));
+    case TargetType^.Kind of
+      tkInteger:
+        Result := System.Rtti.TValue.From<Integer>(Trunc(GetNumber(V)));
+      tkInt64:
+        Result := System.Rtti.TValue.From<Int64>(Trunc(GetNumber(V)));
+      tkFloat:
         Result := System.Rtti.TValue.From<Double>(GetNumber(V));
-      end;
+      tkEnumeration:
+        System.Rtti.TValue.Make(Trunc(GetNumber(V)), TargetType, Result);
+    else
+      Result := System.Rtti.TValue.From<Double>(GetNumber(V));
     end;
-    vkBoolean:
-    begin
-      if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) and
-         (TargetType = TypeInfo(Boolean)) then
-        Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V))
-      else
-        Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V));
-    end;
-    vkNull:
-      Result := System.Rtti.TValue.Empty;
-    vkObject:
-    begin
+  end
+  else if isBoolean(V) then
+  begin
+    if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) and
+       (TargetType = TypeInfo(Boolean)) then
+      Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V))
+    else
+      Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V));
+  end
+  else if isNill(V) then
+    Result := System.Rtti.TValue.Empty
+  else if isObject(V) then
+  begin
       if isString(V) then
       begin
         s := String(ObjStringToAnsiString(pObjString(GetObject(V))));
@@ -2737,10 +2769,9 @@ begin
           [GetEnumName(TypeInfo(TObjectKind), Ord(GetObject(V)^.ObjectKind))]));
         Result := System.Rtti.TValue.Empty;
       end;
-    end;
+  end
   else
     Result := System.Rtti.TValue.Empty;
-  end;
 end;
 
 function ClassHasLoxClassAttr(rt: TRttiType): Boolean;
@@ -3036,102 +3067,108 @@ end;
 function ValueToString(const value : TValue) : pObjString;
 begin
   AssertValueIsString(value);
-  AssertPointerIsNotNil(value.ObjValue, 'string value');
-  result := pObjString(value.ObjValue);
+  AssertPointerIsNotNil(GetObject(value), 'string value');
+  result := pObjString(GetObject(value));
 end;
 
 function StringToValue(const value : pObjString) : TValue;
 begin
   AssertObjStringIsAssigned(value);
   AssertObjectKindIsString(@value.Obj);
-  result.ValueKind := vkObject;
-  result.ObjValue := pObj(value);
+  result := CreateObject(pObj(value));
 end;
 
 function ValueToStr(const value : TValue) : String;
 var
   i : integer;
+  d : Double;
 begin
-  case value.ValueKind of
-    vkNumber:
-      if IsNan(value.NumberValue) then
-        Result := 'nan'
-      else if IsInfinite(value.NumberValue) then
-      begin
-        if value.NumberValue > 0 then Result := 'inf' else Result := '-inf';
-      end
-      else if (value.NumberValue = 0) and (IsInfinite(1 / value.NumberValue)) and ((1 / value.NumberValue) < 0) then
-        Result := '-0'
-      else
-        Result := FloatToStr(value.NumberValue);
-    vkBoolean: if value.BooleanValue then Result := 'true' else Result := 'false';
-    vkNull:    Result := 'nil';
-    vkObject:  begin
-      Assert(value.ObjValue <> nil, 'ValueToStr: ObjValue is nil for object value');
-      case value.ObjValue.ObjectKind of
-        okString: Result := String(ObjStringToAnsiString(pObjString(value.ObjValue)));
-        okFunction: begin
-          if pObjFunction(value.ObjValue)^.name = nil then
-            Result := '<script>'
-          else
-            Result := '<fn ' + String(ObjStringToAnsiString(pObjFunction(value.ObjValue)^.name)) + '>';
-        end;
-        okNative: Result := '<native fn>';
-        okClosure: begin
-          if pObjClosure(value.ObjValue)^.func^.name = nil then
-            Result := '<script>'
-          else
-            Result := '<fn ' + String(ObjStringToAnsiString(pObjClosure(value.ObjValue)^.func^.name)) + '>';
-        end;
-        okUpvalue: Result := 'upvalue';
-        okArray: begin
-          Result := '['; 
-          for i := 0 to pObjArray(value.ObjValue)^.Count - 1 do
-          begin
-            if i > 0 then Result := Result + ', ';
-            Result := Result + ValueToStr(pObjArray(value.ObjValue)^.Elements[i]);
-          end;
-          Result := Result + ']';
-        end;
-        okRecordType: begin
-          Result := '<record ' + String(ObjStringToAnsiString(pObjRecordType(value.ObjValue)^.name)) + '>';
-        end;
-        okRecord: begin
-          Result := String(ObjStringToAnsiString(pObjRecord(value.ObjValue)^.recordType^.name)) + '(';
-          for i := 0 to pObjRecord(value.ObjValue)^.recordType^.fieldCount - 1 do
-          begin
-            if i > 0 then Result := Result + ', ';
-            Result := Result + String(ObjStringToAnsiString(pObjRecord(value.ObjValue)^.recordType^.fieldNames[i]))
-              + ': ' + ValueToStr(pObjRecord(value.ObjValue)^.fields[i]);
-          end;
-          Result := Result + ')';
-        end;
-        okNativeObject: begin
-          Result := '<' + String(pObjNativeObject(value.ObjValue)^.classInfo^.name) + '>';
-        end;
-        okDictionary: begin
-          Result := '{';
-          var first := true;
-          for i := 0 to pObjDictionary(value.ObjValue)^.Capacity - 1 do
-          begin
-            if pObjDictionary(value.ObjValue)^.Entries[i].occupied and
-               not pObjDictionary(value.ObjValue)^.Entries[i].tombstone then
-            begin
-              if not first then Result := Result + ', ';
-              first := false;
-              Result := Result + ValueToStr(pObjDictionary(value.ObjValue)^.Entries[i].key)
-                + ': ' + ValueToStr(pObjDictionary(value.ObjValue)^.Entries[i].value);
-            end;
-          end;
-          Result := Result + '}';
-        end;
-      else
-        Result := '<object>';
+  if isNumber(value) then
+  begin
+    d := GetNumber(value);
+    if IsNan(d) then
+      Result := 'nan'
+    else if IsInfinite(d) then
+    begin
+      if d > 0 then Result := 'inf' else Result := '-inf';
+    end
+    else if (d = 0) and (IsInfinite(1 / d)) and ((1 / d) < 0) then
+      Result := '-0'
+    else
+      Result := FloatToStr(d);
+  end
+  else if isBoolean(value) then
+  begin
+    if GetBoolean(value) then Result := 'true' else Result := 'false';
+  end
+  else if isNill(value) then
+    Result := 'nil'
+  else if isObject(value) then
+  begin
+    Assert(GetObject(value) <> nil, 'ValueToStr: ObjValue is nil for object value');
+    case GetObject(value).ObjectKind of
+      okString: Result := String(ObjStringToAnsiString(pObjString(GetObject(value))));
+      okFunction: begin
+        if pObjFunction(GetObject(value))^.name = nil then
+          Result := '<script>'
+        else
+          Result := '<fn ' + String(ObjStringToAnsiString(pObjFunction(GetObject(value))^.name)) + '>';
       end;
+      okNative: Result := '<native fn>';
+      okClosure: begin
+        if pObjClosure(GetObject(value))^.func^.name = nil then
+          Result := '<script>'
+        else
+          Result := '<fn ' + String(ObjStringToAnsiString(pObjClosure(GetObject(value))^.func^.name)) + '>';
+      end;
+      okUpvalue: Result := 'upvalue';
+      okArray: begin
+        Result := '[';
+        for i := 0 to pObjArray(GetObject(value))^.Count - 1 do
+        begin
+          if i > 0 then Result := Result + ', ';
+          Result := Result + ValueToStr(pObjArray(GetObject(value))^.Elements[i]);
+        end;
+        Result := Result + ']';
+      end;
+      okRecordType: begin
+        Result := '<record ' + String(ObjStringToAnsiString(pObjRecordType(GetObject(value))^.name)) + '>';
+      end;
+      okRecord: begin
+        Result := String(ObjStringToAnsiString(pObjRecord(GetObject(value))^.recordType^.name)) + '(';
+        for i := 0 to pObjRecord(GetObject(value))^.recordType^.fieldCount - 1 do
+        begin
+          if i > 0 then Result := Result + ', ';
+          Result := Result + String(ObjStringToAnsiString(pObjRecord(GetObject(value))^.recordType^.fieldNames[i]))
+            + ': ' + ValueToStr(pObjRecord(GetObject(value))^.fields[i]);
+        end;
+        Result := Result + ')';
+      end;
+      okNativeObject: begin
+        Result := '<' + String(pObjNativeObject(GetObject(value))^.classInfo^.name) + '>';
+      end;
+      okDictionary: begin
+        Result := '{';
+        var first := true;
+        for i := 0 to pObjDictionary(GetObject(value))^.Capacity - 1 do
+        begin
+          if pObjDictionary(GetObject(value))^.Entries[i].occupied and
+             not pObjDictionary(GetObject(value))^.Entries[i].tombstone then
+          begin
+            if not first then Result := Result + ', ';
+            first := false;
+            Result := Result + ValueToStr(pObjDictionary(GetObject(value))^.Entries[i].key)
+              + ': ' + ValueToStr(pObjDictionary(GetObject(value))^.Entries[i].value);
+          end;
+        end;
+        Result := Result + '}';
+      end;
+    else
+      Result := '<object>';
     end;
+  end
   else
     Result := '<unknown>';
-  end;
 end;
 
 procedure Concatenate(Stack : pStack; MemTracker : pMemTracker);
@@ -3245,69 +3282,62 @@ end;
 
 function CreateBoolean(Value: Boolean): TValue; inline;
 begin
-  Result.ValueKind := vkBoolean;
-  Result.BooleanValue := Value;
-
-  // ---- Exit assertions ----
-  Assert(Result.ValueKind = vkBoolean, 'CreateBoolean exit: ValueKind should be vkBoolean');
+  if Value then Result := TRUE_VAL else Result := FALSE_VAL;
 end;
 
 function isBoolean(const Value: TValue): Boolean; inline;
 begin
-  Result := Value.ValueKind = vkBoolean;
+  Result := (Value or 1) = TRUE_VAL;
 end;
 
 function GetBoolean(const Value : TValue) : Boolean; inline;
 begin
-  AssertValueIsBoolean(Value);
-  result := Value.BooleanValue;
+  Result := Value = TRUE_VAL;
 end;
 
 function isNumber(const Value: TValue): Boolean; inline;
 begin
-  Result := Value.ValueKind = vkNumber;
+  Result := (Value and QNAN) <> QNAN;
 end;
 
 function CreateNumber(Value: Double): TValue; inline;
+var
+  bits: UInt64;
 begin
-  Result.ValueKind := vkNumber;
-  Result.NumberValue := Value;
-
-  // ---- Exit assertions ----
-  Assert(Result.ValueKind = vkNumber, 'CreateNumber exit: ValueKind should be vkNumber');
+  Move(Value, bits, SizeOf(UInt64));
+  // If raw bits collide with tag space, canonicalize to a safe NaN.
+  // Without this, 0/0 or NaN-propagation could produce payloads that
+  // satisfy (bits & QNAN) = QNAN, causing misclassification as
+  // nil/boolean/object and risking invalid pointer dereferences.
+  if (bits and QNAN) = QNAN then
+    Result := CANON_NAN
+  else
+    Result := bits;
 end;
 
 function GetNumber(Value : TValue) : double; inline;
 begin
-  AssertValueIsNumber(Value);
-  result := value.NumberValue;
+  Move(Value, Result, SizeOf(Double));
 end;
 
 function CreateNilValue : TValue; inline;
 begin
-  Result.ValueKind := vkNull;
-  Result.NullValue := 0;
-
-  // ---- Exit assertions ----
-  Assert(Result.ValueKind = vkNull, 'CreateNilValue exit: ValueKind should be vkNull');
+  Result := NIL_VAL;
 end;
 
 function isNill(const Value: TValue): Boolean; inline;
 begin
-  Result := Value.ValueKind = vkNull;
+  Result := Value = NIL_VAL;
 end;
 
 function GetNil(const value : TValue) : byte;
 begin
-  AssertValueIsNil(value);
-  result := Value.NullValue;
+  Result := 0;
 end;
 
 function IsFalsey(const Value: TValue): Boolean; inline;
 begin
-  Result :=
-    (Value.ValueKind = vkNull) or
-    ((Value.ValueKind = vkBoolean) and (not Value.BooleanValue));
+  Result := (Value = NIL_VAL) or (Value = FALSE_VAL);
 end;
 
 //Value type assertions (placed here after type checking functions are defined)
@@ -3351,39 +3381,34 @@ end;
 
 function ValuesEqual(a, b : TValue) : boolean;
 begin
-  if a.ValueKind <> b.ValueKind then exit(False);
-
-  case a.ValueKind of
-    vkBoolean : result := GetBoolean(a) = GetBoolean(b);
-    vkNull    : result := true;
-    vkNumber  : result := GetNumber(a) = GetNumber(b);
-    vkObject  : begin
-                  AssertPointerIsNotNil(a.ObjValue, 'A value in ValuesEqual');
-                  AssertPointerIsNotNil(b.ObjValue, 'B value in ValuesEqual');
-                  case a.ObjValue.ObjectKind of
-                    okString : begin
-                      // Strings are interned in VM.Strings, so equal content
-                      // implies identical pObjString pointers. Pointer
-                      // compare suffices and avoids CompareMem.
-                      result := (b.ObjValue.ObjectKind = okString) and
-                                (a.ObjValue = b.ObjValue);
-                    end;
-                    okNativeObject : begin
-                      if b.ObjValue.ObjectKind = okNativeObject then
-                        result := pObjNativeObject(a.ObjValue)^.instance =
-                                  pObjNativeObject(b.ObjValue)^.instance
-                      else
-                        result := false;
-                    end
-                    else
-                    begin
-                      result := a.ObjValue = b.ObjValue; // identity comparison for non-string objects
-                    end;
-                  end
+  if isNumber(a) and isNumber(b) then
+    result := GetNumber(a) = GetNumber(b)
+  else if isObject(a) and isObject(b) then
+  begin
+    AssertPointerIsNotNil(GetObject(a), 'A value in ValuesEqual');
+    AssertPointerIsNotNil(GetObject(b), 'B value in ValuesEqual');
+    case GetObject(a).ObjectKind of
+      okString : begin
+        result := (GetObject(b).ObjectKind = okString) and
+                  (GetObject(a) = GetObject(b));
+      end;
+      okNativeObject : begin
+        if GetObject(b).ObjectKind = okNativeObject then
+          result := pObjNativeObject(GetObject(a))^.instance =
+                    pObjNativeObject(GetObject(b))^.instance
+        else
+          result := false;
+      end
+      else
+      begin
+        result := GetObject(a) = GetObject(b);
+      end;
     end
-    else
-      result := false;
   end
+  else
+    // For booleans, nil, and mixed types: bitwise equality works
+    // (same encoding = same value, different encoding = different value)
+    result := a = b;
 end;
 
 
@@ -3474,7 +3499,7 @@ begin
     for i := 0 to ValueArray.Count - 1 do
     begin
       // format value as general format with up to 12 significant digits
-      valStr := Format('%.12g', [ValuePtr^.NumberValue]);
+      valStr := Format('%.12g', [GetNumber(ValuePtr^)]);
 
       // pad to fixed width
       valStr := valStr + StringOfChar(' ', VALUE_FIELD_WIDTH - Length(valStr));
@@ -5394,10 +5419,10 @@ begin
     while NativeUInt(slot) < NativeUInt(VM.Stack.StackTop) do
     begin
       // Validate stack slot holds a valid value kind
-      Assert(Ord(slot^.ValueKind) <= Ord(High(TValueKind)),
-        'MarkRoots: invalid ValueKind on stack');
+      Assert(isNumber(slot^) or isBoolean(slot^) or isNill(slot^) or isObject(slot^),
+        'MarkRoots: invalid value on stack');
       if isObject(slot^) then
-        AssertValidObjPointer(slot^.ObjValue, 'MarkRoots stack');
+        AssertValidObjPointer(GetObject(slot^), 'MarkRoots stack');
       MarkValue(slot^);
       Inc(slot);
     end;
@@ -5481,7 +5506,7 @@ begin
         for i := 0 to pObjArray(obj)^.Count - 1 do
         begin
           if isObject(pObjArray(obj)^.Elements[i]) then
-            AssertValidObjPointer(pObjArray(obj)^.Elements[i].ObjValue, 'BlackenObject array element');
+            AssertValidObjPointer(GetObject(pObjArray(obj)^.Elements[i]), 'BlackenObject array element');
           MarkValue(pObjArray(obj)^.Elements[i]);
         end;
       end;
@@ -5501,7 +5526,7 @@ begin
       for i := 0 to pObjRecord(obj)^.recordType^.fieldCount - 1 do
       begin
         if isObject(pObjRecord(obj)^.fields[i]) then
-          AssertValidObjPointer(pObjRecord(obj)^.fields[i].ObjValue, 'BlackenObject record field');
+          AssertValidObjPointer(GetObject(pObjRecord(obj)^.fields[i]), 'BlackenObject record field');
         MarkValue(pObjRecord(obj)^.fields[i]);
       end;
     end;
@@ -5515,9 +5540,9 @@ begin
           if pObjDictionary(obj)^.Entries[i].occupied then
           begin
             if isObject(pObjDictionary(obj)^.Entries[i].key) then
-              AssertValidObjPointer(pObjDictionary(obj)^.Entries[i].key.ObjValue, 'BlackenObject dict key');
+              AssertValidObjPointer(GetObject(pObjDictionary(obj)^.Entries[i].key), 'BlackenObject dict key');
             if isObject(pObjDictionary(obj)^.Entries[i].value) then
-              AssertValidObjPointer(pObjDictionary(obj)^.Entries[i].value.ObjValue, 'BlackenObject dict value');
+              AssertValidObjPointer(GetObject(pObjDictionary(obj)^.Entries[i].value), 'BlackenObject dict value');
             MarkValue(pObjDictionary(obj)^.Entries[i].key);
             MarkValue(pObjDictionary(obj)^.Entries[i].value);
           end;
@@ -5627,8 +5652,8 @@ begin
     var verifySlot : pValue := VM.Stack.Values;
     while NativeUInt(verifySlot) < NativeUInt(VM.Stack.StackTop) do
     begin
-      if isObject(verifySlot^) and (verifySlot^.ObjValue <> nil) then
-        Assert(verifySlot^.ObjValue^.IsMarked,
+      if isObject(verifySlot^) and (GetObject(verifySlot^) <> nil) then
+        Assert(GetObject(verifySlot^)^.IsMarked,
           'Post-mark verify: stack root object is not marked');
       Inc(verifySlot);
     end;
@@ -5986,31 +6011,27 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  case args[0].ValueKind of
-    vkNumber: Result := args[0];
-    vkBoolean:
-      if GetBoolean(args[0]) then
-        Result := CreateNumber(1)
-      else
-        Result := CreateNumber(0);
-    vkObject:
-      if isString(args[0]) then
-      begin
-        s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-        fs := TFormatSettings.Create;
-        fs.DecimalSeparator := '.';
-        if TryStrToFloat(String(s), d, fs) then
-          Result := CreateNumber(d)
-        else
-          Result := CreateNilValue;
-      end
-      else
-      begin
-        Result := CreateNilValue;
-      end;
+  if isNumber(args[0]) then
+    Result := args[0]
+  else if isBoolean(args[0]) then
+  begin
+    if GetBoolean(args[0]) then
+      Result := CreateNumber(1)
+    else
+      Result := CreateNumber(0);
+  end
+  else if isObject(args[0]) and isString(args[0]) then
+  begin
+    s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
+    fs := TFormatSettings.Create;
+    fs.DecimalSeparator := '.';
+    if TryStrToFloat(String(s), d, fs) then
+      Result := CreateNumber(d)
+    else
+      Result := CreateNilValue;
+  end
   else
     Result := CreateNilValue;
-  end;
 end;
 
 function boolNative(argCount: integer; args: pValue): TValue;
@@ -6035,27 +6056,30 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  case args[0].ValueKind of
-    vkNumber:  s := 'number';
-    vkBoolean: s := 'boolean';
-    vkNull:    s := 'nil';
-    vkObject:
-      case GetObject(args[0]).ObjectKind of
-        okString:       s := 'string';
-        okFunction:     s := 'function';
-        okNative:       s := 'function';
-        okClosure:      s := 'function';
-        okArray:        s := 'array';
-        okRecordType:   s := 'record_type';
-        okRecord:       s := 'record';
-        okNativeObject: s := 'native_object';
-        okDictionary:   s := 'dictionary';
-      else
-        s := 'unknown';
-      end;
+  if isNumber(args[0]) then
+    s := 'number'
+  else if isBoolean(args[0]) then
+    s := 'boolean'
+  else if isNill(args[0]) then
+    s := 'nil'
+  else if isObject(args[0]) then
+  begin
+    case GetObject(args[0]).ObjectKind of
+      okString:       s := 'string';
+      okFunction:     s := 'function';
+      okNative:       s := 'function';
+      okClosure:      s := 'function';
+      okArray:        s := 'array';
+      okRecordType:   s := 'record_type';
+      okRecord:       s := 'record';
+      okNativeObject: s := 'native_object';
+      okDictionary:   s := 'dictionary';
+    else
+      s := 'unknown';
+    end;
+  end
   else
     s := 'unknown';
-  end;
   objStr := CreateString(s, VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
@@ -7862,24 +7886,21 @@ begin
     for p := 0 to params^.Count - 1 do
     begin
       paramVal := params^.Elements[p];
-      case paramVal.ValueKind of
-        vkNumber:
-          query.ParamByName('p' + IntToStr(p)).AsFloat := GetNumber(paramVal);
-        vkBoolean:
-          query.ParamByName('p' + IntToStr(p)).AsBoolean := GetBoolean(paramVal);
-        vkNull:
-          query.ParamByName('p' + IntToStr(p)).Clear;
-        vkObject:
-          if isString(paramVal) then
-            query.ParamByName('p' + IntToStr(p)).AsString := string(ObjStringToAnsiString(pObjString(GetObject(paramVal))))
-          else
-          begin
-            RuntimeError('sqlQueryParams() parameter ' + IntToStr(p) + ' must be a string, number, boolean, or nil.');
-            query.Free;
-            while VM.Stack.StackTop > stackBase do
-              Dec(VM.Stack.StackTop);
-            Exit(CreateNilValue);
-          end;
+      if isNumber(paramVal) then
+        query.ParamByName('p' + IntToStr(p)).AsFloat := GetNumber(paramVal)
+      else if isBoolean(paramVal) then
+        query.ParamByName('p' + IntToStr(p)).AsBoolean := GetBoolean(paramVal)
+      else if isNill(paramVal) then
+        query.ParamByName('p' + IntToStr(p)).Clear
+      else if isString(paramVal) then
+        query.ParamByName('p' + IntToStr(p)).AsString := string(ObjStringToAnsiString(pObjString(GetObject(paramVal))))
+      else
+      begin
+        RuntimeError('sqlQueryParams() parameter ' + IntToStr(p) + ' must be a string, number, boolean, or nil.');
+        query.Free;
+        while VM.Stack.StackTop > stackBase do
+          Dec(VM.Stack.StackTop);
+        Exit(CreateNilValue);
       end;
     end;
 
