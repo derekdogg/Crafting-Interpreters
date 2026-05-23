@@ -1,0 +1,593 @@
+// NaN Boxing Edge Cases
+// Tests value representation correctness after TValue = UInt64 change
+
+// === Numbers ===
+print "--- Numbers ---";
+
+// Basic arithmetic
+var a = 1 + 2;
+assert(a == 3, "basic add");
+
+// Floating point
+var pi = 3.14159265358979;
+assert(pi > 3.14 and pi < 3.15, "float precision");
+
+// Very large numbers - build up via repeated multiplication
+var big = 1;
+for (var i = 0; i < 1023; i = i + 1) big = big * 2;
+assert(big > 0, "large positive");
+var negbig = -big;
+assert(negbig < 0, "large negative");
+
+// Very small numbers (subnormals)
+var tiny = 1;
+for (var i = 0; i < 1074; i = i + 1) tiny = tiny / 2;
+assert(tiny > 0, "subnormal positive");
+assert(tiny != 0, "subnormal not zero");
+
+// Zero and negative zero
+var pz = 0;
+var nz = -0;
+assert(pz == nz, "-0 == +0");
+assert(pz == 0, "zero equals zero");
+
+// Infinity
+var inf = big * big;
+assert(inf == inf, "inf == inf");
+assert(inf > big, "inf > large");
+var ninf = -inf;
+assert(ninf < 0, "negative inf");
+assert(ninf == ninf, "ninf == ninf");
+assert(inf != ninf, "inf != ninf");
+
+// NaN from 0/0
+var nan = 0 / 0;
+assert(nan != nan, "NaN != NaN");
+assert(!(nan == nan), "!(NaN == NaN)");
+assert(!(nan < 0), "NaN not less than 0");
+assert(!(nan > 0), "NaN not greater than 0");
+assert(!(nan == 0), "NaN not equal to 0");
+
+// NaN from inf - inf
+var nan2 = inf - inf;
+assert(nan2 != nan2, "inf-inf is NaN");
+
+// Integer-like doubles
+assert(1000000000 == 1000000000, "large int");
+
+print "Numbers OK";
+
+// === Booleans ===
+print "--- Booleans ---";
+
+assert(true == true, "true == true");
+assert(false == false, "false == false");
+assert(true != false, "true != false");
+assert(!false == true, "!false == true");
+assert(!true == false, "!true == false");
+
+// Boolean in expressions
+var b = true;
+var c = false;
+assert(b and b, "true and true");
+assert(!(b and c), "true and false");
+assert(b or c, "true or false");
+assert(!(c or c), "false or false");
+
+print "Booleans OK";
+
+// === Nil ===
+print "--- Nil ---";
+
+var n = nil;
+assert(n == nil, "nil == nil");
+assert(nil == nil, "literal nil == nil");
+assert(!(nil != nil), "!(nil != nil)");
+
+print "Nil OK";
+
+// === Cross-type inequality ===
+print "--- Cross-type ---";
+
+assert(nil != false, "nil != false");
+assert(nil != 0, "nil != 0");
+assert(nil != "", "nil != empty string");
+assert(false != 0, "false != 0");
+assert(true != 1, "true != 1");
+assert(0 != "", "0 != empty string");
+assert(0 != false, "0 != false");
+assert(0 != nil, "0 != nil");
+
+print "Cross-type OK";
+
+// === Falsey/truthy ===
+print "--- Falsey ---";
+
+assert(!nil, "nil is falsey");
+assert(!false, "false is falsey");
+// Everything else is truthy
+if (0) { assert(true, "0 is truthy"); } else { assert(false, "0 should be truthy"); }
+if ("") { assert(true, "empty string is truthy"); } else { assert(false, "empty string should be truthy"); }
+if (true) { assert(true, "true is truthy"); } else { assert(false, "true should be truthy"); }
+
+print "Falsey OK";
+
+// === Strings (objects) ===
+print "--- Strings ---";
+
+var s1 = "hello";
+var s2 = "hel" + "lo";
+assert(s1 == s2, "interned string equality");
+assert(s1 == "hello", "string literal equality");
+assert("" == "", "empty strings equal");
+assert("a" != "b", "different strings");
+assert("abc" != "ab", "different length strings");
+
+// String with special chars
+var s3 = "line1\nline2";
+assert(type(s3) == "string", "string type check");
+
+print "Strings OK";
+
+// === Objects - Arrays ===
+print "--- Arrays ---";
+
+var arr = [1, true, nil, "test", [2, 3]];
+assert(arr[0] == 1, "array number");
+assert(arr[1] == true, "array boolean");
+assert(arr[2] == nil, "array nil");
+assert(arr[3] == "test", "array string");
+assert(arr[4][0] == 2, "nested array");
+
+// Array identity
+var arr2 = arr;
+assert(arr == arr2, "array identity same ref");
+var arr3 = [1, true, nil, "test", [2, 3]];
+assert(arr != arr3, "array identity different ref");
+
+print "Arrays OK";
+
+// === Objects - Dictionaries ===
+print "--- Dictionaries ---";
+
+var d = [:];
+d.Set("key", "value");
+d.Set(42, "number key");
+d.Set(true, "bool key");
+assert(d.Get("key") == "value", "dict string key");
+assert(d.Get(42) == "number key", "dict number key");
+assert(d.Get(true) == "bool key", "dict bool key");
+
+// nil as key - test if supported
+d.Set(nil, "nil key");
+assert(d.Has(nil), "dict nil key exists");
+assert(d.Get(nil) == "nil key", "dict nil key");
+
+// -0 and +0 should hash the same
+var d2 = [:];
+d2.Set(0, "zero");
+assert(d2.Get(-0) == "zero", "dict -0 hashes same as +0");
+
+print "Dictionaries OK";
+
+// === Functions and closures ===
+print "--- Closures ---";
+
+fun makeCounter(start) {
+  var count = start;
+  fun increment() {
+    count = count + 1;
+    return count;
+  }
+  return increment;
+}
+
+var counter = makeCounter(10);
+assert(counter() == 11, "closure call 1");
+assert(counter() == 12, "closure call 2");
+assert(counter() == 13, "closure call 3");
+
+// Closure capturing different types
+fun capture() {
+  var n = 42;
+  var b = true;
+  var s = "captured";
+  var nv = nil;
+  fun get(which) {
+    if (which == "n") return n;
+    if (which == "b") return b;
+    if (which == "s") return s;
+    if (which == "nv") return nv;
+    return nil;
+  }
+  return get;
+}
+
+var getter = capture();
+assert(getter("n") == 42, "captured number");
+assert(getter("b") == true, "captured boolean");
+assert(getter("s") == "captured", "captured string");
+assert(getter("nv") == nil, "captured nil");
+
+print "Closures OK";
+
+// === Type function ===
+print "--- Types ---";
+
+assert(type(42) == "number", "type number");
+assert(type(3.14) == "number", "type float");
+assert(type(true) == "boolean", "type true");
+assert(type(false) == "boolean", "type false");
+assert(type(nil) == "nil", "type nil");
+assert(type("hi") == "string", "type string");
+assert(type([]) == "array", "type array");
+assert(type([:]) == "dictionary", "type dict");
+
+print "Types OK";
+
+// === Records ===
+print "--- Records ---";
+
+record Point(x, y);
+var p = Point(3, 4);
+assert(p.x == 3, "record field number");
+assert(p.y == 4, "record field number 2");
+p.x = nil;
+assert(p.x == nil, "record field set to nil");
+p.x = true;
+assert(p.x == true, "record field set to bool");
+p.x = "hello";
+assert(p.x == "hello", "record field set to string");
+
+print "Records OK";
+
+// === Stress: rapid type changes on stack ===
+print "--- Stack stress ---";
+
+fun typeSwitch(n) {
+  var v = 0;
+  for (var i = 0; i < n; i = i + 1) {
+    if (i % 4 == 0) v = i * 1.5;
+    if (i % 4 == 1) v = i > 5;
+    if (i % 4 == 2) v = nil;
+    if (i % 4 == 3) v = "iter" + str(i);
+  }
+  return v;
+}
+
+var result = typeSwitch(1000);
+assert(type(result) == "string", "stress result is string");
+
+print "Stack stress OK";
+
+// === NaN payload preservation ===
+print "--- NaN payloads ---";
+
+var nanA = 0 / 0;
+var nanB = inf - inf;
+var nanC = inf * 0;
+
+assert(nanA != nanA, "nanA is NaN");
+assert(nanB != nanB, "nanB is NaN");
+assert(nanC != nanC, "nanC is NaN");
+assert(type(nanA) == "number", "NaN type is number");
+assert(type(nanB) == "number", "NaN from inf-inf type is number");
+assert(type(nanC) == "number", "NaN from inf*0 type is number");
+
+// NaN propagates through arithmetic
+var nanD = nanA + 1;
+assert(nanD != nanD, "NaN + 1 is NaN");
+var nanE = nanA * 0;
+assert(nanE != nanE, "NaN * 0 is NaN");
+
+print "NaN payloads OK";
+
+// === Signed zero arithmetic ===
+print "--- Signed zero ---";
+
+var posZero = 0;
+var negZero = -0;
+var posInf = big * big;
+var negInf = -posInf;
+
+assert(1 / posZero == posInf, "+0 division gives +inf");
+assert(1 / negZero == negInf, "-0 division gives -inf");
+
+// Verify -0 is preserved through operations
+var nz2 = 0 * -1;
+assert(1 / nz2 == negInf, "0 * -1 produces -0");
+
+print "Signed zero OK";
+
+// === Dictionary NaN keys ===
+print "--- Dict NaN keys ---";
+
+var dnan = [:];
+var nanKey = 0 / 0;
+dnan.Set(nanKey, "stored");
+// NaN != NaN means lookup should fail (key unretrievable)
+// This documents our semantics: NaN keys are write-only
+var nanFound = dnan.Has(nanKey);
+if (!nanFound) {
+  print "NaN key: not retrievable (NaN != NaN)";
+  assert(true, "NaN key not found via Has");
+} else {
+  print "NaN key: retrievable (hash-based)";
+  assert(dnan.Get(nanKey) == "stored", "NaN key lookup works");
+}
+
+print "Dict NaN keys OK";
+
+// === Object pointer stress (GC + many allocations) ===
+print "--- Pointer stress ---";
+
+var objs = [];
+for (var i = 0; i < 10000; i = i + 1) {
+  arrayPush(objs, [i]);
+}
+assert(objs[0][0] == 0, "first object intact");
+assert(objs[9999][0] == 9999, "last object intact");
+assert(objs[5000][0] == 5000, "middle object intact");
+assert(arrayLen(objs) == 10000, "all objects present");
+
+// Verify types survived
+assert(type(objs[0]) == "array", "object type preserved");
+
+print "Pointer stress OK";
+
+// === GC interaction with temporary boxing ===
+print "--- GC temporaries ---";
+
+fun makeTemp(i) {
+  // Creates multiple allocations per call
+  var s = "item" + str(i);
+  var arr = [s, i, i > 50, nil];
+  return arr;
+}
+
+var last = nil;
+for (var i = 0; i < 10000; i = i + 1) {
+  last = makeTemp(i);
+}
+assert(last[0] == "item9999", "temp string survived GC");
+assert(last[1] == 9999, "temp number survived GC");
+assert(last[2] == true, "temp boolean survived GC");
+assert(last[3] == nil, "temp nil survived GC");
+
+print "GC temporaries OK";
+
+// === Mixed-type collection stress ===
+print "--- Mixed collection ---";
+
+var mixed = [:];
+for (var i = 0; i < 1000; i = i + 1) {
+  if (i % 5 == 0) mixed.Set(str(i), i * 2.5);
+  if (i % 5 == 1) mixed.Set(str(i), true);
+  if (i % 5 == 2) mixed.Set(str(i), nil);
+  if (i % 5 == 3) mixed.Set(str(i), "val" + str(i));
+  if (i % 5 == 4) mixed.Set(str(i), [i, i+1]);
+}
+
+assert(mixed.Get("0") == 0, "mixed number");
+assert(mixed.Get("1") == true, "mixed bool");
+assert(mixed.Has("2"), "mixed nil key exists");
+assert(mixed.Get("3") == "val3", "mixed string");
+assert(mixed.Get("4")[0] == 4, "mixed array");
+assert(mixed.Get("995") == 995 * 2.5, "mixed late number");
+assert(mixed.Get("999")[0] == 999, "mixed late array");
+
+print "Mixed collection OK";
+
+// === Upvalue boxing after close ===
+print "--- Upvalue close ---";
+
+fun makeClosures() {
+  var results = [];
+  for (var i = 0; i < 100; i = i + 1) {
+    var num = i * 1.1;
+    var flag = i > 50;
+    var text = "c" + str(i);
+    fun capture() {
+      return [num, flag, text];
+    }
+    arrayPush(results, capture);
+  }
+  return results;
+}
+
+var closures = makeClosures();
+var r0 = closures[0]();
+assert(r0[0] == 0, "upvalue 0 number");
+assert(r0[1] == false, "upvalue 0 bool");
+assert(r0[2] == "c0", "upvalue 0 string");
+
+var r99 = closures[99]();
+assert(r99[0] > 108.8 and r99[0] < 109.0, "upvalue 99 number");
+assert(r99[1] == true, "upvalue 99 bool");
+assert(r99[2] == "c99", "upvalue 99 string");
+
+print "Upvalue close OK";
+
+// === Object identity across types ===
+print "--- Object identity ---";
+
+var d1 = [:];
+var d2 = [:];
+assert(d1 != d2, "dict identity different ref");
+var d3 = d1;
+assert(d1 == d3, "dict identity same ref");
+
+var f1 = makeCounter(0);
+var f2 = makeCounter(0);
+assert(f1 != f2, "closure identity different ref");
+var f3 = f1;
+assert(f1 == f3, "closure identity same ref");
+
+record Tag(v);
+var t1 = Tag(1);
+var t2 = Tag(1);
+assert(t1 != t2, "record identity different ref");
+var t3 = t1;
+assert(t1 == t3, "record identity same ref");
+
+print "Object identity OK";
+
+// === Deep recursion / stack growth ===
+print "--- Deep recursion ---";
+
+fun recurse(n) {
+  if (n == 0) return [42, "done", true, nil];
+  return recurse(n - 1);
+}
+
+var deep = recurse(200);
+assert(deep[0] == 42, "deep recursion number");
+assert(deep[1] == "done", "deep recursion string");
+assert(deep[2] == true, "deep recursion bool");
+assert(deep[3] == nil, "deep recursion nil");
+
+// Recursive with mixed locals on each frame
+fun mixedRecurse(n) {
+  var num = n * 2.5;
+  var flag = n > 100;
+  var s = "r" + str(n);
+  if (n == 0) return [num, flag, s];
+  return mixedRecurse(n - 1);
+}
+
+var mr = mixedRecurse(200);
+assert(mr[0] == 0, "mixed recurse base number");
+assert(mr[1] == false, "mixed recurse base bool");
+assert(mr[2] == "r0", "mixed recurse base string");
+
+print "Deep recursion OK";
+
+// === Cyclic object graphs ===
+print "--- Cycles ---";
+
+var cycA = [nil];
+var cycB = [nil];
+cycA[0] = cycB;
+cycB[0] = cycA;
+
+assert(cycA[0] == cycB, "cycle a->b");
+assert(cycB[0] == cycA, "cycle b->a");
+assert(cycA[0][0] == cycA, "cycle a->b->a");
+assert(cycB[0][0] == cycB, "cycle b->a->b");
+
+// Self-referential array
+var self = [nil, 42, "hello"];
+self[0] = self;
+assert(self[0] == self, "self-referential");
+assert(self[0][1] == 42, "self-ref number access");
+assert(self[0][2] == "hello", "self-ref string access");
+
+// Cycle with dict
+var cycD = [:];
+var cycArr = [cycD];
+cycD.Set("back", cycArr);
+assert(cycArr[0] == cycD, "dict-array cycle forward");
+assert(cycD.Get("back") == cycArr, "dict-array cycle back");
+
+// Force GC with cycles alive
+for (var i = 0; i < 5000; i = i + 1) {
+  var garbage = [i, "g" + str(i), [i * 2]];
+}
+// Verify cycles survived GC
+assert(cycA[0] == cycB, "cycle survived GC a->b");
+assert(cycB[0] == cycA, "cycle survived GC b->a");
+assert(self[0] == self, "self-ref survived GC");
+assert(cycD.Get("back") == cycArr, "dict cycle survived GC");
+
+print "Cycles OK";
+
+// === Dictionary resize / rehash stress ===
+print "--- Dict rehash ---";
+
+var bigDict = [:];
+for (var i = 0; i < 10000; i = i + 1) {
+  bigDict.Set("k" + str(i), i);
+}
+
+// Verify all survive multiple resizes
+assert(bigDict.Get("k0") == 0, "rehash first key");
+assert(bigDict.Get("k9999") == 9999, "rehash last key");
+assert(bigDict.Get("k5000") == 5000, "rehash middle key");
+assert(bigDict.Size() == 10000, "rehash size correct");
+
+// Mixed-type keys through resizes
+var mixedKeys = [:];
+for (var i = 0; i < 500; i = i + 1) {
+  mixedKeys.Set(i, "num" + str(i));
+  mixedKeys.Set(str(i), "str" + str(i));
+  mixedKeys.Set(i > 250, "bool" + str(i));
+}
+assert(mixedKeys.Get(0) == "num0", "mixed key number 0");
+assert(mixedKeys.Get(499) == "num499", "mixed key number 499");
+assert(mixedKeys.Get("0") == "str0", "mixed key string 0");
+assert(mixedKeys.Get("499") == "str499", "mixed key string 499");
+
+print "Dict rehash OK";
+
+// === Dictionary deletion / tombstones ===
+print "--- Dict tombstones ---";
+
+var tomb = [:];
+// Fill with entries
+for (var i = 0; i < 100; i = i + 1) {
+  tomb.Set("t" + str(i), i * 3);
+}
+assert(tomb.Size() == 100, "tomb initial size");
+
+// Delete half the entries
+for (var i = 0; i < 100; i = i + 2) {
+  tomb.Delete("t" + str(i));
+}
+assert(tomb.Size() == 50, "tomb after delete");
+
+// Verify deleted keys are gone
+assert(!tomb.Has("t0"), "deleted key 0 gone");
+assert(!tomb.Has("t50"), "deleted key 50 gone");
+assert(!tomb.Has("t98"), "deleted key 98 gone");
+
+// Verify surviving keys still accessible
+assert(tomb.Get("t1") == 3, "surviving key 1");
+assert(tomb.Get("t51") == 153, "surviving key 51");
+assert(tomb.Get("t99") == 297, "surviving key 99");
+
+// Reinsert over tombstones
+for (var i = 0; i < 100; i = i + 2) {
+  tomb.Set("t" + str(i), i * 7);
+}
+assert(tomb.Size() == 100, "tomb after reinsert");
+assert(tomb.Get("t0") == 0, "reinserted key 0");
+assert(tomb.Get("t50") == 350, "reinserted key 50");
+assert(tomb.Get("t98") == 686, "reinserted key 98");
+
+// Original surviving keys still correct
+assert(tomb.Get("t1") == 3, "original key 1 after reinsert");
+assert(tomb.Get("t99") == 297, "original key 99 after reinsert");
+
+// Heavy delete/reinsert cycle to stress tombstone handling
+var churn = [:];
+for (var i = 0; i < 1000; i = i + 1) {
+  churn.Set("c" + str(i), i);
+}
+for (var i = 0; i < 1000; i = i + 1) {
+  churn.Delete("c" + str(i));
+}
+assert(churn.Size() == 0, "churn fully empty");
+
+// Reinsert after full deletion (all tombstones)
+for (var i = 0; i < 500; i = i + 1) {
+  churn.Set("new" + str(i), i * 2);
+}
+assert(churn.Size() == 500, "churn reinsert count");
+assert(churn.Get("new0") == 0, "churn reinsert first");
+assert(churn.Get("new499") == 998, "churn reinsert last");
+
+print "Dict tombstones OK";
+
+// === All passed ===
+print "";
+print "=== ALL NAN BOXING TESTS PASSED ===";
