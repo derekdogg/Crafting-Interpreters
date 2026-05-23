@@ -595,6 +595,17 @@ begin
     FGameSurface.Parent := nil;
 end;
 
+procedure DetachCanvasFromHost;
+begin
+  // Drop the parent pointer so the canvas can outlive the host form.
+  // Application destroys frmGame BEFORE Form4, but FGameSurface is freed
+  // by Form4.OnDestroy (FreeCanvas). Without this, FGameSurface.FParent
+  // would dangle and FreeAndNil would AV inside the inherited
+  // TWinControl destructor.
+  if Assigned(FGameSurface) then
+    FGameSurface.Parent := nil;
+end;
+
 procedure FreeCanvas;
 begin
   FreeAndNil(FTilemaps);
