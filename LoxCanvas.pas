@@ -1,4 +1,4 @@
-﻿unit LoxCanvas;
+unit LoxCanvas;
 
 interface
 
@@ -23,7 +23,7 @@ type
   // Owns its own keyboard input (focusable, consumes game keys) and
   // its own repaint fallback (re-blits the last presented frame on
   // WM_PAINT when the game loop is idle). Not registered with the IDE
-  // component palette — instantiate from code via InitCanvas().
+  // component palette � instantiate from code via InitCanvas().
   TLoxGameCanvas = class(TCustomControl)
   private
     FOnGameKeyDown: TGameKeyEvent;
@@ -137,7 +137,7 @@ var
   LOGICAL_H: Integer = 240;
   FGameSurface: TLoxGameCanvas;
   FBackBuffer: TBitmap;
-  FFrontBuffer: TBitmap;   // presented frame â€” never partially drawn
+  FFrontBuffer: TBitmap;   // presented frame — never partially drawn
   FPresentBuffer: TBitmap; // client-sized staging buffer for one-shot blits
   FRenderTarget: TBitmap;  // current draw target (FBackBuffer or a surface)
   FRenderTargetId: Integer; // -1 = back buffer, >= 0 = surface index
@@ -237,7 +237,7 @@ end;
 procedure EnsureBackBuffer;
 begin
   // Back buffer is always the fixed logical resolution. We never resize
-  // it to match the host control — that's what the present() scale step
+  // it to match the host control � that's what the present() scale step
   // is for. This guarantees pixel-perfect art and stable fill cost.
   if FBackBuffer = nil then
   begin
@@ -283,7 +283,7 @@ end;
 //
 // Scale rule: the largest positive integer N such that N*LOGICAL_W <= cw
 // AND N*LOGICAL_H <= ch. If the host is smaller than the logical size on
-// any axis, we still use scale=1 and clip — the result is acceptable for
+// any axis, we still use scale=1 and clip � the result is acceptable for
 // a tiny window and avoids the visual disaster of fractional scaling.
 //
 // Pixel-art invariants (please preserve when changing this routine):
@@ -293,7 +293,7 @@ end;
 //      sub-pixel sampling anywhere upstream of this point.
 //   2. The scale step uses StretchBlt with SetStretchBltMode(COLORONCOLOR),
 //      which on Windows is nearest-neighbor for 32-bit blits. HALFTONE
-//      would smooth — DO NOT use it. The final stage->client copy is a
+//      would smooth � DO NOT use it. The final stage->client copy is a
 //      1:1 BitBlt, so no resampling happens there.
 //   3. cw/ch should be PHYSICAL client pixels. Callers pass values from
 //      Windows.GetClientRect (true device pixels) rather than
@@ -362,8 +362,8 @@ end;
 
 procedure TLoxGameCanvas.WMGetDlgCode(var Msg: TWMGetDlgCode);
 begin
-  // Tell the dialog manager we want all keys ourselves — including
-  // arrows and Tab — so they don't trigger focus traversal or other
+  // Tell the dialog manager we want all keys ourselves � including
+  // arrows and Tab � so they don't trigger focus traversal or other
   // default UI behaviour while a game is running.
   Msg.Result := DLGC_WANTARROWS or DLGC_WANTCHARS or DLGC_WANTALLKEYS;
 end;
@@ -507,7 +507,7 @@ begin
     end
     else
     begin
-      // No frame yet — fill black so we don't show garbage. Use the
+      // No frame yet � fill black so we don't show garbage. Use the
       // BeginPaint DC directly (not the VCL Canvas wrapper, which can
       // lazily acquire its own DC and drift from the paint lifecycle).
       Winapi.Windows.FillRect(DC, ClientRect, HBRUSH(GetStockObject(BLACK_BRUSH)));
@@ -595,17 +595,6 @@ begin
     FGameSurface.Parent := nil;
 end;
 
-procedure DetachCanvasFromHost;
-begin
-  // Drop the parent pointer so the canvas can outlive the host form.
-  // Application destroys frmGame BEFORE Form4, but FGameSurface is freed
-  // by Form4.OnDestroy (FreeCanvas). Without this, FGameSurface.FParent
-  // would dangle and FreeAndNil would AV inside the inherited
-  // TWinControl destructor.
-  if Assigned(FGameSurface) then
-    FGameSurface.Parent := nil;
-end;
-
 procedure FreeCanvas;
 begin
   FreeAndNil(FTilemaps);
@@ -651,8 +640,8 @@ var
 begin
   Result := CreateNilValue;
   if argCount < 2 then Exit;
-  newW := Trunc(args[0].NumberValue);
-  newH := Trunc(args[1].NumberValue);
+  newW := Trunc(GetNumber(args[0]));
+  newH := Trunc(GetNumber(args[1]));
   if newW < 32 then newW := 32 else if newW > 4096 then newW := 4096;
   if newH < 32 then newH := 32 else if newH > 4096 then newH := 4096;
   LOGICAL_W := newW;
@@ -700,7 +689,7 @@ begin
     FillChar(ABmp.ScanLine[y]^, ABmp.Width * SizeOf(Cardinal), 0);
 end;
 
-// Unchecked pixel write â€” caller must guarantee x,y are in bounds.
+// Unchecked pixel write — caller must guarantee x,y are in bounds.
 // Use this in internal native blitters where clipping is done at a higher level.
 procedure PutPixelUnchecked(x, y: Integer; pixel: Cardinal); inline;
 begin
@@ -719,15 +708,15 @@ begin
     ClearBuffer(FRenderTarget)
   else if argCount = 3 then
   begin
-    if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-       (args[2].ValueKind <> vkNumber) then
+    if (not isNumber(args[0])) or (not isNumber(args[1])) or
+       (not isNumber(args[2])) then
     begin
       RuntimeError('clearCanvas() color arguments must be numbers.');
       Exit(CreateNilValue);
     end;
-    r := Trunc(args[0].NumberValue) and $FF;
-    g := Trunc(args[1].NumberValue) and $FF;
-    b := Trunc(args[2].NumberValue) and $FF;
+    r := Trunc(GetNumber(args[0])) and $FF;
+    g := Trunc(GetNumber(args[1])) and $FF;
+    b := Trunc(GetNumber(args[2])) and $FF;
     pixel := Cardinal(b or (g shl 8) or (r shl 16) or $FF000000);
     w := FRenderTarget.Width;
     h := FRenderTarget.Height;
@@ -756,15 +745,15 @@ begin
     RuntimeError('setColor() takes 3 arguments (r, g, b).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('setColor() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  r := Trunc(args[0].NumberValue);
-  g := Trunc(args[1].NumberValue);
-  b := Trunc(args[2].NumberValue);
+  r := Trunc(GetNumber(args[0]));
+  g := Trunc(GetNumber(args[1]));
+  b := Trunc(GetNumber(args[2]));
   if (r < 0) or (r > 255) or (g < 0) or (g > 255) or (b < 0) or (b > 255) then
   begin
     RuntimeError('setColor() values must be in the range 0..255.');
@@ -784,13 +773,13 @@ begin
     RuntimeError('setCamera() takes 2 arguments (x, y).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
   begin
     RuntimeError('setCamera() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  FCameraX := Trunc(args[0].NumberValue);
-  FCameraY := Trunc(args[1].NumberValue);
+  FCameraX := Trunc(GetNumber(args[0]));
+  FCameraY := Trunc(GetNumber(args[1]));
   Result := CreateNilValue;
 end;
 
@@ -803,17 +792,17 @@ begin
     RuntimeError('setClipRect() takes 4 arguments (x, y, w, h).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
   begin
     RuntimeError('setClipRect() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[0].NumberValue);
-  y := Trunc(args[1].NumberValue);
-  w := Trunc(args[2].NumberValue);
-  h := Trunc(args[3].NumberValue);
+  x := Trunc(GetNumber(args[0]));
+  y := Trunc(GetNumber(args[1]));
+  w := Trunc(GetNumber(args[2]));
+  h := Trunc(GetNumber(args[3]));
   // Clamp to target bounds
   if x < 0 then begin w := w + x; x := 0; end;
   if y < 0 then begin h := h + y; y := 0; end;
@@ -821,7 +810,7 @@ begin
   if y + h > FRenderTarget.Height then h := FRenderTarget.Height - y;
   if (w <= 0) or (h <= 0) then
   begin
-    // Degenerate clip — nothing will draw
+    // Degenerate clip � nothing will draw
     FClipX1 := 0; FClipY1 := 0; FClipX2 := 0; FClipY2 := 0;
   end else
   begin
@@ -856,17 +845,17 @@ begin
     RuntimeError('fillRect() takes 4 arguments (x, y, w, h).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
   begin
     RuntimeError('fillRect() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[0].NumberValue) - FCameraX;
-  y := Trunc(args[1].NumberValue) - FCameraY;
-  w := Trunc(args[2].NumberValue);
-  h := Trunc(args[3].NumberValue);
+  x := Trunc(GetNumber(args[0])) - FCameraX;
+  y := Trunc(GetNumber(args[1])) - FCameraY;
+  w := Trunc(GetNumber(args[2]));
+  h := Trunc(GetNumber(args[3]));
   // Clamp to clip rect
   x1 := x; y1 := y; x2 := x + w; y2 := y + h;
   if x1 < FClipX1 then x1 := FClipX1;
@@ -1105,7 +1094,7 @@ begin
     RuntimeError('drawText() takes 3 or 4 arguments (x, y, text [, scale]).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
   begin
     RuntimeError('drawText() x and y must be numbers.');
     Exit(CreateNilValue);
@@ -1118,12 +1107,12 @@ begin
   scale := 1;
   if (argCount = 4) then
   begin
-    if args[3].ValueKind <> vkNumber then
+    if not isNumber(args[3]) then
     begin
       RuntimeError('drawText() scale must be a number.');
       Exit(CreateNilValue);
     end;
-    scale := Trunc(args[3].NumberValue);
+    scale := Trunc(GetNumber(args[3]));
     if scale < 1 then scale := 1;
   end;
   EnsureBackBuffer;
@@ -1150,9 +1139,9 @@ begin
     FGlyphCacheBuilt := True;
   end;
 
-  x := Trunc(args[0].NumberValue) - FCameraX;
-  y := Trunc(args[1].NumberValue) - FCameraY;
-  s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
+  x := Trunc(GetNumber(args[0])) - FCameraX;
+  y := Trunc(GetNumber(args[1])) - FCameraY;
+  s := ObjStringToAnsiString(pObjString(GetObject(args[2])));
   bw := FClipX2;
   bh := FClipY2;
 
@@ -1254,22 +1243,22 @@ begin
     RuntimeError('measureText() takes 1 or 2 arguments (text [, scale]).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkObject then
+  if not isObject(args[0]) then
   begin
     RuntimeError('measureText() first argument must be a string.');
     Exit(CreateNilValue);
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   textLen := Length(s);
   scale := 1;
   if argCount = 2 then
   begin
-    if args[1].ValueKind <> vkNumber then
+    if not isNumber(args[1]) then
     begin
       RuntimeError('measureText() scale must be a number.');
       Exit(CreateNilValue);
     end;
-    scale := Trunc(args[1].NumberValue);
+    scale := Trunc(GetNumber(args[1]));
     if scale < 1 then scale := 1;
   end;
   Result := CreateNumber(textLen * 6 * scale);
@@ -1329,12 +1318,12 @@ begin
     RuntimeError('keyHeld() takes 1 argument (key name).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkObject then
+  if not isObject(args[0]) then
   begin
     RuntimeError('keyHeld() argument must be a string.');
     Exit(CreateNilValue);
   end;
-  name := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  name := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   held := False;
   if (FKeysHeld <> nil) then
     FKeysHeld.TryGetValue(name, held);
@@ -1351,12 +1340,12 @@ begin
     RuntimeError('keyPressed() takes 1 argument (key name).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkObject then
+  if not isObject(args[0]) then
   begin
     RuntimeError('keyPressed() argument must be a string.');
     Exit(CreateNilValue);
   end;
-  name := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  name := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   pressed := False;
   if (FKeysPressed <> nil) then
     FKeysPressed.TryGetValue(name, pressed);
@@ -1392,12 +1381,12 @@ begin
     RuntimeError('mouseDown() takes 1 argument (button 0=left, 1=right, 2=middle).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('mouseDown() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  btn := Trunc(args[0].NumberValue);
+  btn := Trunc(GetNumber(args[0]));
   if (btn < 0) or (btn > 2) then
   begin
     RuntimeError('mouseDown() button must be 0..2.');
@@ -1415,12 +1404,12 @@ begin
     RuntimeError('mouseClicked() takes 1 argument (button 0=left, 1=right, 2=middle).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('mouseClicked() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  btn := Trunc(args[0].NumberValue);
+  btn := Trunc(GetNumber(args[0]));
   if (btn < 0) or (btn > 2) then
   begin
     RuntimeError('mouseClicked() button must be 0..2.');
@@ -1438,12 +1427,12 @@ begin
     RuntimeError('spriteWidth() takes 1 argument (sprite id).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('spriteWidth() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) or (FSprites[id] = nil) then
   begin
     RuntimeError('spriteWidth() invalid sprite id.');
@@ -1461,12 +1450,12 @@ begin
     RuntimeError('spriteHeight() takes 1 argument (sprite id).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('spriteHeight() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) or (FSprites[id] = nil) then
   begin
     RuntimeError('spriteHeight() invalid sprite id.');
@@ -1529,20 +1518,20 @@ begin
     RuntimeError('drawLine() takes 4 arguments (x1, y1, x2, y2).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
   begin
     RuntimeError('drawLine() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x1 := Trunc(args[0].NumberValue) - FCameraX;
-  y1 := Trunc(args[1].NumberValue) - FCameraY;
-  x2 := Trunc(args[2].NumberValue) - FCameraX;
-  y2 := Trunc(args[3].NumberValue) - FCameraY;
+  x1 := Trunc(GetNumber(args[0])) - FCameraX;
+  y1 := Trunc(GetNumber(args[1])) - FCameraY;
+  x2 := Trunc(GetNumber(args[2])) - FCameraX;
+  y2 := Trunc(GetNumber(args[3])) - FCameraY;
   bw := FClipX2;
   bh := FClipY2;
-  // Bresenham's line algorithm â€” crisp single-pixel line
+  // Bresenham's line algorithm — crisp single-pixel line
   dx := Abs(x2 - x1);
   dy := -Abs(y2 - y1);
   if x1 < x2 then sx := 1 else sx := -1;
@@ -1571,17 +1560,17 @@ begin
     RuntimeError('drawRect() takes 4 arguments (x, y, w, h).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
   begin
     RuntimeError('drawRect() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[0].NumberValue) - FCameraX;
-  y := Trunc(args[1].NumberValue) - FCameraY;
-  w := Trunc(args[2].NumberValue);
-  h := Trunc(args[3].NumberValue);
+  x := Trunc(GetNumber(args[0])) - FCameraX;
+  y := Trunc(GetNumber(args[1])) - FCameraY;
+  w := Trunc(GetNumber(args[2]));
+  h := Trunc(GetNumber(args[3]));
   if (w <= 0) or (h <= 0) then
   begin
     Result := CreateNilValue;
@@ -1627,16 +1616,16 @@ begin
     RuntimeError('drawCircle() takes 3 arguments (x, y, radius).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('drawCircle() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  cx := Trunc(args[0].NumberValue) - FCameraX;
-  cy := Trunc(args[1].NumberValue) - FCameraY;
-  r  := Trunc(args[2].NumberValue);
+  cx := Trunc(GetNumber(args[0])) - FCameraX;
+  cy := Trunc(GetNumber(args[1])) - FCameraY;
+  r  := Trunc(GetNumber(args[2]));
   if r < 0 then
   begin
     Result := CreateNilValue;
@@ -1740,16 +1729,16 @@ begin
     RuntimeError('fillCircle() takes 3 arguments (x, y, radius).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('fillCircle() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  cx := Trunc(args[0].NumberValue) - FCameraX;
-  cy := Trunc(args[1].NumberValue) - FCameraY;
-  r  := Trunc(args[2].NumberValue);
+  cx := Trunc(GetNumber(args[0])) - FCameraX;
+  cy := Trunc(GetNumber(args[1])) - FCameraY;
+  r  := Trunc(GetNumber(args[2]));
   if r < 0 then
   begin
     Result := CreateNilValue;
@@ -1757,7 +1746,7 @@ begin
   end;
   bw := FClipX2;
   bh := FClipY2;
-  // Midpoint circle â€” fill with horizontal spans
+  // Midpoint circle — fill with horizontal spans
   x := 0;
   y := r;
   d := 1 - r;
@@ -1794,14 +1783,14 @@ begin
     RuntimeError('drawPixel() takes 2 arguments (x, y).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
   begin
     RuntimeError('drawPixel() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[0].NumberValue) - FCameraX;
-  y := Trunc(args[1].NumberValue) - FCameraY;
+  x := Trunc(GetNumber(args[0])) - FCameraX;
+  y := Trunc(GetNumber(args[1])) - FCameraY;
   if (x >= FClipX1) and (x < FClipX2) and
      (y >= FClipY1) and (y < FClipY2) then
     PCardinal(FRenderTarget.ScanLine[y])[x] := FCurrentPixel;
@@ -1829,8 +1818,8 @@ begin
     RuntimeError('drawPixels() arguments must be arrays.');
     Exit(CreateNilValue);
   end;
-  xs := pObjArray(args[0].ObjValue);
-  ys := pObjArray(args[1].ObjValue);
+  xs := pObjArray(GetObject(args[0]));
+  ys := pObjArray(GetObject(args[1]));
   n := xs^.Count;
   if ys^.Count < n then n := ys^.Count;
   if n <= 0 then Exit(CreateNilValue);
@@ -1840,10 +1829,10 @@ begin
   lastY := -$7FFFFFFF;
   for i := 0 to n - 1 do
   begin
-    if (xs^.Elements[i].ValueKind <> vkNumber) or
-       (ys^.Elements[i].ValueKind <> vkNumber) then Continue;
-    x := Trunc(xs^.Elements[i].NumberValue) - FCameraX;
-    y := Trunc(ys^.Elements[i].NumberValue) - FCameraY;
+    if (not isNumber(xs^.Elements[i])) or
+       (not isNumber(ys^.Elements[i])) then Continue;
+    x := Trunc(GetNumber(xs^.Elements[i])) - FCameraX;
+    y := Trunc(GetNumber(ys^.Elements[i])) - FCameraY;
     if (x < FClipX1) or (x >= FClipX2) or
        (y < FClipY1) or (y >= FClipY2) then Continue;
     if y <> lastY then
@@ -1877,9 +1866,9 @@ begin
     RuntimeError('drawPixelsGray() arguments must be arrays.');
     Exit(CreateNilValue);
   end;
-  xs := pObjArray(args[0].ObjValue);
-  ys := pObjArray(args[1].ObjValue);
-  bs := pObjArray(args[2].ObjValue);
+  xs := pObjArray(GetObject(args[0]));
+  ys := pObjArray(GetObject(args[1]));
+  bs := pObjArray(GetObject(args[2]));
   n := xs^.Count;
   if ys^.Count < n then n := ys^.Count;
   if bs^.Count < n then n := bs^.Count;
@@ -1889,14 +1878,14 @@ begin
   lastY := -$7FFFFFFF;
   for i := 0 to n - 1 do
   begin
-    if (xs^.Elements[i].ValueKind <> vkNumber) or
-       (ys^.Elements[i].ValueKind <> vkNumber) or
-       (bs^.Elements[i].ValueKind <> vkNumber) then Continue;
-    x := Trunc(xs^.Elements[i].NumberValue) - FCameraX;
-    y := Trunc(ys^.Elements[i].NumberValue) - FCameraY;
+    if (not isNumber(xs^.Elements[i])) or
+       (not isNumber(ys^.Elements[i])) or
+       (not isNumber(bs^.Elements[i])) then Continue;
+    x := Trunc(GetNumber(xs^.Elements[i])) - FCameraX;
+    y := Trunc(GetNumber(ys^.Elements[i])) - FCameraY;
     if (x < FClipX1) or (x >= FClipX2) or
        (y < FClipY1) or (y >= FClipY2) then Continue;
-    b := Trunc(bs^.Elements[i].NumberValue);
+    b := Trunc(GetNumber(bs^.Elements[i]));
     if b < 0 then b := 0 else if b > 255 then b := 255;
     if y <> lastY then
     begin
@@ -1974,7 +1963,7 @@ begin
     RuntimeError('createSprite() takes 3 arguments (width, height, pixels).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
   begin
     RuntimeError('createSprite() width and height must be numbers.');
     Exit(CreateNilValue);
@@ -1984,14 +1973,14 @@ begin
     RuntimeError('createSprite() third argument must be a string.');
     Exit(CreateNilValue);
   end;
-  w := Trunc(args[0].NumberValue);
-  h := Trunc(args[1].NumberValue);
+  w := Trunc(GetNumber(args[0]));
+  h := Trunc(GetNumber(args[1]));
   if (w <= 0) or (h <= 0) then
   begin
     RuntimeError('createSprite() width and height must be positive.');
     Exit(CreateNilValue);
   end;
-  s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[2])));
   if Length(s) <> w * h then
   begin
     RuntimeError('createSprite() pixel string length must equal width * height.');
@@ -2041,21 +2030,21 @@ begin
     RuntimeError('drawSprite() takes 3 arguments (id, x, y).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('drawSprite() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
   begin
     RuntimeError('drawSprite() invalid sprite id.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[1].NumberValue) - FCameraX;
-  y := Trunc(args[2].NumberValue) - FCameraY;
+  x := Trunc(GetNumber(args[1])) - FCameraX;
+  y := Trunc(GetNumber(args[2])) - FCameraY;
   bmp := FSprites[id];
   if bmp = nil then
   begin
@@ -2121,22 +2110,22 @@ begin
     RuntimeError('drawSpriteScaled() takes 4 arguments (id, x, y, scale).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
   begin
     RuntimeError('drawSpriteScaled() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
   begin
     RuntimeError('drawSpriteScaled() invalid sprite id.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[1].NumberValue) - FCameraX;
-  y := Trunc(args[2].NumberValue) - FCameraY;
-  scale := Trunc(args[3].NumberValue);
+  x := Trunc(GetNumber(args[1])) - FCameraX;
+  y := Trunc(GetNumber(args[2])) - FCameraY;
+  scale := Trunc(GetNumber(args[3]));
   if scale < 1 then
   begin
     RuntimeError('drawSpriteScaled() scale must be >= 1.');
@@ -2219,25 +2208,25 @@ begin
     RuntimeError('drawSpriteRotated() takes 5 arguments (id, x, y, scale, angle).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) or
-     (args[4].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) or
+     (not isNumber(args[4])) then
   begin
     RuntimeError('drawSpriteRotated() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
   begin
     RuntimeError('drawSpriteRotated() invalid sprite id.');
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
-  x := Trunc(args[1].NumberValue) - FCameraX;
-  y := Trunc(args[2].NumberValue) - FCameraY;
-  scale := Trunc(args[3].NumberValue);
+  x := Trunc(GetNumber(args[1])) - FCameraX;
+  y := Trunc(GetNumber(args[2])) - FCameraY;
+  scale := Trunc(GetNumber(args[3]));
   if scale < 1 then scale := 1;
-  angle := args[4].NumberValue * Pi / 180.0; // degrees to radians
+  angle := GetNumber(args[4]) * Pi / 180.0; // degrees to radians
   cosA := Cos(angle);
   sinA := Sin(angle);
 
@@ -2405,22 +2394,22 @@ begin
     RuntimeError('setPaletteColor() first argument must be a single-character string.');
     Exit(CreateNilValue);
   end;
-  if (args[1].ValueKind <> vkNumber) or (args[2].ValueKind <> vkNumber) or
-     (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[1])) or (not isNumber(args[2])) or
+     (not isNumber(args[3])) then
   begin
     RuntimeError('setPaletteColor() r, g, b must be numbers.');
     Exit(CreateNilValue);
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   if Length(s) <> 1 then
   begin
     RuntimeError('setPaletteColor() first argument must be a single character.');
     Exit(CreateNilValue);
   end;
   ch := Ord(s[1]);
-  r := Trunc(args[1].NumberValue);
-  g := Trunc(args[2].NumberValue);
-  b := Trunc(args[3].NumberValue);
+  r := Trunc(GetNumber(args[1]));
+  g := Trunc(GetNumber(args[2]));
+  b := Trunc(GetNumber(args[3]));
   if (r < 0) or (r > 255) or (g < 0) or (g > 255) or (b < 0) or (b > 255) then
   begin
     RuntimeError('setPaletteColor() color values must be 0..255.');
@@ -2458,7 +2447,7 @@ begin
     RuntimeError('createPaletteSprite() takes 3 arguments (width, height, pixels).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
   begin
     RuntimeError('createPaletteSprite() width and height must be numbers.');
     Exit(CreateNilValue);
@@ -2468,14 +2457,14 @@ begin
     RuntimeError('createPaletteSprite() third argument must be a string.');
     Exit(CreateNilValue);
   end;
-  w := Trunc(args[0].NumberValue);
-  h := Trunc(args[1].NumberValue);
+  w := Trunc(GetNumber(args[0]));
+  h := Trunc(GetNumber(args[1]));
   if (w <= 0) or (h <= 0) then
   begin
     RuntimeError('createPaletteSprite() width and height must be positive.');
     Exit(CreateNilValue);
   end;
-  s := ObjStringToAnsiString(pObjString(args[2].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[2])));
   if Length(s) <> w * h then
   begin
     RuntimeError('createPaletteSprite() pixel string length must equal width * height.');
@@ -2655,7 +2644,7 @@ begin
     RuntimeError('loadSpriteFromPNG() path must be a string.');
     Exit(CreateNilValue);
   end;
-  path := ResolveAssetPath(string(ObjStringToAnsiString(pObjString(args[0].ObjValue))));
+  path := ResolveAssetPath(string(ObjStringToAnsiString(pObjString(GetObject(args[0])))));
   id := LoadPngRegionAsSprite(path, 0, 0, 0, 0, False, err);
   if id < 0 then
   begin
@@ -2682,16 +2671,16 @@ begin
     Exit(CreateNilValue);
   end;
   for i := 1 to 4 do
-    if args[i].ValueKind <> vkNumber then
+    if not isNumber(args[i]) then
     begin
       RuntimeError('loadSpriteFromPNGRegion() x, y, w, h must be numbers.');
       Exit(CreateNilValue);
     end;
-  path := ResolveAssetPath(string(ObjStringToAnsiString(pObjString(args[0].ObjValue))));
-  sx := Trunc(args[1].NumberValue);
-  sy := Trunc(args[2].NumberValue);
-  sw := Trunc(args[3].NumberValue);
-  sh := Trunc(args[4].NumberValue);
+  path := ResolveAssetPath(string(ObjStringToAnsiString(pObjString(GetObject(args[0])))));
+  sx := Trunc(GetNumber(args[1]));
+  sy := Trunc(GetNumber(args[2]));
+  sw := Trunc(GetNumber(args[3]));
+  sh := Trunc(GetNumber(args[4]));
   id := LoadPngRegionAsSprite(path, sx, sy, sw, sh, True, err);
   if id < 0 then
   begin
@@ -2712,16 +2701,16 @@ begin
     RuntimeError('createTilemap() takes 4 arguments (cols, rows, tileW, tileH).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
   begin
     RuntimeError('createTilemap() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  cols := Trunc(args[0].NumberValue);
-  rows := Trunc(args[1].NumberValue);
-  tw := Trunc(args[2].NumberValue);
-  th := Trunc(args[3].NumberValue);
+  cols := Trunc(GetNumber(args[0]));
+  rows := Trunc(GetNumber(args[1]));
+  tw := Trunc(GetNumber(args[2]));
+  th := Trunc(GetNumber(args[3]));
   if (cols <= 0) or (rows <= 0) or (tw <= 0) or (th <= 0) then
   begin
     RuntimeError('createTilemap() all arguments must be positive.');
@@ -2742,22 +2731,22 @@ begin
     RuntimeError('setTile() takes 4 arguments (mapId, col, row, spriteId).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) or (args[3].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
   begin
     RuntimeError('setTile() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  mapId := Trunc(args[0].NumberValue);
+  mapId := Trunc(GetNumber(args[0]));
   if (FTilemaps = nil) or (mapId < 0) or (mapId >= FTilemaps.Count) then
   begin
     RuntimeError('setTile() invalid tilemap id.');
     Exit(CreateNilValue);
   end;
   tm := FTilemaps[mapId];
-  col := Trunc(args[1].NumberValue);
-  row := Trunc(args[2].NumberValue);
-  spriteId := Trunc(args[3].NumberValue);
+  col := Trunc(GetNumber(args[1]));
+  row := Trunc(GetNumber(args[2]));
+  spriteId := Trunc(GetNumber(args[3]));
   if (col < 0) or (col >= tm.Cols) or (row < 0) or (row >= tm.Rows) then
   begin
     RuntimeError('setTile() col/row out of range.');
@@ -2783,21 +2772,21 @@ begin
     RuntimeError('getTile() takes 3 arguments (mapId, col, row).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('getTile() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  mapId := Trunc(args[0].NumberValue);
+  mapId := Trunc(GetNumber(args[0]));
   if (FTilemaps = nil) or (mapId < 0) or (mapId >= FTilemaps.Count) then
   begin
     RuntimeError('getTile() invalid tilemap id.');
     Exit(CreateNilValue);
   end;
   tm := FTilemaps[mapId];
-  col := Trunc(args[1].NumberValue);
-  row := Trunc(args[2].NumberValue);
+  col := Trunc(GetNumber(args[1]));
+  row := Trunc(GetNumber(args[2]));
   if (col < 0) or (col >= tm.Cols) or (row < 0) or (row >= tm.Rows) then
     Result := CreateNumber(-1)
   else
@@ -2823,13 +2812,13 @@ begin
     RuntimeError('drawTilemap() takes 3 arguments (mapId, scrollX, scrollY).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('drawTilemap() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  mapId := Trunc(args[0].NumberValue);
+  mapId := Trunc(GetNumber(args[0]));
   if (FTilemaps = nil) or (mapId < 0) or (mapId >= FTilemaps.Count) then
   begin
     RuntimeError('drawTilemap() invalid tilemap id.');
@@ -2837,8 +2826,8 @@ begin
   end;
   EnsureBackBuffer;
   tm := FTilemaps[mapId];
-  scrollX := Trunc(args[1].NumberValue) + FCameraX;
-  scrollY := Trunc(args[2].NumberValue) + FCameraY;
+  scrollX := Trunc(GetNumber(args[1])) + FCameraX;
+  scrollY := Trunc(GetNumber(args[2])) + FCameraY;
 
   // Calculate visible tile range
   startCol := scrollX div tm.TileW;
@@ -2955,7 +2944,7 @@ begin
     RuntimeError('flipSprite() takes 2 arguments (id, direction).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) then
   begin
     RuntimeError('flipSprite() first argument must be a number.');
     Exit(CreateNilValue);
@@ -2965,7 +2954,7 @@ begin
     RuntimeError('flipSprite() second argument must be "h" or "v".');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
   begin
     RuntimeError('flipSprite() invalid sprite id.');
@@ -2977,7 +2966,7 @@ begin
     RuntimeError('flipSprite() sprite has been freed.');
     Exit(CreateNilValue);
   end;
-  var dirStr := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+  var dirStr := ObjStringToAnsiString(pObjString(GetObject(args[1])));
   if (dirStr <> 'h') and (dirStr <> 'v') then
   begin
     RuntimeError('flipSprite() direction must be "h" or "v".');
@@ -3028,12 +3017,12 @@ begin
     RuntimeError('freeSprite() takes 1 argument (id).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('freeSprite() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSprites = nil) or (id < 0) or (id >= FSprites.Count) then
   begin
     RuntimeError('freeSprite() invalid sprite id.');
@@ -3081,13 +3070,13 @@ begin
     RuntimeError('createSurface() takes 2 arguments (width, height).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
   begin
     RuntimeError('createSurface() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  w := Trunc(args[0].NumberValue);
-  h := Trunc(args[1].NumberValue);
+  w := Trunc(GetNumber(args[0]));
+  h := Trunc(GetNumber(args[1]));
   if (w <= 0) or (h <= 0) or (w > 4096) or (h > 4096) then
   begin
     RuntimeError('createSurface() dimensions must be 1..4096.');
@@ -3109,12 +3098,12 @@ begin
     RuntimeError('setRenderTarget() takes 1 argument (surface id, or -1 for back buffer).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('setRenderTarget() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if id < 0 then
   begin
     // Target main back buffer
@@ -3151,13 +3140,13 @@ begin
     RuntimeError('drawSurface() takes 3 arguments (id, x, y).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('drawSurface() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSurfaces = nil) or (id < 0) or (id >= FSurfaces.Count) or (FSurfaces[id] = nil) then
   begin
     RuntimeError('drawSurface() invalid surface id.');
@@ -3165,8 +3154,8 @@ begin
   end;
   src := FSurfaces[id];
   EnsureBackBuffer;
-  x := Trunc(args[1].NumberValue) - FCameraX;
-  y := Trunc(args[2].NumberValue) - FCameraY;
+  x := Trunc(GetNumber(args[1])) - FCameraX;
+  y := Trunc(GetNumber(args[2])) - FCameraY;
   bw := FClipX2;
   bh := FClipY2;
   for sy := 0 to src.Height - 1 do
@@ -3197,12 +3186,12 @@ begin
     RuntimeError('freeSurface() takes 1 argument (id).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('freeSurface() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  id := Trunc(args[0].NumberValue);
+  id := Trunc(GetNumber(args[0]));
   if (FSurfaces = nil) or (id < 0) or (id >= FSurfaces.Count) then
   begin
     RuntimeError('freeSurface() invalid surface id.');

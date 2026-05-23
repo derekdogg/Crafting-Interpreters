@@ -50,3 +50,5 @@ samples/# Code Citations.md
 
 # Reference docs
 RTTI Reference.txt
+samples/decrypt_webconfig.lox
+perf-hotspot-review.md

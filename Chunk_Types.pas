@@ -1,6 +1,6 @@
 ﻿unit Chunk_Types;
 {$POINTERMATH ON}
-{$ASSERTIONS ON}
+{$ASSERTIONS OFF}
 {..$DEFINE DEBUG_LOG_GC}
 {..$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
@@ -790,6 +790,15 @@ function CreateBoolean(Value: Boolean): TValue; inline;
 function CreateNilValue: TValue; inline;
 function CreateObject(value : pObj) : TValue;
 
+//Value accessors
+function isNumber(const Value: TValue): Boolean; inline;
+function isBoolean(const Value: TValue): Boolean; inline;
+function isObject(value : TValue) : boolean; inline;
+function isNill(const Value: TValue): Boolean; inline;
+function GetNumber(Value : TValue) : double; inline;
+function GetBoolean(const Value : TValue) : Boolean; inline;
+function GetObject(const value : TValue) : pObj; inline;
+
 //Table
 procedure InitTable(var Table : pTable; memTracker : pMemTracker);
 function TableSet(var Table : pTable; key : pObjString; value : TValue;MemTracker : pMemTracker): boolean;
@@ -1057,7 +1066,7 @@ begin
     else
     begin
       // key=nil: either empty (value=nil) or tombstone (value=true boolean)
-      if entry.value.ValueKind <> vkNull then
+      if not isNill(entry.value) then
         Inc(tombstoneCount);
     end;
   end;
@@ -2612,28 +2621,28 @@ begin
     vkNumber:
     begin
       if TargetType = nil then
-        Exit(System.Rtti.TValue.From<Double>(V.NumberValue));
+        Exit(System.Rtti.TValue.From<Double>(GetNumber(V)));
       case TargetType^.Kind of
         tkInteger:
-          Result := System.Rtti.TValue.From<Integer>(Trunc(V.NumberValue));
+          Result := System.Rtti.TValue.From<Integer>(Trunc(GetNumber(V)));
         tkInt64:
-          Result := System.Rtti.TValue.From<Int64>(Trunc(V.NumberValue));
+          Result := System.Rtti.TValue.From<Int64>(Trunc(GetNumber(V)));
         tkFloat:
-          Result := System.Rtti.TValue.From<Double>(V.NumberValue);
+          Result := System.Rtti.TValue.From<Double>(GetNumber(V));
         tkEnumeration:
           // Number -> enum ordinal (e.g. 2 -> TBorderStyle(2))
-          System.Rtti.TValue.Make(Trunc(V.NumberValue), TargetType, Result);
+          System.Rtti.TValue.Make(Trunc(GetNumber(V)), TargetType, Result);
       else
-        Result := System.Rtti.TValue.From<Double>(V.NumberValue);
+        Result := System.Rtti.TValue.From<Double>(GetNumber(V));
       end;
     end;
     vkBoolean:
     begin
       if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) and
          (TargetType = TypeInfo(Boolean)) then
-        Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue)
+        Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V))
       else
-        Result := System.Rtti.TValue.From<Boolean>(V.BooleanValue);
+        Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V));
     end;
     vkNull:
       Result := System.Rtti.TValue.Empty;
@@ -2641,7 +2650,7 @@ begin
     begin
       if isString(V) then
       begin
-        s := String(ObjStringToAnsiString(pObjString(V.ObjValue)));
+        s := String(ObjStringToAnsiString(pObjString(GetObject(V))));
         // String -> enum by name (e.g. 'bsSizeable' -> TBorderStyle)
         if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) then
         begin
@@ -2679,7 +2688,7 @@ begin
       else if isArray(V) and (TargetType <> nil) and (TargetType^.Kind = tkSet) then
       begin
         // Lox array of enum-name strings -> Delphi set
-        setArr := pObjArray(V.ObjValue);
+        setArr := pObjArray(GetObject(V));
         setBaseInfo2 := GetTypeData(TargetType)^.CompType^;
         FillChar(setBuf, SizeOf(setBuf), 0);
 
@@ -2690,7 +2699,7 @@ begin
             runtimeError('Set elements must be strings (enum names).');
             Exit(System.Rtti.TValue.Empty);
           end;
-          setElemName := String(ObjStringToAnsiString(pObjString(setArr^.Elements[setI].ObjValue)));
+          setElemName := String(ObjStringToAnsiString(pObjString(GetObject(setArr^.Elements[setI]))));
           setElemOrd := GetEnumValue(setBaseInfo2, setElemName);
           if setElemOrd < 0 then
           begin
@@ -2705,7 +2714,7 @@ begin
       else if isArray(V) and (TargetType <> nil) and (TargetType^.Kind = tkDynArray) then
       begin
         // Lox array -> Delphi dynamic array
-        srcArr := pObjArray(V.ObjValue);
+        srcArr := pObjArray(GetObject(V));
         dynArrLen := srcArr^.Count;
         dynElemType := GetTypeData(TargetType)^.DynArrElType^;
 
@@ -2721,11 +2730,11 @@ begin
         Result := dynResult;
       end
       else if isNativeObject(V) then
-        Result := System.Rtti.TValue.From<TObject>(TObject(pObjNativeObject(V.ObjValue)^.instance))
+        Result := System.Rtti.TValue.From<TObject>(TObject(pObjNativeObject(GetObject(V))^.instance))
       else
       begin
         runtimeError(Format('Cannot marshal Lox %s to Delphi.',
-          [GetEnumName(TypeInfo(TObjectKind), Ord(pObj(V.ObjValue)^.ObjectKind))]));
+          [GetEnumName(TypeInfo(TObjectKind), Ord(GetObject(V)^.ObjectKind))]));
         Result := System.Rtti.TValue.Empty;
       end;
     end;
@@ -3834,20 +3843,20 @@ var
   begin
     if isClosure(callee) then
     begin
-      if argCnt <> pObjClosure(callee.ObjValue)^.func^.arity then
+      if argCnt <> pObjClosure(GetObject(callee))^.func^.arity then
       begin
-        runtimeError('Expected ' + IntToStr(pObjClosure(callee.ObjValue)^.func^.arity) +
+        runtimeError('Expected ' + IntToStr(pObjClosure(GetObject(callee))^.func^.arity) +
           ' arguments but got ' + IntToStr(argCnt) + '.');
         Exit(false);
       end;
       if VM.FrameCount = FRAMES_MAX then
       begin
         runtimeError('Stack overflow (max ' + IntToStr(FRAMES_MAX) +
-          ' frames). Last call: ' + String(ObjStringToAnsiString(pObjClosure(callee.ObjValue)^.func^.name)));
+          ' frames). Last call: ' + String(ObjStringToAnsiString(pObjClosure(GetObject(callee))^.func^.name)));
         Exit(false);
       end;
-      VM.Frames[VM.FrameCount].closure := pObjClosure(callee.ObjValue);
-      VM.Frames[VM.FrameCount].ip := pObjClosure(callee.ObjValue)^.func^.chunk^.Code;
+      VM.Frames[VM.FrameCount].closure := pObjClosure(GetObject(callee));
+      VM.Frames[VM.FrameCount].ip := pObjClosure(GetObject(callee))^.func^.chunk^.Code;
       // slots points to the function value on the stack (argCnt args above it)
       VM.Frames[VM.FrameCount].slots := stack.StackTop;
       Dec(VM.Frames[VM.FrameCount].slots, argCnt + 1);
@@ -3857,19 +3866,19 @@ var
     else if isNative(callee) then
     begin
       // Arity check (-1 means variadic, skip check)
-      if (pObjNative(callee.ObjValue)^.arity >= 0) and
-         (argCnt <> pObjNative(callee.ObjValue)^.arity) then
+      if (pObjNative(GetObject(callee))^.arity >= 0) and
+         (argCnt <> pObjNative(GetObject(callee))^.arity) then
       begin
-        if pObjNative(callee.ObjValue)^.arity = 1 then
-          runtimeError(String(AnsiString(pObjNative(callee.ObjValue)^.name)) +
+        if pObjNative(GetObject(callee))^.arity = 1 then
+          runtimeError(String(AnsiString(pObjNative(GetObject(callee))^.name)) +
             '() takes exactly 1 argument.')
         else
-          runtimeError(String(AnsiString(pObjNative(callee.ObjValue)^.name)) +
+          runtimeError(String(AnsiString(pObjNative(GetObject(callee))^.name)) +
             '() takes exactly ' +
-            IntToStr(pObjNative(callee.ObjValue)^.arity) + ' arguments.');
+            IntToStr(pObjNative(GetObject(callee))^.arity) + ' arguments.');
         Exit(false);
       end;
-      native := pObjNative(callee.ObjValue)^.func;
+      native := pObjNative(GetObject(callee))^.func;
       // NOTE: `args` points into stack.Values at StackTop - argCnt. Any
       // operation inside the native that calls pushStack with growth (directly,
       // or transitively via CreateString / DictSet / newArray-grow / etc.) can
@@ -3893,18 +3902,18 @@ var
     else if isRecordType(callee) then
     begin
       // Construct a new record instance
-      if argCnt <> pObjRecordType(callee.ObjValue)^.fieldCount then
+      if argCnt <> pObjRecordType(GetObject(callee))^.fieldCount then
       begin
-        runtimeError('Expected ' + IntToStr(pObjRecordType(callee.ObjValue)^.fieldCount) +
+        runtimeError('Expected ' + IntToStr(pObjRecordType(GetObject(callee))^.fieldCount) +
           ' arguments but got ' + IntToStr(argCnt) + '.');
         Exit(false);
       end;
       // Create the record instance ? push onto stack to protect from GC
-      value := CreateObject(pObj(newRecord(pObjRecordType(callee.ObjValue), VM.MemTracker)));
+      value := CreateObject(pObj(newRecord(pObjRecordType(GetObject(callee)), VM.MemTracker)));
       pushStack(stack, value, VM.MemTracker);
       // Copy arguments into the record's fields (args are on stack below the new record)
       for j := 0 to argCnt - 1 do
-        pObjRecord(value.ObjValue)^.fields[j] :=
+        pObjRecord(GetObject(value))^.fields[j] :=
           (stack.StackTop - 1 - argCnt + j)^;
       // Pop the record instance we just pushed for protection
       Dec(stack.StackTop);
@@ -3974,13 +3983,13 @@ begin
 
         OP_NEGATE : begin
           // In-place negation: rewrite the top slot, no pop/push.
-          if stack.StackTop[-1].ValueKind <> vkNumber then
+          if not isNumber(stack.StackTop[-1]) then
           begin
              result.code := INTERPRET_RUNTIME_ERROR;
              runtimeError('Operand must be a number.');
              exit;
           end;
-          stack.StackTop[-1].NumberValue := -stack.StackTop[-1].NumberValue;
+          stack.StackTop[-1] := CreateNumber(-GetNumber(stack.StackTop[-1]));
         end;
 
         OP_NIL      : pushStack(vm.stack, CreateNilValue,vm.MemTracker);
@@ -4005,9 +4014,8 @@ begin
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        stack.StackTop[-2].ValueKind := vkBoolean;
-                        stack.StackTop[-2].BooleanValue :=
-                          stack.StackTop[-2].NumberValue > stack.StackTop[-1].NumberValue;
+                        stack.StackTop[-2] := CreateBoolean(
+                          GetNumber(stack.StackTop[-2]) > GetNumber(stack.StackTop[-1]));
                         Dec(stack.StackTop);
                       end;
 
@@ -4018,9 +4026,8 @@ begin
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        stack.StackTop[-2].ValueKind := vkBoolean;
-                        stack.StackTop[-2].BooleanValue :=
-                          stack.StackTop[-2].NumberValue < stack.StackTop[-1].NumberValue;
+                        stack.StackTop[-2] := CreateBoolean(
+                          GetNumber(stack.StackTop[-2]) < GetNumber(stack.StackTop[-1]));
                         Dec(stack.StackTop);
                       end;
 
@@ -4028,9 +4035,8 @@ begin
                         // Fast path: both numbers ? direct in-place add, no pop/push.
                         if isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2]) then
                         begin
-                          stack.StackTop[-2].NumberValue :=
-                            stack.StackTop[-2].NumberValue + stack.StackTop[-1].NumberValue;
-                          // ValueKind already vkNumber, no rewrite needed.
+                          stack.StackTop[-2] := CreateNumber(
+                            GetNumber(stack.StackTop[-2]) + GetNumber(stack.StackTop[-1]));
                           Dec(stack.StackTop);
                         end
                         else if isString(stack.StackTop[-1]) and isString(stack.StackTop[-2]) then
@@ -4052,8 +4058,8 @@ begin
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        stack.StackTop[-2].NumberValue :=
-                          stack.StackTop[-2].NumberValue - stack.StackTop[-1].NumberValue;
+                        stack.StackTop[-2] := CreateNumber(
+                          GetNumber(stack.StackTop[-2]) - GetNumber(stack.StackTop[-1]));
                         Dec(stack.StackTop);
                       end;
 
@@ -4064,8 +4070,8 @@ begin
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        stack.StackTop[-2].NumberValue :=
-                          stack.StackTop[-2].NumberValue * stack.StackTop[-1].NumberValue;
+                        stack.StackTop[-2] := CreateNumber(
+                          GetNumber(stack.StackTop[-2]) * GetNumber(stack.StackTop[-1]));
                         Dec(stack.StackTop);
                       end;
 
@@ -4076,8 +4082,8 @@ begin
                           result.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
-                        stack.StackTop[-2].NumberValue :=
-                          stack.StackTop[-2].NumberValue / stack.StackTop[-1].NumberValue;
+                        stack.StackTop[-2] := CreateNumber(
+                          GetNumber(stack.StackTop[-2]) / GetNumber(stack.StackTop[-1]));
                         Dec(stack.StackTop);
                       end;
 
@@ -4089,17 +4095,16 @@ begin
                           exit;
                         end;
                         // Match prior semantics: A - Trunc(A/B)*B
-                        stack.StackTop[-2].NumberValue :=
-                          stack.StackTop[-2].NumberValue -
-                          Trunc(stack.StackTop[-2].NumberValue / stack.StackTop[-1].NumberValue) *
-                          stack.StackTop[-1].NumberValue;
+                        stack.StackTop[-2] := CreateNumber(
+                          GetNumber(stack.StackTop[-2]) -
+                          Trunc(GetNumber(stack.StackTop[-2]) / GetNumber(stack.StackTop[-1])) *
+                          GetNumber(stack.StackTop[-1]));
                         Dec(stack.StackTop);
                       end;
 
         OP_NOT      : begin
           // In-place: rewrite top slot to boolean(isFalsey(top)).
-          stack.StackTop[-1].BooleanValue := isFalsey(stack.StackTop[-1]);
-          stack.StackTop[-1].ValueKind := vkBoolean;
+          stack.StackTop[-1] := CreateBoolean(isFalsey(stack.StackTop[-1]));
         end;
 
         OP_PRINT: begin
@@ -4227,7 +4232,7 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          if not (stack.StackTop[-2].NumberValue < stack.StackTop[-1].NumberValue) then
+          if not (GetNumber(stack.StackTop[-2]) < GetNumber(stack.StackTop[-1])) then
             Inc(ip, offset);
           Dec(stack.StackTop, 2);
         end;
@@ -4256,7 +4261,7 @@ begin
           // Inline closure fast-path: avoids nested-function call overhead (331M calls for fib(40))
           if isClosure(value) then
           begin
-            closure := pObjClosure(value.ObjValue);
+            closure := pObjClosure(GetObject(value));
             if argCount <> closure^.func^.arity then
             begin
               runtimeError('Expected ' + IntToStr(closure^.func^.arity) +
@@ -4291,7 +4296,7 @@ begin
           value := constants[ip^];
           Inc(ip);
           Assert(isFunction(value), 'OP_CLOSURE: constant is not a function');
-          func := pObjFunction(value.ObjValue);
+          func := pObjFunction(GetObject(value));
           closure := newClosure(func, VM.MemTracker);
           pushStack(stack, CreateObject(pObj(closure)), vm.MemTracker);
           for i := 0 to closure^.upvalueCount - 1 do
@@ -4403,7 +4408,7 @@ begin
           i := i or (ip^ shl 16); Inc(ip);
           value := constants[i];
           Assert(isFunction(value), 'OP_CLOSURE_LONG: constant is not a function');
-          func := pObjFunction(value.ObjValue);
+          func := pObjFunction(GetObject(value));
           closure := newClosure(func, VM.MemTracker);
           pushStack(stack, CreateObject(pObj(closure)), vm.MemTracker);
           for i := 0 to closure^.upvalueCount - 1 do
@@ -4490,7 +4495,7 @@ begin
         OP_GET_PROPERTY: begin
           if isRecord(stack.StackTop[-1]) then
           begin
-            rec := pObjRecord(stack.StackTop[-1].ObjValue);
+            rec := pObjRecord(GetObject(stack.StackTop[-1]));
             recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
             AssertFrameValues('OP_GET_PROPERTY');
@@ -4509,7 +4514,7 @@ begin
           end
           else if isNativeObject(stack.StackTop[-1]) then
           begin
-            nativeObj := pObjNativeObject(stack.StackTop[-1].ObjValue);
+            nativeObj := pObjNativeObject(GetObject(stack.StackTop[-1]));
             recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
             AssertFrameValues('OP_GET_PROPERTY');
@@ -4538,7 +4543,7 @@ begin
         OP_SET_PROPERTY: begin
           if isRecord(stack.StackTop[-2]) then
           begin
-            rec := pObjRecord(stack.StackTop[-2].ObjValue);
+            rec := pObjRecord(GetObject(stack.StackTop[-2]));
             recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
             AssertFrameValues('OP_SET_PROPERTY');
@@ -4561,7 +4566,7 @@ begin
           end
           else if isNativeObject(stack.StackTop[-2]) then
           begin
-            nativeObj := pObjNativeObject(stack.StackTop[-2].ObjValue);
+            nativeObj := pObjNativeObject(GetObject(stack.StackTop[-2]));
             recNameIdx := ip^; Inc(ip);
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
             AssertFrameValues('OP_SET_PROPERTY');
@@ -4603,7 +4608,7 @@ begin
           invokeMethodName := ValueToString(ValueB);
           if isDictionary(value) then
           begin
-            if not InvokeDictMethod(pObjDictionary(value.ObjValue), invokeMethodName,
+            if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
               invokeArgCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
             begin
               result.code := INTERPRET_RUNTIME_ERROR;
@@ -4614,7 +4619,7 @@ begin
           end
           else if isNativeObject(value) then
           begin
-            nativeObj := pObjNativeObject(value.ObjValue);
+            nativeObj := pObjNativeObject(GetObject(value));
             if findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
             begin
               // Call manual wrapper method
@@ -4665,7 +4670,7 @@ begin
           invokeMethodName := ValueToString(ValueB);
           if isDictionary(value) then
           begin
-            if not InvokeDictMethod(pObjDictionary(value.ObjValue), invokeMethodName,
+            if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
               invokeArgCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount) * SizeOf(TValue)), nativeResult) then
             begin
               result.code := INTERPRET_RUNTIME_ERROR;
@@ -4676,7 +4681,7 @@ begin
           end
           else if isNativeObject(value) then
           begin
-            nativeObj := pObjNativeObject(value.ObjValue);
+            nativeObj := pObjNativeObject(GetObject(value));
             if findNativeMethod(nativeObj^.classInfo, invokeMethodName, nativeMethod) then
             begin
               nativeResult := nativeMethod(nativeObj^.instance, invokeArgCount,
@@ -4715,7 +4720,7 @@ begin
         OP_GET_PROPERTY_LONG: begin
           if isRecord(stack.StackTop[-1]) then
           begin
-            rec := pObjRecord(stack.StackTop[-1].ObjValue);
+            rec := pObjRecord(GetObject(stack.StackTop[-1]));
             recNameIdx := ip^; Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
@@ -4736,7 +4741,7 @@ begin
           end
           else if isNativeObject(stack.StackTop[-1]) then
           begin
-            nativeObj := pObjNativeObject(stack.StackTop[-1].ObjValue);
+            nativeObj := pObjNativeObject(GetObject(stack.StackTop[-1]));
             recNameIdx := ip^; Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
@@ -4769,7 +4774,7 @@ begin
         OP_SET_PROPERTY_LONG: begin
           if isRecord(stack.StackTop[-2]) then
           begin
-            rec := pObjRecord(stack.StackTop[-2].ObjValue);
+            rec := pObjRecord(GetObject(stack.StackTop[-2]));
             recNameIdx := ip^; Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
@@ -4794,7 +4799,7 @@ begin
           end
           else if isNativeObject(stack.StackTop[-2]) then
           begin
-            nativeObj := pObjNativeObject(stack.StackTop[-2].ObjValue);
+            nativeObj := pObjNativeObject(GetObject(stack.StackTop[-2]));
             recNameIdx := ip^; Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
             recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
@@ -4843,18 +4848,18 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            i := Trunc(value.NumberValue);
-            if (i < 0) or (i >= pObjArray(ValueB.ObjValue)^.Count) then
+            i := Trunc(GetNumber(value));
+            if (i < 0) or (i >= pObjArray(GetObject(ValueB))^.Count) then
             begin
-              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(ValueB.ObjValue)^.Count - 1) + '].');
+              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(GetObject(ValueB))^.Count - 1) + '].');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pushStack(stack, pObjArray(ValueB.ObjValue)^.Elements[i], vm.MemTracker);
+            pushStack(stack, pObjArray(GetObject(ValueB))^.Elements[i], vm.MemTracker);
           end
           else if isDictionary(ValueB) then
           begin
-            if not DictGet(pObjDictionary(ValueB.ObjValue), value, ValueC) then
+            if not DictGet(pObjDictionary(GetObject(ValueB)), value, ValueC) then
             begin
               runtimeError('Key not found in dictionary.');
               result.code := INTERPRET_RUNTIME_ERROR;
@@ -4864,7 +4869,7 @@ begin
           end
           else if isNativeObject(ValueB) then
           begin
-            nativeObj := pObjNativeObject(ValueB.ObjValue);
+            nativeObj := pObjNativeObject(GetObject(ValueB));
             if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled then
             begin
               idxProp := nil;
@@ -4933,14 +4938,14 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            i := Trunc(ValueB.NumberValue);
-            if (i < 0) or (i >= pObjArray(stack.StackTop[-1].ObjValue)^.Count) then
+            i := Trunc(GetNumber(ValueB));
+            if (i < 0) or (i >= pObjArray(GetObject(stack.StackTop[-1]))^.Count) then
             begin
-              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(stack.StackTop[-1].ObjValue)^.Count - 1) + '].');
+              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(GetObject(stack.StackTop[-1]))^.Count - 1) + '].');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pObjArray(stack.StackTop[-1].ObjValue)^.Elements[i] := value;
+            pObjArray(GetObject(stack.StackTop[-1]))^.Elements[i] := value;
             Dec(stack.StackTop); // pop the array
             pushStack(stack, value, vm.MemTracker); // leave the assigned value
           end
@@ -4950,7 +4955,7 @@ begin
             // Leave all on stack during DictSet to protect from GC
             value := stack.StackTop[-1];   // value
             ValueB := stack.StackTop[-2];  // key
-            DictSet(pObjDictionary(stack.StackTop[-3].ObjValue), ValueB, value, vm.MemTracker);
+            DictSet(pObjDictionary(GetObject(stack.StackTop[-3])), ValueB, value, vm.MemTracker);
             // Pop value, key, dict; push value as result
             Dec(stack.StackTop);
             Dec(stack.StackTop);
@@ -4966,7 +4971,7 @@ begin
             Dec(stack.StackTop);    // index
 
             ValueB := stack.StackTop^;
-            nativeObj := pObjNativeObject(stack.StackTop[-1].ObjValue);
+            nativeObj := pObjNativeObject(GetObject(stack.StackTop[-1]));
             if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled then
             begin
               idxProp := nil;
@@ -5033,12 +5038,12 @@ begin
           // stack) and the source elements (below it) are GC-rooted via Stack.
           if argCount > 0 then
           begin
-            Allocate(Pointer(pObjArray(value.ObjValue)^.Elements), 0, argCount * SizeOf(TValue), vm.MemTracker);
-            pObjArray(value.ObjValue)^.Capacity := argCount;
-            pObjArray(value.ObjValue)^.Count := argCount;
+            Allocate(Pointer(pObjArray(GetObject(value))^.Elements), 0, argCount * SizeOf(TValue), vm.MemTracker);
+            pObjArray(GetObject(value))^.Capacity := argCount;
+            pObjArray(GetObject(value))^.Count := argCount;
             // Elements live at StackTop[-1-argCount .. -2]; array is at [-1].
             for i := 0 to argCount - 1 do
-              pObjArray(value.ObjValue)^.Elements[i] := stack.StackTop[-1 - argCount + i];
+              pObjArray(GetObject(value))^.Elements[i] := stack.StackTop[-1 - argCount + i];
           end;
           // Bulk-collapse the window: overwrite the first element slot with
           // the array and drop the remaining argCount slots in one step.
@@ -5060,7 +5065,7 @@ begin
           begin
             ValueB := stack.StackTop[-1 - 2 * argCount + 2 * i];     // key
             ValueC := stack.StackTop[-1 - 2 * argCount + 2 * i + 1]; // value
-            DictSet(pObjDictionary(value.ObjValue), ValueB, ValueC, vm.MemTracker);
+            DictSet(pObjDictionary(GetObject(value)), ValueB, ValueC, vm.MemTracker);
           end;
           // Bulk-collapse: overwrite the first pair slot with the dict and
           // drop the remaining 2*argCount slots in one step.
@@ -5757,7 +5762,7 @@ begin
   if IsFalsey(args[0]) then
   begin
     if (argCount = 2) and IsString(args[1]) then
-      RuntimeError('Assertion failed: ' + String(ObjStringToAnsiString(pObjString(args[1].ObjValue))))
+      RuntimeError('Assertion failed: ' + String(ObjStringToAnsiString(pObjString(GetObject(args[1])))))
     else
       RuntimeError('Assertion failed.');
     Result := CreateNilValue;
@@ -5841,7 +5846,7 @@ begin
     for i := 0 to capacity - 1 do
       if VM.Strings.Entries[i].key <> nil then
         Inc(liveCount)
-      else if VM.Strings.Entries[i].value.ValueKind <> vkNull then
+      else if not isNill(VM.Strings.Entries[i].value) then
         Inc(tombstones);
   // Create dictionary and push onto stack to protect from GC during allocations
   dict := newDictionary(VM.MemTracker);
@@ -5883,7 +5888,7 @@ begin
     RuntimeError('env() argument must be a string.');
     Exit(CreateNilValue);
   end;
-  name := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  name := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   val := AnsiString(GetEnvironmentVariable(String(name)));
   if val = '' then
     Result := CreateNilValue
@@ -5914,7 +5919,7 @@ begin
       RuntimeError('loadEnv() argument must be a string (file path).');
       Exit(CreateNilValue);
     end;
-    filePath := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+    filePath := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   end
   else
     filePath := AnsiString(ExtractFilePath(ParamStr(0))) + '.env';
@@ -5984,14 +5989,14 @@ begin
   case args[0].ValueKind of
     vkNumber: Result := args[0];
     vkBoolean:
-      if args[0].BooleanValue then
+      if GetBoolean(args[0]) then
         Result := CreateNumber(1)
       else
         Result := CreateNumber(0);
     vkObject:
       if isString(args[0]) then
       begin
-        s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+        s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
         fs := TFormatSettings.Create;
         fs.DecimalSeparator := '.';
         if TryStrToFloat(String(s), d, fs) then
@@ -6035,7 +6040,7 @@ begin
     vkBoolean: s := 'boolean';
     vkNull:    s := 'nil';
     vkObject:
-      case args[0].ObjValue.ObjectKind of
+      case GetObject(args[0]).ObjectKind of
         okString:       s := 'string';
         okFunction:     s := 'function';
         okNative:       s := 'function';
@@ -6071,7 +6076,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Abs(args[0].NumberValue));
+  Result := CreateNumber(Abs(GetNumber(args[0])));
 end;
 
 function floorNative(argCount: integer; args: pValue): TValue;
@@ -6088,7 +6093,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Math.Floor(args[0].NumberValue));
+  Result := CreateNumber(Math.Floor(GetNumber(args[0])));
 end;
 
 function ceilNative(argCount: integer; args: pValue): TValue;
@@ -6105,7 +6110,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Math.Ceil(args[0].NumberValue));
+  Result := CreateNumber(Math.Ceil(GetNumber(args[0])));
 end;
 
 function roundNative(argCount: integer; args: pValue): TValue;
@@ -6122,7 +6127,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Round(args[0].NumberValue));
+  Result := CreateNumber(Round(GetNumber(args[0])));
 end;
 
 function minNative(argCount: integer; args: pValue): TValue;
@@ -6139,10 +6144,10 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  if args[0].NumberValue <= args[1].NumberValue then
-    Result := CreateNumber(args[0].NumberValue)
+  if GetNumber(args[0]) <= GetNumber(args[1]) then
+    Result := CreateNumber(GetNumber(args[0]))
   else
-    Result := CreateNumber(args[1].NumberValue);
+    Result := CreateNumber(GetNumber(args[1]));
 end;
 
 function maxNative(argCount: integer; args: pValue): TValue;
@@ -6159,10 +6164,10 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  if args[0].NumberValue >= args[1].NumberValue then
-    Result := CreateNumber(args[0].NumberValue)
+  if GetNumber(args[0]) >= GetNumber(args[1]) then
+    Result := CreateNumber(GetNumber(args[0]))
   else
-    Result := CreateNumber(args[1].NumberValue);
+    Result := CreateNumber(GetNumber(args[1]));
 end;
 
 function sqrtNative(argCount: integer; args: pValue): TValue;
@@ -6179,13 +6184,13 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  if args[0].NumberValue < 0 then
+  if GetNumber(args[0]) < 0 then
   begin
     RuntimeError('sqrt() argument must not be negative.');
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Sqrt(args[0].NumberValue));
+  Result := CreateNumber(Sqrt(GetNumber(args[0])));
 end;
 
 function powNative(argCount: integer; args: pValue): TValue;
@@ -6202,7 +6207,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Math.Power(args[0].NumberValue, args[1].NumberValue));
+  Result := CreateNumber(Math.Power(GetNumber(args[0]), GetNumber(args[1])));
 end;
 
 function sinNative(argCount: integer; args: pValue): TValue;
@@ -6219,7 +6224,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Sin(args[0].NumberValue));
+  Result := CreateNumber(Sin(GetNumber(args[0])));
 end;
 
 function cosNative(argCount: integer; args: pValue): TValue;
@@ -6236,7 +6241,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(Cos(args[0].NumberValue));
+  Result := CreateNumber(Cos(GetNumber(args[0])));
 end;
 
 function randomNative(argCount: integer; args: pValue): TValue;
@@ -6266,7 +6271,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  Result := CreateNumber(pObjString(args[0].ObjValue)^.length);
+  Result := CreateNumber(pObjString(GetObject(args[0]))^.length);
 end;
 
 function substrNative(argCount: integer; args: pValue): TValue;
@@ -6293,10 +6298,10 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   sLen := Length(s);
-  start := Trunc(args[1].NumberValue);
-  len := Trunc(args[2].NumberValue);
+  start := Trunc(GetNumber(args[1]));
+  len := Trunc(GetNumber(args[2]));
   if (start < 0) or (start >= sLen) then
   begin
     RuntimeError('substr() start index out of bounds.');
@@ -6333,8 +6338,8 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  haystack := ObjStringToAnsiString(pObjString(args[0].ObjValue));
-  needle := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+  haystack := ObjStringToAnsiString(pObjString(GetObject(args[0])));
+  needle := ObjStringToAnsiString(pObjString(GetObject(args[1])));
   if Length(needle) = 0 then
     Result := CreateNumber(0)
   else
@@ -6371,8 +6376,8 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
-  idx := Trunc(args[1].NumberValue);
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
+  idx := Trunc(GetNumber(args[1]));
   if (idx < 0) or (idx >= Length(s)) then
   begin
     RuntimeError('charAt() index out of bounds.');
@@ -6400,7 +6405,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   objStr := CreateString(AnsiString(AnsiUpperCase(String(s))), VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
@@ -6422,7 +6427,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   objStr := CreateString(AnsiString(AnsiLowerCase(String(s))), VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
@@ -6444,7 +6449,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
   objStr := CreateString(AnsiString(Trim(String(s))), VM.MemTracker);
   Result := CreateObject(pObj(objStr));
 end;
@@ -6484,8 +6489,8 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  s := ObjStringToAnsiString(pObjString(args[0].ObjValue));
-  delim := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
+  delim := ObjStringToAnsiString(pObjString(GetObject(args[1])));
   sLen := Length(s);
   delimLen := Length(delim);
   arr := newArray(VM.MemTracker);
@@ -6579,7 +6584,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  arr := pObjArray(args[0].ObjValue);
+  arr := pObjArray(GetObject(args[0]));
   EnsureArrayCapacity(arr, VM.MemTracker);
   arr^.Elements[arr^.Count] := args[1];
   Inc(arr^.Count);
@@ -6602,7 +6607,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  arr := pObjArray(args[0].ObjValue);
+  arr := pObjArray(GetObject(args[0]));
   if arr^.Count = 0 then
   begin
     RuntimeError('Cannot pop from an empty array.');
@@ -6636,7 +6641,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  arr := pObjArray(args[0].ObjValue);
+  arr := pObjArray(GetObject(args[0]));
   idx := Trunc(GetNumber(args[1]));
   if (idx < 0) or (idx >= arr^.Count) then
   begin
@@ -6670,7 +6675,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  arr := pObjArray(args[0].ObjValue);
+  arr := pObjArray(GetObject(args[0]));
   idx := Trunc(GetNumber(args[1]));
   if (idx < 0) or (idx >= arr^.Count) then
   begin
@@ -6698,7 +6703,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  arr := pObjArray(args[0].ObjValue);
+  arr := pObjArray(GetObject(args[0]));
   Result := CreateNumber(arr^.Count);
 end;
 
@@ -6725,7 +6730,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  arr := pObjArray(args[0].ObjValue);
+  arr := pObjArray(GetObject(args[0]));
   idx := Trunc(GetNumber(args[1]));
   if (idx < 0) or (idx >= arr^.Count) then
   begin
@@ -6772,7 +6777,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
   DictSet(dict, args[1], args[2], VM.MemTracker);
   Result := args[2];
 end;
@@ -6794,7 +6799,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
   if not DictGet(dict, args[1], value) then
   begin
     RuntimeError('Key not found in dictionary.');
@@ -6821,7 +6826,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
   Result := CreateBoolean(DictGet(dict, args[1], value));
 end;
 
@@ -6841,7 +6846,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
   Result := CreateBoolean(DictDelete(dict, args[1]));
 end;
 
@@ -6863,7 +6868,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
   arr := newArray(VM.MemTracker);
   // Pre-allocate elements for all keys
   if dict^.Count > 0 then
@@ -6904,7 +6909,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
   Result := CreateNumber(dict^.Count);
 end;
 
@@ -6926,7 +6931,7 @@ begin
     Result := CreateNilValue;
     Exit;
   end;
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
   arr := newArray(VM.MemTracker);
   if dict^.Count > 0 then
   begin
@@ -7186,7 +7191,7 @@ begin
     RuntimeError('loxClassInfo() argument must be a string.');
     Exit(CreateNilValue);
   end;
-  className := String(ObjStringToAnsiString(pObjString(args[0].ObjValue)));
+  className := String(ObjStringToAnsiString(pObjString(GetObject(args[0]))));
 
   // Find the attributed class
   foundClass := nil;
@@ -7352,7 +7357,7 @@ begin
     RuntimeError('loxObjectInfo() argument must be a string.');
     Exit(CreateNilValue);
   end;
-  objName := ObjStringToAnsiString(pObjString(args[0].ObjValue));
+  objName := ObjStringToAnsiString(pObjString(GetObject(args[0])));
 
   // Find the named native object in globals
   nativeObj := nil;
@@ -7363,7 +7368,7 @@ begin
     if not isNativeObject(entry^.value) then Continue;
     if ObjStringToAnsiString(entry^.key) = objName then
     begin
-      nativeObj := pObjNativeObject(entry^.value.ObjValue);
+      nativeObj := pObjNativeObject(GetObject(entry^.value));
       Break;
     end;
   end;
@@ -7536,7 +7541,7 @@ begin
     Exit(CreateNilValue);
   end;
 
-  dict := pObjDictionary(args[0].ObjValue);
+  dict := pObjDictionary(GetObject(args[0]));
 
   // Save stack depth for unwinding on all exit paths
   stackBase := VM.Stack.StackTop;
@@ -7566,7 +7571,7 @@ begin
     RuntimeError('sqlConnect() "server" must be a string.');
     Exit(CreateNilValue);
   end;
-  server := ObjStringToAnsiString(pObjString(serverVal.ObjValue));
+  server := ObjStringToAnsiString(pObjString(GetObject(serverVal)));
 
   // Required: database
   if not DictGet(dict, dbKey, dbVal) then
@@ -7581,14 +7586,14 @@ begin
     RuntimeError('sqlConnect() "database" must be a string.');
     Exit(CreateNilValue);
   end;
-  db := ObjStringToAnsiString(pObjString(dbVal.ObjValue));
+  db := ObjStringToAnsiString(pObjString(GetObject(dbVal)));
 
   // Optional: auth (default "windows")
   auth := 'windows';
   if DictGet(dict, authKey, authVal) then
   begin
     if isString(authVal) then
-      auth := AnsiString(LowerCase(String(ObjStringToAnsiString(pObjString(authVal.ObjValue)))));
+      auth := AnsiString(LowerCase(String(ObjStringToAnsiString(pObjString(GetObject(authVal))))));
   end;
 
   // Optional: user, password (for SQL auth)
@@ -7596,10 +7601,10 @@ begin
   pass := '';
   if DictGet(dict, userKey, userVal) then
     if isString(userVal) then
-      user := ObjStringToAnsiString(pObjString(userVal.ObjValue));
+      user := ObjStringToAnsiString(pObjString(GetObject(userVal)));
   if DictGet(dict, passKey, passVal) then
     if isString(passVal) then
-      pass := ObjStringToAnsiString(pObjString(passVal.ObjValue));
+      pass := ObjStringToAnsiString(pObjString(GetObject(passVal)));
 
   // Keys no longer needed ? unwind stack
   while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
@@ -7653,7 +7658,7 @@ begin
     RuntimeError('sqlClose() argument must be a SQL connection.');
     Exit(CreateNilValue);
   end;
-  nativeObj := pObjNativeObject(args[0].ObjValue);
+  nativeObj := pObjNativeObject(GetObject(args[0]));
   if nativeObj^.classInfo^.name <> 'SqlConnection' then
   begin
     RuntimeError('sqlClose() argument must be a SQL connection.');
@@ -7689,7 +7694,7 @@ begin
     RuntimeError('sqlQuery() first argument must be a SQL connection.');
     Exit(CreateNilValue);
   end;
-  nativeObj := pObjNativeObject(args[0].ObjValue);
+  nativeObj := pObjNativeObject(GetObject(args[0]));
   if nativeObj^.classInfo^.name <> 'SqlConnection' then
   begin
     RuntimeError('sqlQuery() first argument must be a SQL connection.');
@@ -7708,7 +7713,7 @@ begin
     Exit(CreateNilValue);
   end;
 
-  sql := ObjStringToAnsiString(pObjString(args[1].ObjValue));
+  sql := ObjStringToAnsiString(pObjString(GetObject(args[1])));
 
   // Save stack depth so we can unwind on any exit path
   stackBase := VM.Stack.StackTop;
@@ -7814,7 +7819,7 @@ begin
     RuntimeError('sqlQueryParams() first argument must be a SQL connection.');
     Exit(CreateNilValue);
   end;
-  nativeObj := pObjNativeObject(args[0].ObjValue);
+  nativeObj := pObjNativeObject(GetObject(args[0]));
   if nativeObj^.classInfo^.name <> 'SqlConnection' then
   begin
     RuntimeError('sqlQueryParams() first argument must be a SQL connection.');
@@ -7838,8 +7843,8 @@ begin
     Exit(CreateNilValue);
   end;
 
-  sql := ObjStringToAnsiString(pObjString(args[1].ObjValue));
-  params := pObjArray(args[2].ObjValue);
+  sql := ObjStringToAnsiString(pObjString(GetObject(args[1])));
+  params := pObjArray(GetObject(args[2]));
 
   // Save stack depth so we can unwind on any exit path
   stackBase := VM.Stack.StackTop;
@@ -7859,14 +7864,14 @@ begin
       paramVal := params^.Elements[p];
       case paramVal.ValueKind of
         vkNumber:
-          query.ParamByName('p' + IntToStr(p)).AsFloat := paramVal.NumberValue;
+          query.ParamByName('p' + IntToStr(p)).AsFloat := GetNumber(paramVal);
         vkBoolean:
-          query.ParamByName('p' + IntToStr(p)).AsBoolean := paramVal.BooleanValue;
+          query.ParamByName('p' + IntToStr(p)).AsBoolean := GetBoolean(paramVal);
         vkNull:
           query.ParamByName('p' + IntToStr(p)).Clear;
         vkObject:
           if isString(paramVal) then
-            query.ParamByName('p' + IntToStr(p)).AsString := string(ObjStringToAnsiString(pObjString(paramVal.ObjValue)))
+            query.ParamByName('p' + IntToStr(p)).AsString := string(ObjStringToAnsiString(pObjString(GetObject(paramVal))))
           else
           begin
             RuntimeError('sqlQueryParams() parameter ' + IntToStr(p) + ' must be a string, number, boolean, or nil.');
