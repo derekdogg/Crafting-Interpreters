@@ -173,19 +173,20 @@ const
 
   // NaN boxing constants
   // Finite IEEE 754 doubles do not satisfy (bits & QNAN) = QNAN.
-  // Hardware-generated NaNs (0/0, inf-inf, etc.) CAN match this mask,
-  // so arithmetic NaN results are effectively aliased into our tag space.
-  // This is intentional and standard for NaN-boxed VMs (clox, LuaJIT, etc.)
-  // — it means not every IEEE NaN payload survives round-tripping.
+  // Some IEEE NaN payloads CAN match this mask (e.g., NaN propagation
+  // through arithmetic can produce arbitrary payloads). CreateNumber
+  // canonicalizes such NaNs to CANON_NAN so they are never misclassified
+  // as nil/boolean/object values.
   //
   // Non-number Lox values are encoded as quiet NaN payloads:
   //   Nil:    QNAN | TAG_NIL
   //   False:  QNAN | TAG_FALSE
   //   True:   QNAN | TAG_TRUE
   //   Object: SIGN_BIT | QNAN | pointer  (userspace ptrs use lower 48 bits)
-  QNAN     = UInt64($7FFC000000000000);
-  SIGN_BIT = UInt64($8000000000000000);
-  OBJ_TAG  = QNAN or SIGN_BIT;            // $FFFC000000000000
+  QNAN      = UInt64($7FFC000000000000);
+  SIGN_BIT  = UInt64($8000000000000000);
+  OBJ_TAG   = QNAN or SIGN_BIT;            // $FFFC000000000000
+  CANON_NAN = UInt64($7FF8000000000000);   // safe quiet NaN (bit 50 clear → passes isNumber)
 
   TAG_NIL   = 1;
   TAG_FALSE = 2;
@@ -1949,7 +1950,9 @@ end;
 function CreateObject(value : pObj) : TValue;
 begin
   AssertPointerIsNotNil(value, 'CreateObject - object value');
-  result := OBJ_TAG or UInt64(NativeUInt(value));
+  Assert(UInt64(NativeUInt(value)) and OBJ_TAG = 0,
+    'CreateObject: pointer has bits in tag region - platform incompatible with NaN boxing');
+  result := OBJ_TAG or (UInt64(NativeUInt(value)) and not OBJ_TAG);
 end;
 
 
@@ -3288,8 +3291,18 @@ begin
 end;
 
 function CreateNumber(Value: Double): TValue; inline;
+var
+  bits: UInt64;
 begin
-  Result := PUInt64(@Value)^;
+  bits := PUInt64(@Value)^;
+  // If raw bits collide with tag space, canonicalize to a safe NaN.
+  // Without this, 0/0 or NaN-propagation could produce payloads that
+  // satisfy (bits & QNAN) = QNAN, causing misclassification as
+  // nil/boolean/object and risking invalid pointer dereferences.
+  if (bits and QNAN) = QNAN then
+    Result := CANON_NAN
+  else
+    Result := bits;
 end;
 
 function GetNumber(Value : TValue) : double; inline;

@@ -303,7 +303,9 @@ begin
       else if isBoolean(IR.value) then
         Memo2.Lines.Add(BoolToStr(GetBoolean(IR.value), True))
       else if isNill(IR.value) then
+      begin
         // suppress
+      end
       else if isObject(IR.value) then
         Memo2.Lines.Add(IR.ResultStr);
     end;
