@@ -1,0 +1,4 @@
+// Prefix of a real method name must NOT match (length check first).
+var d = [:];
+d.Se("k");
+// expect runtime error: Undefined dictionary method 'Se'.

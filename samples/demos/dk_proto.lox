@@ -6,15 +6,23 @@
 //   Jump:  Space
 //   Quit:  Esc
 // ============================================================
+// Classic arcade cabinet aspect: tall portrait window.
+setCanvasSize(480, 720);
+var w = canvasWidth();   // 480
+var h = canvasHeight();  // 720
 
-var w = canvasWidth();   // 320
-var h = canvasHeight();  // 240
+// Sprite render scale (all art is authored at 1x and drawn at SCALEx).
+var SCALE     = 2;
+var MARIO_W   = 12 * SCALE;
+var MARIO_H   = 16 * SCALE;
+var BARREL_W  = 16 * SCALE;
+var BARREL_H  = 14 * SCALE;
 
-// Playfield is a 192x240 portrait window centered in the canvas
-var fieldX = 64;
-var fieldW = 192;
+// Playfield: 384 wide, centered, full canvas height.
+var fieldX = 48;
+var fieldW = 384;
 var fieldY = 0;
-var fieldH = 240;
+var fieldH = 720;
 
 // --------- Palette ---------
 setPaletteColor("R", 230,  40,  40);  // mario red / barrel rim
@@ -156,47 +164,49 @@ var dk = createPaletteSprite(32, 24,
 
 clearPalette();
 
-// --------- Girders (4 horizontal platforms) ---------
+// --------- Girders (5 horizontal platforms) ---------
 // Y positions (top edge of each girder)
-var girderH = 8;
+var girderH = 16;
 var girders = newArray();
-arrayPush(girders, 56);
-arrayPush(girders, 104);
-arrayPush(girders, 152);
-arrayPush(girders, 208);
+arrayPush(girders, 120);
+arrayPush(girders, 240);
+arrayPush(girders, 360);
+arrayPush(girders, 480);
+arrayPush(girders, 600);
+var BOTTOM_GIRDER = arrayLen(girders) - 1;
 
 fun drawGirder(gy) {
   // base red bar
   setColor(200, 60, 50);
   fillRect(fieldX, gy, fieldW, girderH);
-  // top highlight + bottom shadow
+  // top highlight + bottom shadow (2px each at 2x scale)
   setColor(255, 130, 110);
-  fillRect(fieldX, gy, fieldW, 1);
+  fillRect(fieldX, gy, fieldW, 2);
   setColor(110, 35, 30);
-  fillRect(fieldX, gy + girderH - 1, fieldW, 1);
-  // rivets every 12px
-  var rx = fieldX + 4;
-  while (rx < fieldX + fieldW - 2) {
+  fillRect(fieldX, gy + girderH - 2, fieldW, 2);
+  // rivets every 24px (4x4 dots)
+  var rx = fieldX + 8;
+  while (rx < fieldX + fieldW - 4) {
     setColor(60, 20, 15);
-    fillRect(rx, gy + 3, 2, 2);
-    rx = rx + 12;
+    fillRect(rx, gy + 6, 4, 4);
+    rx = rx + 24;
   }
 }
 
 fun girderAt(py) {
-  // Returns Y of girder top if (player_feet_y) is within 4px above, else -1
+  // Returns Y of girder top if (player_feet_y) is within 8px above, else -1
   var i = 0;
   while (i < arrayLen(girders)) {
     var gy = arrayGet(girders, i);
-    if (py >= gy - 4 and py <= gy + 2) return gy;
+    if (py >= gy - 8 and py <= gy + 4) return gy;
     i = i + 1;
   }
   return -1;
 }
 
 // --------- Mario state ---------
-var marioX = fieldX + 20;
-var marioY = arrayGet(girders, 3) - 16;  // stand on bottom girder
+var marioX = fieldX + 40;
+var marioY = arrayGet(girders, BOTTOM_GIRDER) - MARIO_H;
 var marioVX = 0;
 var marioVY = 0;
 var onGround = true;
@@ -206,23 +216,23 @@ var walkTimer = 0;
 var leftHeld = false;
 var rightHeld = false;
 
-var moveSpeed = 50;     // px/sec
-var gravity = 320;
-var jumpSpeed = -120;
+var moveSpeed = 100;    // px/sec
+var gravity = 640;
+var jumpSpeed = -240;
 
 // --------- Barrel state ---------
-var bX = fieldX + fieldW - 32;
-var bY = arrayGet(girders, 0) - 14;
+var bX = fieldX + fieldW - BARREL_W - 8;
+var bY = arrayGet(girders, 0) - BARREL_H;
 var bVY = 0;
 var bGirder = 0;             // which girder the barrel rolls on
 var bDir = -1;               // -1 = rolling left, 1 = right
 var bSpinTimer = 0;
 var bSpinFrame = 0;
-var barrelSpeed = 40;
+var barrelSpeed = 80;
 
 fun resetBarrel() {
-  bX = fieldX + fieldW - 32;
-  bY = arrayGet(girders, 0) - 14;
+  bX = fieldX + fieldW - BARREL_W - 8;
+  bY = arrayGet(girders, 0) - BARREL_H;
   bVY = 0;
   bGirder = 0;
   bDir = -1;
@@ -262,17 +272,17 @@ while (running) {
   if (rightHeld) { marioVX =  moveSpeed; facingLeft = false; }
   marioX = marioX + marioVX * dt;
   if (marioX < fieldX) marioX = fieldX;
-  if (marioX > fieldX + fieldW - 12) marioX = fieldX + fieldW - 12;
+  if (marioX > fieldX + fieldW - MARIO_W) marioX = fieldX + fieldW - MARIO_W;
 
   marioVY = marioVY + gravity * dt;
   marioY = marioY + marioVY * dt;
 
-  // Ground check (Mario feet at marioY + 16)
+  // Ground check (Mario feet at marioY + MARIO_H)
   if (marioVY >= 0) {
-    var feetY = marioY + 16;
+    var feetY = marioY + MARIO_H;
     var gy = girderAt(feetY);
     if (gy >= 0) {
-      marioY = gy - 16;
+      marioY = gy - MARIO_H;
       marioVY = 0;
       onGround = true;
     } else {
@@ -282,8 +292,8 @@ while (running) {
 
   // Fall off bottom — reset
   if (marioY > h) {
-    marioY = arrayGet(girders, 3) - 16;
-    marioX = fieldX + 20;
+    marioY = arrayGet(girders, BOTTOM_GIRDER) - MARIO_H;
+    marioX = fieldX + 40;
     marioVY = 0;
   }
 
@@ -301,31 +311,31 @@ while (running) {
   if (bSpinTimer > 0.1) { bSpinTimer = 0; bSpinFrame = 1 - bSpinFrame; }
 
   // Drop to next girder at the edges
-  if (bDir < 0 and bX <= fieldX - 4) {
+  if (bDir < 0 and bX <= fieldX - 8) {
     bGirder = bGirder + 1;
-    if (bGirder > 3) { resetBarrel(); }
+    if (bGirder > BOTTOM_GIRDER) { resetBarrel(); }
     else {
       bX = fieldX;
-      bY = arrayGet(girders, bGirder) - 14;
+      bY = arrayGet(girders, bGirder) - BARREL_H;
       bDir = 1;  // reverse direction each level (DK-style)
     }
-  } else if (bDir > 0 and bX >= fieldX + fieldW - 12) {
+  } else if (bDir > 0 and bX >= fieldX + fieldW - BARREL_W) {
     bGirder = bGirder + 1;
-    if (bGirder > 3) { resetBarrel(); }
+    if (bGirder > BOTTOM_GIRDER) { resetBarrel(); }
     else {
-      bX = fieldX + fieldW - 16;
-      bY = arrayGet(girders, bGirder) - 14;
+      bX = fieldX + fieldW - BARREL_W - 4;
+      bY = arrayGet(girders, bGirder) - BARREL_H;
       bDir = -1;
     }
   }
 
-  // Mario hit by barrel?
-  if ((marioX + 10 > bX) and (marioX + 2 < bX + 16) and
-      (marioY + 14 > bY) and (marioY + 2 < bY + 14)) {
+  // Mario hit by barrel? (tightened hitbox: 4px inset on each side)
+  if ((marioX + MARIO_W - 4 > bX) and (marioX + 4 < bX + BARREL_W) and
+      (marioY + MARIO_H - 4 > bY) and (marioY + 4 < bY + BARREL_H)) {
     // bonk — reset Mario
     playNoise(400, 0.4);
-    marioY = arrayGet(girders, 3) - 16;
-    marioX = fieldX + 20;
+    marioY = arrayGet(girders, BOTTOM_GIRDER) - MARIO_H;
+    marioX = fieldX + 40;
     marioVY = 0;
   }
 
@@ -376,19 +386,19 @@ while (running) {
   }
 
   // Donkey Kong on top-left of playfield
-  drawSpriteScaled(dk, fieldX + 12, 16, 1);
+  drawSpriteScaled(dk, fieldX + 24, 32, SCALE);
 
   // Pauline (just a tiny figure top-right)
   setColor(255, 220, 60);
-  fillRect(fieldX + fieldW - 24, 20, 8, 12);
+  fillRect(fieldX + fieldW - 48, 40, 16, 24);
   setColor(255, 200, 160);
-  fillRect(fieldX + fieldW - 22, 16, 4, 4);
+  fillRect(fieldX + fieldW - 44, 32, 8, 8);
 
   // Barrel
   if (bSpinFrame == 0)
-    drawSpriteScaled(barrel1, floor(bX), floor(bY), 1);
+    drawSpriteScaled(barrel1, floor(bX), floor(bY), SCALE);
   else
-    drawSpriteScaled(barrel2, floor(bX), floor(bY), 1);
+    drawSpriteScaled(barrel2, floor(bX), floor(bY), SCALE);
 
   // Mario
   var marioSpr = marioStand;
@@ -399,7 +409,7 @@ while (running) {
     else if (marioSpr == marioWalk) marioSpr = marioWalkL;
     else marioSpr = marioJumpL;
   }
-  drawSpriteScaled(marioSpr, floor(marioX), floor(marioY), 1);
+  drawSpriteScaled(marioSpr, floor(marioX), floor(marioY), SCALE);
 
   present();
 }

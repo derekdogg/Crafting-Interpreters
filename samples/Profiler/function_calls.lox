@@ -1,0 +1,73 @@
+// function_calls.lox — call-frame overhead.
+//
+// Compares same workload as (a) one big loop body, (b) tiny function called
+// per iter, (c) deep recursion. The deltas isolate CallValue + frame
+// setup + return cost vs raw dispatch.
+
+var REPS = 1000000;
+var DEPTH = 200;  // VM frame limit is 256; stay safely below.
+
+fun bench(label, fn, arg) {
+  var start = clock();
+  var r = fn(arg);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+// (a) inline: no call overhead, just dispatch + arithmetic.
+fun inlineSum(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + i;
+    i = i + 1;
+  }
+  return s;
+}
+
+// (b) one tiny call per iteration. Delta vs (a) = per-call cost.
+fun addOne(s, i) { return s + i; }
+fun calledSum(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = addOne(s, i);
+    i = i + 1;
+  }
+  return s;
+}
+
+// (c) deep recursion to D, repeated REPS / D times — pure stack push/pop.
+fun recurse(n) {
+  if (n <= 0) return 0;
+  return 1 + recurse(n - 1);
+}
+fun recurseDriver(reps) {
+  var k = 0;
+  var total = 0;
+  while (k < reps) {
+    total = total + recurse(DEPTH);
+    k = k + 1;
+  }
+  return total;
+}
+
+// (d) zero-arg call — measures the minimum call cost.
+fun nop() { return 0; }
+fun nopLoop(n) {
+  var i = 0;
+  while (i < n) {
+    nop();
+    i = i + 1;
+  }
+  return i;
+}
+
+print "=== function calls ===";
+bench("inline sum  ", inlineSum, REPS);
+bench("called sum  ", calledSum, REPS);
+bench("nop loop    ", nopLoop,   REPS);
+bench("recurse 200 ", recurseDriver, REPS / DEPTH);
+print "=== done ===";

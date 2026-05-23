@@ -1,0 +1,149 @@
+// Tests for stack growth via OP_CONSTANT's capacity check.
+//
+// The VM stack starts at START_CAPACITY (256 slots). When StackTop >= CapacityEnd,
+// pushStackGrow reallocates the stack. This test forces that path by creating
+// deep recursion and large temporary expression chains that exceed 256 slots.
+
+// ---------------------------------------------------------------------------
+// Test 1: Deep recursion forces stack growth
+// Each call frame uses ~3+ slots (closure, locals, temporaries).
+// At 256 capacity, ~80 recursive calls should trigger a grow.
+// We go to 150 to be sure.
+// ---------------------------------------------------------------------------
+{
+  fun recurse(n) {
+    if (n == 0) return 0;
+    var local = n;  // one local per frame to consume stack space
+    return local + recurse(n - 1);
+  }
+  // Sum 1..150 = 11325
+  assert(recurse(150) == 11325, "T1: deep recursion triggers stack grow");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Deep recursion (200 levels)
+// Exceeds initial 256-slot stack capacity but stays under 256 frame limit.
+// Each frame uses ~2-3 stack slots, so 200 frames ≈ 400-600 slots > 256.
+// ---------------------------------------------------------------------------
+{
+  fun deep(n) {
+    if (n == 0) return 0;
+    return n + deep(n - 1);
+  }
+  // Sum 1..200 = 20100
+  assert(deep(200) == 20100, "T2: 200-deep recursion (stack grow)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Recursion with multiple locals per frame
+// Each frame consumes 5+ slots. 60 calls * 5 slots = 300 > 256.
+// This guarantees the grow happens while OP_CONSTANT is pushing locals.
+// ---------------------------------------------------------------------------
+{
+  fun fatFrame(n) {
+    var a = n;
+    var b = n * 2;
+    var c = n * 3;
+    var d = n * 4;
+    if (n == 0) return 0;
+    return a + b + c + d + fatFrame(n - 1);
+  }
+  // Each frame contributes n + 2n + 3n + 4n = 10n
+  // Sum of 10n for n=1..60 = 10 * (60*61/2) = 10 * 1830 = 18300
+  assert(fatFrame(60) == 18300, "T3: fat frames force grow during OP_CONSTANT");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Two-phase deep recursion across stack growth boundary
+// First call grows the stack, second call verifies it still works correctly
+// after the growth with a different function.
+// ---------------------------------------------------------------------------
+{
+  fun countDown(n) {
+    if (n == 0) return 0;
+    return 1 + countDown(n - 1);
+  }
+  fun sumDown(n) {
+    if (n == 0) return 0;
+    return n + sumDown(n - 1);
+  }
+  // First: grow the stack
+  assert(countDown(200) == 200, "T4a: first deep call grows stack");
+  // Second: use the grown stack with a different function
+  assert(sumDown(200) == 20100, "T4b: second deep call on grown stack");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Stack survives grow and values remain correct
+// After a deep call that triggers grow, verify that locals in the caller's
+// frame (which were rebased during realloc) are still correct.
+// ---------------------------------------------------------------------------
+{
+  fun growAndReturn(n) {
+    if (n == 0) return 42;
+    return growAndReturn(n - 1);
+  }
+
+  var before1 = "hello";
+  var before2 = 999;
+  var before3 = true;
+
+  // This triggers stack growth (150+ frames)
+  var result = growAndReturn(200);
+
+  // Locals declared BEFORE the deep call must survive the reallocation
+  assert(before1 == "hello", "T5a: string local survives grow");
+  assert(before2 == 999, "T5b: number local survives grow");
+  assert(before3 == true, "T5c: bool local survives grow");
+  assert(result == 42, "T5d: return value correct after grow");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Closures over variables that survive stack growth
+// An upvalue captured before the grow must still work after the grow,
+// even though the stack was reallocated.
+// ---------------------------------------------------------------------------
+{
+  fun makeCounter() {
+    var count = 0;
+    fun increment() {
+      count = count + 1;
+      return count;
+    }
+    return increment;
+  }
+
+  var counter = makeCounter();
+  assert(counter() == 1, "T6a: counter before grow");
+  assert(counter() == 2, "T6b: counter before grow");
+
+  // Now trigger a stack grow with deep recursion
+  fun burner(n) {
+    if (n == 0) return 0;
+    var pad = n;
+    return burner(n - 1);
+  }
+  burner(200);
+
+  // The closure's upvalue must still work after the grow
+  assert(counter() == 3, "T6c: counter after grow (upvalue survives)");
+  assert(counter() == 4, "T6d: counter after grow");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Constants pushed in a deeply nested expression
+// A long chain of additions forces many OP_CONSTANT pushes in sequence.
+// Combined with recursion, some of these pushes will hit the grow path.
+// ---------------------------------------------------------------------------
+{
+  fun bigExpr(n) {
+    if (n == 0) return 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10;
+    return bigExpr(n - 1) + 1 + 2 + 3 + 4 + 5;
+  }
+  // bigExpr(0) = 55
+  // bigExpr(n) = bigExpr(n-1) + 15
+  // bigExpr(100) = 55 + 100*15 = 55 + 1500 = 1555
+  assert(bigExpr(100) == 1555, "T7: constants in deep nested expression");
+}
+
+print "pass: stack_growth"; // expect: pass: stack_growth

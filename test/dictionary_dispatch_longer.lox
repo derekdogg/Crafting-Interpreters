@@ -1,0 +1,4 @@
+// Name longer than 'Set' that starts with 'Set' must NOT match.
+var d = [:];
+d.Setter("k");
+// expect runtime error: Undefined dictionary method 'Setter'.

@@ -1,0 +1,54 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 2: Tombstone in every slot of a probe chain
+// Fill 6 slots, delete them in forward order (creating a chain of tombstones),
+// then insert new keys that must skip over all tombstones.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  var keys = newArray();
+  // Insert 6 keys
+  for (var i = 0; i < 6; i = i + 1) {
+    var k = "t2_" + str(i);
+    arrayPush(keys, k);
+    d.Set(k, i * 10);
+  }
+  assert(d.Size() == 6);
+
+  // Delete all 6 â€” creates 6 tombstones in the backing array
+  for (var i = 0; i < 6; i = i + 1) {
+    assert(d.Delete(arrayGet(keys, i)) == true);
+  }
+  assert(d.Size() == 0);
+
+  // Insert 6 new keys â€” they must navigate the tombstone field
+  for (var i = 0; i < 6; i = i + 1) {
+    d.Set("new_" + str(i), i * 100);
+  }
+  assert(d.Size() == 6);
+
+  // Verify new keys
+  for (var i = 0; i < 6; i = i + 1) {
+    assert(d.Get("new_" + str(i)) == i * 100);
+  }
+  // Verify old keys still gone
+  for (var i = 0; i < 6; i = i + 1) {
+    assert(d.Has(arrayGet(keys, i)) == false);
+  }
+}
+print "pass: tombstone chain"; // expect: pass: tombstone chain
+

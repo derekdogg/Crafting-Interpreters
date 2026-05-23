@@ -1,0 +1,103 @@
+// records.lox — record field access cost.
+//
+// Records store fields in a flat array; reads/writes use findFieldIndex
+// which is O(N) in field count. So a 16-field record should be ~4x slower
+// to access than a 4-field record. This script verifies and quantifies
+// that scaling.
+//
+// Also compares record access vs equivalent-shape dict access — records
+// should win on small N (linear scan beats hash on tiny tables), dicts
+// should win as N grows.
+
+var REPS = 200000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn(REPS);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+record R2(a, b);
+record R4(a, b, c, d);
+record R8(a, b, c, d, e, f, g, h);
+record R16(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p);
+
+fun rec2(n) {
+  var r = R2(1, 2);
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + r.a + r.b;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun rec4(n) {
+  var r = R4(1, 2, 3, 4);
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + r.a + r.b + r.c + r.d;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun rec8(n) {
+  var r = R8(1, 2, 3, 4, 5, 6, 7, 8);
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + r.a + r.b + r.c + r.d + r.e + r.f + r.g + r.h;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun rec16(n) {
+  var r = R16(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    // Access last field — worst case for linear scan.
+    s = s + r.p;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun rec16First(n) {
+  var r = R16(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    // Access first field — best case.
+    s = s + r.a;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun recMutate(n) {
+  // Set + get same field repeatedly.
+  var r = R4(0, 0, 0, 0);
+  var i = 0;
+  while (i < n) {
+    r.a = i;
+    i = i + 1;
+  }
+  return r.a;
+}
+
+print "=== records ===";
+bench("R2  read 2 fields/iter   ", rec2);
+bench("R4  read 4 fields/iter   ", rec4);
+bench("R8  read 8 fields/iter   ", rec8);
+bench("R16 read last (worst)    ", rec16);
+bench("R16 read first (best)    ", rec16First);
+bench("R4  set field repeatedly ", recMutate);
+print "=== done ===";

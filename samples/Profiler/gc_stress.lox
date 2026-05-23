@@ -1,0 +1,72 @@
+// gc_stress.lox — allocation rate and mark-sweep cost.
+//
+// Each iteration allocates a fresh object that immediately becomes garbage.
+// The string-concat variant exercises the interning table; the array
+// variant exercises raw allocation; the closure variant exercises capturing.
+// With DEBUG_STRESS_GC defined, every Allocate() triggers a full mark-sweep,
+// so these numbers should rise dramatically. Useful to confirm STRESS_GC
+// is doing what it claims, and to compare GC walk-cost across object kinds.
+
+var REPS = 50000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn(REPS);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+fun allocStrings(n) {
+  // Each concat creates a fresh string (until interning kicks in).
+  var s = "";
+  var i = 0;
+  while (i < n) {
+    s = "a" + str(i % 10);
+    i = i + 1;
+  }
+  return s;
+}
+
+fun allocArrays(n) {
+  var i = 0;
+  var lastLen = 0;
+  while (i < n) {
+    var a = newArray();
+    arrayPush(a, i);
+    lastLen = arrayLen(a);
+    i = i + 1;
+  }
+  return lastLen;
+}
+
+fun allocClosures(n) {
+  var i = 0;
+  var last = 0;
+  while (i < n) {
+    var x = i;
+    fun cap() { return x; }
+    last = cap();
+    i = i + 1;
+  }
+  return last;
+}
+
+fun noAlloc(n) {
+  // Baseline — same loop without allocation.
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + i;
+    i = i + 1;
+  }
+  return s;
+}
+
+print "=== gc stress ===";
+bench("no allocation (baseline)", noAlloc);
+bench("string per iter         ", allocStrings);
+bench("array per iter          ", allocArrays);
+bench("closure per iter        ", allocClosures);
+print "=== done ===";

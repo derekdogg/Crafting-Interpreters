@@ -1,0 +1,78 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 34: Overwrite key whose hash collides with deleted key of different type
+// false(hash=0) and 0(hash=0) are exact hash collisions.
+// Insert false and 0. Delete false (tombstone). Overwrite 0.
+// The probe for 0 hits tombstone(false) at slot 0, then finds 0 at slot 1.
+// Must update at slot 1, not create duplicate at slot 0.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(false, "F");   // hash=0, slot 0
+  d.Set(0, "zero");    // hash=0, probes to slot 1
+  assert(d.Size() == 2);
+
+  d.Delete(false);      // tombstone at slot 0
+  assert(d.Size() == 1);
+
+  // Overwrite 0: probe hits tombstone(false) at slot 0, must continue to slot 1
+  d.Set(0, "zero_updated");
+  assert(d.Size() == 1);           // Must NOT become 2
+  assert(d.Get(0) == "zero_updated");
+  assert(d.Has(false) == false);
+
+  var keys = d.Keys();
+  assert(arrayLen(keys) == 1);
+  assert(keys[0] == 0);
+
+  // Now test the reverse: insert false and 0, delete 0, overwrite false
+  var d2 = [:];
+  d2.Set(false, "F");  // slot 0
+  d2.Set(0, "zero");   // slot 1
+  d2.Delete(0);         // tombstone at slot 1 (but slot 1 held key 0)
+  assert(d2.Size() == 1);
+
+  d2.Set(false, "F_updated");  // probe hits false at slot 0 immediately (match)
+  assert(d2.Size() == 1);
+  assert(d2.Get(false) == "F_updated");
+  assert(d2.Has(0) == false);
+
+  // Cross-type: delete false, insert 0, then overwrite 0 through false's tombstone
+  var d3 = [:];
+  d3.Set(false, "F");
+  d3.Set(0, "Z");
+  d3.Set(1, "O");      // hash=0x3FF00000, mod 8=0, probes to slot 2
+  d3.Delete(false);     // tombstone at slot 0
+  assert(d3.Size() == 2);
+
+  // Overwrite 0 (at slot 1): probe hits tombstone at slot 0, must continue
+  d3.Set(0, "Z2");
+  assert(d3.Size() == 2);
+  assert(d3.Get(0) == "Z2");
+  assert(d3.Get(1) == "O");
+
+  // Overwrite 1 (at slot 2): probe hits tombstone at 0, key 0 at 1, finds 1 at 2
+  d3.Set(1, "O2");
+  assert(d3.Size() == 2);
+  assert(d3.Get(1) == "O2");
+  assert(d3.Get(0) == "Z2");
+
+  var keys3 = d3.Keys();
+  assert(arrayLen(keys3) == 2);
+}
+print "pass: cross-type tombstone overwrite"; // expect: pass: cross-type tombstone overwrite
+

@@ -1,0 +1,73 @@
+// arrays.lox — array indexing and push cost.
+//
+// Three workloads:
+//   (a) push N — measures growth + native call overhead
+//   (b) get N — sequential read via subscript
+//   (c) set N — sequential write via subscript
+//   (d) iterate sum — read-then-add per element
+//
+// Compared against a pure-arithmetic baseline you can infer subscript cost.
+
+var N = 200000;
+
+fun bench(label, fn, arg) {
+  var start = clock();
+  var r = fn(arg);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+fun buildPush(n) {
+  var a = newArray();
+  var i = 0;
+  while (i < n) {
+    arrayPush(a, i);
+    i = i + 1;
+  }
+  return arrayLen(a);
+}
+
+fun readAll(n) {
+  var a = newArray();
+  var i = 0;
+  while (i < n) { arrayPush(a, i); i = i + 1; }
+  var s = 0;
+  i = 0;
+  while (i < n) {
+    s = s + a[i];
+    i = i + 1;
+  }
+  return s;
+}
+
+fun writeAll(n) {
+  var a = newArray();
+  var i = 0;
+  while (i < n) { arrayPush(a, 0); i = i + 1; }
+  i = 0;
+  while (i < n) {
+    a[i] = i;
+    i = i + 1;
+  }
+  return a[n - 1];
+}
+
+fun baselineSum(n) {
+  // Same loop shape without subscripting — use this to subtract loop overhead.
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + i;
+    i = i + 1;
+  }
+  return s;
+}
+
+print "=== arrays ===";
+bench("baseline (no subscript) ", baselineSum, N);
+bench("push N                  ", buildPush, N);
+bench("read N                  ", readAll, N);
+bench("write N                 ", writeAll, N);
+print "=== done ===";

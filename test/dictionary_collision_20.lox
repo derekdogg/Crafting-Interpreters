@@ -1,0 +1,74 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 20: Guaranteed collision chain at scale â€” 50 integers
+// Insert integers 0-49. All have â‰¥15 trailing zeros in their hash
+// (worst case: 49 = 110001â‚‚ â†’ 5 mantissa bits â†’ 15 trailing zeros).
+// So all 50 hash to 0 mod 8, mod 16, mod 32, and mod 64.
+// After resizes to capacity 64, they still all land on slot 0.
+// This forces a probe chain of length 50.
+// Then delete every other entry and verify the chain stays intact.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 50; i = i + 1) {
+    d.Set(i, i * 7);
+  }
+  assert(d.Size() == 50);
+
+  // Verify all 50
+  for (var i = 0; i < 50; i = i + 1) {
+    assert(d.Get(i) == i * 7);
+  }
+
+  // Delete even keys â€” creates tombstones at every other position
+  // in the guaranteed collision chain
+  for (var i = 0; i < 50; i = i + 2) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 25);
+
+  // Odd keys must survive â€” all hash to slot 0, probe must skip
+  // 25 tombstones interspersed through the chain to reach each one
+  for (var i = 1; i < 50; i = i + 2) {
+    assert(d.Get(i) == i * 7);
+  }
+  for (var i = 0; i < 50; i = i + 2) {
+    assert(d.Has(i) == false);
+  }
+
+  // Delete all remaining odd keys one by one, verifying the last
+  // surviving key after each deletion
+  for (var i = 1; i < 48; i = i + 2) {
+    d.Delete(i);
+    // Key 49 (last odd) must still be reachable through all tombstones
+    assert(d.Get(49) == 49 * 7);
+  }
+  // Only key 49 remains
+  d.Delete(49);
+  assert(d.Size() == 0);
+
+  // Table is now full of tombstones. Re-insert and verify it works.
+  for (var i = 0; i < 50; i = i + 1) {
+    d.Set(i, i * 11);
+  }
+  assert(d.Size() == 50);
+  for (var i = 0; i < 50; i = i + 1) {
+    assert(d.Get(i) == i * 11);
+  }
+}
+print "pass: guaranteed 50-key collision chain"; // expect: pass: guaranteed 50-key collision chain
+

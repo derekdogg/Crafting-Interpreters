@@ -1,0 +1,74 @@
+// Fibonacci benchmark — stresses local-heavy paths.
+//
+// Three flavors, each chosen to exercise a different aspect of the VM:
+//   1. fibRec(n)       — recursive: stresses call frames, return, parameter slot 1 (fast).
+//   2. fibIter(n)      — iterative: tight while-loop, 4 user locals all in slots 1..4 (fast).
+//   3. fibNested(n)    — same as iter, but wrapped in another function with extra locals
+//                        pushed past slot 7 to compare fast vs generic OP_GET_LOCAL.
+//
+// All locals in fibIter and fibRec live in slots 0..7, so every read/write
+// goes through OP_GET_LOCAL_N / OP_SET_LOCAL_N.
+
+fun fibRec(n) {
+  if (n < 2) return n;
+  return fibRec(n - 1) + fibRec(n - 2);
+}
+
+fun fibIter(n) {
+  // locals: slot 1 = n (param), slot 2 = a, slot 3 = b, slot 4 = i, slot 5 = t
+  var a = 0;
+  var b = 1;
+  var i = 0;
+  while (i < n) {
+    var t = a + b;
+    a = b;
+    b = t;
+    i = i + 1;
+  }
+  return a;
+}
+
+// Same algorithm but pads slots so a/b/i/t land at slot >= 8 to force the
+// generic OP_GET_LOCAL/OP_SET_LOCAL path. Comment out the var lines to flip.
+fun fibIterSlow(n) {
+  var p0 = 0; var p1 = 0; var p2 = 0; var p3 = 0;
+  var p4 = 0; var p5 = 0; var p6 = 0; // pushes the real locals past slot 7
+  var a = 0;
+  var b = 1;
+  var i = 0;
+  while (i < n) {
+    var t = a + b;
+    a = b;
+    b = t;
+    i = i + 1;
+  }
+  // touch padding so the compiler can't eliminate them
+  return a + p0 + p1 + p2 + p3 + p4 + p5 + p6;
+}
+
+fun bench(label, fn, arg, reps) {
+  var start = clock();
+  var r = 0;
+  var k = 0;
+  while (k < reps) {
+    r = fn(arg);
+    k = k + 1;
+  }
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+// ---- Tunable workload ----
+// fibRec(30) is ~1.6M calls — heavy on call/return + slot 1 access.
+// fibIter(500000) repeated 20 times is ~10M iterations — pure local-arithmetic loop.
+
+print "=== fib benchmark ===";
+
+bench("fibRec(30)        x 1   ", fibRec,      30,      1);
+bench("fibRec(35)        x 1   ", fibRec,      35,      1);  // book's Ch.30 benchmark
+bench("fibIter(500000)   x 20  ", fibIter,     500000,  20);
+bench("fibIterSlow(500k) x 20  ", fibIterSlow, 500000,  20);
+
+print "=== done ===";

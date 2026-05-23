@@ -1,0 +1,69 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 33: Tombstone reuse on INSERT (new key) vs overwrite distinction
+// When inserting a NEW key (not an overwrite), DictFindEntry returns the
+// first tombstone encountered (for slot reuse). But when overwriting an
+// EXISTING key, it must return the existing entry. This test verifies
+// both paths work correctly in the same collision chain.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Insert 0, 1, 2, 3, 4 into collision chain
+  for (var i = 0; i < 5; i = i + 1) {
+    d.Set(i, "v" + str(i));
+  }
+
+  // Delete 1 and 3 â†’ tombstones at slots 1 and 3
+  d.Delete(1);
+  d.Delete(3);
+  assert(d.Size() == 3);
+
+  // INSERT new key 10 (also hashes to slot 0): should reuse tombstone at slot 1
+  d.Set(10, "new_ten");
+  assert(d.Size() == 4);    // Count must increase (new key)
+  assert(d.Get(10) == "new_ten");
+
+  // OVERWRITE existing key 4 (at slot 4): must NOT use tombstone at slot 3
+  d.Set(4, "v4_updated");
+  assert(d.Size() == 4);    // Count must NOT increase (overwrite)
+  assert(d.Get(4) == "v4_updated");
+
+  // INSERT new key 20 (hashes to slot 0): should reuse tombstone at slot 3
+  d.Set(20, "new_twenty");
+  assert(d.Size() == 5);    // Count must increase (new key)
+  assert(d.Get(20) == "new_twenty");
+
+  // Verify all keys present and correct
+  assert(d.Get(0) == "v0");
+  assert(d.Get(2) == "v2");
+  assert(d.Get(4) == "v4_updated");
+  assert(d.Get(10) == "new_ten");
+  assert(d.Get(20) == "new_twenty");
+  assert(d.Has(1) == false);
+  assert(d.Has(3) == false);
+
+  // No duplicates
+  var keys = d.Keys();
+  assert(arrayLen(keys) == 5);
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    for (var j = i + 1; j < arrayLen(keys); j = j + 1) {
+      assert(keys[i] != keys[j]);
+    }
+  }
+}
+print "pass: tombstone reuse insert vs overwrite"; // expect: pass: tombstone reuse insert vs overwrite
+

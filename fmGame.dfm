@@ -11,6 +11,8 @@ object frmGame: TfrmGame
   Font.Name = 'Segoe UI'
   Font.Style = []
   OnCloseQuery = FormCloseQuery
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
   OnShow = FormShow
   TextHeight = 15
 end

@@ -1,0 +1,368 @@
+// Tests for shortcut/fused opcodes:
+//   OP_GET_LOCAL_0..7  — fast local reads (slot encoded in opcode, no operand)
+//   OP_SET_LOCAL_0..7  — fast local writes
+//   OP_JUMP_IF_FALSE_POP — fused condition pop+jump for if/while/for
+//   OP_POP_N           — bulk pop of multiple locals on scope exit
+//
+// These opcodes are compiler optimizations that must be semantically identical
+// to their generic counterparts.
+
+// ===========================================================================
+// OP_GET_LOCAL_0..7 / OP_SET_LOCAL_0..7
+// ===========================================================================
+// Slot 0 is the function-self slot (reserved). User locals start at slot 1
+// inside a function body. In top-level script scope, locals start at slot 0
+// but functions will use 1-based slots. These tests exercise both.
+
+// ---------------------------------------------------------------------------
+// Test 1: Local variables in slots 0-7 (top-level block scope)
+// In a block at script level, there's no function self-slot, so locals
+// occupy slots 0, 1, 2, ... directly. Slots 0-7 get the fast opcodes.
+// ---------------------------------------------------------------------------
+{
+  var a = 10;   // slot 0 -> OP_GET_LOCAL_0 / OP_SET_LOCAL_0
+  var b = 20;   // slot 1
+  var c = 30;   // slot 2
+  var d = 40;   // slot 3
+  var e = 50;   // slot 4
+  var f = 60;   // slot 5
+  var g = 70;   // slot 6
+  var h = 80;   // slot 7
+
+  assert(a == 10, "T1: slot 0 read");
+  assert(b == 20, "T1: slot 1 read");
+  assert(c == 30, "T1: slot 2 read");
+  assert(d == 40, "T1: slot 3 read");
+  assert(e == 50, "T1: slot 4 read");
+  assert(f == 60, "T1: slot 5 read");
+  assert(g == 70, "T1: slot 6 read");
+  assert(h == 80, "T1: slot 7 read");
+
+  // Mutate each — exercises OP_SET_LOCAL_N
+  a = a + 1;
+  b = b + 1;
+  c = c + 1;
+  d = d + 1;
+  e = e + 1;
+  f = f + 1;
+  g = g + 1;
+  h = h + 1;
+
+  assert(a == 11, "T1: slot 0 write");
+  assert(b == 21, "T1: slot 1 write");
+  assert(c == 31, "T1: slot 2 write");
+  assert(d == 41, "T1: slot 3 write");
+  assert(e == 51, "T1: slot 4 write");
+  assert(f == 61, "T1: slot 5 write");
+  assert(g == 71, "T1: slot 6 write");
+  assert(h == 81, "T1: slot 7 write");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Locals in a function body (slot 0 = self, user locals at 1+)
+// ---------------------------------------------------------------------------
+{
+  fun testSlots() {
+    var a = 100;  // slot 1 (slot 0 is function self)
+    var b = 200;  // slot 2
+    var c = 300;  // slot 3
+    var d = 400;  // slot 4
+    var e = 500;  // slot 5
+    var f = 600;  // slot 6
+    var g = 700;  // slot 7
+    // slot 8+ falls back to OP_GET_LOCAL with operand byte
+    var h = 800;
+
+    a = a * 2;
+    b = b * 2;
+    c = c * 2;
+    d = d * 2;
+    e = e * 2;
+    f = f * 2;
+    g = g * 2;
+    h = h * 2;
+
+    assert(a == 200, "T2: func slot 1 read/write");
+    assert(b == 400, "T2: func slot 2 read/write");
+    assert(c == 600, "T2: func slot 3 read/write");
+    assert(d == 800, "T2: func slot 4 read/write");
+    assert(e == 1000, "T2: func slot 5 read/write");
+    assert(f == 1200, "T2: func slot 6 read/write");
+    assert(g == 1400, "T2: func slot 7 read/write");
+    assert(h == 1600, "T2: func slot 8 (generic) read/write");
+  }
+  testSlots();
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Fast slots with function parameters
+// Parameters occupy slots 1, 2, 3, ... (slot 0 = self)
+// ---------------------------------------------------------------------------
+{
+  fun add4(a, b, c, d) {
+    // a=slot1, b=slot2, c=slot3, d=slot4 -> all fast
+    return a + b + c + d;
+  }
+  assert(add4(1, 2, 3, 4) == 10, "T3: parameters in fast slots");
+
+  fun swap(a, b) {
+    var tmp = a;  // tmp=slot3
+    a = b;        // OP_SET_LOCAL_1 (param a is slot 1)
+    b = tmp;      // OP_SET_LOCAL_2 (param b is slot 2)
+    return a * 10 + b;
+  }
+  // swap(3,7) -> a becomes 7, b becomes 3 -> 7*10+3=73
+  assert(swap(3, 7) == 73, "T3: param set via fast slots");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Fast slots with loop variables
+// The loop variable `i` occupies a slot. In a tight loop with few locals,
+// it lands in a fast slot.
+// ---------------------------------------------------------------------------
+{
+  fun sumLoop(n) {
+    // n = slot 1
+    var sum = 0;  // slot 2
+    for (var i = 0; i < n; i = i + 1) {
+      // i = slot 3 -> OP_GET_LOCAL_3 / OP_SET_LOCAL_3
+      sum = sum + i;
+    }
+    return sum;
+  }
+  assert(sumLoop(10) == 45, "T4a: loop var in fast slot");
+  assert(sumLoop(100) == 4950, "T4b: loop var in fast slot (larger)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Assignment expression value with fast set
+// OP_SET_LOCAL_N leaves the value on the stack (assignment is an expression).
+// ---------------------------------------------------------------------------
+{
+  var x = 0;
+  var y = 0;
+  // Chain assignment: y = (x = 42)
+  y = x = 42;
+  assert(x == 42, "T5: chain assign x");
+  assert(y == 42, "T5: chain assign y");
+}
+
+// ===========================================================================
+// OP_JUMP_IF_FALSE_POP
+// ===========================================================================
+// This replaces OP_JUMP_IF_FALSE + OP_POP in if/while/for conditions.
+// It always pops the condition value and jumps if falsey.
+
+// ---------------------------------------------------------------------------
+// Test 6: if-statement uses OP_JUMP_IF_FALSE_POP
+// ---------------------------------------------------------------------------
+{
+  var result = "none";
+
+  if (true) { result = "true"; }
+  assert(result == "true", "T6a: if true");
+
+  result = "none";
+  if (false) { result = "wrong"; }
+  assert(result == "none", "T6b: if false");
+
+  result = "none";
+  if (nil) { result = "wrong"; }
+  assert(result == "none", "T6c: if nil (falsey)");
+
+  result = "none";
+  if (0) { result = "zero"; }
+  assert(result == "zero", "T6d: if 0 (truthy in Lox)");
+
+  result = "none";
+  if ("") { result = "emptystr"; }
+  assert(result == "emptystr", "T6e: if empty string (truthy)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: while-loop uses OP_JUMP_IF_FALSE_POP
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  var done = false;
+  while (!done) {
+    count = count + 1;
+    if (count == 5) {
+      done = true;
+    }
+  }
+  assert(count == 5, "T7: while with bool condition");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: for-loop condition uses OP_JUMP_IF_FALSE_POP
+// ---------------------------------------------------------------------------
+{
+  var product = 1;
+  for (var i = 1; i < 6; i = i + 1) {
+    product = product * i;
+  }
+  // 1*2*3*4*5 = 120
+  assert(product == 120, "T8: for loop factorial");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: if-else — both branches, condition popped correctly
+// ---------------------------------------------------------------------------
+{
+  fun classify(x) {
+    if (x < 0) {
+      return "negative";
+    } else {
+      return "non-negative";
+    }
+  }
+  assert(classify(-5) == "negative", "T9a: if-else negative");
+  assert(classify(0) == "non-negative", "T9b: if-else zero");
+  assert(classify(10) == "non-negative", "T9c: if-else positive");
+}
+
+// ===========================================================================
+// OP_POP_N
+// ===========================================================================
+// When a block scope ends with 2+ local variables, the compiler emits
+// OP_POP_N instead of multiple OP_POP instructions.
+
+// ---------------------------------------------------------------------------
+// Test 10: Block with multiple locals — bulk pop on exit
+// ---------------------------------------------------------------------------
+{
+  var outer = "alive";
+  {
+    var a = 1;
+    var b = 2;
+    var c = 3;
+    var d = 4;
+    var e = 5;
+    // Exiting this block pops 5 slots via OP_POP_N 5
+    assert(a + b + c + d + e == 15, "T10a: locals before pop");
+  }
+  assert(outer == "alive", "T10b: outer survives block pop");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Nested blocks — each gets its own OP_POP_N
+// ---------------------------------------------------------------------------
+{
+  var result = 0;
+  {
+    var x = 10;
+    var y = 20;
+    {
+      var a = 100;
+      var b = 200;
+      var c = 300;
+      result = x + y + a + b + c;  // 630
+    }
+    // a, b, c popped here (OP_POP_N 3)
+    result = result + x + y;  // 630 + 30 = 660
+  }
+  // x, y popped here (OP_POP_N 2)
+  assert(result == 660, "T11: nested block pops");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: Loop body with locals — OP_POP_N each iteration
+// ---------------------------------------------------------------------------
+{
+  var total = 0;
+  for (var i = 0; i < 5; i = i + 1) {
+    var a = i * 10;
+    var b = i * 100;
+    total = total + a + b;
+    // a, b popped at end of each iteration via OP_POP_N 2
+  }
+  // i=0: 0+0, i=1: 10+100, i=2: 20+200, i=3: 30+300, i=4: 40+400
+  // total = 0 + 110 + 220 + 330 + 440 = 1100
+  assert(total == 1100, "T12: loop body bulk pop per iteration");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Function with many locals — all popped on return
+// ---------------------------------------------------------------------------
+{
+  fun manyLocals() {
+    var a = 1;
+    var b = 2;
+    var c = 3;
+    var d = 4;
+    var e = 5;
+    var f = 6;
+    var g = 7;
+    var h = 8;
+    var i = 9;
+    var j = 10;
+    return a + b + c + d + e + f + g + h + i + j;
+  }
+  assert(manyLocals() == 55, "T13: function with 10 locals");
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Interactions — fast slots + bulk pop + fused jump
+// Combine all optimized opcodes in one function to verify they coexist.
+// ---------------------------------------------------------------------------
+{
+  fun combined(n) {
+    // n at slot 1 (fast), sum at slot 2 (fast), i at slot 3 (fast)
+    var sum = 0;
+    for (var i = 1; i < n; i = i + 1) {
+      // Loop condition: i < n uses OP_LESS_JUMP_IF_FALSE (peephole)
+      // i, n accessed via OP_GET_LOCAL_3, OP_GET_LOCAL_1
+      var sq = i * i;   // sq at slot 4 (fast)
+      var cb = sq * i;  // cb at slot 5 (fast)
+      if (cb < 1000 and i < 20) {
+        // and with < on right: tests peephole guard
+        sum = sum + cb;
+      }
+      // sq, cb popped via OP_POP_N 2
+    }
+    return sum;
+  }
+  // Cubes of 1..9 that are < 1000: 1,8,27,64,125,216,343,512,729 = 2025
+  assert(combined(100) == 2025, "T14: combined fast-slot + peephole + pop_n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Edge case — exactly 8 locals (slots 0-7 all fast, none generic)
+// ---------------------------------------------------------------------------
+{
+  fun exact8(a, b, c, d, e, f, g) {
+    // slot0=self, a=1, b=2, c=3, d=4, e=5, f=6, g=7 — all fast
+    return a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7;
+  }
+  // 1*1 + 2*2 + 3*3 + 4*4 + 5*5 + 6*6 + 7*7 = 1+4+9+16+25+36+49 = 140
+  assert(exact8(1, 2, 3, 4, 5, 6, 7) == 140, "T15: all 7 param slots fast");
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: Slot 8+ falls to generic OP_GET_LOCAL / OP_SET_LOCAL
+// ---------------------------------------------------------------------------
+{
+  fun overflow() {
+    var a = 1;  // slot 1
+    var b = 2;  // slot 2
+    var c = 3;  // slot 3
+    var d = 4;  // slot 4
+    var e = 5;  // slot 5
+    var f = 6;  // slot 6
+    var g = 7;  // slot 7
+    var h = 8;  // slot 8 -> generic
+    var i = 9;  // slot 9 -> generic
+    var j = 10; // slot 10 -> generic
+
+    h = h + 100;
+    i = i + 200;
+    j = j + 300;
+
+    return a + b + c + d + e + f + g + h + i + j;
+  }
+  // 1+2+3+4+5+6+7+108+209+310 = 655
+  assert(overflow() == 655, "T16: slots 8+ use generic opcodes");
+}
+
+print "pass: shortcut_opcodes"; // expect: pass: shortcut_opcodes

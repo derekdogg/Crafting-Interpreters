@@ -1,0 +1,51 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 26: Delete-and-reinsert while iterating (resize trigger mid-loop)
+// While iterating over a Keys() snapshot, delete entries to create
+// tombstones, then insert enough new entries to trigger a resize.
+// The snapshot must be unaffected by the resize. The dict must be
+// consistent after the loop.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 40; i = i + 1) {
+    d.Set("dr_" + str(i), i);
+  }
+
+  var snap = d.Keys();
+  assert(arrayLen(snap) == 40);
+
+  // For each key in the snapshot: delete it, then insert a replacement
+  // with a different name. This creates tombstones AND new entries,
+  // potentially triggering multiple resizes mid-iteration.
+  for (var i = 0; i < arrayLen(snap); i = i + 1) {
+    d.Delete(snap[i]);
+    d.Set("repl_" + str(i), i * 10);
+  }
+
+  // All original keys gone, all replacements present
+  assert(d.Size() == 40);
+  for (var i = 0; i < 40; i = i + 1) {
+    assert(d.Has("dr_" + str(i)) == false);
+    assert(d.Get("repl_" + str(i)) == i * 10);
+  }
+
+  // Snapshot must still be the original 40 keys (stale but intact)
+  assert(arrayLen(snap) == 40);
+}
+print "pass: delete-reinsert during iteration (resize)"; // expect: pass: delete-reinsert during iteration (resize)
+

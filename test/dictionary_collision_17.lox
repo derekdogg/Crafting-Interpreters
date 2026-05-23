@@ -1,0 +1,125 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// ===========================================================================
+// Guaranteed Collision Tests
+// ===========================================================================
+// The following tests use keys that are PROVEN to collide based on the hash
+// function implementation, not just "likely" to collide.
+//
+// Hash function facts (from Chunk_Types.pas):
+//   Numbers:  hash = uint32(ieee754bits XOR (ieee754bits >> 32))
+//   Booleans: false=0, true=1
+//   Nil:      hash=2
+//
+// For positive integers as IEEE 754 doubles, the lower 32 bits of the
+// 64-bit representation are all zero whenever the integer fits in the
+// upper mantissa field (true for any integer < 2^32). Therefore:
+//   hash = upper32 XOR 0 = upper32
+//
+// The upper 32 bits have the form:
+//   [sign:1][exponent:11][mantissa_high:20]
+//
+// The mantissa bits are LEFT-aligned in the 20-bit field. An integer N
+// with binary representation 1.bbb...b Ã— 2^e stores k significant
+// mantissa bits in positions 19..(20-k), leaving (20-k) trailing zeros.
+// The number of trailing zeros in hash(N) is therefore:
+//
+//   trailing_zeros(hash(N)) = 20 - (bit_width(N) - 1)
+//
+// Concrete values used in these tests:
+//   0:  hash = 0x00000000  (all zeros)
+//   1:  hash = 0x3FF00000  (20 trailing zeros)
+//   2:  hash = 0x40000000  (30 trailing zeros)
+//   3:  hash = 0x40080000  (19 trailing zeros)
+//   5:  hash = 0x40140000  (18 trailing zeros)
+//   9:  hash = 0x40220000  (17 trailing zeros)
+//   49: hash = 0x40488000  (15 trailing zeros)
+//
+// Key consequences for the integer ranges used below:
+//   Integers 0-5:  â‰¥18 trailing zeros â†’ all hash to 0 mod 2^18
+//   Integers 0-9:  â‰¥17 trailing zeros â†’ all hash to 0 mod 2^17
+//   Integers 0-49: â‰¥15 trailing zeros â†’ all hash to 0 mod 2^15
+//
+// At capacity 8 (mod 8) or 64 (mod 64), all integers 0-49 land on slot 0.
+// This is a mathematically guaranteed worst case: every integer key in
+// these ranges maps to the same slot, creating a maximal-length probe chain.
+//
+// Additionally: false hashes to 0, same as number 0 â€” an exact collision.
+
+
+// Test 17: Proven same-slot collision â€” integers 0-5 all land on slot 0
+// Integers 0-5 have â‰¥18 trailing zeros in their hash (see table above),
+// so all 6 hash to slot 0 mod 8. This creates a guaranteed probe chain
+// of length 6 starting at slot 0. Then selectively delete entries from
+// the chain and verify that entries beyond the tombstones are still
+// reachable.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Integers 0-5: hash mod 8 = 0 (proven) â€” guaranteed maximal probe chain
+  d.Set(0, "zero");   // slot 0
+  d.Set(1, "one");    // probes to slot 1
+  d.Set(2, "two");    // probes to slot 2
+  d.Set(3, "three");  // probes to slot 3
+  d.Set(4, "four");   // probes to slot 4
+  d.Set(5, "five");   // probes to slot 5
+  assert(d.Size() == 6);
+
+  // All must be retrievable despite the 6-long chain
+  assert(d.Get(0) == "zero");
+  assert(d.Get(1) == "one");
+  assert(d.Get(2) == "two");
+  assert(d.Get(3) == "three");
+  assert(d.Get(4) == "four");
+  assert(d.Get(5) == "five");
+
+  // Delete from the HEAD of the chain (slot 0) â€” key 0
+  d.Delete(0);
+  // Keys 1-5 must still be found (probe must skip the tombstone at slot 0)
+  assert(d.Get(1) == "one");
+  assert(d.Get(2) == "two");
+  assert(d.Get(3) == "three");
+  assert(d.Get(4) == "four");
+  assert(d.Get(5) == "five");
+  assert(d.Has(0) == false);
+
+  // Delete from the MIDDLE of the chain â€” key 3 (slot 3)
+  d.Delete(3);
+  // Keys 4 and 5 must still be found (probe skips tombstones at slots 0 and 3)
+  assert(d.Get(4) == "four");
+  assert(d.Get(5) == "five");
+  assert(d.Has(3) == false);
+
+  // Delete from the TAIL of the chain â€” key 5 (slot 5)
+  d.Delete(5);
+  // Remaining keys 1, 2, 4 must still work
+  assert(d.Get(1) == "one");
+  assert(d.Get(2) == "two");
+  assert(d.Get(4) == "four");
+  assert(d.Size() == 3);
+
+  // Re-insert deleted keys â€” they should reuse tombstone slots
+  d.Set(0, "new_zero");
+  d.Set(3, "new_three");
+  d.Set(5, "new_five");
+  assert(d.Size() == 6);
+  assert(d.Get(0) == "new_zero");
+  assert(d.Get(3) == "new_three");
+  assert(d.Get(5) == "new_five");
+}
+print "pass: proven slot-0 chain"; // expect: pass: proven slot-0 chain
+

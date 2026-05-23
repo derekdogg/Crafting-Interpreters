@@ -1,0 +1,67 @@
+// Stress the Concatenate path under GC: builds many transient strings,
+// forces collection between iterations, and verifies the final value.
+//
+// This exercises:
+//   - Raw GetMem buffer is not GC-tracked (no dangling free during stress)
+//   - PushStack rooting around AllocateString
+//   - Intern table membership of every produced concat result
+
+fun build(n) {
+  var s = "";
+  for (var i = 0; i < n; i = i + 1) {
+    s = s + "x";
+  }
+  return s;
+}
+
+var a = build(50);
+assert(strlen(a) == 50);
+
+// Force a collection; 'a' must stay reachable via the global.
+collectGarbage();
+assert(strlen(a) == 50);
+
+// Same content from a different construction path must intern to the same value.
+var b = "";
+for (var i = 0; i < 50; i = i + 1) {
+  b = b + "x";
+}
+assert(a == b);
+
+// Many short-lived concats with GC pressure interleaved.
+var keep = "anchor";
+for (var i = 0; i < 100; i = i + 1) {
+  var tmp = "p_" + str(i) + "_q";    // 3 concats per iter, all transient
+  if (i == 50) {
+    collectGarbage();
+  }
+}
+assert(keep == "anchor");
+
+// Concat result used immediately, then dropped.
+for (var i = 0; i < 20; i = i + 1) {
+  print "ok_" + str(i);
+}
+// expect: ok_0
+// expect: ok_1
+// expect: ok_2
+// expect: ok_3
+// expect: ok_4
+// expect: ok_5
+// expect: ok_6
+// expect: ok_7
+// expect: ok_8
+// expect: ok_9
+// expect: ok_10
+// expect: ok_11
+// expect: ok_12
+// expect: ok_13
+// expect: ok_14
+// expect: ok_15
+// expect: ok_16
+// expect: ok_17
+// expect: ok_18
+// expect: ok_19
+
+collectGarbage();
+print "done";                      // expect: done

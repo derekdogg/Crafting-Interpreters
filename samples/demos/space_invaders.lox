@@ -21,8 +21,6 @@ var playerH = 7 * SPR;
 var playerX = w / 2 - playerW / 2;
 var playerY = h - 30;
 var playerSpeed = 140;
-var leftHeld = false;
-var rightHeld = false;
 
 // --- Player bullets (multiple allowed) ---
 var maxPlayerBullets = 3;
@@ -632,65 +630,54 @@ while (running) {
   if (dt > 0.1) dt = 0.1;
 
   // --- Input ---
-  while (events.hasItems()) {
-    var e = events.dequeue();
-    if (e == "keydown:left") leftHeld = true;
-    if (e == "keyup:left") leftHeld = false;
-    if (e == "keydown:right") rightHeld = true;
-    if (e == "keyup:right") rightHeld = false;
-    if (e == "keydown:escape") {
-      stopMusic();
-      running = false;
-    }
-    if (e == "keydown:space") {
-      if (!gameOver) {
-        // Find a free bullet slot
-        var bSlot = 0;
-        var fired = false;
-        while (bSlot < maxPlayerBullets) {
-          if (!arrayGet(bulletActive, bSlot) and !fired) {
-            arraySet(bulletActive, bSlot, true);
-            arraySet(bulletX, bSlot, playerX + playerW / 2 - bulletW / 2);
-            arraySet(bulletY, bSlot, playerY);
-            playSweep(1200, 400, 80, 0.3);
-            fired = true;
-          }
-          bSlot = bSlot + 1;
-        }
+  if (keyPressed("escape")) {
+    stopMusic();
+    running = false;
+  }
+  if (keyPressed("space") and !gameOver) {
+    // Find a free bullet slot
+    var bSlot = 0;
+    var fired = false;
+    while (bSlot < maxPlayerBullets) {
+      if (!arrayGet(bulletActive, bSlot) and !fired) {
+        arraySet(bulletActive, bSlot, true);
+        arraySet(bulletX, bSlot, playerX + playerW / 2 - bulletW / 2);
+        arraySet(bulletY, bSlot, playerY);
+        playSweep(1200, 400, 80, 0.3);
+        fired = true;
       }
+      bSlot = bSlot + 1;
     }
-    if (e == "keydown:enter") {
-      if (gameOver) {
-        // Restart
-        gameOver = false;
-        score = 0;
-        lives = 3;
-        aliveCount = invCount;
-        i = 0;
-        while (i < invCount) {
-          arraySet(invAlive, i, true);
-          i = i + 1;
-        }
-        invOffsetX = (w - invGridW) / 2;
-        invOffsetY = 40;
-        invDirX = 1;
-        invSpeedX = 40;
-        invMoveInterval = 0.6;
-        invMoveTimer = 0;
-        marchStep = 0;
-        ufoActive = false;
-        ufoTimer = 0;
-        resetShields();
-        resetPlayer();
-        startMusic();
-      }
+  }
+  if (keyPressed("enter") and gameOver) {
+    // Restart
+    gameOver = false;
+    score = 0;
+    lives = 3;
+    aliveCount = invCount;
+    i = 0;
+    while (i < invCount) {
+      arraySet(invAlive, i, true);
+      i = i + 1;
     }
+    invOffsetX = (w - invGridW) / 2;
+    invOffsetY = 40;
+    invDirX = 1;
+    invSpeedX = 40;
+    invMoveInterval = 0.6;
+    invMoveTimer = 0;
+    marchStep = 0;
+    ufoActive = false;
+    ufoTimer = 0;
+    resetShields();
+    resetPlayer();
+    startMusic();
   }
 
   if (!gameOver) {
     // --- Update player ---
-    if (leftHeld) playerX = playerX - playerSpeed * dt;
-    if (rightHeld) playerX = playerX + playerSpeed * dt;
+    if (keyHeld("left"))  playerX = playerX - playerSpeed * dt;
+    if (keyHeld("right")) playerX = playerX + playerSpeed * dt;
     if (playerX < 0) playerX = 0;
     if (playerX > w - playerW) playerX = w - playerW;
 

@@ -1,0 +1,49 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 16: Has/Get/Delete on completely empty table (zero capacity)
+// Before any insert, the backing array is nil and capacity is 0.
+// Every lookup, Has, and Delete must terminate immediately â€” not attempt
+// to probe a zero-length array.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  assert(d.Size() == 0);
+  assert(d.Has("x") == false);
+  assert(d.Has(0) == false);
+  assert(d.Has(nil) == false);
+  assert(d.Has(true) == false);
+  assert(d.Delete("x") == false);
+  assert(d.Delete(0) == false);
+  assert(d.Delete(nil) == false);
+  assert(d.Delete(true) == false);
+
+  // Now insert one key â€” table must transition from zero-capacity correctly
+  d.Set("first", 1);
+  assert(d.Size() == 1);
+  assert(d.Get("first") == 1);
+
+  // Delete it â€” back to empty (but now has backing array with tombstone)
+  d.Delete("first");
+  assert(d.Size() == 0);
+  assert(d.Has("first") == false);
+
+  // Lookups on the tombstoned-but-empty table must still terminate
+  assert(d.Has("anything") == false);
+  assert(d.Delete("anything") == false);
+}
+print "pass: zero-capacity termination"; // expect: pass: zero-capacity termination
+

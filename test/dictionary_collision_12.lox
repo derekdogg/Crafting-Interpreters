@@ -1,0 +1,65 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// ===========================================================================
+// Lookup Termination Safety
+// ===========================================================================
+// These tests verify the probe loop always terminates, even under pathological
+// conditions: tables saturated with tombstones, lookups for keys that never
+// existed, probes that must wrap around the backing array, and Size() tracking
+// through every individual mutation.
+
+
+// Test 12: Full tombstone traversal â€” lookup non-existent key
+// Fill the table, delete every entry (maximizing tombstones), then look up
+// keys that were never inserted. The probe must scan past every tombstone
+// and terminate at an empty slot â€” not loop forever.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Insert 6 keys (capacity 8, fills to threshold)
+  for (var i = 0; i < 6; i = i + 1) {
+    d.Set("fill_" + str(i), i);
+  }
+  // Delete all â€” table is now 6 tombstones + 2 empty slots
+  for (var i = 0; i < 6; i = i + 1) {
+    d.Delete("fill_" + str(i));
+  }
+  assert(d.Size() == 0);
+
+  // These keys were never inserted. Probe must traverse all tombstones
+  // and terminate at an empty slot.
+  assert(d.Has("never1") == false);
+  assert(d.Has("never2") == false);
+  assert(d.Has("never3") == false);
+  assert(d.Delete("never1") == false);
+  assert(d.Delete("never2") == false);
+
+  // Repeat at larger scale: fill 50, delete all, query 50 non-existent
+  var d2 = [:];
+  for (var i = 0; i < 50; i = i + 1) {
+    d2.Set("big_" + str(i), i);
+  }
+  for (var i = 0; i < 50; i = i + 1) {
+    d2.Delete("big_" + str(i));
+  }
+  assert(d2.Size() == 0);
+  for (var i = 0; i < 50; i = i + 1) {
+    assert(d2.Has("miss_" + str(i)) == false);
+  }
+}
+print "pass: tombstone traversal termination"; // expect: pass: tombstone traversal termination
+

@@ -1,0 +1,90 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 19: Three-way low-hash collision cluster
+// false(hash=0), true(hash=1), nil(hash=2) occupy slots 0,1,2.
+// Integers 0-3 all have â‰¥18 trailing zeros â†’ hash to slot 0 mod 8.
+// So keys 0,1,2,3 must probe past the bool/nil entries. This creates
+// a guaranteed 7-entry cluster in slots 0-6:
+//   slot 0: false  (hash=0, lands directly)
+//   slot 1: true   (hash=1, lands directly)
+//   slot 2: nil    (hash=2, lands directly)
+//   slot 3: 0      (hash=0, probes past falseâ†’trueâ†’nil)
+//   slot 4: 1      (hash=0x3FF00000, mod 8=0, probes to slot 4)
+//   slot 5: 2      (hash=0x40000000, mod 8=0, probes to slot 5)
+//   slot 6: 3      (hash=0x40080000, mod 8=0, probes to slot 6 â†’ resize)
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(false, "F");
+  d.Set(true, "T");
+  d.Set(nil, "N");
+  d.Set(0, "n0");
+  d.Set(1, "n1");
+  d.Set(2, "n2");
+  d.Set(3, "n3");
+  assert(d.Size() == 7);
+
+  // Verify all 7 are distinguishable
+  assert(d.Get(false) == "F");
+  assert(d.Get(true) == "T");
+  assert(d.Get(nil) == "N");
+  assert(d.Get(0) == "n0");
+  assert(d.Get(1) == "n1");
+  assert(d.Get(2) == "n2");
+  assert(d.Get(3) == "n3");
+
+  // Delete the three "blocking" entries (false, true, nil) that sit
+  // at the head of the cluster. Integer keys must still be found
+  // by probing past the three tombstones.
+  d.Delete(false);
+  d.Delete(true);
+  d.Delete(nil);
+  assert(d.Size() == 4);
+
+  assert(d.Get(0) == "n0");
+  assert(d.Get(1) == "n1");
+  assert(d.Get(2) == "n2");
+  assert(d.Get(3) == "n3");
+  assert(d.Has(false) == false);
+  assert(d.Has(true) == false);
+  assert(d.Has(nil) == false);
+
+  // Delete integer keys from inside the chain
+  d.Delete(1);
+  d.Delete(2);
+  assert(d.Get(0) == "n0");
+  assert(d.Get(3) == "n3");
+  assert(d.Size() == 2);
+
+  // Re-insert everything in reverse order
+  d.Set(3, "r3");   // overwrite
+  d.Set(nil, "rN");
+  d.Set(true, "rT");
+  d.Set(false, "rF");
+  d.Set(2, "r2");
+  d.Set(1, "r1");
+  assert(d.Size() == 7);
+  assert(d.Get(false) == "rF");
+  assert(d.Get(true) == "rT");
+  assert(d.Get(nil) == "rN");
+  assert(d.Get(0) == "n0");
+  assert(d.Get(1) == "r1");
+  assert(d.Get(2) == "r2");
+  assert(d.Get(3) == "r3");
+}
+print "pass: three-way hash cluster"; // expect: pass: three-way hash cluster
+

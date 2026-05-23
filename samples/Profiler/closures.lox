@@ -1,0 +1,82 @@
+// closures.lox — upvalue read/write cost.
+//
+// Compares:
+//   (a) local-only counter inside a function
+//   (b) upvalue counter via a closure-returning factory
+//   (c) deeply-nested upvalue (3 levels up)
+//
+// Delta (b)-(a) ≈ OP_GET_UPVALUE + OP_SET_UPVALUE cost per access.
+// Delta (c)-(b) ≈ ~zero if upvalue indirection is constant-time
+// (it should be — captured-once upvalues become direct via OP_CLOSE_UPVALUE).
+
+var REPS = 500000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn();
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+fun localCounter() {
+  var n = REPS;
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + 1;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun makeUpvalueCounter() {
+  var s = 0;
+  fun inc() {
+    s = s + 1;
+    return s;
+  }
+  return inc;
+}
+fun upvalueCounter() {
+  var inc = makeUpvalueCounter();
+  var i = 0;
+  var last = 0;
+  while (i < REPS) {
+    last = inc();
+    i = i + 1;
+  }
+  return last;
+}
+
+fun makeDeepUpvalueCounter() {
+  var s = 0;
+  fun outer() {
+    fun middle() {
+      fun inc() {
+        s = s + 1;
+        return s;
+      }
+      return inc;
+    }
+    return middle();
+  }
+  return outer();
+}
+fun deepUpvalueCounter() {
+  var inc = makeDeepUpvalueCounter();
+  var i = 0;
+  var last = 0;
+  while (i < REPS) {
+    last = inc();
+    i = i + 1;
+  }
+  return last;
+}
+
+print "=== closures ===";
+bench("local counter           ", localCounter);
+bench("upvalue counter (1 deep)", upvalueCounter);
+bench("upvalue counter (3 deep)", deepUpvalueCounter);
+print "=== done ===";

@@ -1,0 +1,70 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 35: Bulk overwrite-through-tombstone stress test
+// 50 keys in a collision chain. Delete the first 25 (tombstones at slots
+// 0-24). Then overwrite each of the remaining 25 keys (slots 25-49).
+// Every overwrite must probe past all 25 tombstones without creating
+// duplicates. Verify with Size(), Keys() uniqueness, and Get() consistency.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 50; i = i + 1) {
+    d.Set(i, i);
+  }
+  assert(d.Size() == 50);
+
+  // Delete keys 0-24: 25 tombstones at the head of the chain
+  for (var i = 0; i < 25; i = i + 1) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 25);
+
+  // Overwrite each surviving key (25-49). Each overwrite must probe past
+  // 25 tombstones + (key_index - 25) occupied entries to find the match.
+  for (var i = 25; i < 50; i = i + 1) {
+    d.Set(i, i * 100);
+    assert(d.Size() == 25);  // Size must stay 25 after EVERY overwrite
+  }
+
+  // Verify all values updated correctly
+  for (var i = 25; i < 50; i = i + 1) {
+    assert(d.Get(i) == i * 100);
+  }
+  for (var i = 0; i < 25; i = i + 1) {
+    assert(d.Has(i) == false);
+  }
+
+  // No duplicates in Keys()
+  var keys = d.Keys();
+  assert(arrayLen(keys) == 25);
+  for (var i = 0; i < arrayLen(keys); i = i + 1) {
+    for (var j = i + 1; j < arrayLen(keys); j = j + 1) {
+      assert(keys[i] != keys[j]);
+    }
+  }
+
+  // Values() must all be in range 2500..4900 (25*100..49*100)
+  var vals = d.Values();
+  assert(arrayLen(vals) == 25);
+  for (var i = 0; i < arrayLen(vals); i = i + 1) {
+    assert(vals[i] >= 2500);
+    assert(vals[i] <= 4900);
+  }
+}
+print "pass: bulk overwrite through tombstone field"; // expect: pass: bulk overwrite through tombstone field
+
+print "ALL COLLISION TESTS PASSED"; // expect: ALL COLLISION TESTS PASSED

@@ -1,0 +1,48 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 21: Overwrite within a guaranteed collision chain
+// Integer keys 0-9 all hash to 0 mod 8 (â‰¥17 trailing zeros, see table).
+// Overwriting a key in the middle of the resulting probe chain must update
+// the correct entry â€” not a different one that happens to be adjacent in
+// the probe sequence.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 10; i = i + 1) {
+    d.Set(i, "orig_" + str(i));
+  }
+
+  // Overwrite keys in reverse order
+  for (var i = 9; i >= 0; i = i - 1) {
+    d.Set(i, "upd_" + str(i));
+  }
+  assert(d.Size() == 10);
+
+  // Every key must have its own updated value â€” no cross-contamination
+  for (var i = 0; i < 10; i = i + 1) {
+    assert(d.Get(i) == "upd_" + str(i));
+  }
+
+  // Overwrite only key 5
+  d.Set(5, "special");
+  assert(d.Get(4) == "upd_4");   // neighbor before
+  assert(d.Get(5) == "special"); // updated
+  assert(d.Get(6) == "upd_6");   // neighbor after
+  assert(d.Size() == 10);
+}
+print "pass: overwrite in collision chain"; // expect: pass: overwrite in collision chain
+

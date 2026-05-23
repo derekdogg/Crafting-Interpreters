@@ -1,0 +1,178 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 22: Tombstone saturation â€” maximise tombstone-to-capacity ratio
+//
+// The classic infinite-loop killer for linear probing is a table with NO
+// empty slots (all occupied or all tombstones). If probe termination relies
+// on finding an empty slot and none exists, lookups loop forever.
+//
+// This implementation guards against it: DictSet checks
+//   (count + tombstones + 1) > capacity * 0.75
+// so the theoretical maximum tombstone ratio after a full fill-then-delete
+// cycle is 75% (the remaining 25% are empty). We verify:
+//
+//   1. After filling to threshold and deleting all, lookups terminate.
+//   2. The table is not 100% tombstones (at least 1 empty slot must exist).
+//   3. Inserting into the tombstone-saturated table triggers resize/cleanup.
+//   4. Repeated fill-delete cycles do not accumulate tombstones across
+//      resizes (DictGrow discards them).
+// ---------------------------------------------------------------------------
+{
+  // --- Phase A: Small table, maximise tombstone ratio ---
+  // Capacity 8, threshold 6 entries. Fill to threshold, then delete all.
+  var d = [:];
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Set("c", 3);
+  d.Set("d", 4);
+  d.Set("e", 5);
+  d.Set("f", 6);
+  // 6 entries in capacity 8 â€” right at threshold
+
+  d.Delete("a");
+  d.Delete("b");
+  d.Delete("c");
+  d.Delete("d");
+  d.Delete("e");
+  d.Delete("f");
+  assert(d.Size() == 0);
+
+  // 6 of 8 slots are tombstones. 2 slots are empty.
+  // Lookups for non-existent keys MUST terminate â€” the probe will skip
+  // 6 tombstones and find one of the 2 empty slots.
+  assert(d.Has("x") == false);
+  assert(d.Has("y") == false);
+  assert(d.Has("z") == false);
+  assert(d.Has(0) == false);
+  assert(d.Has(nil) == false);
+  assert(d.Has(true) == false);
+  assert(d.Has(false) == false);
+  assert(d.Delete("nope") == false);
+
+  // Inserting 1 key: (0 + 6 + 1) = 7 > 6 threshold â†’ triggers resize.
+  // Resize discards all tombstones.
+  d.Set("alive", 42);
+  assert(d.Size() == 1);
+  assert(d.Get("alive") == 42);
+
+  // After resize: 0 tombstones, 1 entry, larger capacity.
+  // Verify the table is fully healthy by filling it again.
+  for (var i = 0; i < 50; i = i + 1) {
+    d.Set("post_" + str(i), i);
+  }
+  assert(d.Size() == 51);
+  assert(d.Get("alive") == 42);
+  for (var i = 0; i < 50; i = i + 1) {
+    assert(d.Get("post_" + str(i)) == i);
+  }
+
+  // --- Phase B: Large table, maximum tombstone density ---
+  // Fill to near threshold at capacity 128 (96 entries), delete all.
+  // Creates 96 tombstones in 128 slots = 75% tombstone, 25% empty.
+  var d2 = [:];
+  for (var i = 0; i < 96; i = i + 1) {
+    d2.Set("sat_" + str(i), i);
+  }
+  for (var i = 0; i < 96; i = i + 1) {
+    d2.Delete("sat_" + str(i));
+  }
+  assert(d2.Size() == 0);
+
+  // Probe 200 non-existent keys through the tombstone field.
+  // Each probe must skip up to 96 consecutive tombstones before finding
+  // an empty slot. If any probe loops forever, this test hangs.
+  for (var i = 0; i < 200; i = i + 1) {
+    assert(d2.Has("miss_" + str(i)) == false);
+  }
+  for (var i = 0; i < 50; i = i + 1) {
+    assert(d2.Delete("miss_" + str(i)) == false);
+  }
+
+  // Insert 1 key â†’ forces resize, cleans all 96 tombstones
+  d2.Set("survivor", 999);
+  assert(d2.Size() == 1);
+  assert(d2.Get("survivor") == 999);
+
+  // --- Phase C: Repeated fill-delete cycles ---
+  // Verify tombstones don't accumulate across resize boundaries.
+  // Each cycle: fill to threshold â†’ delete all â†’ insert 1 (triggers resize).
+  // After 10 cycles the table must still function correctly.
+  var d3 = [:];
+  for (var cycle = 0; cycle < 10; cycle = cycle + 1) {
+    // Fill 6 keys (will grow on 7th at capacity 8, but after cycle 0
+    // the capacity is larger â€” fill to whatever the threshold is)
+    for (var i = 0; i < 20; i = i + 1) {
+      d3.Set("cyc_" + str(i), cycle * 100 + i);
+    }
+    // Delete all
+    for (var i = 0; i < 20; i = i + 1) {
+      d3.Delete("cyc_" + str(i));
+    }
+    assert(d3.Size() == 0);
+
+    // Lookups must terminate in the tombstone-heavy table
+    assert(d3.Has("nope") == false);
+    assert(d3.Has(0) == false);
+
+    // Insert 1 to trigger resize and tombstone cleanup
+    d3.Set("ping", cycle);
+    assert(d3.Size() == 1);
+    assert(d3.Get("ping") == cycle);
+    d3.Delete("ping");
+    assert(d3.Size() == 0);
+  }
+
+  // Final: the table still works after 10 fill-delete-resize cycles
+  d3.Set("final", 777);
+  assert(d3.Size() == 1);
+  assert(d3.Get("final") == 777);
+
+  // --- Phase D: Integer keys â€” guaranteed collision + tombstone saturation ---
+  // Integers 0-5 all hash to slot 0 mod 8 (proven in test 17).
+  // After filling 6 integer keys and deleting all, the 6 tombstones
+  // are in consecutive slots 0-5. Lookups for OTHER integer keys
+  // (which ALSO hash to slot 0) must probe through all 6 tombstones
+  // and reach one of the 2 empty slots (6 or 7).
+  var d4 = [:];
+  d4.Set(0, "a");
+  d4.Set(1, "b");
+  d4.Set(2, "c");
+  d4.Set(3, "d");
+  d4.Set(4, "e");
+  d4.Set(5, "f");
+  d4.Delete(0);
+  d4.Delete(1);
+  d4.Delete(2);
+  d4.Delete(3);
+  d4.Delete(4);
+  d4.Delete(5);
+  assert(d4.Size() == 0);
+
+  // Keys 10,20,30 also hash to slot 0 mod 8. Probe must traverse
+  // 6 consecutive tombstones starting at slot 0, then find empty at slot 6.
+  assert(d4.Has(10) == false);
+  assert(d4.Has(20) == false);
+  assert(d4.Has(30) == false);
+  assert(d4.Delete(10) == false);
+
+  // Insert into the tombstone-saturated chain
+  d4.Set(10, "ten");
+  assert(d4.Get(10) == "ten");
+  assert(d4.Size() == 1);
+}
+print "pass: tombstone saturation (no empty slots)"; // expect: pass: tombstone saturation (no empty slots)
+

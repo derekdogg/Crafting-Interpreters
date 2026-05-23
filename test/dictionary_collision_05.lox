@@ -1,0 +1,65 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 5: Worst-case linear probe â€” all keys map to same slot mod capacity
+// Use number keys whose IEEE 754 double XOR-hash produces the same value
+// mod 8 (initial capacity). We use multiples that collide: since the hash
+// of integer N as a double is (bits xor (bits >> 32)), small integers with
+// the same low exponent bits collide mod small capacities.
+// Insert enough to force multiple resizes while maintaining collision clusters.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Insert 200 sequential number keys â€” many will share hash mod capacity
+  // at each resize boundary (8, 16, 32, 64, 128, 256), creating dense
+  // probe chains at every capacity level.
+  for (var i = 0; i < 200; i = i + 1) {
+    d.Set(i, i * 3);
+  }
+  assert(d.Size() == 200);
+
+  // Delete every other key â€” scatters tombstones through probe chains
+  for (var i = 0; i < 200; i = i + 2) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 100);
+
+  // Verify all odd keys survived (must probe past tombstones)
+  for (var i = 1; i < 200; i = i + 2) {
+    assert(d.Get(i) == i * 3);
+  }
+  // Verify all even keys gone
+  for (var i = 0; i < 200; i = i + 2) {
+    assert(d.Has(i) == false);
+  }
+
+  // Re-insert even keys with new values â€” reuses tombstone slots
+  for (var i = 0; i < 200; i = i + 2) {
+    d.Set(i, i * 7);
+  }
+  assert(d.Size() == 200);
+
+  // Verify every single key
+  for (var i = 0; i < 200; i = i + 1) {
+    if (i % 2 == 0) {
+      assert(d.Get(i) == i * 7);
+    } else {
+      assert(d.Get(i) == i * 3);
+    }
+  }
+}
+print "pass: number key probe chains"; // expect: pass: number key probe chains
+

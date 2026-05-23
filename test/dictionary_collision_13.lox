@@ -1,0 +1,62 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 13: Wraparound probe termination
+// Insert keys that hash near the end of the backing array so the linear
+// probe wraps from the last slot back to slot 0. Then delete keys at the
+// wraparound boundary and verify lookups across the seam still work.
+// We use number keys â€” at capacity 16, key N lands at slot hash(N) mod 16.
+// By inserting many keys, some will inevitably probe across the boundary.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  // Fill 12 entries into capacity 16 (threshold = 12 at 0.75)
+  for (var i = 0; i < 12; i = i + 1) {
+    d.Set(i, "w" + str(i));
+  }
+  assert(d.Size() == 12);
+
+  // Delete keys 8-11 (likely to be near the end of the array)
+  for (var i = 8; i < 12; i = i + 1) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 8);
+
+  // Insert new keys â€” these probe past the tombstones and may wrap
+  for (var i = 100; i < 108; i = i + 1) {
+    d.Set(i, "w" + str(i));
+  }
+  assert(d.Size() == 16);
+
+  // Verify all live keys
+  for (var i = 0; i < 8; i = i + 1) {
+    assert(d.Get(i) == "w" + str(i));
+  }
+  for (var i = 8; i < 12; i = i + 1) {
+    assert(d.Has(i) == false);
+  }
+  for (var i = 100; i < 108; i = i + 1) {
+    assert(d.Get(i) == "w" + str(i));
+  }
+
+  // Look up keys that never existed â€” probe must terminate even when
+  // wrapping around a table with tombstones at the seam
+  for (var i = 200; i < 220; i = i + 1) {
+    assert(d.Has(i) == false);
+  }
+}
+print "pass: wraparound probe"; // expect: pass: wraparound probe
+

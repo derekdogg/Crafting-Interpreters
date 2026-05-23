@@ -1,0 +1,98 @@
+// strings.lox — string concat, interning, and length cost.
+//
+// Concatenation always allocates a fresh string (then probes the intern
+// table). The intern table hit-rate dominates real workloads — a hit
+// frees the freshly-allocated string back to the GC immediately, a miss
+// inserts it.
+//
+// Variants:
+//   (a) short fixed concat (high intern hit-rate expected)
+//   (b) growing concat (every result unique, intern miss every time)
+//   (c) char-by-char build (worst case — N concats per output string)
+//   (d) length-only loop (str() conversion cost without concat)
+//
+// NOTE: each test uses its own size because the O(n^2) cases blow up.
+
+fun bench(label, fn, n) {
+  var start = clock();
+  var r = fn(n);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+fun internHit(n) {
+  // Same literal repeatedly — confirms literals are interned at compile time.
+  var s = "";
+  var i = 0;
+  while (i < n) {
+    s = "hello world";
+    i = i + 1;
+  }
+  return s;
+}
+
+fun strConvert(n) {
+  // Pure str(number) — measures number-to-string formatting cost.
+  var s = "";
+  var i = 0;
+  while (i < n) {
+    s = str(i);
+    i = i + 1;
+  }
+  return s;
+}
+
+fun shortConcat(n) {
+  // Always produces one of ~10 strings — intern hits after warmup.
+  var s = "";
+  var i = 0;
+  while (i < n) {
+    s = "v" + str(i % 10);
+    i = i + 1;
+  }
+  return s;
+}
+
+fun growingConcat(n) {
+  // Result grows each iter — intern table never hits.
+  // O(n^2) in total chars copied — keep n small.
+  var s = "";
+  var i = 0;
+  while (i < n) {
+    s = s + "x";
+    i = i + 1;
+  }
+  return s;
+}
+
+fun charBuild(outer, inner) {
+  // Build inner-char strings repeatedly. Cost is O(outer * inner^2).
+  var i = 0;
+  var last = "";
+  while (i < outer) {
+    var s = "";
+    var j = 0;
+    while (j < inner) {
+      s = s + "a";
+      j = j + 1;
+    }
+    last = s;
+    i = i + 1;
+  }
+  return last;
+}
+
+print "=== strings ===";
+bench("intern hit (literal)        ", internHit,      500000);
+bench("str(i) conversion           ", strConvert,     200000);
+bench("short concat (intern hit)   ", shortConcat,     50000);
+bench("growing concat (O(n^2))     ", growingConcat,    2000);
+// charBuild: 10 outer * 1000 inner = ~10M char-copies. Tune higher cautiously.
+var cbStart = clock();
+var cbResult = charBuild(10, 1000);
+print "char-by-char 10 x 1000      ";
+print clock() - cbStart;
+print cbResult;
+print "=== done ===";

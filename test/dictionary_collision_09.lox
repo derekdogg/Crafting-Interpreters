@@ -1,0 +1,48 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// Test 9: Reverse-order deletion
+// Insert keys 0..299, then delete in reverse order. This creates tombstones
+// at the end of probe chains first, which is the opposite of forward deletion
+// and can expose different bugs in tombstone skipping.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 300; i = i + 1) {
+    d.Set(i, i);
+  }
+  assert(d.Size() == 300);
+
+  // Delete in reverse
+  for (var i = 299; i >= 0; i = i - 1) {
+    assert(d.Delete(i) == true);
+    // Verify a key at the low end is still accessible (if not yet deleted)
+    if (i > 0) {
+      assert(d.Get(0) == 0);
+    }
+  }
+  assert(d.Size() == 0);
+
+  // Refill and verify table is still healthy
+  for (var i = 0; i < 300; i = i + 1) {
+    d.Set(i, i * 11);
+  }
+  for (var i = 0; i < 300; i = i + 1) {
+    assert(d.Get(i) == i * 11);
+  }
+}
+print "pass: reverse deletion"; // expect: pass: reverse deletion
+

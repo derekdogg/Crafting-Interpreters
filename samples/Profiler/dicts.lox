@@ -1,0 +1,89 @@
+// dicts.lox — dictionary set/get/delete throughput.
+//
+// Exercises hash probing, growth (rehash), and tombstone behaviour.
+// Compare set vs get to see whether write-amplification from growth
+// dominates. Delete-then-reinsert measures tombstone cleanup cost.
+//
+// NOTE: dicts use native function calls (dictSet/dictGet/...), so every
+// access also pays one CallValue. Subtract function_calls.lox's "nop loop"
+// per-call cost when interpreting absolute numbers.
+
+var N = 50000;
+
+fun bench(label, fn, arg) {
+  var start = clock();
+  var r = fn(arg);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+fun setN(n) {
+  var d = dictNew();
+  var i = 0;
+  while (i < n) {
+    dictSet(d, str(i), i);
+    i = i + 1;
+  }
+  return dictSize(d);
+}
+
+fun getN(n) {
+  var d = dictNew();
+  var i = 0;
+  while (i < n) { dictSet(d, str(i), i); i = i + 1; }
+  var s = 0;
+  i = 0;
+  while (i < n) {
+    s = s + dictGet(d, str(i));
+    i = i + 1;
+  }
+  return s;
+}
+
+fun hasN(n) {
+  // Pure read path — dictHas should be cheaper than dictGet (no value copy).
+  var d = dictNew();
+  var i = 0;
+  while (i < n) { dictSet(d, str(i), i); i = i + 1; }
+  var hits = 0;
+  i = 0;
+  while (i < n) {
+    if (dictHas(d, str(i))) hits = hits + 1;
+    i = i + 1;
+  }
+  return hits;
+}
+
+fun deleteN(n) {
+  var d = dictNew();
+  var i = 0;
+  while (i < n) { dictSet(d, str(i), i); i = i + 1; }
+  i = 0;
+  while (i < n) {
+    dictDelete(d, str(i));
+    i = i + 1;
+  }
+  return dictSize(d);
+}
+
+fun churn(n) {
+  // Same 100 keys repeatedly set + half deleted — exercises tombstones.
+  var d = dictNew();
+  var i = 0;
+  while (i < n) {
+    dictSet(d, str(i % 100), i);
+    if (i % 2 == 0) dictDelete(d, str(i % 100));
+    i = i + 1;
+  }
+  return dictSize(d);
+}
+
+print "=== dicts ===";
+bench("set N      ", setN, N);
+bench("get N      ", getN, N);
+bench("has N      ", hasN, N);
+bench("delete N   ", deleteN, N);
+bench("churn      ", churn, N);
+print "=== done ===";

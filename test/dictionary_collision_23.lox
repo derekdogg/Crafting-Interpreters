@@ -1,0 +1,58 @@
+// Dictionary Collision Torture Tests
+//
+// Purpose: Force worst-case hash table behavior by creating long probe chains,
+// heavy tombstone clusters, and pathological insert/delete patterns that
+// stress linear probing to its limits.
+//
+// The dictionary uses linear probing with capacity starting at 8 and load
+// factor 0.75. These tests are designed to:
+// - Create maximum-length probe chains before resize triggers
+// - Place tombstones at every position in a probe chain
+// - Delete entries that other entries probed past (chain breakage test)
+// - Fill to exact load factor boundary then verify all lookups
+// - Interleave inserts and deletes to create fragmented probe sequences
+
+
+// ---------------------------------------------------------------------------
+// ===========================================================================
+// Mutation During Iteration
+// ===========================================================================
+// Keys() and Values() return snapshot arrays â€” independent copies at the
+// time of the call. These tests verify that mutating the dictionary while
+// iterating over a snapshot does not corrupt the snapshot, skip entries,
+// cause double-visits, or crash. They also verify that the snapshot becomes
+// stale (does NOT reflect mutations) and that the dict is consistent
+// afterward.
+
+
+// Test 23: Delete every key while iterating over Keys() snapshot
+// Iterate over the snapshot, deleting each key from the dict.
+// The snapshot array must remain stable (no skipped entries, no crash).
+// After the loop, the dict must be empty.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  for (var i = 0; i < 50; i = i + 1) {
+    d.Set("iter_" + str(i), i);
+  }
+  assert(d.Size() == 50);
+
+  var snap = d.Keys();
+  assert(arrayLen(snap) == 50);
+
+  // Delete every key using the snapshot as the iteration source
+  for (var i = 0; i < arrayLen(snap); i = i + 1) {
+    assert(d.Delete(snap[i]) == true);
+  }
+  assert(d.Size() == 0);
+
+  // Snapshot array must still be intact (it's an independent copy)
+  assert(arrayLen(snap) == 50);
+
+  // Dict must be fully empty
+  for (var i = 0; i < arrayLen(snap); i = i + 1) {
+    assert(d.Has(snap[i]) == false);
+  }
+}
+print "pass: delete during Keys() iteration"; // expect: pass: delete during Keys() iteration
+
