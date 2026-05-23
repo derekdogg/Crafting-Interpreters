@@ -1,30 +1,57 @@
 # Crafting Interpreters — Bytecode VM in Delphi Pascal
 
-A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting Interpreters](https://craftinginterpreters.com/) (Chapters 14–26), implemented in Delphi Pascal.
+A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting Interpreters](https://craftinginterpreters.com/) (Chapters 14–26), implemented in Delphi Pascal — extended with a 2D game engine, SQL database access, NaN boxing, and peephole optimizations.
 
 ![Lox Interpreter — Space Invaders](images/MainScreen.png)
 
 ## Features
 
+### Language & VM
+
 - **Scanner & Compiler** — Single-pass Pratt parser compiling to bytecode
 - **Virtual Machine** — Stack-based VM with call frames, closures, and upvalues
+- **NaN Boxing** — `TValue = UInt64`; doubles stored as raw IEEE-754 bits, non-number values encoded as quiet NaN payloads. Canonicalizes NaN inputs via `CANON_NAN` to prevent tag-space collisions. ~2.6× faster than tagged-union on fib(40).
 - **Garbage Collection** — Mark-sweep GC with tricolor marking and gray stack worklist
 - **String Interning** — Hash table with weak references for automatic deduplication
-- **Arrays** — Dynamic arrays via native functions (`newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove`)
+- **Dynamic Stack** — Growable value stack (starts at 256 slots, grows to 65 536) with automatic frame/upvalue pointer rebasing after realloc
+- **Arrays** — Dynamic arrays with literal syntax (`[1, 2, 3]`), subscript get/set (`arr[i]`), plus native functions (`newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove`)
 - **Dictionaries** — Hash-table dictionaries with generalized keys (any hashable TValue), Swift-style literal syntax (`[:]`, `["key": val]`), subscript get/set, PascalCase method API (Set, Get, Has, Delete, Keys, Values, Size), linear probing with tombstones, 75% load factor, bounded probing, GC-integrated
 - **Records** — Immutable-structure value types via `record Name(field1, field2);` syntax with dot access and field mutation
-- **Native Objects** — Inject Delphi classes as GC-tracked Lox objects with automatic RTTI-based property and method dispatch; ships with `StringList()` (add, get, count, remove)
-- **RTTI Injection** — Any Delphi `TObject` descendant can be injected into a Lox script via `InjectObject()`; published properties and methods are automatically accessible without wrapper code. Supports nested objects, object-typed method arguments, property mutation, method invocation with marshaling between Lox and Delphi types. Denylist prevents scripts from calling `Free`/`Destroy` and other lifecycle methods.
-- **Event Queue** — `TLoxQueue` native object enables Delphi-to-Lox event passing; Delphi code enqueues string events from form handlers, Lox scripts poll and consume them via `events.hasItems()` / `events.dequeue()`
-- **Interactive Script Execution** — `processMessages()` native function pumps the Windows message queue mid-script, enabling interactive scripts that respond to UI events in real-time; automatic print output flushing to the output memo; script abort on form close
-- **Script Runtime Safety** — Run button, test buttons, and editor are disabled while a script is running to prevent concurrent VM access and editor corruption
-- **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
-- **Native Functions** — `clock()`, `collectGarbage()`, `assert()`, `bytesAllocated()`, `objectsAllocated()`, 7 array functions, `StringList()` constructor, dictionary functions (`dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize`), `processMessages()` for UI event loop integration
-- **Conversion Functions** — `str()`, `num()`, `bool()`, `type()` for runtime type conversion and introspection
-- **String Functions** — `strlen()`, `substr()`, `indexOf()`, `charAt()`, `upper()`, `lower()`, `trim()`, `split()`
-- **Math Functions** — `abs()`, `floor()`, `ceil()`, `round()` (banker's rounding), `min()`, `max()`, `sqrt()`, `pow()`, `random()`
-- **Native Arity Checking** — All 55 native functions enforce correct argument count at the call site with descriptive error messages
+- **Native Objects** — Inject Delphi classes as GC-tracked Lox objects with automatic RTTI-based property and method dispatch
+- **RTTI Injection** — Any Delphi `TObject` descendant can be injected into a Lox script via `InjectObject()`; published properties and methods are automatically accessible without wrapper code. Supports nested objects, object-typed method arguments, sets, dynamic arrays, property mutation, method invocation with marshaling between Lox and Delphi types. Denylist prevents scripts from calling `Free`/`Destroy` and other lifecycle methods.
+
+### Performance Optimizations
+
+- **NaN Boxing** — Eliminates heap-allocated tagged unions; all values fit in a single 8-byte register
+- **Peephole Optimizations** — Fused opcodes: `OP_JUMP_IF_FALSE_POP` (fused test+pop), `OP_LESS_JUMP_IF_FALSE` (fused comparison+branch for `for` loops), `OP_POP_N` (bulk pop)
+- **Fast Local Slots** — `OP_GET_LOCAL_0..7` / `OP_SET_LOCAL_0..7` encode slot index in the opcode itself, saving 1 bytecode byte and 1 dispatch per access
+- **Inline Fast Paths** — `pushStack` / `popStack` / `peekStack` are `inline` with cold-path delegation for stack growth
+- **NaN Canonicalization** — `CreateNumber` uses `Move()` (not pointer punning) for aliasing-safe bit conversion; NaN payloads that collide with tag space are canonicalized to `CANON_NAN`
+
+### 2D Game Engine
+
+- **Software-rendered canvas** — 320×240 logical resolution (configurable), auto-scaled with letterboxing, double-buffered
+- **Sprites** — Create from pixel arrays, PNG files, PNG regions, or palette indices; draw, scale, rotate, flip; automatic sprite sheet slicing
+- **Tilemaps** — Create tile grids from sprite sheets; set/get individual tiles; draw with camera offset
+- **Surfaces** — Off-screen render targets for compositing
+- **Camera** — Global camera offset for scrolling
+- **Input** — `keyHeld()`, `keyPressed()`, `mouseX/Y()`, `mouseDown()`, `mouseClicked()` — edge-triggered per frame
+- **Sound** — 4-channel waveform synthesizer: `playNote(freq, duration, waveform, channel)`, `playSequence()` for melodies, `stopSound()`, `stopAllSound()`
+- **Game Loop** — `processMessages()` pumps the Windows message queue mid-script; scripts run as cooperative game loops with event polling
+
+### Database Access
+
+- **SQL Server** — `sqlConnect(config)`, `sqlQuery(conn, sql)`, `sqlQueryParams(conn, sql, params)`, `sqlClose(conn)` — parameterized queries returning arrays of dictionaries, with connection pooling via FireDAC
+- **Environment Variables** — `env(name)`, `loadEnv()` for `.env` file loading (connection strings, secrets)
+
+### IDE & Tooling
+
 - **Syntax-Highlighted Editor** — SynEdit-based Script Pad with custom Lox highlighter (keywords, built-ins, strings, numbers, comments), dark theme, line numbers, auto-indent, group undo
+- **Event Queue** — `TLoxQueue` native object enables Delphi-to-Lox event passing; Delphi code enqueues string events from form handlers, Lox scripts poll via `events.hasItems()` / `events.dequeue()`
+- **Interactive Script Execution** — `processMessages()` enables interactive scripts; automatic print output flushing; script abort on form close
+- **Script Runtime Safety** — Run button, test buttons, and editor are disabled while a script is running
+- **VM Introspection** — `vmStackDepth()`, `vmStackCapacity()`, `vmCallDepth()`, `vmOpenUpvalues()`, `gcNextThreshold()`, `gcCollectionCount()`, `internTableStats()`, `loxClasses()`, `loxClassInfo()`, `loxObjects()`, `loxObjectInfo()`
+- **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
 
 ## Chapters Implemented
 
@@ -42,40 +69,99 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | 24 | Functions, call frames, native functions |
 | 25 | Closures and upvalues |
 | 26 | Garbage collection (mark-sweep) |
-| — | Arrays (native function API, GC-integrated) |
-| — | Records (`record Name(fields);`, dot access, field mutation, GC-integrated) |
-| — | Native objects (Delphi class wrapping, `StringList()`, `OP_INVOKE`, GC-integrated) |
-| — | RTTI injection (`InjectObject()`, auto-registration, property/method dispatch, nested objects, denylist) |
-| — | Dictionaries (`[:]`/`["k":v]` literals, subscript, method dispatch, GC-integrated) |
-| — | Modulo operator (`%`) |
-| — | Conversion functions (`str`, `num`, `bool`, `type`) |
-| — | String manipulation (`strlen`, `substr`, `indexOf`, `charAt`, `upper`, `lower`, `trim`, `split`) |
-| — | Math library (`abs`, `floor`, `ceil`, `round`, `min`, `max`, `sqrt`, `pow`, `random`) |
-| — | Long-operand opcodes (`OP_*_LONG`) for >255 constants per chunk |
-| — | Event queue (`TLoxQueue`) for Delphi-to-Lox event passing |
-| — | Interactive script execution (`processMessages()`, print flushing, abort handling) |
+
+### Extensions Beyond the Book
+
+| Feature | Description |
+|---------|-------------|
+| NaN Boxing | `TValue = UInt64`, IEEE-754 bit encoding, NaN canonicalization, defensive `CreateObject` |
+| Peephole Optimizations | Fused opcodes (`OP_JUMP_IF_FALSE_POP`, `OP_LESS_JUMP_IF_FALSE`, `OP_POP_N`), fast local slots (0–7) |
+| Arrays | Literal syntax, subscript operators, native API, GC-integrated |
+| Dictionaries | Literal syntax, subscript, method dispatch, tombstones, rehashing, GC-integrated |
+| Records | `record Name(fields);`, dot access, field mutation, GC-integrated |
+| Native Objects | Delphi class wrapping, `StringList()`, `OP_INVOKE`, GC-integrated |
+| RTTI Injection | `InjectObject()`, auto-registration, property/method dispatch, nested objects, denylist |
+| 2D Game Engine | Canvas, sprites, tilemaps, surfaces, camera, input, sound — full retro game development |
+| SQL Database | FireDAC-based SQL Server access with parameterized queries |
+| Environment | `.env` file loading, `env()` variable access |
+| VM Introspection | Runtime inspection of stack, GC, intern table, and native class registry |
+| Modulo Operator | `%` for integers and floats |
+| Conversion Functions | `str`, `num`, `bool`, `type` |
+| String Library | `strlen`, `substr`, `indexOf`, `charAt`, `upper`, `lower`, `trim`, `split` |
+| Math Library | `abs`, `floor`, `ceil`, `round`, `min`, `max`, `sqrt`, `pow`, `sin`, `cos`, `random` |
+| Long-Operand Opcodes | `OP_*_LONG` for >255 constants per chunk |
+
+## Native Functions (90+)
+
+| Category | Functions |
+|----------|-----------|
+| Core | `clock`, `collectGarbage`, `assert`, `bytesAllocated`, `objectsAllocated` |
+| VM Introspection | `vmStackDepth`, `vmStackCapacity`, `vmCallDepth`, `vmOpenUpvalues`, `gcNextThreshold`, `gcCollectionCount`, `internTableStats`, `loxClasses`, `loxClassInfo`, `loxObjects`, `loxObjectInfo` |
+| Environment | `env`, `loadEnv` |
+| Conversion | `str`, `num`, `bool`, `type` |
+| Math | `abs`, `floor`, `ceil`, `round`, `min`, `max`, `sqrt`, `pow`, `sin`, `cos`, `random` |
+| String | `strlen`, `substr`, `indexOf`, `charAt`, `upper`, `lower`, `trim`, `split` |
+| Array | `newArray`, `arrayPush`, `arrayPop`, `arrayGet`, `arraySet`, `arrayLen`, `arrayRemove` |
+| Dictionary | `dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize` |
+| Native Objects | `StringList` |
+| SQL | `sqlConnect`, `sqlQuery`, `sqlQueryParams`, `sqlClose` |
+| Canvas | `canvasWidth`, `canvasHeight`, `setCanvasSize`, `clearCanvas`, `setColor`, `fillRect`, `drawRect`, `drawText`, `drawLine`, `drawCircle`, `fillCircle`, `drawPixel`, `drawPixels`, `drawPixelsGray`, `present`, `measureText`, `setCamera`, `setClipRect`, `clearClipRect` |
+| Sprites | `createSprite`, `drawSprite`, `drawSpriteScaled`, `drawSpriteRotated`, `flipSprite`, `freeSprite`, `spriteWidth`, `spriteHeight`, `loadSpriteFromPNG`, `loadSpriteFromPNGRegion`, `createPaletteSprite`, `setPaletteColor`, `clearPalette` |
+| Tilemaps | `createTilemap`, `setTile`, `getTile`, `drawTilemap` |
+| Surfaces | `createSurface`, `setRenderTarget`, `drawSurface`, `freeSurface` |
+| Input | `keyHeld`, `keyPressed`, `mouseX`, `mouseY`, `mouseDown`, `mouseClicked` |
+| Sound | `playNote`, `playSequence`, `stopSound`, `stopAllSound` |
+| Game Loop | `processMessages` |
 
 ## Project Structure
 
 ```
-Chunk_Types.pas      — Core unit: scanner, parser, compiler, VM, GC, hash table
-NativeObjects.pas    — Native Delphi classes exposed to Lox (TLoxQueue, TCustomer, TAddress)
-Main.pas / Main.dfm  — GUI form with interpreter REPL and auto-run test suite
-InterpreterGui.dpr   — Delphi project file
-samples/             — Custom Lox test programs (auto-run on startup)
-samples/errors/      — Expected-error test programs (auto-run on startup)
-samples/stress/      — GC stress patterns (run via Button2)
-test/                — Official Crafting Interpreters test suite (auto-run on startup)
-test/native/         — RTTI injection tests (native object property/method/GC tests)
+Chunk_Types.pas        — Core unit: scanner, parser, compiler, VM, GC, hash table, SQL natives
+LoxCanvas.pas          — 2D game engine: canvas, sprites, tilemaps, surfaces, input
+LoxSound.pas           — 4-channel waveform sound synthesizer
+NativeObjects.pas      — Native Delphi classes exposed to Lox (TLoxQueue, TCustomer, TAddress)
+fmGame.pas / fmGame.dfm — Game window: hosts canvas, input events, script lifecycle
+Main.pas / Main.dfm    — Editor form with interpreter REPL, test runner, syntax highlighting
+SynHighlighterLox.pas  — Custom SynEdit Lox syntax highlighter
+InterpreterGui.dpr     — Delphi project file
+docs/                  — Architecture documentation (11 chapters)
+samples/               — Custom Lox test programs (auto-run on startup)
+samples/demos/         — Game demos (Space Invaders, Manic Cavern, Mario, slots, etc.)
+samples/errors/        — Expected-error test programs
+samples/stress/        — GC stress patterns (run via Button2)
+samples/introspection/ — VM introspection scripts (GC monitor, stack probe, dashboard)
+samples/Profiler/      — Performance benchmarks
+test/                  — Official Crafting Interpreters test suite + extensions
+test/native/           — RTTI injection tests
+test/record/           — Record type tests (23 files)
 ```
+
+## NaN Boxing
+
+All Lox values are represented as a single `UInt64` (`TValue`):
+
+| Value Type | Encoding |
+|-----------|----------|
+| Number | Raw IEEE-754 double bits (passes `(bits and QNAN) <> QNAN`) |
+| Nil | `QNAN or 1` (`$7FFC000000000001`) |
+| False | `QNAN or 2` (`$7FFC000000000002`) |
+| True | `QNAN or 3` (`$7FFC000000000003`) |
+| Object | `SIGN_BIT or QNAN or pointer` (lower 48 bits) |
+
+Safety measures:
+- **NaN Canonicalization** — `CreateNumber` detects NaN payloads that collide with tag space and maps them to `CANON_NAN` ($7FF8000000000000)
+- **Pointer Validation** — `CreateObject` raises `ELoxRuntimeError` at runtime if a pointer has bits in the tag region (detects platform incompatibility)
+- **Aliasing-safe conversion** — `Move()` used instead of pointer type-punning for Double↔UInt64 bit conversion
 
 ## Testing
 
-All tests run automatically when the application starts. Results are displayed in Memo2. You can also type Lox code into Memo1 and click **Run**.
+All tests run automatically when the application starts. Results are displayed in Memo2. You can also type Lox code into the Script Pad and click **Run**.
 
 ### Official Test Suite
 
-156 tests from the [official Crafting Interpreters test suite](https://github.com/munificent/craftinginterpreters/tree/master/test), matching the **chap26_garbage** level (all features except classes/inheritance), plus custom dictionary and array tests. Tests are organized across 20+ categories:
+156+ tests from the [official Crafting Interpreters test suite](https://github.com/munificent/craftinginterpreters/tree/master/test), matching the **chap26_garbage** level (all features except classes/inheritance), plus custom dictionary, array, record, and NaN boxing tests.
+
+The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N] Error` comments from each `.lox` file and verifies actual output matches expected results.
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
@@ -85,7 +171,7 @@ All tests run automatically when the application starts. Results are displayed i
 | call | 4 | Calling non-callable types (bool, nil, num, string) |
 | closure | 11 | Capture, shadowing, nesting, reuse, unused closures |
 | comments | 4 | Line comments, EOF, unicode |
-| dictionary | 2 | Literal syntax, method API, subscript, resize, tombstones, mixed keys |
+| dictionary | 35+ | Literal syntax, method API, subscript, resize, tombstones, collisions, mixed keys |
 | for | 11 | Syntax, scoping, closures, return, error recovery |
 | function | 12 | Parameters, recursion, mutual recursion, limits, errors |
 | if | 10 | If/else, dangling else, truth, var/fun in branches |
@@ -95,138 +181,84 @@ All tests run automatically when the application starts. Results are displayed i
 | number | 3 | Literals, leading dot, NaN equality |
 | operator | 20 | Arithmetic, comparison, equality, type errors |
 | print | 1 | Missing argument error |
+| record | 23 | Construction, fields, mutation, nesting, closures, collections, identity, errors |
 | regression | 1 | Bug regression (#40) |
 | return | 6 | Return from functions, after control flow, at top level |
-| string | 15 | Literals, multiline, unterminated, error after multiline, strlen, substr, indexOf, charAt, upper, lower, trim, split |
+| string | 15 | Literals, multiline, unterminated, strlen, substr, indexOf, charAt, upper, lower, trim, split |
 | conversion | 8 | str, num, bool, type — conversions and arity errors |
 | math | 13 | abs, floor, ceil, round, min, max, sqrt, pow, random — values, edge cases, errors |
 | variable | 18 | Scoping, shadowing, undefined, duplicate, initializer |
 | while | 7 | Syntax, closures, return, var/fun in body |
-| *(top-level)* | 3 | Precedence, empty file, unexpected character |
-
-The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N] Error` comments from each `.lox` file and verifies actual output matches expected results.
+| nan_boxing_edge_cases | 1 (25 sections) | Numbers, booleans, nil, objects, NaN payloads, signed zero, dict NaN keys, pointer stress, GC interaction, deep recursion, cycles, dict rehash/tombstones |
+| peephole_less_jump | 1 | Fused OP_LESS_JUMP_IF_FALSE correctness |
+| shortcut_opcodes | 1 | Fast local slot opcodes (GET/SET_LOCAL_0..7) |
+| stack_growth | 1 | Dynamic stack growth under deep recursion |
 
 ### Custom Sample Tests
 
-**32 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
+**44 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
-| File | Coverage |
-|------|----------|
-| hello.lox | Basic print |
-| arithmetic.lox | Operators, precedence, comparisons, logical and/or |
-| variables.lox | Declaration, assignment, type reassignment, nil default |
-| strings.lox | Concatenation, interning, loop building |
-| scoping.lox | Blocks, shadowing, nested scopes |
-| control_flow.lox | if/else, while, for, nested loops |
-| functions.lox | Declarations, return, recursion, first-class, implicit nil, early return |
-| closures.lox | Capture, counters, shared upvalues, nested closures |
-| counter.lox | Closure-based counter pattern |
-| fibonacci.lox | Recursive and iterative fibonacci |
-| modulo.lox | Modulo operator with integers, floats, negative numbers |
-| arrays.lox | Array creation, push, pop, get, set, len, remove |
-| arrays_advanced.lox | Nested arrays, arrays in closures, arrays as function args |
-| gc_basic.lox | Live data survives, dead temporaries reclaimed |
-| gc_functions.lox | Functions and closures survive GC |
-| gc_reclaim.lox | Memory reclamation verified via `objectsAllocated()` |
-| gc_stress.lox | Heavy allocation patterns under GC pressure |
-| gc_interning.lox | String interning consistency, intern table under churn |
-| gc_upvalue_closing.lox | Closed upvalues, nested closing, capture-by-reference, factories |
-| gc_args_and_temps.lox | GC between args, mid-expression temps, recursive arg building |
-| gc_scopes_and_natives.lox | Native `clock()` survives, deep scopes, gray stack, loop capture |
-| gc_edge_cases.lox | Open upvalue list, closing order, rapid create/discard, name reuse, large constant pools |
-| gc_torture.lox | Concat chains, nested defs, slot reuse, fib, ping-pong, closure spam, alternating alloc/collect |
-| gc_gray_stack.lox | Gray stack growth under heavy marking pressure |
-| gc_arrays.lox | Array elements survive GC, nested array marking, array in closures |
-| records.lox | Record declaration, construction, field access, mutation, multiple types |
-| gc_records.lox | Record GC reclamation, live record survival, nested records, closure-captured records |
-| native_objects.lox | StringList create, add, get, count, remove, print |
-| native_objects_stress.lox | 14 tests: multi-instance, loops, churn, closures, GC pressure, 20 simultaneous lists, interleaved GC |
-| gc_coverage_gaps.lox | GC coverage gaps: edge cases not hit by other tests |
-| gc_simple_log.lox | Basic GC logging verification |
-| gc_stress_collections.lox | Stress collection patterns under sustained pressure |
+| Category | Files | Coverage |
+|----------|-------|----------|
+| Basics | hello, arithmetic, variables, strings, scoping, control_flow, functions, closures, counter, fibonacci, modulo | Core language features |
+| Arrays | arrays, arrays_advanced | Creation, nesting, closures, function args |
+| Records | records | Declaration, construction, field access, mutation |
+| Native Objects | native_objects, native_objects_stress | StringList, multi-instance, loops, GC pressure |
+| GC | gc_basic, gc_functions, gc_reclaim, gc_stress, gc_interning, gc_upvalue_closing, gc_args_and_temps, gc_scopes_and_natives, gc_edge_cases, gc_torture, gc_gray_stack, gc_arrays, gc_records, gc_coverage_gaps, gc_simple_log, gc_stress_collections | 16 dedicated GC test files |
+| SQL | sql_connect, sql_query, sql_filter, sql_aggregation, sql_params, sql_null_handling, sql_multi_query, sql_field_access | Database access patterns |
+| Decrypt | decrypt_webconfig | Real-world utility script |
+| Introspection | gc_monitor, intern_table_observer, stack_depth_probe, vm_dashboard | VM runtime inspection |
+
+### Game Demos
+
+**20 demos** in `samples/demos/` — interactive game scripts:
+
+| File | Description |
+|------|-------------|
+| space_invaders.lox | Classic Space Invaders with sprites, sound, and scoring |
+| manic_cavern.lox | Platformer with tilemaps and gravity |
+| mario_walk.lox | Animated sprite walking demo |
+| dk_proto.lox | Donkey Kong prototype |
+| slots.lox | Slot machine with animation |
+| tilemap_demo.lox | Tilemap rendering with camera scrolling |
+| rotation_demo.lox | Sprite rotation showcase |
+| sound_tester.lox | Interactive sound synthesis explorer |
+| music_demo.lox | Melody sequencing |
+| *...and 11 more* | Input tests, camera, clipping, fonts, sprites, surfaces |
 
 ### GC Stress Test Suite
 
-**1 comprehensive stress file** in `samples/stress/` — run via the **Run Stress Tests** button (Button2):
+**1 comprehensive stress file** in `samples/stress/` — run via the **Run Stress Tests** button:
 
-| File | Coverage |
-|------|----------|
-| gc_stress_patterns.lox | 15 patterns: allocation storm, long/short-lived mix, pointer graphs, cycles, mutation, deep chains (2000 levels), container thrash, random lifetimes, closure capture, combined stress, shared-object explosion, sustained pressure (5000 iterations), cycle reclamation verification, intern table churn (2000+ strings), stack realloc with open upvalues |
+15 patterns: allocation storm, long/short-lived mix, pointer graphs, cycles, mutation, deep chains (2000 levels), container thrash, random lifetimes, closure capture, combined stress, shared-object explosion, sustained pressure (5000 iterations), cycle reclamation verification, intern table churn (2000+ strings), stack realloc with open upvalues.
 
-### Standard Library Test Suite
+### Performance Benchmarks
 
-Tests for built-in conversion, string, and math functions in `test/conversion/`, `test/string/`, and `test/math/`:
-
-| Category | Tests | Coverage |
-|----------|-------|----------|
-| conversion | 8 | `str()`, `num()`, `bool()`, `type()` — all value types, edge cases, arity errors |
-| string | 11 | `strlen()`, `substr()`, `indexOf()`, `charAt()`, `upper()`, `lower()`, `trim()`, `split()` — bounds, empty strings, arity/type errors |
-| math | 9 | `abs()`, `floor()`, `ceil()`, `round()` (banker's), `min()`, `max()`, `sqrt()`, `pow()`, `random()` — negatives, edge cases, type errors |
+**11 benchmark scripts** in `samples/Profiler/` covering arithmetic, arrays, branching, closures, dictionaries, function calls, GC stress, globals vs locals, constant loading, records, and strings.
 
 ### RTTI Injection Test Suite
 
 **21 tests** in `test/native/` — RTTI-based native object injection, run via the **Run RTTI Tests** button:
 
-| File | Coverage |
-|------|----------|
-| inject_stringlist.lox | StringList manual wrapper: add, get, count, remove |
-| inject_rtti.lox | Happy path: all property types, methods, nesting, chaining, equality |
-| inject_rtti_closures.lox | Closures capturing native objects, mutation visibility, GC safety |
-| inject_rtti_edge.lox | Empty string, zero, negatives, bool toggle, large numbers, punctuation |
-| inject_rtti_equality.lox | Pointer identity, self-equality, cross-type comparison, nested consistency |
-| inject_rtti_obj_arg.lox | Pass native object as method argument, identity after reassignment |
-| inject_rtti_gc_array.lox | Native objects in Lox arrays, survive GC, mutation via array reference |
-| inject_rtti_gc_dict.lox | Native objects as dict values, survive rehash + GC, nested access |
-| inject_rtti_gc_functions.lox | Pass/return through functions, closure capture, nested calls, shared closures |
-| inject_rtti_gc_loop.lox | Loop allocation pressure, repeated access, building arrays from properties |
-| inject_rtti_err_bad_property.lox | GET undefined property |
-| inject_rtti_err_set_bad_property.lox | SET undefined property |
-| inject_rtti_err_bad_method.lox | INVOKE undefined method |
-| inject_rtti_err_denylist_free.lox | Denylist blocks `Free()` |
-| inject_rtti_err_denylist_destroy.lox | Denylist blocks `Destroy()` |
-| inject_rtti_err_bad_arg_type.lox | Array arg to Delphi method |
-| inject_rtti_err_wrong_arity.lox | Wrong argument count |
-| inject_rtti_err_set_array.lox | Assign Lox array to property |
-| inject_rtti_err_set_closure.lox | Assign Lox closure to property |
-| inject_rtti_err_set_record.lox | Assign Lox record to property |
-| inject_rtti_err_arg_closure.lox | Closure arg to Delphi method |
-| inject_rtti_err_arg_dict.lox | Dict arg to Delphi method |
-
-**11 error tests** in `samples/errors/` — expected to produce errors:
-
-| File | Expected Error |
-|------|---------------|
-| type_error_add.lox | String + number type mismatch |
-| negate_string.lox | Negate non-number |
-| multiply_booleans.lox | Multiply non-numbers |
-| wrong_arity_few.lox | Too few arguments |
-| wrong_arity_many.lox | Too many arguments |
-| call_non_function.lox | Calling a non-callable value |
-| undefined_variable.lox | Undefined variable access |
-| stack_overflow.lox | Infinite recursion |
-| array_out_of_bounds.lox | Array index out of bounds |
-| array_pop_empty.lox | Pop from empty array |
-| array_not_array.lox | Array operation on non-array value |
+Happy-path tests (property access, methods, nesting, closures, equality, GC safety, arrays, dicts, functions, loops) plus 11 error tests (undefined property, denylist, wrong arity, bad arg types).
 
 ## GC Hardening
 
-The garbage collector has been hardened with:
-
 - **DEBUG_STRESS_GC** — Triggers `CollectGarbage` on every growth allocation
 - **DEBUG_LOG_GC** — Logs allocate/free/mark/blacken events to `gc.log` with summary stats
-- **Push/pop protection** at all 7 GC-sensitive allocation sites
+- **DEBUG_STRESS_TABLE** — Enables `AssertTableConsistency` on every table operation
+- **Push/pop protection** at all GC-sensitive allocation sites
 - **NextGC floor** of 1024 bytes to prevent zero-threshold assertions
-- **Stack realloc rebase fix** — After `ReallocMem` moves the stack buffer, rebases all `VM.Frames[i].slots` and open upvalue `location` pointers
-- **AssertTableConsistency** — Debug assertion validating `live + tombstones = Table.Count`
-- **15-pattern stress test suite** (`samples/stress/gc_stress_patterns.lox`) covering allocation storms, cycles, deep chains, container thrash, closure capture, shared-object explosion, sustained pressure, cycle reclamation, intern table churn, and stack realloc with open upvalues
-- **16 dedicated GC test files** covering interning, upvalue closing, argument temporaries, nested scopes, native functions, open upvalue linked lists, slot reuse, mutual recursion, alternating alloc/collect torture scenarios, array element marking, record type/instance reclamation, coverage gaps, and stress collections
+- **Stack realloc rebase** — After `ReallocMem` moves the stack buffer, rebases all `VM.Frames[i].slots` and open upvalue `location` pointers
+- **Stack overflow guard** — Hard limit at 65 536 slots with `ELoxRuntimeError` raise (not silent corruption)
+- **16 dedicated GC test files** + 15-pattern stress suite + NaN boxing edge cases
 
 ## Build
 
 ### Prerequisites
 
-- **Delphi** (RAD Studio) — Win32 target, tested with RAD Studio 12+
-- **SynEdit** — Install via **GetIt Package Manager** (Tools → GetIt Package Manager → search "SynEdit"). This provides the `TSynEdit` editor component and highlighter framework used by the Script Pad.
+- **Delphi** (RAD Studio 12+) — Win32 target
+- **SynEdit** — Install via **GetIt Package Manager** (Tools → GetIt Package Manager → search "SynEdit")
 
 ### Building
 
@@ -234,9 +266,9 @@ The garbage collector has been hardened with:
 2. Ensure the target platform is **Win32** and configuration is **Debug** or **Release**
 3. Build (Shift+F9) or Run (F9)
 
-
 ### Notes
 
 - SynEdit is an IDE design-time package — it must be installed into the IDE, not just added to the search path
-- The custom Lox syntax highlighter (`SynHighlighterLox.pas`) is included in the project and requires no additional setup beyond having SynEdit installed
+- The custom Lox syntax highlighter (`SynHighlighterLox.pas`) is included in the project
+- FireDAC (included with RAD Studio) is used for SQL Server connectivity
 - No other external dependencies are required
