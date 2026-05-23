@@ -172,7 +172,7 @@ begin
     RuntimeError('playTone() takes 2-3 arguments (frequency, durationMs [, volume]).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
   begin
     RuntimeError('playTone() arguments must be numbers.');
     Exit(CreateNilValue);
@@ -180,17 +180,17 @@ begin
   vol := 1.0;
   if (argCount = 3) then
   begin
-    if args[2].ValueKind <> vkNumber then
+    if not isNumber(args[2]) then
     begin
       RuntimeError('playTone() volume must be a number (0.0 to 1.0).');
       Exit(CreateNilValue);
     end;
-    vol := args[2].NumberValue;
+    vol := GetNumber(args[2]);
     if vol < 0 then vol := 0;
     if vol > 1 then vol := 1;
   end;
-  freq := Trunc(args[0].NumberValue);
-  durMs := Trunc(args[1].NumberValue);
+  freq := Trunc(GetNumber(args[0]));
+  durMs := Trunc(GetNumber(args[1]));
   if (freq < 20) or (freq > 20000) then
   begin
     RuntimeError('playTone() frequency must be between 20 and 20000.');
@@ -232,8 +232,8 @@ begin
     RuntimeError('playSweep() takes 3-4 arguments (startFreq, endFreq, durationMs [, volume]).');
     Exit(CreateNilValue);
   end;
-  if (args[0].ValueKind <> vkNumber) or (args[1].ValueKind <> vkNumber) or
-     (args[2].ValueKind <> vkNumber) then
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
   begin
     RuntimeError('playSweep() arguments must be numbers.');
     Exit(CreateNilValue);
@@ -241,18 +241,18 @@ begin
   vol := 1.0;
   if (argCount = 4) then
   begin
-    if args[3].ValueKind <> vkNumber then
+    if not isNumber(args[3]) then
     begin
       RuntimeError('playSweep() volume must be a number (0.0 to 1.0).');
       Exit(CreateNilValue);
     end;
-    vol := args[3].NumberValue;
+    vol := GetNumber(args[3]);
     if vol < 0 then vol := 0;
     if vol > 1 then vol := 1;
   end;
-  startFreq := Trunc(args[0].NumberValue);
-  endFreq := Trunc(args[1].NumberValue);
-  durMs := Trunc(args[2].NumberValue);
+  startFreq := Trunc(GetNumber(args[0]));
+  endFreq := Trunc(GetNumber(args[1]));
+  durMs := Trunc(GetNumber(args[2]));
   if (startFreq < 20) or (startFreq > 20000) or
      (endFreq < 20) or (endFreq > 20000) then
   begin
@@ -294,7 +294,7 @@ begin
     RuntimeError('playNoise() takes 1-2 arguments (durationMs [, volume]).');
     Exit(CreateNilValue);
   end;
-  if args[0].ValueKind <> vkNumber then
+  if not isNumber(args[0]) then
   begin
     RuntimeError('playNoise() argument must be a number.');
     Exit(CreateNilValue);
@@ -302,16 +302,16 @@ begin
   vol := 1.0;
   if (argCount = 2) then
   begin
-    if args[1].ValueKind <> vkNumber then
+    if not isNumber(args[1]) then
     begin
       RuntimeError('playNoise() volume must be a number (0.0 to 1.0).');
       Exit(CreateNilValue);
     end;
-    vol := args[1].NumberValue;
+    vol := GetNumber(args[1]);
     if vol < 0 then vol := 0;
     if vol > 1 then vol := 1;
   end;
-  durMs := Trunc(args[0].NumberValue);
+  durMs := Trunc(GetNumber(args[0]));
   if (durMs < 1) or (durMs > 5000) then
   begin
     RuntimeError('playNoise() duration must be between 1 and 5000 ms.');
@@ -354,12 +354,12 @@ begin
     RuntimeError('playSequence() first argument must be an array of [freq, durationMs, waveType?] notes.');
     Exit(CreateNilValue);
   end;
-  if args[1].ValueKind <> vkBoolean then
+  if not isBoolean(args[1]) then
   begin
     RuntimeError('playSequence() second argument must be a boolean (loop).');
     Exit(CreateNilValue);
   end;
-  doLoop := args[1].BooleanValue;
+  doLoop := GetBoolean(args[1]);
 
   if not FReady then InitAudio;
   if not FSeqReady then
@@ -377,7 +377,7 @@ begin
     FSeqPlaying := False;
   end;
 
-  notesArr := pObjArray(args[0].ObjValue);
+  notesArr := pObjArray(GetObject(args[0]));
   noteCount := notesArr^.Count;
   if noteCount = 0 then
   begin
@@ -394,18 +394,18 @@ begin
       RuntimeError('playSequence() each note must be [freq, durationMs, waveType?] (waveType: 0=pulse, 1=triangle, 2=saw, 3=noise).');
       Exit(CreateNilValue);
     end;
-    noteArr := pObjArray(notesArr^.Elements[i].ObjValue);
+    noteArr := pObjArray(GetObject(notesArr^.Elements[i]));
     if noteArr^.Count < 2 then
     begin
       RuntimeError('playSequence() each note must have at least [freq, durationMs].');
       Exit(CreateNilValue);
     end;
-    if (noteArr^.Elements[0].ValueKind <> vkNumber) or (noteArr^.Elements[1].ValueKind <> vkNumber) then
+    if (not isNumber(noteArr^.Elements[0])) or (not isNumber(noteArr^.Elements[1])) then
     begin
       RuntimeError('playSequence() note freq and duration must be numbers.');
       Exit(CreateNilValue);
     end;
-    durMs := Trunc(noteArr^.Elements[1].NumberValue);
+    durMs := Trunc(GetNumber(noteArr^.Elements[1]));
     if durMs < 1 then durMs := 1;
     if durMs > MAX_NOTE_DURATION_MS then durMs := MAX_NOTE_DURATION_MS;
     totalSamples := totalSamples + Int64(SAMPLE_RATE) * durMs div 1000;
@@ -434,10 +434,10 @@ begin
   begin
     for i := 0 to noteCount - 1 do
     begin
-      noteArr := pObjArray(notesArr^.Elements[i].ObjValue);
-      freq := Trunc(noteArr^.Elements[0].NumberValue);
+      noteArr := pObjArray(GetObject(notesArr^.Elements[i]));
+      freq := Trunc(GetNumber(noteArr^.Elements[0]));
       if freq > MAX_NOTE_FREQ then freq := MAX_NOTE_FREQ;
-      durMs := Trunc(noteArr^.Elements[1].NumberValue);
+      durMs := Trunc(GetNumber(noteArr^.Elements[1]));
       if durMs < 1 then durMs := 1;
       if durMs > MAX_NOTE_DURATION_MS then durMs := MAX_NOTE_DURATION_MS;
       n := (SAMPLE_RATE * durMs) div 1000;
@@ -446,9 +446,9 @@ begin
       // Optional waveform type: [freq, ms, type]
       // 0 = pulse25 (default), 1 = triangle, 2 = sawtooth, 3 = noise
       waveType := 0;
-      if (noteArr^.Count >= 3) and (noteArr^.Elements[2].ValueKind = vkNumber) then
+      if (noteArr^.Count >= 3) and (isNumber(noteArr^.Elements[2])) then
       begin
-        waveType := Trunc(noteArr^.Elements[2].NumberValue);
+        waveType := Trunc(GetNumber(noteArr^.Elements[2]));
         if (waveType < 0) or (waveType > 3) then
           waveType := 0;
       end;
