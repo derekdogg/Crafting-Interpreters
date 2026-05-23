@@ -1,0 +1,4 @@
+// Lowercase 'set' must NOT match the 'Set' method (case-sensitive dispatch).
+var d = [:];
+d.set("k", 1);
+// expect runtime error: Undefined dictionary method 'set'.

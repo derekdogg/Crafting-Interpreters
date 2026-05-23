@@ -74,10 +74,10 @@ uses
 function processMessagesNative(argCount: integer; args: pValue): TValue;
 begin
   // Flush any pending print output to the output memo.
-  if VM.PrintOutput <> '' then
+  if VM.PrintBuilder.Length > 0 then
   begin
-    Form4.Memo2.Lines.Add(VM.PrintOutput);
-    VM.PrintOutput := '';
+    Form4.Memo2.Lines.Add(VM.PrintBuilder.ToString);
+    VM.PrintBuilder.Clear;
   end;  // Wipe last frame's edge-trigger state BEFORE pumping. Any
   // up->down transitions delivered by the pump below will repopulate
   // FKeysPressed / FMouseBtnClicked so the script's keyPressed() /
@@ -102,6 +102,7 @@ begin
     defineNative('processMessages', processMessagesNative, 0);
     RegisterCanvasNatives;
     RegisterSoundNatives;
+
     registerNativeClassRTTI('LoxQueue', TLoxQueue);
     InjectNativeObject('events', Pointer(FEventQueue), 'LoxQueue');
     Result := CompileAndRun(PAnsiChar(Source));

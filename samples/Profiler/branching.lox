@@ -1,0 +1,87 @@
+// branching.lox — branch predictor sensitivity.
+//
+// Same total work, different branch patterns:
+//   (a) always-taken: 100% predictable
+//   (b) never-taken:  100% predictable (opposite direction)
+//   (c) alternating: predictable on most CPUs with 2-bit predictors
+//   (d) pseudo-random: defeats the predictor
+//
+// On modern OoO hardware the random variant can be 2-3x slower than
+// always-taken even when the underlying instruction count is identical.
+// Useful for spotting branchy hot paths that could be made data-driven.
+
+var REPS = 2000000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn(REPS);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+fun alwaysTaken(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    if (i >= 0) s = s + 1;   // always true
+    i = i + 1;
+  }
+  return s;
+}
+
+fun neverTaken(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    if (i < 0) s = s + 1;    // always false
+    else       s = s + 2;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun alternating(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    if (i % 2 == 0) s = s + 1;
+    else            s = s + 2;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun pseudoRandom(n) {
+  // LCG produces pseudo-random parity — defeats the predictor.
+  var s = 0;
+  var i = 0;
+  var x = 12345;
+  while (i < n) {
+    x = (x * 1103515245 + 12345) % 2147483648;
+    if (x % 2 == 0) s = s + 1;
+    else            s = s + 2;
+    i = i + 1;
+  }
+  return s;
+}
+
+fun noBranch(n) {
+  // Baseline — no inner branch beyond the loop condition.
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + 1;
+    i = i + 1;
+  }
+  return s;
+}
+
+print "=== branching ===";
+bench("no inner branch (baseline)", noBranch);
+bench("always taken              ", alwaysTaken);
+bench("never taken               ", neverTaken);
+bench("alternating               ", alternating);
+bench("pseudo-random             ", pseudoRandom);
+print "=== done ===";

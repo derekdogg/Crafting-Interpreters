@@ -1,4 +1,4 @@
-ï»¿unit Test;
+unit Test;
 {$ASSERTIONS ON}
 
 interface
@@ -491,7 +491,7 @@ begin
  // Expecting an assertion to be triggered
     try
       AllocateArray(Pointer(ValueArray), Capacity, Count, SizeOf(TValue));
-      // If we reach here, no assertion was raised â†’ fail the test
+      // If we reach here, no assertion was raised ? fail the test
       raise Exception.Create('Assertion was expected but not raised');
     except
       on E: EAssertionFailed do
@@ -615,7 +615,7 @@ begin
     pushStack(stack,value,MemTracker);
   end;
 
-  assert(Stack.Count = 1000);
+  assert(Stack.StackTop - Stack.Values = 1000);
 
    // Peek from top down
   for i := 0 to 999 do
@@ -650,7 +650,7 @@ begin
     pushStack(stack,value,MemTracker);
   end;
 
-  assert(Stack.Count = 1000);
+  assert(Stack.StackTop - Stack.Values = 1000);
 
   for i := 999 downto 0 do
   begin
@@ -680,7 +680,7 @@ begin
     for i := 0 to 999 do
       pushStack(stack,value,MemTracker);
 
-    assert(Stack.Count = 1000);
+    assert(Stack.StackTop - Stack.Values = 1000);
 
   except
     on E:EAssertionFailed do
@@ -1174,7 +1174,7 @@ procedure TestGarbageCollection;
         Result.ErrorStr := VM.RuntimeErrorStr
       else if (Result.code = INTERPRET_OK) and isString(Result.value) then
         Result.ResultStr := ObjStringToAnsiString(ValueToString(Result.value));
-      Result.OutputStr := VM.PrintOutput;
+      Result.OutputStr := VM.PrintBuilder.ToString;
     finally
       FreeVM;
     end;
@@ -1209,12 +1209,12 @@ begin
     'var a = "first"; a = "second"; a = "third"; print a;',
     'third');
 
-  // Functions created in loop â€” old closures become garbage
+  // Functions created in loop — old closures become garbage
   AssertOutput(
     'var f; for (var i = 0; i < 10; i = i + 1) { fun g() { return i; } f = g; } print f();',
     '10');
 
-  // String concatenation in loop â€” intermediate strings become garbage
+  // String concatenation in loop — intermediate strings become garbage
   AssertOutput(
     'var s = ""; for (var i = 0; i < 5; i = i + 1) { s = s + "a"; } print s;',
     'aaaaa');
@@ -1245,7 +1245,7 @@ begin
     'true');
 
   // =========================================================================
-  // PART 2: Stress GC â€” GC fires on EVERY growing allocation
+  // PART 2: Stress GC — GC fires on EVERY growing allocation
   // This catches any point where a value is temporarily unrooted.
   // =========================================================================
 
@@ -1304,7 +1304,7 @@ begin
   // Native function
   AssertStressOutput('print clock() >= 0;', 'true');
 
-  // Closures under stress â€” the most GC-sensitive patterns
+  // Closures under stress — the most GC-sensitive patterns
   AssertStressOutput(
     'fun outer() { var x = "outside"; fun inner() { print x; } inner(); } outer();',
     'outside');
@@ -1354,7 +1354,7 @@ begin
   AssertStressRuntimeError('"hello" + 1');
 
   // =========================================================================
-  // PART 3: Direct VM tests â€” verify BytesAllocated bookkeeping
+  // PART 3: Direct VM tests — verify BytesAllocated bookkeeping
   // =========================================================================
 
   // After FreeVM, BytesAllocated should be 0 (already asserted in FreeVM)
@@ -1376,13 +1376,13 @@ begin
   InitVM;
   try
     VM.MemTracker.NextGC := MaxInt; // suppress auto-GC so we control timing
-    // Create strings â€” only reachable via intern table (weak ref)
+    // Create strings — only reachable via intern table (weak ref)
     CreateString('ephemeral_1', VM.MemTracker);
     CreateString('ephemeral_2', VM.MemTracker);
     Assert(VM.MemTracker.CreatedObjects <> nil, 'GC intern: should have created objects');
     Assert(TableFindString(VM.Strings, 'ephemeral_1', 11, HashString('ephemeral_1', 11)) <> nil,
       'GC intern: string should be in intern table before GC');
-    // Now force GC â€” strings are NOT on stack, NOT in globals, only in intern table.
+    // Now force GC — strings are NOT on stack, NOT in globals, only in intern table.
     // MarkRoots won't mark them. TableRemoveWhite should remove them. Sweep should free them.
     CollectGarbage;
     Assert(TableFindString(VM.Strings, 'ephemeral_1', 11, HashString('ephemeral_1', 11)) = nil,

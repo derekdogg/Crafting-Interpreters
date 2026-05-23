@@ -1,0 +1,57 @@
+// Basic two-operand.
+print "str" + "ing";              // expect: string
+
+// Empty-string fast paths (all three combinations).
+// Note: the runner's directive parser requires a trailing space, so the
+// empty-empty result is checked indirectly via assert + a delimited print.
+print "(" + "" + ")";             // expect: ()
+print "" + "abc";                 // expect: abc
+print "abc" + "";                 // expect: abc
+var empty = "" + "";
+assert(empty == "");
+assert(strlen(empty) == 0);
+print "[" + empty + "]";          // expect: []
+
+// Left-associative chaining: (("a" + "b") + "c") + "d".
+print "a" + "b" + "c" + "d";      // expect: abcd
+
+// Mixed empty and non-empty in a chain.
+print "x" + "" + "y" + "" + "z";  // expect: xyz
+
+// Variable operands (forces runtime concat, not constant folding).
+var a = "foo";
+var b = "bar";
+print a + b;                      // expect: foobar
+
+// Self concatenation: a = a + a (the value at 'below' equals 'top').
+var s = "ab";
+s = s + s;
+print s;                          // expect: abab
+s = s + s;
+print s;                          // expect: abababab
+
+// Concat result reused as a key in equality (exercises interning).
+var k1 = "foo" + "bar";
+var k2 = "foob" + "ar";
+assert(k1 == k2);
+print k1 == k2;                   // expect: true
+
+// Concat with already-interned literal (intern early-exit path).
+var lit = "hello";
+var built = "hel" + "lo";
+assert(lit == built);
+print lit == built;               // expect: true
+
+// Multi-byte UTF-8 preserved across concat.
+print "A~" + "¶Þॐஃ";              // expect: A~¶Þॐஃ
+print "α" + "β" + "γ";            // expect: αβγ
+
+// Embedded spaces and punctuation.
+print "hello" + ", " + "world" + "!"; // expect: hello, world!
+
+// Numeric-looking content stays a string.
+print "12" + "34";                // expect: 1234
+
+// Concat inside expression context.
+print ("a" + "b") == "ab";        // expect: true
+print "len=" + "1234567890";      // expect: len=1234567890

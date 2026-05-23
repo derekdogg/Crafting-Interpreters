@@ -1,0 +1,59 @@
+// op_constant_bench.lox — saturates OP_CONSTANT to measure dispatch
+// changes targeted at constant loading.
+//
+// Each inner-loop expression contains many literal constants so that
+// OP_CONSTANT dominates the bytecode mix. Compare timings before/after
+// any change to ReadConstantFr / OP_CONSTANT handler.
+
+var REPS = 1000000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn(REPS);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+// 16 literals per iteration → 16 OP_CONSTANTs + 15 OP_ADDs + loop overhead.
+fun manyConsts(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8
+            + 9 + 10 + 11 + 12 + 13 + 14 + 15 + 16;
+    i = i + 1;
+  }
+  return s;
+}
+
+// Baseline: same total adds, but constants reused (compiler should still
+// emit OP_CONSTANT each time — Lox doesn't do common-subexpression elimination).
+fun reusedConst(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1
+            + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+    i = i + 1;
+  }
+  return s;
+}
+
+// Pure no-constant baseline for sanity.
+fun noConst(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + i;
+    i = i + 1;
+  }
+  return s;
+}
+
+print "=== op_constant ===";
+bench("no constants   ", noConst);
+bench("16 unique consts/iter", manyConsts);
+bench("16 reused const/iter ", reusedConst);
+print "=== done ===";

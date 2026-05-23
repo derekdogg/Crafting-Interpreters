@@ -1,0 +1,87 @@
+// arithmetic.lox — pure numeric op throughput.
+//
+// Isolates OP_ADD / OP_SUBTRACT / OP_MULTIPLY / OP_DIVIDE / OP_MODULO cost.
+// Each variant runs the same iteration count with a single op kind, so
+// you can compare per-op cost. Locals are kept in slots 0..7 so the
+// fast-slot variants are used.
+
+var REPS = 2000000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn(REPS);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+fun addLoop(n) {
+  var sum = 0;
+  var i = 0;
+  while (i < n) {
+    sum = sum + i;
+    i = i + 1;
+  }
+  return sum;
+}
+
+fun subLoop(n) {
+  var sum = 0;
+  var i = 0;
+  while (i < n) {
+    sum = sum - 1;
+    i = i + 1;
+  }
+  return sum;
+}
+
+fun mulLoop(n) {
+  var x = 1;
+  var i = 0;
+  while (i < n) {
+    x = x * 1.0000001;
+    i = i + 1;
+  }
+  return x;
+}
+
+fun divLoop(n) {
+  var x = 1000000;
+  var i = 0;
+  while (i < n) {
+    x = x / 1.0000001;
+    i = i + 1;
+  }
+  return x;
+}
+
+fun modLoop(n) {
+  var sum = 0;
+  var i = 0;
+  while (i < n) {
+    sum = sum + (i % 7);
+    i = i + 1;
+  }
+  return sum;
+}
+
+fun mixedLoop(n) {
+  // Mimics realistic arithmetic mix.
+  var x = 0;
+  var i = 0;
+  while (i < n) {
+    x = (x + i) * 2 - i;
+    i = i + 1;
+  }
+  return x;
+}
+
+print "=== arithmetic ===";
+bench("add    ", addLoop);
+bench("sub    ", subLoop);
+bench("mul    ", mulLoop);
+bench("div    ", divLoop);
+bench("mod    ", modLoop);
+bench("mixed  ", mixedLoop);
+print "=== done ===";

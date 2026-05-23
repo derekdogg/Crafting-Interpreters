@@ -1,0 +1,63 @@
+// globals_vs_locals.lox — quantify hash-lookup penalty on global access.
+//
+// Same arithmetic loop, identical except where the accumulator lives:
+//   (a) local in slot 0..7 (OP_GET_LOCAL_N, no operand byte)
+//   (b) local in slot >=8 (OP_GET_LOCAL with operand byte)
+//   (c) module global (OP_GET_GLOBAL — hash lookup per access)
+//
+// The (c)/(a) ratio is your global-lookup penalty. Currently expected to
+// be the biggest single perf gap on real-world code.
+
+var REPS = 1000000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn(REPS);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+// (a) Fast-slot local.
+fun fastLocal(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + 1;
+    i = i + 1;
+  }
+  return s;
+}
+
+// (b) Generic local (slot >= 8). Pad with 8 unused vars to push 's' past slot 7.
+fun slowLocal(n) {
+  var p0=0;var p1=0;var p2=0;var p3=0;
+  var p4=0;var p5=0;var p6=0;var p7=0;
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + 1;
+    i = i + 1;
+  }
+  return s + p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7;
+}
+
+// (c) Module-level globals.
+var gSum = 0;
+var gI = 0;
+fun globalAcc(n) {
+  gSum = 0;
+  gI = 0;
+  while (gI < n) {
+    gSum = gSum + 1;
+    gI = gI + 1;
+  }
+  return gSum;
+}
+
+print "=== globals vs locals ===";
+bench("fast local (slot 0..7)  ", fastLocal);
+bench("slow local (slot >= 8)  ", slowLocal);
+bench("module global           ", globalAcc);
+print "=== done ===";

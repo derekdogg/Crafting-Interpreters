@@ -1,4 +1,4 @@
-unit LoxCanvas;
+﻿unit LoxCanvas;
 
 interface
 
@@ -711,7 +711,8 @@ begin
       row := FRenderTarget.ScanLine[y];
       FillDWord(row^, w, pixel);
     end;
-  end else
+  end
+  else
   begin
     RuntimeError('clearCanvas() takes 0 or 3 arguments.');
     Exit(CreateNilValue);
