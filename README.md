@@ -206,7 +206,6 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 | Native Objects | native_objects, native_objects_stress | StringList, multi-instance, loops, GC pressure |
 | GC | gc_basic, gc_functions, gc_reclaim, gc_stress, gc_interning, gc_upvalue_closing, gc_args_and_temps, gc_scopes_and_natives, gc_edge_cases, gc_torture, gc_gray_stack, gc_arrays, gc_records, gc_coverage_gaps, gc_simple_log, gc_stress_collections | 16 dedicated GC test files |
 | SQL | sql_connect, sql_query, sql_filter, sql_aggregation, sql_params, sql_null_handling, sql_multi_query, sql_field_access | Database access patterns |
-| Decrypt | decrypt_webconfig | Real-world utility script |
 | Introspection | gc_monitor, intern_table_observer, stack_depth_probe, vm_dashboard | VM runtime inspection |
 
 ### Game Demos
