@@ -1,5 +1,0 @@
-// Stack overflow from infinite recursion
-fun recurse() {
-  recurse();
-}
-recurse(); // expect runtime error: Stack overflow

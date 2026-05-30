@@ -1,0 +1,61 @@
+// Dictionary Equals method tests
+
+// Two empty dicts
+var a = [:];
+var b = [:];
+print a.Equals(b);  // expect: true
+
+// Same reference
+print a.Equals(a);  // expect: true
+
+// One empty, one not
+a["x"] = 1;
+print a.Equals(b);  // expect: false
+
+// Same keys and values
+b["x"] = 1;
+print a.Equals(b);  // expect: true
+
+// Same keys, different values
+var c = [:];
+c["x"] = 2;
+print a.Equals(c);  // expect: false
+
+// Different keys
+var d = [:];
+d["y"] = 1;
+print a.Equals(d);  // expect: false
+
+// Multiple entries
+var e = [:];
+e["a"] = 1;
+e["b"] = 2;
+e["c"] = 3;
+var f = [:];
+f["c"] = 3;
+f["a"] = 1;
+f["b"] = 2;
+print e.Equals(f);  // expect: true
+
+// Non-dict argument
+print a.Equals(nil);    // expect: false
+print a.Equals(42);     // expect: false
+print a.Equals("hi");   // expect: false
+
+// Nested dicts
+var g = [:];
+var inner1 = [:];
+inner1["x"] = 10;
+g["nested"] = inner1;
+
+var h = [:];
+var inner2 = [:];
+inner2["x"] = 10;
+h["nested"] = inner2;
+print g.Equals(h);  // expect: false
+
+// Nested dicts with different values
+var inner3 = [:];
+inner3["x"] = 99;
+h["nested"] = inner3;
+print g.Equals(h);  // expect: false

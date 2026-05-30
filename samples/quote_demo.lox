@@ -1,0 +1,27 @@
+// Demonstrating doubled-quote syntax for embedded quotes in Lox
+//
+// The Lox scanner has NO escape processing. A backslash is just a literal
+// character. To embed a double-quote inside a string, use "" (doubled quote).
+//
+// "" inside a string produces a single " character.
+
+// This works fine - backslash is literal:
+var path = "C:\Users\Derek\Documents";
+print "Path: " + path;
+
+// Embedding quotes using doubled-quote syntax:
+var cmd = "msbuild ""C:\My Project\app.sln"" /p:Configuration=Release";
+print "Command: " + cmd;
+
+// A person speaking:
+var msg = "the person says ""hello""";
+print msg;
+
+// You can still use chr(34) if you prefer:
+var Q = chr(34);
+var cmd2 = "msbuild " + Q + "C:\My Project\app.sln" + Q + " /p:Configuration=Release";
+print "Command: " + cmd2;
+
+// A string that is just a quote character:
+var quote = """";
+print "A quote: " + quote;
