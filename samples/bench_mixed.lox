@@ -1,0 +1,132 @@
+// Mixed benchmark: loops, closures, arrays, dicts, recursion, string ops
+// Designed to represent typical Lox program patterns
+
+// --- Tight loop with arithmetic ---
+var sum = 0;
+for (var i = 0; i < 100000; i = i + 1) {
+  sum = sum + i;
+}
+assert(sum == 4999950000, "loop sum");
+
+// --- Nested loops ---
+var count = 0;
+for (var i = 0; i < 500; i = i + 1) {
+  for (var j = 0; j < 500; j = j + 1) {
+    count = count + 1;
+  }
+}
+assert(count == 250000, "nested loop");
+
+// --- Array building and iteration ---
+var arr = [];
+for (var i = 0; i < 10000; i = i + 1) {
+  arrayPush(arr, i * 2);
+}
+var arrSum = 0;
+for (var i = 0; i < arrayLen(arr); i = i + 1) {
+  arrSum = arrSum + arr[i];
+}
+assert(arrSum == 99990000, "array sum");
+
+// --- Dictionary operations ---
+var d = [:];
+for (var i = 0; i < 5000; i = i + 1) {
+  d.Set("key" + str(i), i);
+}
+var dictSum = 0;
+for (var i = 0; i < 5000; i = i + 1) {
+  dictSum = dictSum + d.Get("key" + str(i));
+}
+assert(dictSum == 12497500, "dict sum");
+
+// --- Closures and higher-order functions ---
+fun forEach(arr, fn) {
+  for (var i = 0; i < arrayLen(arr); i = i + 1) {
+    fn(arr[i]);
+  }
+}
+
+fun map(arr, fn) {
+  var result = [];
+  for (var i = 0; i < arrayLen(arr); i = i + 1) {
+    arrayPush(result, fn(arr[i]));
+  }
+  return result;
+}
+
+fun reduce(arr, fn, init) {
+  var acc = init;
+  for (var i = 0; i < arrayLen(arr); i = i + 1) {
+    acc = fn(acc, arr[i]);
+  }
+  return acc;
+}
+
+var nums = [];
+for (var i = 0; i < 10000; i = i + 1) {
+  arrayPush(nums, i);
+}
+
+fun double(x) { return x * 2; }
+fun add(a, b) { return a + b; }
+
+var doubled = map(nums, double);
+var total = reduce(doubled, add, 0);
+assert(total == 99990000, "map/reduce");
+
+// --- Recursion (tree walk) ---
+fun treeSum(depth) {
+  if (depth == 0) return 1;
+  return treeSum(depth - 1) + treeSum(depth - 1);
+}
+var ts = treeSum(15);
+assert(ts == 32768, "tree sum");
+
+// --- String concatenation ---
+var s = "";
+for (var i = 0; i < 1000; i = i + 1) {
+  s = s + "a";
+}
+assert(strlen(s) == 1000, "string concat");
+
+// --- Method dispatch on dicts ---
+var counters = [:];
+for (var i = 0; i < 100; i = i + 1) {
+  counters.Set("c" + str(i), 0);
+}
+for (var round = 0; round < 100; round = round + 1) {
+  for (var i = 0; i < 100; i = i + 1) {
+    var key = "c" + str(i);
+    counters.Set(key, counters.Get(key) + 1);
+  }
+}
+assert(counters.Get("c50") == 100, "dict dispatch");
+
+// --- Closure capture stress ---
+fun makeAdder(val) {
+  fun adder(x) { return x + val; }
+  return adder;
+}
+var adders = [];
+for (var i = 0; i < 100; i = i + 1) {
+  arrayPush(adders, makeAdder(i));
+}
+var adderSum = 0;
+for (var i = 0; i < 100; i = i + 1) {
+  adderSum = adderSum + adders[i](10);
+}
+assert(adderSum == 5950, "closure capture");
+
+// --- Record operations ---
+record Point(x, y);
+var points = [];
+for (var i = 0; i < 5000; i = i + 1) {
+  arrayPush(points, Point(i, i * 2));
+}
+var pointSum = 0;
+for (var i = 0; i < 5000; i = i + 1) {
+  pointSum = pointSum + points[i].x + points[i].y;
+}
+assert(pointSum == 37492500, "records");
+
+print "all assertions passed";

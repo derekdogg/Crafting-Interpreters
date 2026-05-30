@@ -588,6 +588,101 @@ assert(churn.Get("new499") == 998, "churn reinsert last");
 
 print "Dict tombstones OK";
 
+// === NaN misclassification guard ===
+// The most dangerous NaN-boxing failure mode: a NaN double whose raw bits
+// collide with the tag space (QNAN|SIGN_BIT for objects, QNAN|1 for nil,
+// QNAN|2 for false, QNAN|3 for true) gets misclassified.
+// CreateNumber must canonicalize ALL NaN payloads to CANON_NAN.
+// This section verifies that exotic NaN sources never leak through.
+print "--- NaN misclassification guard ---";
+
+// Generate NaN through diverse arithmetic paths that may produce
+// different hardware NaN payloads on x87/SSE (signaling vs quiet,
+// various mantissa bits, sign bit set or clear).
+var nan_div   = 0 / 0;
+var nan_sub   = inf - inf;
+var nan_mul   = inf * 0;
+var nan_chain = (0 / 0) + (inf - inf);     // NaN + NaN
+var nan_neg   = -(0 / 0);                   // negative NaN (sign bit set!)
+var nan_abs   = nan_neg * -1;               // flip sign back
+var nan_prop  = nan_div * 2 + 3 - nan_mul;  // deep propagation
+
+// All must be classified as numbers, never as nil/bool/object
+assert(type(nan_div) == "number", "nan_div is number");
+assert(type(nan_sub) == "number", "nan_sub is number");
+assert(type(nan_mul) == "number", "nan_mul is number");
+assert(type(nan_chain) == "number", "nan_chain is number");
+assert(type(nan_neg) == "number", "nan_neg (sign bit!) is number");
+assert(type(nan_abs) == "number", "nan_abs is number");
+assert(type(nan_prop) == "number", "nan_prop is number");
+
+// None must be nil
+assert(nan_div != nil, "nan_div not nil");
+assert(nan_neg != nil, "nan_neg not nil");
+assert(nan_chain != nil, "nan_chain not nil");
+
+// None must be boolean
+assert(nan_div != true, "nan_div not true");
+assert(nan_div != false, "nan_div not false");
+assert(nan_neg != true, "nan_neg not true");
+assert(nan_neg != false, "nan_neg not false");
+
+// All must be truthy (only nil and false are falsey)
+if (!nan_div) { assert(false, "nan_div should be truthy"); }
+if (!nan_neg) { assert(false, "nan_neg should be truthy"); }
+if (!nan_chain) { assert(false, "nan_chain should be truthy"); }
+
+// NaN must survive round-trip through collections without misclassification
+var nan_arr = [nan_div, nan_neg, nan_chain, nan_prop];
+for (var i = 0; i < 4; i = i + 1) {
+  assert(type(nan_arr[i]) == "number", "array NaN[" + str(i) + "] is number");
+  assert(nan_arr[i] != nan_arr[i], "array NaN[" + str(i) + "] != itself");
+  assert(nan_arr[i] != nil, "array NaN[" + str(i) + "] not nil");
+  assert(nan_arr[i] != false, "array NaN[" + str(i) + "] not false");
+}
+
+// NaN must survive round-trip through dict values
+var nan_dict = [:];
+nan_dict.Set("a", nan_div);
+nan_dict.Set("b", nan_neg);
+nan_dict.Set("c", nan_chain);
+assert(type(nan_dict.Get("a")) == "number", "dict NaN a is number");
+assert(type(nan_dict.Get("b")) == "number", "dict NaN b (neg) is number");
+assert(type(nan_dict.Get("c")) == "number", "dict NaN c is number");
+assert(nan_dict.Get("a") != nil, "dict NaN a not nil");
+assert(nan_dict.Get("b") != nil, "dict NaN b not nil");
+
+// NaN must survive round-trip through upvalues (closed-over variables)
+fun captureNaN() {
+  var local_nan = -(inf * 0);  // negative NaN
+  var local_nan2 = 0 / 0;
+  fun retrieve() {
+    return [local_nan, local_nan2];
+  }
+  return retrieve;
+}
+var getNans = captureNaN();
+// Force GC to close the upvalues and stress the representation
+for (var i = 0; i < 5000; i = i + 1) { var g = "garbage" + str(i); }
+var closed = getNans();
+assert(type(closed[0]) == "number", "upvalue neg NaN is number");
+assert(type(closed[1]) == "number", "upvalue NaN is number");
+assert(closed[0] != closed[0], "upvalue neg NaN != itself");
+assert(closed[1] != closed[1], "upvalue NaN != itself");
+assert(closed[0] != nil, "upvalue neg NaN not nil");
+assert(closed[0] != false, "upvalue neg NaN not false");
+
+// NaN must survive round-trip through record fields
+record NanBox(val);
+var nb = NanBox(nan_neg);
+assert(type(nb.val) == "number", "record field neg NaN is number");
+assert(nb.val != nb.val, "record field neg NaN != itself");
+assert(nb.val != nil, "record field neg NaN not nil");
+nb.val = nan_chain;
+assert(type(nb.val) == "number", "record field chain NaN is number");
+
+print "NaN misclassification guard OK";
+
 // === All passed ===
 print "";
 print "=== ALL NAN BOXING TESTS PASSED ===";

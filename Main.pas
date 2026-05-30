@@ -30,6 +30,7 @@ type
     Memo1: TSynEdit;
     PanelToolbar: TPanel;
     Button1: TButton;
+    BtnRunGame: TButton;
     Button2: TButton;
     Button3: TButton;
     SplitterOutput: TSplitter;
@@ -39,6 +40,7 @@ type
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure FormKeyUp(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure Button1Click(Sender: TObject);
+    procedure BtnRunGameClick(Sender: TObject);
     procedure BtnPopulateClick(Sender: TObject);
     procedure BtnRunSelectedClick(Sender: TObject);
     procedure BtnCheckAllClick(Sender: TObject);
@@ -65,6 +67,7 @@ type
     FScriptRunning: Boolean;
   public
     FClosing: Boolean;
+    procedure HandleLivePrint(const Text: string);
   end;
 
 var
@@ -277,17 +280,23 @@ begin
   txt := AnsiString(Memo1.Lines.Text);
   FScriptRunning := True;
   Button1.Enabled := False;
+  BtnRunGame.Enabled := False;
   BtnRunSelected.Enabled := False;
   BtnRunAll.Enabled := False;
   Memo1.ReadOnly := True;
   try
-    // The game form owns the canvas, the input-event queue, and the
-    // whole VM lifecycle. It shows itself, sets up natives, runs the
-    // script to completion, then tears the VM down again.
-    IR := frmGame.RunScript(txt);
+    // Run without game window — no canvas/sound/events, just the core VM.
+    InitVM;
+    try
+      VM.OnPrint := HandleLivePrint;
+      IR := CompileAndRun(PAnsiChar(txt));
+    finally
+      FreeVM;
+    end;
   finally
     FScriptRunning := False;
     Button1.Enabled := True;
+    BtnRunGame.Enabled := True;
     BtnRunSelected.Enabled := True;
     BtnRunAll.Enabled := True;
     Memo1.ReadOnly := False;
@@ -296,8 +305,6 @@ begin
   case IR.code of
     INTERPRET_OK:
     begin
-      if IR.OutputStr <> '' then
-        Memo2.Lines.Add(IR.OutputStr);
       if isNumber(IR.value) then
         Memo2.Lines.Add(FloatToStr(GetNumber(IR.value)))
       else if isBoolean(IR.value) then
@@ -311,11 +318,67 @@ begin
     end;
     INTERPRET_COMPILE_ERROR: Memo2.Lines.Add(IR.ErrorStr);
     INTERPRET_RUNTIME_ERROR: Memo2.Lines.Add(IR.ErrorStr);
+    INTERPRET_HALTED: Memo2.Lines.Add('Script halted (exit code ' + IntToStr(IR.ExitCode) + '): ' + IR.ErrorStr);
   end;
 
-  // If closing was requested while the script was running, now close for real
   if FClosing then
     Close;
+end;
+
+procedure TForm4.BtnRunGameClick(Sender: TObject);
+var
+  IR : TInterpretResult;
+  txt : AnsiString;
+begin
+  Memo2.Lines.Clear;
+  txt := AnsiString(Memo1.Lines.Text);
+  FScriptRunning := True;
+  Button1.Enabled := False;
+  BtnRunGame.Enabled := False;
+  BtnRunSelected.Enabled := False;
+  BtnRunAll.Enabled := False;
+  Memo1.ReadOnly := True;
+  try
+    // The game form owns the canvas, the input-event queue, and the
+    // whole VM lifecycle. It shows itself, sets up natives, runs the
+    // script to completion, then tears the VM down again.
+    IR := frmGame.RunScript(txt);
+  finally
+    FScriptRunning := False;
+    Button1.Enabled := True;
+    BtnRunGame.Enabled := True;
+    BtnRunSelected.Enabled := True;
+    BtnRunAll.Enabled := True;
+    Memo1.ReadOnly := False;
+  end;
+
+  case IR.code of
+    INTERPRET_OK:
+    begin
+      if isNumber(IR.value) then
+        Memo2.Lines.Add(FloatToStr(GetNumber(IR.value)))
+      else if isBoolean(IR.value) then
+        Memo2.Lines.Add(BoolToStr(GetBoolean(IR.value), True))
+      else if isNill(IR.value) then
+      begin
+        // suppress
+      end
+      else if isObject(IR.value) then
+        Memo2.Lines.Add(IR.ResultStr);
+    end;
+    INTERPRET_COMPILE_ERROR: Memo2.Lines.Add(IR.ErrorStr);
+    INTERPRET_RUNTIME_ERROR: Memo2.Lines.Add(IR.ErrorStr);
+    INTERPRET_HALTED: Memo2.Lines.Add('Script halted (exit code ' + IntToStr(IR.ExitCode) + '): ' + IR.ErrorStr);
+  end;
+
+  if FClosing then
+    Close;
+end;
+
+procedure TForm4.HandleLivePrint(const Text: string);
+begin
+  Memo2.Lines.Add(Text);
+  Application.ProcessMessages;
 end;
 
 procedure TForm4.Button2Click(Sender: TObject);

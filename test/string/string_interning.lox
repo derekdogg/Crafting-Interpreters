@@ -1,0 +1,103 @@
+// String Interning Tests
+// Verifies that identical strings share the same object (pointer equality)
+// and that the intern table behaves correctly under various scenarios.
+
+// === Basic interning: same literal ===
+var a = "hello";
+var b = "hello";
+// Interned strings should be pointer-identical (== uses bitwise equality for objects)
+assert(a == b, "same literal should be interned to same object");
+
+// === Concatenation produces interned result ===
+var c = "hel" + "lo";
+assert(c == a, "concatenation result should be interned");
+assert(c == b, "concatenation result should match all copies");
+
+// === Runtime-built strings intern correctly ===
+var prefix = "wor";
+var suffix = "ld";
+var d = prefix + suffix;
+var e = "world";
+assert(d == e, "runtime concat should intern to same object as literal");
+
+// === Single character strings ===
+var f = "x";
+var g = "x";
+assert(f == g, "single-char strings should be interned");
+
+// === Empty strings ===
+var h = "";
+var i = "";
+assert(h == i, "empty strings should be interned");
+
+var j = "" + "";
+assert(j == h, "concatenation of empty strings should intern");
+
+// === Strings built in loops ===
+var target = "aaaaaaaaaa"; // 10 a's
+var built = "";
+for (var k = 0; k < 10; k = k + 1) {
+  built = built + "a";
+}
+assert(built == target, "loop-built string should intern to same as literal");
+
+// === Many distinct strings don't break interning ===
+// Create many unique strings, then verify a known one still resolves
+var unique = newArray();
+for (var k = 0; k < 100; k = k + 1) {
+  arrayPush(unique, "str_" + str(k));
+}
+// The literal "str_50" should intern to the same object created in the loop
+var lookup = "str_50";
+assert(lookup == arrayGet(unique, 50), "intern lookup after many inserts");
+
+// === Interning survives GC ===
+var before = "survivor";
+// Force GC pressure
+for (var k = 0; k < 200; k = k + 1) {
+  var throwaway = "garbage_" + str(k);
+}
+collectGarbage();
+var after = "survivor";
+assert(before == after, "interned string should survive GC");
+
+// === Substrings are independently interned ===
+var full = "abcdef";
+var sub1 = substr(full, 0, 3); // "abc"
+var sub2 = "abc";
+assert(sub1 == sub2, "substr result should be interned");
+
+// === Repeated concat builds same intern ===
+var r1 = "foo" + "bar";
+var r2 = "foo" + "bar";
+assert(r1 == r2, "repeated same concat should intern identically");
+
+// === Numeric-to-string interning ===
+var n1 = str(42);
+var n2 = str(42);
+assert(n1 == n2, "str() of same number should intern");
+
+// === Case sensitivity ===
+var upper = "Hello";
+var lower = "hello";
+assert(upper != lower, "different case should NOT be same intern");
+
+// === Long strings intern correctly ===
+var long1 = "abcdefghijklmnopqrstuvwxyz0123456789";
+var long2 = "abcdefghijklmnopqrstuvwxyz0123456789";
+assert(long1 == long2, "long identical strings should be interned");
+
+// === Intern table stats (verify entries exist) ===
+var stats = internTableStats();
+assert(stats != nil, "internTableStats should return a value");
+print "intern table stats: " + str(stats);
+
+// === Concat with empty string preserves identity ===
+var base = "keep";
+var same = base + "";
+var same2 = "" + base;
+assert(same == base, "concat with empty suffix should intern to original");
+assert(same2 == base, "concat with empty prefix should intern to original");
+
+// === All passed ===
+print "--- All string interning tests passed ---";

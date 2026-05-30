@@ -147,26 +147,35 @@ object Form4: TForm4
         Top = 5
         Width = 90
         Height = 25
-        Caption = 'Run Script'
+        Caption = 'Run'
         TabOrder = 0
         OnClick = Button1Click
       end
-      object Button2: TButton
+      object BtnRunGame: TButton
         Left = 100
+        Top = 5
+        Width = 90
+        Height = 25
+        Caption = 'Run Game'
+        TabOrder = 1
+        OnClick = BtnRunGameClick
+      end
+      object Button2: TButton
+        Left = 198
         Top = 4
         Width = 75
         Height = 25
         Caption = 'Click'
-        TabOrder = 1
+        TabOrder = 2
         OnClick = Button2Click
       end
       object Button3: TButton
-        Left = 180
+        Left = 278
         Top = 4
         Width = 75
         Height = 25
         Caption = 'Esc'
-        TabOrder = 2
+        TabOrder = 3
         OnClick = Button3Click
       end
     end

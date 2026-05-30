@@ -1,0 +1,169 @@
+// Nested dictionary tests - multiple levels, edge cases, and stress
+
+// === Basic nesting (3 levels) ===
+var root = [:];
+root["level1"] = [:];
+root["level1"]["level2"] = [:];
+root["level1"]["level2"]["value"] = 42;
+print root["level1"]["level2"]["value"];
+// expect: 42
+
+// === Deep nesting (10 levels) ===
+var deep = [:];
+deep["a"] = [:];
+deep["a"]["b"] = [:];
+deep["a"]["b"]["c"] = [:];
+deep["a"]["b"]["c"]["d"] = [:];
+deep["a"]["b"]["c"]["d"]["e"] = [:];
+deep["a"]["b"]["c"]["d"]["e"]["f"] = [:];
+deep["a"]["b"]["c"]["d"]["e"]["f"]["g"] = [:];
+deep["a"]["b"]["c"]["d"]["e"]["f"]["g"]["h"] = [:];
+deep["a"]["b"]["c"]["d"]["e"]["f"]["g"]["h"]["i"] = [:];
+deep["a"]["b"]["c"]["d"]["e"]["f"]["g"]["h"]["i"]["end"] = "found";
+print deep["a"]["b"]["c"]["d"]["e"]["f"]["g"]["h"]["i"]["end"];
+// expect: found
+
+// === Sibling dicts at same level ===
+var tree = [:];
+tree["left"] = [:];
+tree["right"] = [:];
+tree["left"]["value"] = 1;
+tree["right"]["value"] = 2;
+tree["left"]["child"] = [:];
+tree["right"]["child"] = [:];
+tree["left"]["child"]["x"] = 10;
+tree["right"]["child"]["x"] = 20;
+print tree["left"]["child"]["x"];
+// expect: 10
+print tree["right"]["child"]["x"];
+// expect: 20
+
+// === Overwriting a nested dict ===
+var obj = [:];
+obj["data"] = [:];
+obj["data"]["old"] = "first";
+obj["data"] = [:];
+obj["data"]["new"] = "second";
+print obj["data"].Has("old");
+// expect: false
+print obj["data"]["new"];
+// expect: second
+
+// === Nested dict with mixed value types ===
+var mixed = [:];
+mixed["str"] = "hello";
+mixed["num"] = 3.14;
+mixed["bool"] = true;
+mixed["nil_val"] = nil;
+mixed["arr"] = [1, 2, 3];
+mixed["sub"] = [:];
+mixed["sub"]["inner_arr"] = [4, 5, 6];
+mixed["sub"]["inner_num"] = 99;
+print mixed["str"];
+// expect: hello
+print mixed["num"];
+// expect: 3.14
+print mixed["bool"];
+// expect: true
+print mixed["nil_val"];
+// expect: nil
+print mixed["sub"]["inner_num"];
+// expect: 99
+print mixed["sub"]["inner_arr"][1];
+// expect: 5
+
+// === Nested dict Size tracking ===
+var sized = [:];
+sized["a"] = [:];
+sized["a"]["x"] = 1;
+sized["a"]["y"] = 2;
+sized["a"]["z"] = 3;
+print sized.Size();
+// expect: 1
+print sized["a"].Size();
+// expect: 3
+
+// === Nested dict Keys ===
+var keyed = [:];
+keyed["outer1"] = [:];
+keyed["outer2"] = [:];
+keyed["outer1"]["inner1"] = 1;
+keyed["outer1"]["inner2"] = 2;
+print keyed.Size();
+// expect: 2
+print keyed["outer1"].Size();
+// expect: 2
+
+// === Dict reference sharing (mutation visible through alias) ===
+var shared = [:];
+var inner = [:];
+inner["x"] = 1;
+shared["ref"] = inner;
+inner["x"] = 999;
+print shared["ref"]["x"];
+// expect: 999
+
+// === Nested dict built in a loop ===
+var looped = [:];
+var i = 0;
+while (i < 5) {
+  var key = "item" + str(i);
+  looped[key] = [:];
+  looped[key]["index"] = i;
+  looped[key]["squared"] = i * i;
+  i = i + 1;
+}
+print looped["item0"]["index"];
+// expect: 0
+print looped["item3"]["squared"];
+// expect: 9
+print looped["item4"]["index"];
+// expect: 4
+print looped.Size();
+// expect: 5
+
+// === Nested dict Delete on inner dict ===
+var del = [:];
+del["keep"] = [:];
+del["keep"]["a"] = 1;
+del["keep"]["b"] = 2;
+del["keep"]["c"] = 3;
+del["keep"].Delete("b");
+print del["keep"].Size();
+// expect: 2
+print del["keep"].Has("b");
+// expect: false
+print del["keep"]["a"];
+// expect: 1
+print del["keep"]["c"];
+// expect: 3
+
+// === Deep nesting built with a loop (20 levels) ===
+var chain = [:];
+var current = chain;
+var j = 0;
+while (j < 20) {
+  current["next"] = [:];
+  current["depth"] = j;
+  current = current["next"];
+  j = j + 1;
+}
+current["leaf"] = true;
+// Walk back through to verify depth markers
+print chain["depth"];
+// expect: 0
+print chain["next"]["depth"];
+// expect: 1
+print chain["next"]["next"]["depth"];
+// expect: 2
+
+// === Self-referencing dict (cyclic) ===
+var cyc = [:];
+cyc["name"] = "root";
+cyc["self"] = cyc;
+print cyc["self"]["name"];
+// expect: root
+print cyc["self"]["self"]["name"];
+// expect: root
+print cyc["self"]["self"]["self"]["name"];
+// expect: root

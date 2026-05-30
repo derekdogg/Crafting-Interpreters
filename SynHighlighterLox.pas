@@ -10,9 +10,12 @@ type
   TtkTokenKind = (tkComment, tkIdentifier, tkKeyword, tkNull, tkNumber,
     tkSpace, tkString, tkSymbol, tkUnknown, tkBuiltIn);
 
+  TRangeState = (rsNormal, rsBlockComment, rsString);
+
   TSynLoxSyn = class(TSynCustomHighlighter)
   private
     FTokenID: TtkTokenKind;
+    FRange: TRangeState;
     FCommentAttri: TSynHighlighterAttributes;
     FIdentifierAttri: TSynHighlighterAttributes;
     FKeyAttri: TSynHighlighterAttributes;
@@ -24,8 +27,10 @@ type
     procedure IdentProc;
     procedure NumberProc;
     procedure SlashProc;
+    procedure BlockCommentProc;
     procedure SpaceProc;
     procedure StringProc;
+    procedure MultiLineStringProc;
     procedure SymbolProc;
     procedure NullProc;
     procedure UnknownProc;
@@ -40,6 +45,9 @@ type
     class function GetFriendlyLanguageName: string; override;
     function GetDefaultAttribute(Index: Integer): TSynHighlighterAttributes; override;
     function GetEol: Boolean; override;
+    function GetRange: Pointer; override;
+    procedure SetRange(Value: Pointer); override;
+    procedure ResetRange; override;
     function GetTokenID: TtkTokenKind;
     function GetTokenAttribute: TSynHighlighterAttributes; override;
     function GetTokenKind: Integer; override;
@@ -197,9 +205,41 @@ begin
     FTokenID := tkComment;
     Run := fLineLen;
   end
+  else if (Run < fLineLen) and (fLine[Run] = '*') then
+  begin
+    // Block comment start
+    Inc(Run);
+    FTokenID := tkComment;
+    FRange := rsBlockComment;
+    while Run < fLineLen do
+    begin
+      if (fLine[Run] = '*') and (Run + 1 < fLineLen) and (fLine[Run + 1] = '/') then
+      begin
+        Inc(Run, 2);
+        FRange := rsNormal;
+        Break;
+      end;
+      Inc(Run);
+    end;
+  end
   else
   begin
     FTokenID := tkSymbol;
+  end;
+end;
+
+procedure TSynLoxSyn.BlockCommentProc;
+begin
+  FTokenID := tkComment;
+  while Run < fLineLen do
+  begin
+    if (fLine[Run] = '*') and (Run + 1 < fLineLen) and (fLine[Run + 1] = '/') then
+    begin
+      Inc(Run, 2);
+      FRange := rsNormal;
+      Exit;
+    end;
+    Inc(Run);
   end;
 end;
 
@@ -211,23 +251,48 @@ begin
 end;
 
 procedure TSynLoxSyn.StringProc;
-var
-  Quote: Char;
 begin
   FTokenID := tkString;
-  Quote := fLine[Run];
-  Inc(Run);
+  Inc(Run); // skip opening quote
   while Run < fLineLen do
   begin
-    if fLine[Run] = Quote then
+    if fLine[Run] = '"' then
     begin
+      // Doubled quote ("") is an embedded quote - skip both and continue
+      if (Run + 1 < fLineLen) and (fLine[Run + 1] = '"') then
+      begin
+        Inc(Run, 2);
+        Continue;
+      end;
       Inc(Run);
-      Break;
+      Exit; // closed on this line
     end;
-    if fLine[Run] = '\' then
-      Inc(Run);
     Inc(Run);
   end;
+  // Reached end of line without closing quote - multi-line string
+  FRange := rsString;
+end;
+
+procedure TSynLoxSyn.MultiLineStringProc;
+begin
+  FTokenID := tkString;
+  while Run < fLineLen do
+  begin
+    if fLine[Run] = '"' then
+    begin
+      // Doubled quote ("") is an embedded quote - skip both and continue
+      if (Run + 1 < fLineLen) and (fLine[Run + 1] = '"') then
+      begin
+        Inc(Run, 2);
+        Continue;
+      end;
+      Inc(Run);
+      FRange := rsNormal;
+      Exit;
+    end;
+    Inc(Run);
+  end;
+  // Still no closing quote - remain in rsString
 end;
 
 procedure TSynLoxSyn.SymbolProc;
@@ -261,6 +326,10 @@ begin
   fTokenPos := Run;
   if Run >= fLineLen then
     NullProc
+  else if FRange = rsBlockComment then
+    BlockCommentProc
+  else if FRange = rsString then
+    MultiLineStringProc
   else
     case fLine[Run] of
       'a'..'z', 'A'..'Z', '_': IdentProc;
@@ -293,6 +362,21 @@ end;
 function TSynLoxSyn.GetEol: Boolean;
 begin
   Result := Run > fLineLen;
+end;
+
+function TSynLoxSyn.GetRange: Pointer;
+begin
+  Result := Pointer(Ord(FRange));
+end;
+
+procedure TSynLoxSyn.SetRange(Value: Pointer);
+begin
+  FRange := TRangeState(NativeInt(Value));
+end;
+
+procedure TSynLoxSyn.ResetRange;
+begin
+  FRange := rsNormal;
 end;
 
 function TSynLoxSyn.GetTokenID: TtkTokenKind;

@@ -99,6 +99,7 @@ begin
   NotifyScriptStarted;
   InitVM;
   try
+    VM.OnPrint := Form4.HandleLivePrint;
     defineNative('processMessages', processMessagesNative, 0);
     RegisterCanvasNatives;
     RegisterSoundNatives;
