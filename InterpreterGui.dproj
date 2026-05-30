@@ -139,6 +139,16 @@
         </DCCReference>
         <DCCReference Include="LoxCanvas.pas"/>
         <DCCReference Include="Chunk_Types.pas"/>
+        <DCCReference Include="Natives\NativeRegistry.pas"/>
+        <DCCReference Include="Natives\ArrayNatives.pas"/>
+        <DCCReference Include="Natives\ConversionNatives.pas"/>
+        <DCCReference Include="Natives\DictNatives.pas"/>
+        <DCCReference Include="Natives\IntrospectionNatives.pas"/>
+        <DCCReference Include="Natives\MathNatives.pas"/>
+        <DCCReference Include="Natives\SqlNatives.pas"/>
+        <DCCReference Include="Natives\StringNatives.pas"/>
+        <DCCReference Include="Natives\FileNatives.pas"/>
+        <DCCReference Include="Natives\SystemNatives.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -168,6 +178,18 @@
                 <DeployFile LocalName="Win32\Debug\InterpreterGui.exe" Configuration="Debug" Class="ProjectOutput">
                     <Platform Name="Win32">
                         <RemoteName>InterpreterGui.exe</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="Win64\Debug\InterpreterGui.exe" Configuration="Debug" Class="ProjectOutput">
+                    <Platform Name="Win64">
+                        <RemoteName>InterpreterGui.exe</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="Win64\Debug\InterpreterGui.rsm" Configuration="Debug" Class="DebugSymbols">
+                    <Platform Name="Win64">
+                        <RemoteName>InterpreterGui.rsm</RemoteName>
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>

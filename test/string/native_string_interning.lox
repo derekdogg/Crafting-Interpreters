@@ -1,0 +1,125 @@
+// Native String Interning Tests
+// Verifies that native functions which create strings go through
+// the intern table (CreateString → TableFindString) correctly.
+
+// === str() produces interned strings ===
+var s1 = str(42);
+var s2 = str(42);
+assert(s1 == s2, "str() same number should intern");
+assert(s1 == "42", "str() result should match literal");
+
+var s3 = str(true);
+var s4 = str(true);
+assert(s3 == s4, "str(true) should intern");
+assert(s3 == "true", "str(true) should match literal");
+
+var s5 = str(nil);
+assert(s5 == "nil", "str(nil) should match literal");
+
+// === type() returns interned type name strings ===
+var t1 = type(123);
+var t2 = type(456);
+assert(t1 == t2, "type() of two numbers should return same interned string");
+assert(t1 == "number", "type(number) should intern to literal");
+
+var t3 = type("hello");
+assert(t3 == "string", "type(string) should intern to literal");
+
+var t4 = type(true);
+assert(t4 == "boolean", "type(boolean) should intern to literal");
+
+var t5 = type(nil);
+assert(t5 == "nil", "type(nil) should intern to literal");
+
+var t6 = type(newArray());
+assert(t6 == "array", "type(array) should intern to literal");
+
+// === upper() produces interned strings ===
+var u1 = upper("hello");
+var u2 = upper("hello");
+assert(u1 == u2, "upper() same input should intern");
+assert(u1 == "HELLO", "upper() result should match literal");
+
+// upper of already-uppercase should intern to same as literal
+var u3 = upper("WORLD");
+assert(u3 == "WORLD", "upper() no-op should intern to existing literal");
+
+// === lower() produces interned strings ===
+var l1 = lower("HELLO");
+var l2 = lower("HELLO");
+assert(l1 == l2, "lower() same input should intern");
+assert(l1 == "hello", "lower() result should match literal");
+
+var l3 = lower("world");
+assert(l3 == "world", "lower() no-op should intern to existing literal");
+
+// === trim() produces interned strings ===
+var tr1 = trim("  hi  ");
+var tr2 = trim("  hi  ");
+assert(tr1 == tr2, "trim() same input should intern");
+assert(tr1 == "hi", "trim() result should match literal");
+
+// trim of clean string should intern to same
+var tr3 = trim("clean");
+assert(tr3 == "clean", "trim() no-op should intern to existing literal");
+
+// === charAt() produces interned single-char strings ===
+var ch1 = charAt("abc", 0);
+var ch2 = charAt("xyz", 0);  // also 'x' but different
+var ch3 = "a";
+assert(ch1 == ch3, "charAt() result should intern to literal");
+
+var ch4 = charAt("banana", 2);
+var ch5 = charAt("nope", 0);
+assert(ch4 == ch5, "charAt() same char from different strings should intern");
+assert(ch4 == "n", "charAt() should match literal");
+
+// === substr() produces interned strings ===
+var ss1 = substr("foobar", 0, 3);
+assert(ss1 == "foo", "substr() result should intern to literal");
+
+var ss2 = substr("foobar", 3, 3);
+assert(ss2 == "bar", "substr() tail should intern to literal");
+
+var ss3 = substr("hello world", 0, 5);
+assert(ss3 == "hello", "substr() should intern to previously seen literal");
+
+// === split() elements are interned ===
+var parts = split("red,green,blue", ",");
+assert(arrayGet(parts, 0) == "red", "split element 0 should intern");
+assert(arrayGet(parts, 1) == "green", "split element 1 should intern");
+assert(arrayGet(parts, 2) == "blue", "split element 2 should intern");
+
+// split with empty delimiter → individual chars
+var chars = split("hi", "");
+assert(arrayGet(chars, 0) == "h", "split char 0 should intern");
+assert(arrayGet(chars, 1) == "i", "split char 1 should intern");
+
+// === Chained native calls produce interned results ===
+var chain1 = upper(trim("  test  "));
+var chain2 = "TEST";
+assert(chain1 == chain2, "chained natives should produce interned result");
+
+var chain3 = lower(substr("FOOBAR", 0, 3));
+assert(chain3 == "foo", "lower(substr()) should intern");
+
+// === Native results survive GC ===
+var kept = upper("persist");
+for (var k = 0; k < 200; k = k + 1) {
+  var tmp = str(k) + "_garbage";
+}
+collectGarbage();
+assert(kept == "PERSIST", "native-created string should survive GC");
+
+// === Results ===
+print "str():    PASS";
+print "type():   PASS";
+print "upper():  PASS";
+print "lower():  PASS";
+print "trim():   PASS";
+print "charAt(): PASS";
+print "substr(): PASS";
+print "split():  PASS";
+print "chained:  PASS";
+print "GC:       PASS";
+print "--- All native string interning tests passed ---";

@@ -4,6 +4,7 @@
 {..$DEFINE DEBUG_LOG_GC}
 {..$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
+{..$DEFINE OPCODE_PROFILING}
 interface
  
 uses
@@ -110,8 +111,10 @@ const
   OP_SET_LOCAL_6 = 63;
   OP_SET_LOCAL_7 = 64;
   OP_LESS_JUMP_IF_FALSE = 65;  // Fused OP_LESS + OP_JUMP_IF_FALSE_POP. 2-byte offset operand. Pops both number operands, jumps if NOT (a < b).
+  OP_GET_LOCAL_CONST_SUBTRACT = 66;  // Fused GET_LOCAL_N + CONSTANT + SUBTRACT. Operands: <slot> <const_idx>. Pushes locals[slot] - constants[const_idx].
+  OP_ADD_SET_LOCAL_POP = 67;  // Fused ADD + SET_LOCAL_N + POP. Operand: <slot>. Adds top two stack values, stores to slot, pops both.
 
-  OP_STRINGS : array[0..65] of string = (
+  OP_STRINGS : array[0..67] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -165,36 +168,43 @@ const
     'OP_GET_LOCAL_4','OP_GET_LOCAL_5','OP_GET_LOCAL_6','OP_GET_LOCAL_7',
     'OP_SET_LOCAL_0','OP_SET_LOCAL_1','OP_SET_LOCAL_2','OP_SET_LOCAL_3',
     'OP_SET_LOCAL_4','OP_SET_LOCAL_5','OP_SET_LOCAL_6','OP_SET_LOCAL_7',
-    'OP_LESS_JUMP_IF_FALSE');
+    'OP_LESS_JUMP_IF_FALSE',
+    'OP_GET_LOCAL_CONST_SUBTRACT',
+    'OP_ADD_SET_LOCAL_POP');
 
   UINT8_COUNT = 256;
-  FRAMES_MAX = 256;
-  STACK_MAX = FRAMES_MAX * UINT8_COUNT;  // 65536 slots ? hard upper bound on Stack growth
+  FRAMES_MAX = 512;
+  STACK_MAX = FRAMES_MAX * UINT8_COUNT;  // 65536 slots — hard upper bound on Stack growth
 
   // NaN boxing constants
   // Finite IEEE 754 doubles do not satisfy (bits & QNAN) = QNAN.
-  // Some IEEE NaN payloads CAN match this mask (e.g., NaN propagation
-  // through arithmetic can produce arbitrary payloads). CreateNumber
-  // canonicalizes such NaNs to CANON_NAN so they are never misclassified
-  // as nil/boolean/object values.
+  // Some IEEE NaN payloads can satisfy this mask. Arithmetic operations
+  // that propagate NaNs are allowed to preserve or modify payload bits,
+  // so an externally supplied or computed NaN could otherwise be mistaken
+  // for a tagged value. CreateNumber canonicalizes such NaNs to CANON_NAN
+  // so they are never misclassified as nil/boolean/object values.
   //
   // Non-number Lox values are encoded as quiet NaN payloads:
   //   Nil:    QNAN | TAG_NIL
   //   False:  QNAN | TAG_FALSE
   //   True:   QNAN | TAG_TRUE
-  //   Object: SIGN_BIT | QNAN | pointer  (userspace ptrs use lower 48 bits)
+  //   Object: SIGN_BIT | QNAN | pointer
+  //            (assumes object pointers fit within the low 48 bits
+  //             of a 64-bit virtual address)
   QNAN      = UInt64($7FFC000000000000);
   SIGN_BIT  = UInt64($8000000000000000);
   OBJ_TAG   = QNAN or SIGN_BIT;            // $FFFC000000000000
-  CANON_NAN = UInt64($7FF8000000000000);   // safe quiet NaN (bit 50 clear → passes isNumber)
+  CANON_NAN = UInt64($7FF8000000000000);
+  // Canonical quiet NaN chosen so (bits and QNAN) <> QNAN,
+  // therefore it is classified as a number rather than a tagged value.
 
   TAG_NIL   = 1;
   TAG_FALSE = 2;
   TAG_TRUE  = 3;
 
-  NIL_VAL   = QNAN or TAG_NIL;            // $7FFC000000000001
-  FALSE_VAL = QNAN or TAG_FALSE;          // $7FFC000000000002
-  TRUE_VAL  = QNAN or TAG_TRUE;           // $7FFC000000000003
+  NIL_VAL   = QNAN or TAG_NIL;    // $7FFC000000000001
+  FALSE_VAL = QNAN or TAG_FALSE;  // $7FFC000000000002
+  TRUE_VAL  = QNAN or TAG_TRUE;   // $7FFC000000000003
 
 
 type
@@ -277,7 +287,7 @@ type
   pTable          = ^TTable;
   pLocal          = ^TLocal;
   pCallFrame      = ^TCallFrame;
-  //pRoots          = ^TRoots;
+
 
   //Arrays
   TAnsiCharArray = Array[0..0] of AnsiChar;
@@ -464,11 +474,12 @@ type
 
   //Virtual Machine result
   TInterpretResult = record
-    code  : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR);
+    code  : (INTERPRET_OK, INTERPRET_COMPILE_ERROR, INTERPRET_RUNTIME_ERROR, INTERPRET_HALTED);
     value : TValue;
     ErrorStr : String;
     ResultStr : String;
     OutputStr : String;
+    ExitCode : Integer;
   end;
 
   TMemTracker = record
@@ -487,7 +498,10 @@ type
     ip      : pByte;
     slots   : pValue; // points into VM stack
   end;
-   
+
+  // Callback fired on each print statement for real-time output.
+  // If assigned, called with the printed text (one line per call).
+  TLoxPrintEvent = procedure(const Text: string) of object;
 
   //Virtual Machine
   TVirtualMachine = record
@@ -504,6 +518,7 @@ type
     // need the materialised text read VM.PrintBuilder.ToString; resets call
     // VM.PrintBuilder.Clear. The builder is owned by initVM/FreeVM.
     PrintBuilder    : TStringBuilder;
+    OnPrint         : TLoxPrintEvent;
   end;
 
   TScanner = record
@@ -572,6 +587,13 @@ type
 
 function findNativeClass(const name : AnsiString) : pNativeClassInfo;
 procedure RunTimeError(const msg : string);
+
+type
+  ELoxHalt = class(Exception)
+  public
+    HaltExitCode: Integer;
+    constructor Create(const AMsg: string; AExitCode: Integer);
+  end;
 
 //Assertions
 procedure AssertMemTrackerIsNotNil(MemTracker : pMemTracker);
@@ -673,9 +695,9 @@ function StringsEqual(a, b: PObjString): Boolean;
 function ValuesEqual(a, b : TValue) : boolean;
 function TokenToString(const Token: TToken): AnsiString;
 function ObjStringToAnsiString(S: PObjString): AnsiString;
-function ValueToString(const value : TValue) : pObjString;
+function ValueToString(const value : TValue) : pObjString; inline;
 function ValueToStr(const value : TValue) : String;
-function StringToValue(const value : pObjString) : TValue;
+function StringToValue(const value : pObjString) : TValue; inline;
 function isString(value : TValue) : boolean; inline;
 function ObjStringEqualsAnsi(s: PObjString; const a: AnsiString): Boolean; inline;
 function ObjStringToWideStr(s: PObjString): string;
@@ -705,7 +727,7 @@ function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue;
 procedure InitMemTracker(var MemTracker : pMemTracker);
 procedure FreeMemTracker(var MemTracker : pMemTracker);
 procedure MarkObject(obj : pObj);
-procedure MarkValue(value : TValue);
+procedure MarkValue(value : TValue); inline;
 procedure MarkRoots;
 procedure MarkTable(Table : pTable);
 procedure MarkArray(ValueArray : pValueArray);
@@ -731,10 +753,10 @@ procedure FillNilValues(p: pValue; Count: NativeInt);
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker);
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);
 procedure ResetStack(var stack : pStack);
-procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker); inline;
-procedure pushStackGrow(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
-function peekStack(stack : pStack) : TValue; overload; inline;
-function peekStack(stack : pStack; distanceFromTop : integer) : TValue; overload; inline;
+procedure pushStack(var stack : pStack;const value : TValue); inline;
+procedure pushStackGrow(var stack : pStack;const value : TValue);
+//function peekStack(stack : pStack) : TValue; overload; inline;
+function peekStack(stack : pStack; distanceFromTop : integer) : TValue; inline;
 function  popStack(var stack : pStack) : TValue; inline;
 
 //Scanner
@@ -756,6 +778,7 @@ procedure ifStatement();
 procedure whileStatement();
 procedure forStatement();
 procedure expressionStatement();
+procedure emitPopWithPeephole;
 procedure Number(canAssign: Boolean);
 procedure grouping(canAssign: Boolean);
 procedure unary(canAssign: Boolean);
@@ -807,7 +830,7 @@ function HashString(const Key: PAnsiChar; Length: Integer): UInt32;
 function CreateNumber(Value: Double): TValue; inline;
 function CreateBoolean(Value: Boolean): TValue; inline;
 function CreateNilValue: TValue; inline;
-function CreateObject(value : pObj) : TValue;
+function CreateObject(value : pObj) : TValue; inline;
 
 //Value accessors
 function isNumber(const Value: TValue): Boolean; inline;
@@ -817,6 +840,13 @@ function isNill(const Value: TValue): Boolean; inline;
 function GetNumber(Value : TValue) : double; inline;
 function GetBoolean(const Value : TValue) : Boolean; inline;
 function GetObject(const value : TValue) : pObj; inline;
+function IsFalsey(const Value: TValue): Boolean; inline;
+
+//Native helper functions — convenience wrappers for native function authors
+function AsAnsiString(value : TValue) : AnsiString; inline;
+function AsWideString(value : TValue) : string; inline;
+function AsInteger(value : TValue) : Integer; inline;
+function CreateStringValue(const s : AnsiString) : TValue;
 
 //Table
 procedure InitTable(var Table : pTable; memTracker : pMemTracker);
@@ -973,6 +1003,7 @@ var
   Parser  : TParser;
   Current : pCompiler;
   lastPatchTarget : integer = -1;
+  lastAddOffset   : integer = -1;
   //Output : TStrings;
   {$IFDEF DEBUG_LOG_GC}
   GCLogFile : TextFile;
@@ -986,9 +1017,72 @@ var
 implementation
 
 uses
-  Math, strUtils, Windows, System.AnsiStrings,
-  Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
-  FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait;
+  Math, System.AnsiStrings,
+  NativeRegistry;
+
+{$IFDEF OPCODE_PROFILING}
+var
+  OpPairCounts: array[0..255, 0..255] of UInt64;
+  OpPrevOp: Byte = 255;
+
+procedure DumpOpcodePairs;
+type
+  TPairEntry = record
+    A, B: Byte;
+    Count: UInt64;
+  end;
+var
+  pairs: array of TPairEntry;
+  i, j, n: Integer;
+  temp: TPairEntry;
+  nameA, nameB: string;
+begin
+  // Collect non-zero pairs
+  SetLength(pairs, 0);
+  for i := 0 to 255 do
+    for j := 0 to 255 do
+      if OpPairCounts[i, j] > 0 then
+      begin
+        n := Length(pairs);
+        SetLength(pairs, n + 1);
+        pairs[n].A := i;
+        pairs[n].B := j;
+        pairs[n].Count := OpPairCounts[i, j];
+      end;
+
+  // Simple insertion sort top-30 (descending by count)
+  for i := 0 to High(pairs) do
+    for j := i + 1 to High(pairs) do
+      if pairs[j].Count > pairs[i].Count then
+      begin
+        temp := pairs[i];
+        pairs[i] := pairs[j];
+        pairs[j] := temp;
+      end;
+
+  VM.PrintBuilder.Append(sLineBreak);
+  VM.PrintBuilder.Append('=== OPCODE PAIR PROFILE (top 30) ===');
+  VM.PrintBuilder.Append(sLineBreak);
+  if Assigned(VM.OnPrint) then
+    VM.OnPrint('=== OPCODE PAIR PROFILE (top 30) ===');
+  for i := 0 to Min(29, High(pairs)) do
+  begin
+    if pairs[i].A <= High(OP_STRINGS) then nameA := OP_STRINGS[pairs[i].A]
+    else nameA := 'OP_' + IntToStr(pairs[i].A);
+    if pairs[i].B <= High(OP_STRINGS) then nameB := OP_STRINGS[pairs[i].B]
+    else nameB := 'OP_' + IntToStr(pairs[i].B);
+    VM.PrintBuilder.Append(Format('  %-28s -> %-28s : %d',
+      [nameA, nameB, pairs[i].Count]));
+    VM.PrintBuilder.Append(sLineBreak);
+    if Assigned(VM.OnPrint) then
+      VM.OnPrint(Format('  %-28s -> %-28s : %d',
+        [nameA, nameB, pairs[i].Count]));
+  end;
+  VM.PrintBuilder.Append('====================================');
+  if Assigned(VM.OnPrint) then
+    VM.OnPrint('====================================');
+end;
+{$ENDIF}
 
 type
   // Raised by the slow paths of stack growth (pushStackGrow) and other
@@ -997,6 +1091,14 @@ type
   // into INTERPRET_RUNTIME_ERROR so deep recursion / runaway pushes surface
   // as a clean script error instead of crashing the host app.
   ELoxRuntimeError = class(Exception);
+
+{ ELoxHalt }
+
+constructor ELoxHalt.Create(const AMsg: string; AExitCode: Integer);
+begin
+  inherited Create(AMsg);
+  HaltExitCode := AExitCode;
+end;
 
 { LoxClassAttribute }
 
@@ -1614,7 +1716,7 @@ begin
   // Push string onto stack to protect from GC during TableSet.
   if (VM <> nil) and (VM.Strings <> nil) then
   begin
-    pushStack(VM.Stack, StringToValue(Result), VM.MemTracker);
+    pushStack(VM.Stack, StringToValue(Result));
     TableSet(VM.Strings, Result, CreateNilValue, MemTracker);
     Dec(VM.Stack.StackTop);
   end;
@@ -1841,7 +1943,7 @@ end;
 // realloc the stack buffer ? callers routinely pass references into
 // Stack.Values itself (e.g. OP_GET_LOCAL), so we must snapshot before the
 // ReallocMem moves the buffer.
-procedure pushStackGrow(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
+procedure pushStackGrow(var stack : pStack;const value : TValue);
 var
   NewCapacity : integer;
   OldCapacity : integer;
@@ -1851,11 +1953,11 @@ var
   upval       : pObjUpvalue;
   LocalValue  : TValue;
 begin
-  // ---- Entry assertions ----
-  AssertMemTrackerIsNotNil(MemTracker);
+  {$IFOPT C+}
   AssertStackIsAssigned(Stack);
   AssertStackValuesIsAssigned(Stack);
   AssertStackCapacityIsGreaterThanZero(Stack);
+  {$ENDIF}
 
   // Snapshot value before any realloc (see header comment).
   LocalValue := value;
@@ -1867,35 +1969,47 @@ begin
   // "Stack overflow" instead of an eventual OOM crash. Caught at the
   // CompileAndRun boundary and converted to INTERPRET_RUNTIME_ERROR.
   OldCapacity := Stack.CapacityEnd - Stack.Values;  // element count
-  if OldCapacity >= STACK_MAX then
-    raise ELoxRuntimeError.CreateFmt('Stack overflow (max %d slots).', [STACK_MAX]);
+  //if OldCapacity >= STACK_MAX then
+    //raise ELoxRuntimeError.CreateFmt('Stack overflow (max %d slots).', [STACK_MAX]);
+  {$IFOPT C+}
   AssertStackCapacityCanGrow(Stack);
+  {$ENDIF}
   NewCapacity := OldCapacity * GROWTH_FACTOR;
   if NewCapacity > STACK_MAX then
     NewCapacity := STACK_MAX;
+  {$IFOPT C+}
   AssertStackByteSizeIsSafe(NewCapacity);
+  {$ENDIF}
   OldValues := Stack.Values;
   ReallocMem(Stack.Values, NewCapacity * SizeOf(TValue));
+  {$IFOPT C+}
   AssertStackValuesIsAssigned(Stack);
+  {$ENDIF}
   // Zero new portion
   FillNilValues(@Stack.Values[OldCapacity], NewCapacity - OldCapacity);
   Stack.CapacityEnd := Stack.Values + NewCapacity;
+  {$IFOPT C+}
   AssertStackCapacityIsGreaterThanZero(Stack);
+  {$ENDIF}
   // If the buffer moved, rebase StackTop, frame.slots and open upvalue locations
   if Stack.Values <> OldValues then
   begin
     Offset := NativeInt(Stack.Values) - NativeInt(OldValues);
+    {$IFOPT C+}
     AssertRebaseOffsetIsNonZero(Offset);
+    {$ENDIF}
     // Rebase StackTop
     Inc(PByte(Stack.StackTop), Offset);
     // Rebase call frame slot pointers
     if (VM <> nil) and (Stack = VM.Stack) then
     begin
+      {$IFOPT C+}
       AssertFrameCountInBounds(VM.FrameCount);
+      {$ENDIF}
       for i := 0 to VM.FrameCount - 1 do
         Inc(PByte(VM.Frames[i].slots), Offset);
       // Rebase open upvalue location pointers
-      upval := VM.OpenUpvalues; //this global has sneaked in, just debating whether to inject it
+      upval := VM.OpenUpvalues;
       while upval <> nil do
       begin
         Inc(PByte(upval^.location), Offset);
@@ -1907,10 +2021,11 @@ begin
   Stack.StackTop^ := LocalValue;
   Inc(Stack.StackTop);
 
-  // ---- Exit assertions ----
+  {$IFOPT C+}
   AssertStackIsAssigned(Stack);
   AssertStackIsNotEmpty(Stack);
   AssertStackTopIsNotNil(Stack);
+  {$ENDIF}
 end;
 
 // pushStack - fast-path inline wrapper.
@@ -1918,10 +2033,10 @@ end;
 // 1 predicted-not-taken branch. No realloc, so `value` cannot alias a
 // memory region that's about to move - direct write is safe without a
 // defensive copy. Cold path delegates to pushStackGrow.
-procedure pushStack(var stack : pStack;const value : TValue;MemTracker : pMemTracker);
+procedure pushStack(var stack : pStack;const value : TValue);
 begin
   if Stack.StackTop >= Stack.CapacityEnd then
-    pushStackGrow(Stack, value, MemTracker)
+    pushStackGrow(Stack, value)
   else
   begin
     Stack.StackTop^ := value;
@@ -1951,16 +2066,20 @@ function CreateObject(value : pObj) : TValue;
 var
   ptr: UInt64;
 begin
+  {$IFOPT C+}
   AssertPointerIsNotNil(value, 'CreateObject - object value');
+  {$ENDIF}
 
   ptr := UInt64(NativeUInt(value));
 
+  {$IFOPT C+}
   // NaN-boxing assumes canonical lower-half userspace pointers (lower 48 bits).
   // Object pointers must not overlap the reserved tag region (upper 16 bits).
   if (ptr and OBJ_TAG) <> 0 then
     raise ELoxRuntimeError.Create(
       'CreateObject: pointer incompatible with NaN boxing ($' +
       IntToHex(ptr, 16) + ')');
+  {$ENDIF}
 
   Result := OBJ_TAG or ptr;
 end;
@@ -2554,7 +2673,7 @@ begin
 
       arr := newArray(MemTracker);
       // Protect array from GC during element allocation
-      pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
+      pushStack(VM.Stack, CreateObject(pObj(arr)));
 
       for bit := baseTypeData^.MinValue to baseTypeData^.MaxValue do
       begin
@@ -2579,7 +2698,7 @@ begin
       dynLen := V.GetArrayLength;
       dynArr := newArray(MemTracker);
       // Protect array from GC during element allocation
-      pushStack(VM.Stack, CreateObject(pObj(dynArr)), VM.MemTracker);
+      pushStack(VM.Stack, CreateObject(pObj(dynArr)));
 
       for dynI := 0 to dynLen - 1 do
       begin
@@ -3066,15 +3185,19 @@ end;
 
 function ValueToString(const value : TValue) : pObjString;
 begin
+  {$IFOPT C+}
   AssertValueIsString(value);
   AssertPointerIsNotNil(GetObject(value), 'string value');
+  {$ENDIF}
   result := pObjString(GetObject(value));
 end;
 
 function StringToValue(const value : pObjString) : TValue;
 begin
+  {$IFOPT C+}
   AssertObjStringIsAssigned(value);
   AssertObjectKindIsString(@value.Obj);
+  {$ENDIF}
   result := CreateObject(pObj(value));
 end;
 
@@ -3183,7 +3306,7 @@ begin
   // ---- Test MemTracker ---------------------------------------------------
   AssertMemTrackerIsNotNil(MemTracker);
   AssertStackIsAssigned(Stack);
-  Assert(IsString(peekStack(stack)),'Value at top of stack to concatenate is not a string');
+  Assert(IsString(peekStack(stack,0)),'Value at top of stack to concatenate is not a string');
   Assert(IsString(peekStack(stack,1)),'Value at position -1 of stack to concatenate is not a string');
 
   oldCount := Stack.StackTop - Stack.Values;  // element count via pointer arithmetic
@@ -3204,9 +3327,9 @@ begin
     resultStr := below;  // both are empty strings; either is fine
     popStack(stack);
     popStack(stack);
-    PushStack(stack, StringToValue(resultStr), Memtracker);
+    PushStack(stack, StringToValue(resultStr));
     Assert(Stack.StackTop - Stack.Values = oldCount - 1, 'Concatenate exit: should pop 2, push 1 (net -1)');
-    Assert(isString(peekStack(stack)), 'Concatenate exit: top of stack should be a string');
+    Assert(isString(peekStack(stack,0)), 'Concatenate exit: top of stack should be a string');
     Exit;
   end;
 
@@ -3233,9 +3356,9 @@ begin
       buf := nil;
       popStack(stack);
       popStack(stack);
-      PushStack(stack, StringToValue(resultStr), Memtracker);
+      PushStack(stack, StringToValue(resultStr));
       Assert(Stack.StackTop - Stack.Values = oldCount - 1, 'Concatenate exit: should pop 2, push 1 (net -1)');
-      Assert(isString(peekStack(stack)), 'Concatenate exit: top of stack should be a string');
+      Assert(isString(peekStack(stack,0)), 'Concatenate exit: top of stack should be a string');
       Exit;
     end;
 
@@ -3260,7 +3383,7 @@ begin
     // Intern: push to protect from GC during TableSet (same pattern as CreateString)
     if (VM <> nil) and (VM.Strings <> nil) then
     begin
-      pushStack(stack, StringToValue(resultStr), MemTracker);
+      pushStack(stack, StringToValue(resultStr));
       TableSet(VM.Strings, resultStr, CreateNilValue, MemTracker);
       popStack(stack);
     end;
@@ -3272,11 +3395,11 @@ begin
   // Pop sources and push result
   popStack(stack);
   popStack(stack);
-  PushStack(stack, StringToValue(resultStr), Memtracker);
+  PushStack(stack, StringToValue(resultStr));
 
   // ---- Exit assertions ----
   Assert(Stack.StackTop - Stack.Values = oldCount - 1, 'Concatenate exit: should pop 2, push 1 (net -1)');
-  Assert(isString(peekStack(stack)), 'Concatenate exit: top of stack should be a string');
+  Assert(isString(peekStack(stack,0)), 'Concatenate exit: top of stack should be a string');
 end;
 
 
@@ -3340,6 +3463,31 @@ begin
   Result := (Value = NIL_VAL) or (Value = FALSE_VAL);
 end;
 
+// --- Native helper functions ---
+
+function AsAnsiString(value : TValue) : AnsiString; inline;
+begin
+  Result := ObjStringToAnsiString(pObjString(GetObject(value)));
+end;
+
+function AsWideString(value : TValue) : string; inline;
+begin
+  Result := ObjStringToWideStr(pObjString(GetObject(value)));
+end;
+
+function AsInteger(value : TValue) : Integer; inline;
+begin
+  Result := Trunc(GetNumber(value));
+end;
+
+function CreateStringValue(const s : AnsiString) : TValue;
+var
+  objStr : pObjString;
+begin
+  objStr := CreateString(s, VM.MemTracker);
+  Result := CreateObject(pObj(objStr));
+end;
+
 //Value type assertions (placed here after type checking functions are defined)
 procedure AssertValueIsBoolean(const Value : TValue);
 begin
@@ -3378,6 +3526,8 @@ begin
     (a^.Length = b^.Length) and
     CompareMem(@a^.Chars, @b^.Chars, a^.Length);
 end;
+
+
 
 function ValuesEqual(a, b : TValue) : boolean;
 begin
@@ -3424,7 +3574,7 @@ begin
   oldCount := ValueArray.Count;
 
   // Push value onto stack to protect from GC during potential array growth.
-  pushStack(VM.Stack, value, VM.MemTracker);
+  pushStack(VM.Stack, value);
   
   // Add the value to the ValueArray -- note here the value array can grow
   writeValueArray(ValueArray, value,Memtracker);
@@ -3671,7 +3821,7 @@ begin
       newCap := dict^.Count;
       oldSize := 0;
       newSize := newCap * SizeOf(TValue);
-      PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
+      PushStack(vm.stack, CreateObject(pObj(arr)));
       Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
       arr^.Capacity := newCap;
       for i := 0 to dict^.Capacity - 1 do
@@ -3699,7 +3849,7 @@ begin
       newCap := dict^.Count;
       oldSize := 0;
       newSize := newCap * SizeOf(TValue);
-      PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
+      PushStack(vm.stack, CreateObject(pObj(arr)));
       Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
       arr^.Capacity := newCap;
       for i := 0 to dict^.Capacity - 1 do
@@ -3722,6 +3872,41 @@ begin
       Exit(false);
     end;
     outResult := CreateNumber(dict^.Count);
+  end
+  else if ObjStringEqualsAnsi(methodName, 'Equal') or ObjStringEqualsAnsi(methodName, 'Equals') then
+  begin
+    if argCount <> 1 then
+    begin
+      RuntimeError('Equal() takes exactly 1 argument.');
+      Exit(false);
+    end;
+    if not isDictionary(args[0]) then
+      outResult := CreateBoolean(false)
+    else if pObjDictionary(GetObject(args[0])) = dict then
+      outResult := CreateBoolean(true)
+    else
+    begin
+      outResult := CreateBoolean(false);
+      if pObjDictionary(GetObject(args[0]))^.Count = dict^.Count then
+      begin
+        outResult := CreateBoolean(true);
+        for i := 0 to dict^.Capacity - 1 do
+        begin
+          if not dict^.Entries[i].occupied or dict^.Entries[i].tombstone then
+            Continue;
+          if not DictGet(pObjDictionary(GetObject(args[0])), dict^.Entries[i].key, val) then
+          begin
+            outResult := CreateBoolean(false);
+            Break;
+          end;
+          if not ValuesEqual(dict^.Entries[i].value, val) then
+          begin
+            outResult := CreateBoolean(false);
+            Break;
+          end;
+        end;
+      end;
+    end;
   end
   else
   begin
@@ -3843,7 +4028,7 @@ var
       context + ': upvalue index out of bounds');
   end;
 
-  // ReadByteFr ? nested helper, called 1-4 times per dispatch.
+  // ReadByteFr  nested helper, called 1-4 times per dispatch.
   // Asserts that `frame` and `frame^.ip` are non-nil were moved to the
   // outer dispatch loop (see `Assert(frame = CurrentFrame, ...)` at the
   // top of `while True do`). Those invariants do not change mid-dispatch,
@@ -3921,7 +4106,7 @@ var
       end;
       // pop args + callee
       stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
-      pushStack(stack, nativeResult, VM.MemTracker);
+      pushStack(stack, nativeResult);
       Result := true;
     end
     else if isRecordType(callee) then
@@ -3935,7 +4120,7 @@ var
       end;
       // Create the record instance ? push onto stack to protect from GC
       value := CreateObject(pObj(newRecord(pObjRecordType(GetObject(callee)), VM.MemTracker)));
-      pushStack(stack, value, VM.MemTracker);
+      pushStack(stack, value);
       // Copy arguments into the record's fields (args are on stack below the new record)
       for j := 0 to argCnt - 1 do
         pObjRecord(GetObject(value))^.fields[j] :=
@@ -3944,7 +4129,7 @@ var
       Dec(stack.StackTop);
       // Pop args + callee, push result
       stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(argCnt + 1) * SizeOf(TValue));
-      pushStack(stack, value, VM.MemTracker);
+      pushStack(stack, value);
       Result := true;
     end
     else
@@ -3983,11 +4168,15 @@ begin
       Assert(VM.FrameCount > 0,'Run dispatch: FrameCount <= 0');
       Assert(frame = CurrentFrame, 'Run dispatch: frame is out of sync with FrameCount');
       instruction := ip^; Inc(ip);
+      {$IFDEF OPCODE_PROFILING}
+      Inc(OpPairCounts[OpPrevOp, instruction]);
+      OpPrevOp := instruction;
+      {$ENDIF}
       case instruction of
 
         OP_CONSTANT : begin
           if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, constants[ip^], vm.MemTracker)
+            pushStackGrow(stack, constants[ip^])
           else begin
             stack.StackTop^ := constants[ip^];
             Inc(stack.StackTop);
@@ -4003,7 +4192,7 @@ begin
           AssertConstantIndex(i, 'OP_CONSTANT_LONG');
           AssertFrameValues('OP_CONSTANT_LONG');
           value := constants[i];
-          pushStack(stack,value,vm.MemTracker);
+          pushStack(stack,value);
         end;
 
         OP_NEGATE : begin
@@ -4017,14 +4206,12 @@ begin
           stack.StackTop[-1] := CreateNumber(-GetNumber(stack.StackTop[-1]));
         end;
 
-        OP_NIL      : pushStack(vm.stack, CreateNilValue,vm.MemTracker);
-        OP_TRUE     : pushStack(stack, CreateBoolean(true),vm.MemTracker);
-        OP_FALSE    : pushStack(vm.stack, CreateBoolean(false),vm.MemTracker);
+        OP_NIL      : pushStack(stack, CreateNilValue);
+        OP_TRUE     : pushStack(stack, CreateBoolean(true));
+        OP_FALSE    : pushStack(stack, CreateBoolean(false));
 
         OP_EQUAL: begin
-         // Value := Dec(stack.StackTop);
-         // ValueB := Dec(stack.StackTop);
-         // pushStack(vm.stack,CreateBoolean(valuesEqual(Value, ValueB)),vm.MemTracker);
+
           stack.StackTop[-2] := CreateBoolean(valuesEqual(stack.StackTop[-2], stack.StackTop[-1]));
           Dec(stack.StackTop);
         end;
@@ -4139,6 +4326,8 @@ begin
           if VM.PrintBuilder.Length > 0 then
             VM.PrintBuilder.Append(sLineBreak);
           VM.PrintBuilder.Append(ValueToStr(value));
+          if Assigned(VM.OnPrint) then
+            VM.OnPrint(ValueToStr(value));
         end;
 
         OP_POP: begin
@@ -4165,7 +4354,7 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          pushStack(stack, ValueB, vm.MemTracker);
+          pushStack(stack, ValueB);
         end;
 
         OP_SET_GLOBAL: begin
@@ -4185,7 +4374,7 @@ begin
           slot := ip^; Inc(ip);
           Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop), 'OP_GET_LOCAL: slot out of stack bounds');
           if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[slot], vm.MemTracker)
+            pushStackGrow(stack, frame^.slots[slot])
           else begin
             stack.StackTop^ := frame^.slots[slot];
             Inc(stack.StackTop);
@@ -4198,7 +4387,7 @@ begin
           Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_N: slot out of stack bounds');
           if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[slot], vm.MemTracker)
+            pushStackGrow(stack, frame^.slots[slot])
           else begin
             stack.StackTop^ := frame^.slots[slot];
             Inc(stack.StackTop);
@@ -4262,6 +4451,46 @@ begin
           Dec(stack.StackTop, 2);
         end;
 
+        OP_GET_LOCAL_CONST_SUBTRACT: begin
+          // Fused GET_LOCAL + CONSTANT + SUBTRACT. Operands: <slot> <const_idx>.
+          // Pushes locals[slot] - constants[const_idx]. Saves two dispatch cycles.
+          slot := ip^; Inc(ip);
+          index := ip^; Inc(ip);
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, CreateNumber(
+              GetNumber(frame^.slots[slot]) - GetNumber(constants[index])))
+          else begin
+            stack.StackTop^ := CreateNumber(
+              GetNumber(frame^.slots[slot]) - GetNumber(constants[index]));
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_ADD_SET_LOCAL_POP: begin
+          // Fused ADD + SET_LOCAL + POP. Operand: <slot>.
+          // Adds top two stack values, stores to local slot, pops both.
+          // Saves two dispatch cycles per loop increment / accumulator update.
+          slot := ip^; Inc(ip);
+          if isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2]) then
+          begin
+            frame^.slots[slot] := CreateNumber(
+              GetNumber(stack.StackTop[-2]) + GetNumber(stack.StackTop[-1]));
+            Dec(stack.StackTop, 2);
+          end
+          else if isString(stack.StackTop[-1]) and isString(stack.StackTop[-2]) then
+          begin
+            Concatenate(vm.stack, vm.MemTracker);
+            frame^.slots[slot] := stack.StackTop[-1];
+            Dec(stack.StackTop);
+          end
+          else
+          begin
+            runtimeError('Operands must be two numbers or two strings.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+        end;
+
         OP_LOOP: begin
           offset := ip^ shl 8; Inc(ip);
           offset := offset or ip^; Inc(ip);
@@ -4323,7 +4552,7 @@ begin
           Assert(isFunction(value), 'OP_CLOSURE: constant is not a function');
           func := pObjFunction(GetObject(value));
           closure := newClosure(func, VM.MemTracker);
-          pushStack(stack, CreateObject(pObj(closure)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(closure)));
           for i := 0 to closure^.upvalueCount - 1 do
           begin
             isLocal := ip^; Inc(ip);
@@ -4343,7 +4572,7 @@ begin
           slot := ip^; Inc(ip);
           AssertUpvalueIndex(slot, 'OP_GET_UPVALUE');
           Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_GET_UPVALUE: upvalue is nil');
-          pushStack(stack, frame^.closure^.upvalues^[slot]^.location^, vm.MemTracker);
+          pushStack(stack, frame^.closure^.upvalues^[slot]^.location^);
         end;
 
         OP_SET_UPVALUE: begin
@@ -4409,7 +4638,7 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          pushStack(stack, ValueB, vm.MemTracker);
+          pushStack(stack, ValueB);
         end;
 
         OP_SET_GLOBAL_LONG: begin
@@ -4435,7 +4664,7 @@ begin
           Assert(isFunction(value), 'OP_CLOSURE_LONG: constant is not a function');
           func := pObjFunction(GetObject(value));
           closure := newClosure(func, VM.MemTracker);
-          pushStack(stack, CreateObject(pObj(closure)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(closure)));
           for i := 0 to closure^.upvalueCount - 1 do
           begin
             isLocal := ip^; Inc(ip);
@@ -4479,7 +4708,7 @@ begin
               recFieldNamesCopy[i] := recFieldNames[i];
           end;
           recType := newRecordType(recTypeName, argCount, recFieldNamesCopy, VM.MemTracker);
-          pushStack(stack, CreateObject(pObj(recType)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(recType)));
         end;
 
         OP_RECORD_LONG: begin
@@ -4514,7 +4743,7 @@ begin
               recFieldNamesCopy[i] := recFieldNames[i];
           end;
           recType := newRecordType(recTypeName, argCount, recFieldNamesCopy, VM.MemTracker);
-          pushStack(stack, CreateObject(pObj(recType)), vm.MemTracker);
+          pushStack(stack, CreateObject(pObj(recType)));
         end;
 
         OP_GET_PROPERTY: begin
@@ -4535,7 +4764,7 @@ begin
               exit;
             end;
             Dec(stack.StackTop);
-            pushStack(stack, rec^.fields[fieldIdx], vm.MemTracker);
+            pushStack(stack, rec^.fields[fieldIdx]);
           end
           else if isNativeObject(stack.StackTop[-1]) then
           begin
@@ -4554,7 +4783,7 @@ begin
               exit;
             end;
             Dec(stack.StackTop);
-            pushStack(stack, rttiResult, vm.MemTracker);
+            pushStack(stack, rttiResult);
           end
           else
           begin
@@ -4587,7 +4816,7 @@ begin
 
             value := stack.StackTop^;
             Dec(stack.StackTop);
-            pushStack(stack, value, vm.MemTracker);
+            pushStack(stack, value);
           end
           else if isNativeObject(stack.StackTop[-2]) then
           begin
@@ -4609,7 +4838,7 @@ begin
 
             value := stack.StackTop^;
             Dec(stack.StackTop);
-            pushStack(stack, value, vm.MemTracker);
+            pushStack(stack, value);
           end
           else
           begin
@@ -4640,7 +4869,7 @@ begin
               exit;
             end;
             stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(stack, nativeResult, VM.MemTracker);
+            pushStack(stack, nativeResult);
           end
           else if isNativeObject(value) then
           begin
@@ -4672,7 +4901,7 @@ begin
             end;
             // Pop args + receiver, push result
             stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(stack, nativeResult, VM.MemTracker);
+            pushStack(stack, nativeResult);
           end
           else
           begin
@@ -4702,7 +4931,7 @@ begin
               exit;
             end;
             stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(stack, nativeResult, VM.MemTracker);
+            pushStack(stack, nativeResult);
           end
           else if isNativeObject(value) then
           begin
@@ -4732,7 +4961,7 @@ begin
               exit;
             end;
             stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(invokeArgCount + 1) * SizeOf(TValue));
-            pushStack(stack, nativeResult, VM.MemTracker);
+            pushStack(stack, nativeResult);
           end
           else
           begin
@@ -4762,7 +4991,7 @@ begin
               exit;
             end;
             Dec(stack.StackTop);
-            pushStack(stack, rec^.fields[fieldIdx], vm.MemTracker);
+            pushStack(stack, rec^.fields[fieldIdx]);
           end
           else if isNativeObject(stack.StackTop[-1]) then
           begin
@@ -4783,7 +5012,7 @@ begin
               exit;
             end;
             Dec(stack.StackTop);
-            pushStack(stack, rttiResult, vm.MemTracker);
+            pushStack(stack, rttiResult);
           end
           else
           begin
@@ -4820,7 +5049,7 @@ begin
 
             value := stack.StackTop^;
             Dec(stack.StackTop);
-            pushStack(stack, value, vm.MemTracker);
+            pushStack(stack, value);
           end
           else if isNativeObject(stack.StackTop[-2]) then
           begin
@@ -4844,7 +5073,7 @@ begin
 
             value := stack.StackTop^;
             Dec(stack.StackTop);
-            pushStack(stack, value, vm.MemTracker);
+            pushStack(stack, value);
           end
           else
           begin
@@ -4880,7 +5109,7 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pushStack(stack, pObjArray(GetObject(ValueB))^.Elements[i], vm.MemTracker);
+            pushStack(stack, pObjArray(GetObject(ValueB))^.Elements[i]);
           end
           else if isDictionary(ValueB) then
           begin
@@ -4890,7 +5119,7 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pushStack(stack, ValueC, vm.MemTracker);
+            pushStack(stack, ValueC);
           end
           else if isNativeObject(ValueB) then
           begin
@@ -4914,7 +5143,7 @@ begin
                   idxDelphiArgs[0] := LoxValueToDelphi(value, idxParams[0].ParamType.Handle);
                   if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
                   idxDelphiVal := idxProp.GetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]]);
-                  pushStack(stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker), vm.MemTracker);
+                  pushStack(stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker));
                 except
                   on E: Exception do
                   begin
@@ -4972,7 +5201,7 @@ begin
             end;
             pObjArray(GetObject(stack.StackTop[-1]))^.Elements[i] := value;
             Dec(stack.StackTop); // pop the array
-            pushStack(stack, value, vm.MemTracker); // leave the assigned value
+            pushStack(stack, value); // leave the assigned value
           end
           else if isDictionary(stack.StackTop[-3]) then
           begin
@@ -4985,7 +5214,7 @@ begin
             Dec(stack.StackTop);
             Dec(stack.StackTop);
             Dec(stack.StackTop);
-            pushStack(stack, value, vm.MemTracker);
+            pushStack(stack, value);
           end
           else if isNativeObject(stack.StackTop[-3]) then
           begin
@@ -5020,7 +5249,7 @@ begin
                   if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
                   idxProp.SetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]], idxDelphiVal);
                   Dec(stack.StackTop); // pop the native object
-                  pushStack(stack, value, vm.MemTracker); // leave the assigned value
+                  pushStack(stack, value); // leave the assigned value
                 except
                   on E: Exception do
                   begin
@@ -5058,7 +5287,7 @@ begin
           argCount := ip^; Inc(ip);
           // Create the array and push it to protect from GC during Allocate
           value := CreateObject(pObj(newArray(vm.MemTracker)));
-          pushStack(stack, value, vm.MemTracker);
+          pushStack(stack, value);
           // Pre-grow the array elements and copy in. Both the array (top of
           // stack) and the source elements (below it) are GC-rooted via Stack.
           if argCount > 0 then
@@ -5083,7 +5312,7 @@ begin
           argCount := ip^; Inc(ip);
           // Create dictionary and push to stack for GC safety during DictSet.
           value := CreateObject(pObj(newDictionary(vm.MemTracker)));
-          pushStack(stack, value, vm.MemTracker);
+          pushStack(stack, value);
           // Insert pairs from below the dict on the stack.
           // Pairs occupy StackTop[-1-2*argCount .. -2]; dict is at [-1].
           for i := 0 to argCount - 1 do
@@ -5135,10 +5364,6 @@ begin
   Result := (Stack.StackTop - 1 - DistanceFromTop)^;
 end;
 
-function peekStack(Stack: pStack): TValue; inline;
-begin
-  Result := peekStack(Stack, 0);
-end;
 
 function popStack(var stack : pStack) : TValue; inline;
 begin
@@ -5171,7 +5396,7 @@ begin
    end;
 
    // Push the script closure onto the stack
-   pushStack(VM.Stack, CreateObject(pObj(closure)), VM.MemTracker);
+   pushStack(VM.Stack, CreateObject(pObj(closure)));
 
    // Set up the first call frame
    VM.Frames[0].closure := closure;
@@ -5181,11 +5406,26 @@ begin
 
    try
      Result := Run;
+     {$IFDEF OPCODE_PROFILING}
+     DumpOpcodePairs;
+     {$ENDIF}
    except
      // Stack overflow (or any other VM-internal abort raised as
      // ELoxRuntimeError) unwinds out of Run mid-dispatch. Translate to
      // a clean runtime-error result and reset transient VM state so a
      // subsequent CompileAndRun on the same initVM session starts fresh.
+     on E: ELoxHalt do
+     begin
+       VM.FrameCount := 0;
+       VM.OpenUpvalues := nil;
+       if VM.Stack <> nil then
+         VM.Stack.StackTop := VM.Stack.Values;
+       Result.code := INTERPRET_HALTED;
+       Result.ExitCode := E.HaltExitCode;
+       Result.ErrorStr := E.Message;
+       Result.OutputStr := VM.PrintBuilder.ToString;
+       Exit;
+     end;
      on E: ELoxRuntimeError do
      begin
        VM.RuntimeErrorStr := E.Message;
@@ -5757,1225 +5997,12 @@ begin
 
   // Push nameStr and native onto stack to protect from GC (book pattern).
   nameStr := CreateString(name, VM.MemTracker);
-  pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr));
   native := newNative(func, arity, PAnsiChar(name), VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(native)), VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(native)));
   TableSet(VM.Globals, nameStr, CreateObject(pObj(native)), VM.MemTracker);
   Dec(VM.Stack.StackTop);
   Dec(VM.Stack.StackTop);
-end;
-
-function clockNative(argCount: integer; args: pValue): TValue;
-begin
-  Result := CreateNumber(GetTickCount / 1000.0);
-end;
-
-function collectGarbageNative(argCount: integer; args: pValue): TValue;
-begin
-  CollectGarbage;
-  Result := CreateNilValue;
-end;
-
-function assertNative(argCount: integer; args: pValue): TValue;
-begin
-  if (argCount < 1) or (argCount > 2) then
-  begin
-    RuntimeError('assert() takes 1 or 2 arguments.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if IsFalsey(args[0]) then
-  begin
-    if (argCount = 2) and IsString(args[1]) then
-      RuntimeError('Assertion failed: ' + String(ObjStringToAnsiString(pObjString(GetObject(args[1])))))
-    else
-      RuntimeError('Assertion failed.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNilValue;
-end;
-
-function bytesAllocatedNative(argCount: integer; args: pValue): TValue;
-begin
-  Result := CreateNumber(VM.MemTracker.BytesAllocated);
-end;
-
-function objectsAllocatedNative(argCount: integer; args: pValue): TValue;
-var
-  obj: pObj;
-  count: integer;
-begin
-  count := 0;
-  obj := VM.MemTracker.CreatedObjects;
-  while obj <> nil do
-  begin
-    count := count + 1;
-    obj := obj.Next;
-  end;
-  Result := CreateNumber(count);
-end;
-
-function vmStackDepthNative(argCount: integer; args: pValue): TValue;
-begin
-  Result := CreateNumber( (NativeUInt(VM.Stack.StackTop) - NativeUInt(VM.Stack.Values)) div SizeOf(TValue) );
-end;
-
-function vmStackCapacityNative(argCount: integer; args: pValue): TValue;
-begin
-  Result := CreateNumber(VM.Stack.CapacityEnd - VM.Stack.Values);
-end;
-
-function vmCallDepthNative(argCount: integer; args: pValue): TValue;
-begin
-  Result := CreateNumber(VM.FrameCount);
-end;
-
-function vmOpenUpvaluesNative(argCount: integer; args: pValue): TValue;
-var
-  upval: pObjUpvalue;
-  count: integer;
-begin
-  count := 0;
-  upval := VM.OpenUpvalues;
-  while upval <> nil do
-  begin
-    count := count + 1;
-    upval := upval^.next;
-  end;
-  Result := CreateNumber(count);
-end;
-
-function gcNextThresholdNative(argCount: integer; args: pValue): TValue;
-begin
-  Result := CreateNumber(VM.MemTracker.NextGC);
-end;
-
-function gcCollectionCountNative(argCount: integer; args: pValue): TValue;
-begin
-  Result := CreateNumber(VM.MemTracker.GCCollections);
-end;
-
-function internTableStatsNative(argCount: integer; args: pValue): TValue;
-var
-  dict: pObjDictionary;
-  liveCount, capacity, tombstones, i: integer;
-  keyStr: pObjString;
-  dictVal: TValue;
-begin
-  capacity := VM.Strings.CurrentCapacity;
-  // Count live entries and tombstones separately
-  liveCount := 0;
-  tombstones := 0;
-  if (VM.Strings.Entries <> nil) and (capacity > 0) then
-    for i := 0 to capacity - 1 do
-      if VM.Strings.Entries[i].key <> nil then
-        Inc(liveCount)
-      else if not isNill(VM.Strings.Entries[i].value) then
-        Inc(tombstones);
-  // Create dictionary and push onto stack to protect from GC during allocations
-  dict := newDictionary(VM.MemTracker);
-  dictVal := CreateObject(pObj(dict));
-  pushStack(VM.Stack, dictVal, VM.MemTracker);
-  // Root each key string before DictSet ? DictGrow can trigger GC
-  keyStr := CreateString('liveStrings', VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
-  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(liveCount), VM.MemTracker);
-  Dec(VM.Stack.StackTop);
-
-  keyStr := CreateString('slots', VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
-  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(capacity), VM.MemTracker);
-  Dec(VM.Stack.StackTop);
-
-  keyStr := CreateString('tombstones', VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
-  DictSet(dict, CreateObject(pObj(keyStr)), CreateNumber(tombstones), VM.MemTracker);
-  Dec(VM.Stack.StackTop);
-
-  // Pop the dict protection slot ? caller will push result onto stack
-  Dec(VM.Stack.StackTop);
-  Result := dictVal;
-end;
-
-function envNative(argCount: integer; args: pValue): TValue;
-var
-  name, val : AnsiString;
-  objStr : pObjString;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('env() takes exactly 1 argument.');
-    Exit(CreateNilValue);
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('env() argument must be a string.');
-    Exit(CreateNilValue);
-  end;
-  name := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  val := AnsiString(GetEnvironmentVariable(String(name)));
-  if val = '' then
-    Result := CreateNilValue
-  else
-  begin
-    objStr := CreateString(val, VM.MemTracker);
-    Result := CreateObject(pObj(objStr));
-  end;
-end;
-
-function loadEnvNative(argCount: integer; args: pValue): TValue;
-var
-  filePath : AnsiString;
-  lines : TStringList;
-  i, eqPos : integer;
-  line, key, value : string;
-begin
-  if argCount > 1 then
-  begin
-    RuntimeError('loadEnv() takes 0 or 1 arguments.');
-    Exit(CreateNilValue);
-  end;
-
-  if argCount = 1 then
-  begin
-    if not isString(args[0]) then
-    begin
-      RuntimeError('loadEnv() argument must be a string (file path).');
-      Exit(CreateNilValue);
-    end;
-    filePath := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  end
-  else
-    filePath := AnsiString(ExtractFilePath(ParamStr(0))) + '.env';
-
-  if not FileExists(String(filePath)) then
-  begin
-    RuntimeError('loadEnv() file not found: ' + String(filePath));
-    Exit(CreateNilValue);
-  end;
-
-  lines := TStringList.Create;
-  try
-    lines.LoadFromFile(String(filePath));
-    for i := 0 to lines.Count - 1 do
-    begin
-      line := Trim(lines[i]);
-      if (line = '') or (line[1] = '#') then
-        Continue;
-      eqPos := Pos('=', line);
-      if eqPos = 0 then
-        Continue;
-      key := Trim(Copy(line, 1, eqPos - 1));
-      value := Trim(Copy(line, eqPos + 1, MaxInt));
-      // Strip surrounding quotes if present
-      if (Length(value) >= 2) and
-         ((value[1] = '"') or (value[1] = '''')) and
-         (value[Length(value)] = value[1]) then
-        value := Copy(value, 2, Length(value) - 2);
-      SetEnvironmentVariable(PChar(key), PChar(value));
-    end;
-  finally
-    lines.Free;
-  end;
-  Result := CreateNilValue;
-end;
-
-// ---- Conversion native functions ----
-
-function strNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  objStr : pObjString;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('str() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  s := AnsiString(ValueToStr(args[0]));
-  objStr := CreateString(s, VM.MemTracker);
-  Result := CreateObject(pObj(objStr));
-end;
-
-function numNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  d : Double;
-  fs : TFormatSettings;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('num() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if isNumber(args[0]) then
-    Result := args[0]
-  else if isBoolean(args[0]) then
-  begin
-    if GetBoolean(args[0]) then
-      Result := CreateNumber(1)
-    else
-      Result := CreateNumber(0);
-  end
-  else if isObject(args[0]) and isString(args[0]) then
-  begin
-    s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-    fs := TFormatSettings.Create;
-    fs.DecimalSeparator := '.';
-    if TryStrToFloat(String(s), d, fs) then
-      Result := CreateNumber(d)
-    else
-      Result := CreateNilValue;
-  end
-  else
-    Result := CreateNilValue;
-end;
-
-function boolNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('bool() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateBoolean(not IsFalsey(args[0]));
-end;
-
-function typeNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  objStr : pObjString;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('type() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if isNumber(args[0]) then
-    s := 'number'
-  else if isBoolean(args[0]) then
-    s := 'boolean'
-  else if isNill(args[0]) then
-    s := 'nil'
-  else if isObject(args[0]) then
-  begin
-    case GetObject(args[0]).ObjectKind of
-      okString:       s := 'string';
-      okFunction:     s := 'function';
-      okNative:       s := 'function';
-      okClosure:      s := 'function';
-      okArray:        s := 'array';
-      okRecordType:   s := 'record_type';
-      okRecord:       s := 'record';
-      okNativeObject: s := 'native_object';
-      okDictionary:   s := 'dictionary';
-    else
-      s := 'unknown';
-    end;
-  end
-  else
-    s := 'unknown';
-  objStr := CreateString(s, VM.MemTracker);
-  Result := CreateObject(pObj(objStr));
-end;
-
-// ---- Math native functions ----
-
-function absNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('abs() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('abs() argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Abs(GetNumber(args[0])));
-end;
-
-function floorNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('floor() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('floor() argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Math.Floor(GetNumber(args[0])));
-end;
-
-function ceilNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('ceil() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('ceil() argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Math.Ceil(GetNumber(args[0])));
-end;
-
-function roundNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('round() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('round() argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Round(GetNumber(args[0])));
-end;
-
-function minNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('min() takes exactly 2 arguments.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) or not isNumber(args[1]) then
-  begin
-    RuntimeError('min() arguments must be numbers.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if GetNumber(args[0]) <= GetNumber(args[1]) then
-    Result := CreateNumber(GetNumber(args[0]))
-  else
-    Result := CreateNumber(GetNumber(args[1]));
-end;
-
-function maxNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('max() takes exactly 2 arguments.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) or not isNumber(args[1]) then
-  begin
-    RuntimeError('max() arguments must be numbers.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if GetNumber(args[0]) >= GetNumber(args[1]) then
-    Result := CreateNumber(GetNumber(args[0]))
-  else
-    Result := CreateNumber(GetNumber(args[1]));
-end;
-
-function sqrtNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('sqrt() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('sqrt() argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if GetNumber(args[0]) < 0 then
-  begin
-    RuntimeError('sqrt() argument must not be negative.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Sqrt(GetNumber(args[0])));
-end;
-
-function powNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('pow() takes exactly 2 arguments (base, exponent).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) or not isNumber(args[1]) then
-  begin
-    RuntimeError('pow() arguments must be numbers.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Math.Power(GetNumber(args[0]), GetNumber(args[1])));
-end;
-
-function sinNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('sin() takes exactly 1 argument (radians).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('sin() argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Sin(GetNumber(args[0])));
-end;
-
-function cosNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('cos() takes exactly 1 argument (radians).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('cos() argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Cos(GetNumber(args[0])));
-end;
-
-function randomNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 0 then
-  begin
-    RuntimeError('random() takes no arguments.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(Random);
-end;
-
-// ---- String manipulation native functions ----
-
-function strlenNative(argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('strlen() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('strlen() argument must be a string.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := CreateNumber(pObjString(GetObject(args[0]))^.length);
-end;
-
-function substrNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  start, len, sLen : integer;
-  objStr : pObjString;
-begin
-  if argCount <> 3 then
-  begin
-    RuntimeError('substr() takes exactly 3 arguments (string, start, length).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('substr() first argument must be a string.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[1]) or not isNumber(args[2]) then
-  begin
-    RuntimeError('substr() start and length must be numbers.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  sLen := Length(s);
-  start := Trunc(GetNumber(args[1]));
-  len := Trunc(GetNumber(args[2]));
-  if (start < 0) or (start >= sLen) then
-  begin
-    RuntimeError('substr() start index out of bounds.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if len < 0 then
-  begin
-    RuntimeError('substr() length must not be negative.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  // Clamp length to remaining characters
-  if start + len > sLen then
-    len := sLen - start;
-  objStr := CreateString(Copy(s, start + 1, len), VM.MemTracker);
-  Result := CreateObject(pObj(objStr));
-end;
-
-function indexOfNative(argCount: integer; args: pValue): TValue;
-var
-  haystack, needle : AnsiString;
-  pos : integer;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('indexOf() takes exactly 2 arguments (string, needle).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) or not isString(args[1]) then
-  begin
-    RuntimeError('indexOf() arguments must be strings.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  haystack := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  needle := ObjStringToAnsiString(pObjString(GetObject(args[1])));
-  if Length(needle) = 0 then
-    Result := CreateNumber(0)
-  else
-  begin
-    pos := System.Pos(needle, haystack);
-    if pos = 0 then
-      Result := CreateNumber(-1)
-    else
-      Result := CreateNumber(pos - 1); // 0-based index
-  end;
-end;
-
-function charAtNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  idx : integer;
-  objStr : pObjString;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('charAt() takes exactly 2 arguments (string, index).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('charAt() first argument must be a string.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[1]) then
-  begin
-    RuntimeError('charAt() second argument must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  idx := Trunc(GetNumber(args[1]));
-  if (idx < 0) or (idx >= Length(s)) then
-  begin
-    RuntimeError('charAt() index out of bounds.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  objStr := CreateString(AnsiString(s[idx + 1]), VM.MemTracker);
-  Result := CreateObject(pObj(objStr));
-end;
-
-function upperNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  objStr : pObjString;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('upper() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('upper() argument must be a string.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  objStr := CreateString(AnsiString(AnsiUpperCase(String(s))), VM.MemTracker);
-  Result := CreateObject(pObj(objStr));
-end;
-
-function lowerNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  objStr : pObjString;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('lower() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('lower() argument must be a string.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  objStr := CreateString(AnsiString(AnsiLowerCase(String(s))), VM.MemTracker);
-  Result := CreateObject(pObj(objStr));
-end;
-
-function trimNative(argCount: integer; args: pValue): TValue;
-var
-  s : AnsiString;
-  objStr : pObjString;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('trim() takes exactly 1 argument.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('trim() argument must be a string.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  objStr := CreateString(AnsiString(Trim(String(s))), VM.MemTracker);
-  Result := CreateObject(pObj(objStr));
-end;
-
-function splitNative(argCount: integer; args: pValue): TValue;
-var
-  s, delim, part : AnsiString;
-  arr : pObjArray;
-  objStr : pObjString;
-  partVal : TValue;
-  pos, start, delimLen, sLen : integer;
-  newCap, oldSize, newSize : integer;
-
-  procedure ArrayAppendStr(str : pObjString);
-  var
-    val : TValue;
-  begin
-    // Push string onto stack to protect from GC during potential array growth
-    val := CreateObject(pObj(str));
-    pushStack(VM.Stack, val, VM.MemTracker);
-    EnsureArrayCapacity(arr, VM.MemTracker);
-    arr^.Elements[arr^.Count] := val;
-    Inc(arr^.Count);
-    Dec(VM.Stack.StackTop);
-  end;
-
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('split() takes exactly 2 arguments (string, delimiter).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isString(args[0]) or not isString(args[1]) then
-  begin
-    RuntimeError('split() arguments must be strings.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  delim := ObjStringToAnsiString(pObjString(GetObject(args[1])));
-  sLen := Length(s);
-  delimLen := Length(delim);
-  arr := newArray(VM.MemTracker);
-  // Push array onto stack to protect from GC during string allocations
-  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
-
-  if delimLen = 0 then
-  begin
-    // Split into individual characters
-    for start := 1 to sLen do
-    begin
-      objStr := CreateString(AnsiString(s[start]), VM.MemTracker);
-      ArrayAppendStr(objStr);
-    end;
-    Dec(VM.Stack.StackTop); // remove GC protection
-    Result := CreateObject(pObj(arr));
-    Exit;
-  end;
-
-  // Empty string with non-empty delimiter returns array with one empty string
-  if sLen = 0 then
-  begin
-    objStr := CreateString('', VM.MemTracker);
-    ArrayAppendStr(objStr);
-    Dec(VM.Stack.StackTop);
-    Result := CreateObject(pObj(arr));
-    Exit;
-  end;
-
-  start := 1;
-  while start <= sLen do
-  begin
-    pos := PosEx(String(delim), String(s), start);
-    if pos = 0 then
-    begin
-      part := Copy(s, start, sLen - start + 1);
-      objStr := CreateString(part, VM.MemTracker);
-      ArrayAppendStr(objStr);
-      Break;
-    end
-    else
-    begin
-      part := Copy(s, start, pos - start);
-      objStr := CreateString(part, VM.MemTracker);
-      ArrayAppendStr(objStr);
-      start := pos + delimLen;
-    end;
-  end;
-
-  // Handle trailing delimiter (e.g. "a," -> ["a", ""])
-  if (sLen >= delimLen) and (Copy(s, sLen - delimLen + 1, delimLen) = delim) then
-  begin
-    objStr := CreateString('', VM.MemTracker);
-    ArrayAppendStr(objStr);
-  end;
-
-  Dec(VM.Stack.StackTop); // remove GC protection
-  Result := CreateObject(pObj(arr));
-end;
-
-// ---- Array native functions ----
-
-function arrayNewNative(argCount: integer; args: pValue): TValue;
-var
-  arr : pObjArray;
-begin
-  if argCount <> 0 then
-  begin
-    RuntimeError('newArray() takes no arguments.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr := newArray(VM.MemTracker);
-  Result := CreateObject(pObj(arr));
-end;
-
-function arrayPushNative(argCount: integer; args: pValue): TValue;
-var
-  arr : pObjArray;
-  newCap, oldSize, newSize : integer;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('arrayPush() takes 2 arguments (array, value).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isArray(args[0]) then
-  begin
-    RuntimeError('First argument to arrayPush() must be an array.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr := pObjArray(GetObject(args[0]));
-  EnsureArrayCapacity(arr, VM.MemTracker);
-  arr^.Elements[arr^.Count] := args[1];
-  Inc(arr^.Count);
-  Result := args[0]; // return the array for chaining
-end;
-
-function arrayPopNative(argCount: integer; args: pValue): TValue;
-var
-  arr : pObjArray;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('arrayPop() takes 1 argument (array).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isArray(args[0]) then
-  begin
-    RuntimeError('First argument to arrayPop() must be an array.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr := pObjArray(GetObject(args[0]));
-  if arr^.Count = 0 then
-  begin
-    RuntimeError('Cannot pop from an empty array.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Dec(arr^.Count);
-  Result := arr^.Elements[arr^.Count];
-end;
-
-function arrayGetNative(argCount: integer; args: pValue): TValue;
-var
-  arr : pObjArray;
-  idx : integer;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('arrayGet() takes 2 arguments (array, index).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isArray(args[0]) then
-  begin
-    RuntimeError('First argument to arrayGet() must be an array.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[1]) then
-  begin
-    RuntimeError('Index argument to arrayGet() must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr := pObjArray(GetObject(args[0]));
-  idx := Trunc(GetNumber(args[1]));
-  if (idx < 0) or (idx >= arr^.Count) then
-  begin
-    RuntimeError('Array index ' + IntToStr(idx) + ' out of bounds [0, ' + IntToStr(arr^.Count - 1) + '].');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := arr^.Elements[idx];
-end;
-
-function arraySetNative(argCount: integer; args: pValue): TValue;
-var
-  arr : pObjArray;
-  idx : integer;
-begin
-  if argCount <> 3 then
-  begin
-    RuntimeError('arraySet() takes 3 arguments (array, index, value).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isArray(args[0]) then
-  begin
-    RuntimeError('First argument to arraySet() must be an array.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[1]) then
-  begin
-    RuntimeError('Index argument to arraySet() must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr := pObjArray(GetObject(args[0]));
-  idx := Trunc(GetNumber(args[1]));
-  if (idx < 0) or (idx >= arr^.Count) then
-  begin
-    RuntimeError('Array index ' + IntToStr(idx) + ' out of bounds [0, ' + IntToStr(arr^.Count - 1) + '].');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr^.Elements[idx] := args[2];
-  Result := args[2];
-end;
-
-function arrayLenNative(argCount: integer; args: pValue): TValue;
-var
-  arr : pObjArray;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('arrayLen() takes 1 argument (array).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isArray(args[0]) then
-  begin
-    RuntimeError('First argument to arrayLen() must be an array.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr := pObjArray(GetObject(args[0]));
-  Result := CreateNumber(arr^.Count);
-end;
-
-function arrayRemoveNative(argCount: integer; args: pValue): TValue;
-var
-  arr : pObjArray;
-  idx, j : integer;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('arrayRemove() takes 2 arguments (array, index).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isArray(args[0]) then
-  begin
-    RuntimeError('First argument to arrayRemove() must be an array.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isNumber(args[1]) then
-  begin
-    RuntimeError('Index argument to arrayRemove() must be a number.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  arr := pObjArray(GetObject(args[0]));
-  idx := Trunc(GetNumber(args[1]));
-  if (idx < 0) or (idx >= arr^.Count) then
-  begin
-    RuntimeError('Array index ' + IntToStr(idx) + ' out of bounds [0, ' + IntToStr(arr^.Count - 1) + '].');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := arr^.Elements[idx];
-  // Shift elements left
-  for j := idx to arr^.Count - 2 do
-    arr^.Elements[j] := arr^.Elements[j + 1];
-  Dec(arr^.Count);
-end;
-
-// ---- Dictionary native functions ----
-
-function dictNewNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-begin
-  if argCount <> 0 then
-  begin
-    RuntimeError('dictNew() takes no arguments.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := newDictionary(VM.MemTracker);
-  Result := CreateObject(pObj(dict));
-end;
-
-function dictSetNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-begin
-  if argCount <> 3 then
-  begin
-    RuntimeError('dictSet() takes 3 arguments (dict, key, value).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('First argument to dictSet() must be a dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := pObjDictionary(GetObject(args[0]));
-  DictSet(dict, args[1], args[2], VM.MemTracker);
-  Result := args[2];
-end;
-
-function dictGetNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-  value : TValue;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('dictGet() takes 2 arguments (dict, key).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('First argument to dictGet() must be a dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := pObjDictionary(GetObject(args[0]));
-  if not DictGet(dict, args[1], value) then
-  begin
-    RuntimeError('Key not found in dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  Result := value;
-end;
-
-function dictHasNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-  value : TValue;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('dictHas() takes 2 arguments (dict, key).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('First argument to dictHas() must be a dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := pObjDictionary(GetObject(args[0]));
-  Result := CreateBoolean(DictGet(dict, args[1], value));
-end;
-
-function dictDeleteNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('dictDelete() takes 2 arguments (dict, key).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('First argument to dictDelete() must be a dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := pObjDictionary(GetObject(args[0]));
-  Result := CreateBoolean(DictDelete(dict, args[1]));
-end;
-
-function dictKeysNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-  arr : pObjArray;
-  i, newCap, oldSize, newSize : integer;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('dictKeys() takes 1 argument (dict).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('First argument to dictKeys() must be a dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := pObjDictionary(GetObject(args[0]));
-  arr := newArray(VM.MemTracker);
-  // Pre-allocate elements for all keys
-  if dict^.Count > 0 then
-  begin
-    newCap := dict^.Count;
-    oldSize := 0;
-    newSize := newCap * SizeOf(TValue);
-    // Push arr to stack for GC safety before allocating
-    PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
-    Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
-    arr^.Capacity := newCap;
-    for i := 0 to dict^.Capacity - 1 do
-    begin
-      if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
-      begin
-        arr^.Elements[arr^.Count] := dict^.Entries[i].key;
-        Inc(arr^.Count);
-      end;
-    end;
-    Dec(VM.Stack.StackTop);
-  end;
-  Result := CreateObject(pObj(arr));
-end;
-
-function dictSizeNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('dictSize() takes 1 argument (dict).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('First argument to dictSize() must be a dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := pObjDictionary(GetObject(args[0]));
-  Result := CreateNumber(dict^.Count);
-end;
-
-function dictValuesNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-  arr : pObjArray;
-  i, newCap, oldSize, newSize : integer;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('dictValues() takes 1 argument (dict).');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('First argument to dictValues() must be a dictionary.');
-    Result := CreateNilValue;
-    Exit;
-  end;
-  dict := pObjDictionary(GetObject(args[0]));
-  arr := newArray(VM.MemTracker);
-  if dict^.Count > 0 then
-  begin
-    newCap := dict^.Count;
-    oldSize := 0;
-    newSize := newCap * SizeOf(TValue);
-    PushStack(vm.stack, CreateObject(pObj(arr)), vm.MemTracker);
-    Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
-    arr^.Capacity := newCap;
-    for i := 0 to dict^.Capacity - 1 do
-    begin
-      if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
-      begin
-        arr^.Elements[arr^.Count] := dict^.Entries[i].value;
-        Inc(arr^.Count);
-      end;
-    end;
-    Dec(VM.Stack.StackTop);
-  end;
-  Result := CreateObject(pObj(arr));
 end;
 
 // ---- Native class registry ----
@@ -7046,12 +6073,11 @@ begin
   Assert(classInfo <> nil, 'InjectNativeObject: class not registered: ' + className);
 
   // GC-safe order: create string first, push it, then create object and push it.
-  // This matches defineNative's pattern ? each allocation is rooted before the next.
   nameStr := CreateString(name, VM.MemTracker);
-  pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr));
   obj := newNativeObject(instance, classInfo, VM.MemTracker);
   obj^.ownsInstance := false;  // Delphi owns this object
-  pushStack(VM.Stack, CreateObject(pObj(obj)), VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(obj)));
   TableSet(VM.Globals, nameStr, CreateObject(pObj(obj)), VM.MemTracker);
   Dec(VM.Stack.StackTop);
   Dec(VM.Stack.StackTop);
@@ -7070,902 +6096,9 @@ begin
   InjectNativeObject(name, Pointer(instance), className);
 end;
 
-// ---- StringList wrapper ----
 
-function SL_Add(instance: Pointer; argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('add() takes 1 argument.');
-    Exit(CreateNilValue);
-  end;
-  if not isString(args[0]) then
-  begin
-    RuntimeError('add() argument must be a string.');
-    Exit(CreateNilValue);
-  end;
-  TStringList(instance).Add(String(ObjStringToAnsiString(ValueToString(args[0]))));
-  Result := CreateNilValue;
-end;
-
-function SL_Get(instance: Pointer; argCount: integer; args: pValue): TValue;
-var
-  idx : integer;
-  s : AnsiString;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('get() takes 1 argument.');
-    Exit(CreateNilValue);
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('get() argument must be a number.');
-    Exit(CreateNilValue);
-  end;
-  idx := Trunc(GetNumber(args[0]));
-  if (idx < 0) or (idx >= TStringList(instance).Count) then
-  begin
-    RuntimeError('StringList index ' + IntToStr(idx) + ' out of bounds.');
-    Exit(CreateNilValue);
-  end;
-  s := AnsiString(TStringList(instance)[idx]);
-  Result := StringToValue(CreateString(s, VM.MemTracker));
-end;
-
-function SL_Count(instance: Pointer; argCount: integer; args: pValue): TValue;
-begin
-  if argCount <> 0 then
-  begin
-    RuntimeError('count() takes no arguments.');
-    Exit(CreateNilValue);
-  end;
-  Result := CreateNumber(TStringList(instance).Count);
-end;
-
-function SL_Remove(instance: Pointer; argCount: integer; args: pValue): TValue;
-var
-  idx : integer;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('remove() takes 1 argument.');
-    Exit(CreateNilValue);
-  end;
-  if not isNumber(args[0]) then
-  begin
-    RuntimeError('remove() argument must be a number.');
-    Exit(CreateNilValue);
-  end;
-  idx := Trunc(GetNumber(args[0]));
-  if (idx < 0) or (idx >= TStringList(instance).Count) then
-  begin
-    RuntimeError('StringList index ' + IntToStr(idx) + ' out of bounds.');
-    Exit(CreateNilValue);
-  end;
-  TStringList(instance).Delete(idx);
-  Result := CreateNilValue;
-end;
-
-procedure SL_Destroy(instance: Pointer);
-begin
-  TStringList(instance).Free;
-end;
-
-function loxClassesNative(argCount: integer; args: pValue): TValue;
-var
-  ctx: TRttiContext;
-  t: TRttiType;
-  attr: TCustomAttribute;
-  arr: pObjArray;
-  nameStr: pObjString;
-  names: TStringList;
-  i: Integer;
-begin
-  ctx := TRttiContext.Create;
-  names := TStringList.Create;
-  try
-    for t in ctx.GetTypes do
-      if t is TRttiInstanceType then
-        for attr in t.GetAttributes do
-          if attr is LoxClassAttribute then
-            names.Add(LoxClassAttribute(attr).Name);
-    names.Sort;
-
-    arr := newArray(VM.MemTracker);
-    pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
-    for i := 0 to names.Count - 1 do
-    begin
-      nameStr := CreateString(AnsiString(names[i]), VM.MemTracker);
-      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-      EnsureArrayCapacity(arr, VM.MemTracker);
-      arr^.Elements[arr^.Count] := StringToValue(nameStr);
-      Inc(arr^.Count);
-      Dec(VM.Stack.StackTop);
-    end;
-    Dec(VM.Stack.StackTop); // pop the array guard
-    Result := CreateObject(pObj(arr));
-  finally
-    names.Free;
-    ctx.Free;
-  end;
-end;
-
-function loxClassInfoNative(argCount: integer; args: pValue): TValue;
-var
-  ctx: TRttiContext;
-  t: TRttiType;
-  attr: TCustomAttribute;
-  className: string;
-  foundClass: TClass;
-  rt: TRttiType;
-  prop: TRttiProperty;
-  method: TRttiMethod;
-  dict: pObjDictionary;
-  dictVal: TValue;
-  propsArr, methodsArr: pObjArray;
-  nameStr: pObjString;
-  keyStr: pObjString;
-  i: Integer;
-  seen: TStringList;
-  mName: string;
-begin
-  if not isString(args[0]) then
-  begin
-    RuntimeError('loxClassInfo() argument must be a string.');
-    Exit(CreateNilValue);
-  end;
-  className := String(ObjStringToAnsiString(pObjString(GetObject(args[0]))));
-
-  // Find the attributed class
-  foundClass := nil;
-  ctx := TRttiContext.Create;
-  try
-    for t in ctx.GetTypes do
-      if t is TRttiInstanceType then
-        for attr in t.GetAttributes do
-          if (attr is LoxClassAttribute) and SameText(LoxClassAttribute(attr).Name, className) then
-          begin
-            foundClass := TRttiInstanceType(t).MetaclassType;
-            Break;
-          end;
-
-    if foundClass = nil then
-    begin
-      RuntimeError('loxClassInfo(): class "' + className + '" not found.');
-      Exit(CreateNilValue);
-    end;
-
-    rt := ctx.GetType(foundClass);
-
-    // Build result dict ? push everything for GC safety
-    dict := newDictionary(VM.MemTracker);
-    dictVal := CreateObject(pObj(dict));
-    pushStack(VM.Stack, dictVal, VM.MemTracker);
-
-    // --- Properties array (sorted for deterministic output) ---
-    propsArr := newArray(VM.MemTracker);
-    pushStack(VM.Stack, CreateObject(pObj(propsArr)), VM.MemTracker);
-    seen := TStringList.Create;
-    try
-      seen.CaseSensitive := False;
-      seen.Sorted := True;
-      seen.Duplicates := dupIgnore;
-      for prop in rt.GetProperties do
-      begin
-        if not prop.IsReadable then Continue;
-        if not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Continue;
-        seen.Add(prop.Name);
-      end;
-      for i := 0 to seen.Count - 1 do
-      begin
-        nameStr := CreateString(AnsiString(seen[i]), VM.MemTracker);
-        pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-        EnsureArrayCapacity(propsArr, VM.MemTracker);
-        propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
-        Inc(propsArr^.Count);
-        Dec(VM.Stack.StackTop);
-      end;
-    finally
-      seen.Free;
-    end;
-    // Set "properties" key
-    keyStr := CreateString('properties', VM.MemTracker);
-    pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
-    DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(propsArr)), VM.MemTracker);
-    Dec(VM.Stack.StackTop);
-    Dec(VM.Stack.StackTop); // pop propsArr guard
-
-    // --- Methods array (attribute-filtered, deduplicated, sorted) ---
-    methodsArr := newArray(VM.MemTracker);
-    pushStack(VM.Stack, CreateObject(pObj(methodsArr)), VM.MemTracker);
-    seen := TStringList.Create;
-    try
-      seen.CaseSensitive := False;
-      seen.Sorted := True;
-      seen.Duplicates := dupIgnore;
-      for method in rt.GetMethods do
-      begin
-        mName := method.Name;
-        if not HasAttribute(method.GetAttributes, LoxMethodAttribute) then
-          Continue;
-        if seen.IndexOf(mName) >= 0 then Continue;
-        seen.Add(mName);
-      end;
-      for i := 0 to seen.Count - 1 do
-      begin
-        nameStr := CreateString(AnsiString(seen[i]), VM.MemTracker);
-        pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-        EnsureArrayCapacity(methodsArr, VM.MemTracker);
-        methodsArr^.Elements[methodsArr^.Count] := StringToValue(nameStr);
-        Inc(methodsArr^.Count);
-        Dec(VM.Stack.StackTop);
-      end;
-    finally
-      seen.Free;
-    end;
-    // Set "methods" key
-    keyStr := CreateString('methods', VM.MemTracker);
-    pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
-    DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(methodsArr)), VM.MemTracker);
-    Dec(VM.Stack.StackTop);
-    Dec(VM.Stack.StackTop); // pop methodsArr guard
-
-    Dec(VM.Stack.StackTop); // pop dict guard
-    Result := dictVal;
-  finally
-    ctx.Free;
-  end;
-end;
-
-function loxObjectsNative(argCount: integer; args: pValue): TValue;
-var
-  i: Integer;
-  entry: pEntry;
-  arr: pObjArray;
-  nameStr: pObjString;
-  names: TStringList;
-begin
-  names := TStringList.Create;
-  try
-    // Walk VM.Globals, find entries whose value is a native object
-    for i := 0 to VM.Globals.CurrentCapacity - 1 do
-    begin
-      entry := @VM.Globals.Entries[i];
-      if (entry^.key = nil) then Continue;
-      if not isNativeObject(entry^.value) then Continue;
-      names.Add(String(ObjStringToAnsiString(entry^.key)));
-    end;
-    names.Sort;
-
-    arr := newArray(VM.MemTracker);
-    pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
-    for i := 0 to names.Count - 1 do
-    begin
-      nameStr := CreateString(AnsiString(names[i]), VM.MemTracker);
-      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-      EnsureArrayCapacity(arr, VM.MemTracker);
-      arr^.Elements[arr^.Count] := StringToValue(nameStr);
-      Inc(arr^.Count);
-      Dec(VM.Stack.StackTop);
-    end;
-    Dec(VM.Stack.StackTop); // pop arr guard
-    Result := CreateObject(pObj(arr));
-  finally
-    names.Free;
-  end;
-end;
-
-function loxObjectInfoNative(argCount: integer; args: pValue): TValue;
-var
-  objName: AnsiString;
-  i: Integer;
-  entry: pEntry;
-  nativeObj: pObjNativeObject;
-  rt: TRttiType;
-  prop: TRttiProperty;
-  method: TRttiMethod;
-  attr: TCustomAttribute;
-  hasLoxClass: Boolean;
-  dict: pObjDictionary;
-  dictVal: TValue;
-  propsArr, methodsArr: pObjArray;
-  nameStr, keyStr: pObjString;
-  classNameStr: pObjString;
-  newCap, oldSize, newSize: Integer;
-  seen: TStringList;
-  mName: string;
-begin
-  if not isString(args[0]) then
-  begin
-    RuntimeError('loxObjectInfo() argument must be a string.');
-    Exit(CreateNilValue);
-  end;
-  objName := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-
-  // Find the named native object in globals
-  nativeObj := nil;
-  for i := 0 to VM.Globals.CurrentCapacity - 1 do
-  begin
-    entry := @VM.Globals.Entries[i];
-    if (entry^.key = nil) then Continue;
-    if not isNativeObject(entry^.value) then Continue;
-    if ObjStringToAnsiString(entry^.key) = objName then
-    begin
-      nativeObj := pObjNativeObject(GetObject(entry^.value));
-      Break;
-    end;
-  end;
-
-  if nativeObj = nil then
-  begin
-    RuntimeError('loxObjectInfo(): object "' + String(objName) + '" not found.');
-    Exit(CreateNilValue);
-  end;
-
-  if (nativeObj^.classInfo = nil) or (not nativeObj^.classInfo^.rttiEnabled) then
-  begin
-    RuntimeError('loxObjectInfo(): object "' + String(objName) + '" has no RTTI.');
-    Exit(CreateNilValue);
-  end;
-
-  rt := RttiCtx.GetType(nativeObj^.classInfo^.rttiClass);
-  if rt = nil then
-  begin
-    RuntimeError('loxObjectInfo(): RTTI not available for "' + String(objName) + '".');
-    Exit(CreateNilValue);
-  end;
-
-  // Check if this class has [LoxClass] ? if so, only show attributed members
-  hasLoxClass := False;
-  for attr in rt.GetAttributes do
-    if attr is LoxClassAttribute then
-    begin
-      hasLoxClass := True;
-      Break;
-    end;
-
-  // Build result dict
-  dict := newDictionary(VM.MemTracker);
-  dictVal := CreateObject(pObj(dict));
-  pushStack(VM.Stack, dictVal, VM.MemTracker);
-
-  // --- "class" key ---
-  classNameStr := CreateString(nativeObj^.classInfo^.name, VM.MemTracker);
-  pushStack(VM.Stack, StringToValue(classNameStr), VM.MemTracker);
-  keyStr := CreateString('class', VM.MemTracker);
-  pushStack(VM.Stack, StringToValue(keyStr), VM.MemTracker);
-  DictSet(dict, StringToValue(keyStr), StringToValue(classNameStr), VM.MemTracker);
-  Dec(VM.Stack.StackTop);
-  Dec(VM.Stack.StackTop);
-
-  // --- Properties array ---
-  propsArr := newArray(VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(propsArr)), VM.MemTracker);
-  for prop in rt.GetProperties do
-  begin
-    if not prop.IsReadable then Continue;
-    if hasLoxClass then
-    begin
-      // Only include properties with [LoxProperty]
-      if not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Continue;
-    end;
-    nameStr := CreateString(AnsiString(prop.Name), VM.MemTracker);
-    pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-    EnsureArrayCapacity(propsArr, VM.MemTracker);
-    propsArr^.Elements[propsArr^.Count] := StringToValue(nameStr);
-    Inc(propsArr^.Count);
-    Dec(VM.Stack.StackTop);
-  end;
-  keyStr := CreateString('properties', VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
-  DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(propsArr)), VM.MemTracker);
-  Dec(VM.Stack.StackTop);
-  Dec(VM.Stack.StackTop); // pop propsArr guard
-
-  // --- Methods array ---
-  methodsArr := newArray(VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(methodsArr)), VM.MemTracker);
-  seen := TStringList.Create;
-  try
-    seen.CaseSensitive := False;
-    seen.Sorted := True;
-    seen.Duplicates := dupIgnore;
-    for method in rt.GetMethods do
-    begin
-      mName := method.Name;
-      if hasLoxClass then
-      begin
-        // Only include methods with [LoxMethod]
-        if not HasAttribute(method.GetAttributes, LoxMethodAttribute) then Continue;
-      end
-      else
-      begin
-        // No [LoxClass] ? use denylist (legacy behavior)
-        if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
-           SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
-           SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
-           SameText(mName, 'BeforeDestruction') or SameText(mName, 'Create') or
-           SameText(mName, 'GetHashCode') or SameText(mName, 'Equals') or
-           SameText(mName, 'ToString') or SameText(mName, 'ClassName') or
-           SameText(mName, 'ClassType') or SameText(mName, 'ClassParent') or
-           SameText(mName, 'ClassInfo') or SameText(mName, 'InstanceSize') or
-           SameText(mName, 'InheritsFrom') or SameText(mName, 'DefaultHandler') or
-           SameText(mName, 'SafeCallException') or SameText(mName, 'NewInstance') or
-           SameText(mName, 'UnitName') or SameText(mName, 'QualifiedClassName') then
-          Continue;
-      end;
-      if seen.IndexOf(mName) >= 0 then Continue;
-      seen.Add(mName);
-
-      nameStr := CreateString(AnsiString(mName), VM.MemTracker);
-      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
-      EnsureArrayCapacity(methodsArr, VM.MemTracker);
-      methodsArr^.Elements[methodsArr^.Count] := StringToValue(nameStr);
-      Inc(methodsArr^.Count);
-      Dec(VM.Stack.StackTop);
-    end;
-  finally
-    seen.Free;
-  end;
-  keyStr := CreateString('methods', VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(keyStr)), VM.MemTracker);
-  DictSet(dict, CreateObject(pObj(keyStr)), CreateObject(pObj(methodsArr)), VM.MemTracker);
-  Dec(VM.Stack.StackTop);
-  Dec(VM.Stack.StackTop); // pop methodsArr guard
-
-  Dec(VM.Stack.StackTop); // pop dict guard
-  Result := dictVal;
-end;
-
-function stringListNative(argCount: integer; args: pValue): TValue;
-var
-  classInfo : pNativeClassInfo;
-  obj : pObjNativeObject;
-begin
-  if argCount <> 0 then
-  begin
-    RuntimeError('StringList() takes no arguments.');
-    Exit(CreateNilValue);
-  end;
-  classInfo := findNativeClass('StringList');
-  Assert(classInfo <> nil, 'StringList class not registered');
-  obj := newNativeObject(TStringList.Create, classInfo, VM.MemTracker);
-  Result := CreateObject(pObj(obj));
-end;
-
-// ==== SQL Connection native object ====
-
-procedure SQL_Destroy(instance: Pointer);
-begin
-  if TFDConnection(instance).Connected then
-    TFDConnection(instance).Close;
-  TFDConnection(instance).Free;
-end;
-
-function sqlConnectNative(argCount: integer; args: pValue): TValue;
-var
-  dict : pObjDictionary;
-  classInfo : pNativeClassInfo;
-  obj : pObjNativeObject;
-  conn : TFDConnection;
-  serverVal, dbVal, authVal, userVal, passVal : TValue;
-  server, db, auth, user, pass : AnsiString;
-  serverKey, dbKey, authKey, userKey, passKey : TValue;
-  stackBase : pValue;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('sqlConnect() takes 1 argument (config dictionary).');
-    Exit(CreateNilValue);
-  end;
-  if not isDictionary(args[0]) then
-  begin
-    RuntimeError('sqlConnect() argument must be a dictionary.');
-    Exit(CreateNilValue);
-  end;
-
-  dict := pObjDictionary(GetObject(args[0]));
-
-  // Save stack depth for unwinding on all exit paths
-  stackBase := VM.Stack.StackTop;
-
-  // Build key values for lookup ? protect each from GC before next allocation
-  serverKey := CreateObject(pObj(CreateString('server', VM.MemTracker)));
-  pushStack(VM.Stack, serverKey, VM.MemTracker);
-  dbKey := CreateObject(pObj(CreateString('database', VM.MemTracker)));
-  pushStack(VM.Stack, dbKey, VM.MemTracker);
-  authKey := CreateObject(pObj(CreateString('auth', VM.MemTracker)));
-  pushStack(VM.Stack, authKey, VM.MemTracker);
-  userKey := CreateObject(pObj(CreateString('user', VM.MemTracker)));
-  pushStack(VM.Stack, userKey, VM.MemTracker);
-  passKey := CreateObject(pObj(CreateString('password', VM.MemTracker)));
-  pushStack(VM.Stack, passKey, VM.MemTracker);
-
-  // Required: server
-  if not DictGet(dict, serverKey, serverVal) then
-  begin
-    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
-    RuntimeError('sqlConnect() config missing "server" key.');
-    Exit(CreateNilValue);
-  end;
-  if not isString(serverVal) then
-  begin
-    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
-    RuntimeError('sqlConnect() "server" must be a string.');
-    Exit(CreateNilValue);
-  end;
-  server := ObjStringToAnsiString(pObjString(GetObject(serverVal)));
-
-  // Required: database
-  if not DictGet(dict, dbKey, dbVal) then
-  begin
-    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
-    RuntimeError('sqlConnect() config missing "database" key.');
-    Exit(CreateNilValue);
-  end;
-  if not isString(dbVal) then
-  begin
-    while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
-    RuntimeError('sqlConnect() "database" must be a string.');
-    Exit(CreateNilValue);
-  end;
-  db := ObjStringToAnsiString(pObjString(GetObject(dbVal)));
-
-  // Optional: auth (default "windows")
-  auth := 'windows';
-  if DictGet(dict, authKey, authVal) then
-  begin
-    if isString(authVal) then
-      auth := AnsiString(LowerCase(String(ObjStringToAnsiString(pObjString(GetObject(authVal))))));
-  end;
-
-  // Optional: user, password (for SQL auth)
-  user := '';
-  pass := '';
-  if DictGet(dict, userKey, userVal) then
-    if isString(userVal) then
-      user := ObjStringToAnsiString(pObjString(GetObject(userVal)));
-  if DictGet(dict, passKey, passVal) then
-    if isString(passVal) then
-      pass := ObjStringToAnsiString(pObjString(GetObject(passVal)));
-
-  // Keys no longer needed ? unwind stack
-  while VM.Stack.StackTop > stackBase do Dec(VM.Stack.StackTop);
-
-  // Create and configure the connection
-  conn := TFDConnection.Create(nil);
-  try
-    conn.DriverName := 'MSSQL';
-    conn.Params.Values['Server'] := string(server);
-    conn.Params.Database := string(db);
-
-    if auth = 'sql' then
-    begin
-      conn.Params.UserName := string(user);
-      conn.Params.Password := string(pass);
-    end
-    else
-    begin
-      conn.Params.Values['OSAuthent'] := 'Yes';
-    end;
-
-    conn.LoginPrompt := False;
-    conn.Open;
-  except
-    on E: Exception do
-    begin
-      conn.Free;
-      RuntimeError('sqlConnect() failed: ' + E.Message);
-      Exit(CreateNilValue);
-    end;
-  end;
-
-  classInfo := findNativeClass('SqlConnection');
-  Assert(classInfo <> nil, 'SqlConnection class not registered');
-  obj := newNativeObject(conn, classInfo, VM.MemTracker);
-  Result := CreateObject(pObj(obj));
-end;
-
-function sqlCloseNative(argCount: integer; args: pValue): TValue;
-var
-  nativeObj : pObjNativeObject;
-  conn : TFDConnection;
-begin
-  if argCount <> 1 then
-  begin
-    RuntimeError('sqlClose() takes 1 argument (connection).');
-    Exit(CreateNilValue);
-  end;
-  if not isNativeObject(args[0]) then
-  begin
-    RuntimeError('sqlClose() argument must be a SQL connection.');
-    Exit(CreateNilValue);
-  end;
-  nativeObj := pObjNativeObject(GetObject(args[0]));
-  if nativeObj^.classInfo^.name <> 'SqlConnection' then
-  begin
-    RuntimeError('sqlClose() argument must be a SQL connection.');
-    Exit(CreateNilValue);
-  end;
-  conn := TFDConnection(nativeObj^.instance);
-  if conn.Connected then
-    conn.Close;
-  Result := CreateNilValue;
-end;
-
-function sqlQueryNative(argCount: integer; args: pValue): TValue;
-var
-  nativeObj : pObjNativeObject;
-  conn : TFDConnection;
-  query : TFDQuery;
-  sql : AnsiString;
-  arr : pObjArray;
-  dict : pObjDictionary;
-  colCount, i : integer;
-  colName : AnsiString;
-  keyVal, valVal : TValue;
-  newCap, oldSize, newSize : integer;
-  stackBase : pValue;
-begin
-  if argCount <> 2 then
-  begin
-    RuntimeError('sqlQuery() takes 2 arguments (connection, sql string).');
-    Exit(CreateNilValue);
-  end;
-  if not isNativeObject(args[0]) then
-  begin
-    RuntimeError('sqlQuery() first argument must be a SQL connection.');
-    Exit(CreateNilValue);
-  end;
-  nativeObj := pObjNativeObject(GetObject(args[0]));
-  if nativeObj^.classInfo^.name <> 'SqlConnection' then
-  begin
-    RuntimeError('sqlQuery() first argument must be a SQL connection.');
-    Exit(CreateNilValue);
-  end;
-  if not isString(args[1]) then
-  begin
-    RuntimeError('sqlQuery() second argument must be a string.');
-    Exit(CreateNilValue);
-  end;
-
-  conn := TFDConnection(nativeObj^.instance);
-  if not conn.Connected then
-  begin
-    RuntimeError('sqlQuery() connection is not open.');
-    Exit(CreateNilValue);
-  end;
-
-  sql := ObjStringToAnsiString(pObjString(GetObject(args[1])));
-
-  // Save stack depth so we can unwind on any exit path
-  stackBase := VM.Stack.StackTop;
-
-  // Create result array and protect from GC
-  arr := newArray(VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
-
-  query := TFDQuery.Create(nil);
-  try
-    query.Connection := conn;
-    query.SQL.Text := string(sql);
-    query.Open;
-
-    colCount := query.FieldCount;
-
-    while not query.Eof do
-    begin
-      // Create a dictionary for this row, protect from GC
-      dict := newDictionary(VM.MemTracker);
-      pushStack(VM.Stack, CreateObject(pObj(dict)), VM.MemTracker);
-
-      for i := 0 to colCount - 1 do
-      begin
-        // Create key string (column name), protect from GC
-        colName := AnsiString(query.Fields[i].FieldName);
-        keyVal := CreateObject(pObj(CreateString(colName, VM.MemTracker)));
-        pushStack(VM.Stack, keyVal, VM.MemTracker);
-
-        // Create value based on field type
-        if query.Fields[i].IsNull then
-          valVal := CreateNilValue
-        else if query.Fields[i].DataType in [ftInteger, ftSmallint, ftWord, ftLargeint,
-            ftFloat, ftCurrency, ftBCD, ftFMTBcd] then
-          valVal := CreateNumber(query.Fields[i].AsFloat)
-        else if query.Fields[i].DataType in [ftBoolean] then
-          valVal := CreateBoolean(query.Fields[i].AsBoolean)
-        else
-        begin
-          // Everything else as string
-          valVal := CreateObject(pObj(CreateString(AnsiString(query.Fields[i].AsString), VM.MemTracker)));
-        end;
-
-        // Protect valVal from GC during DictSet (which may trigger table growth)
-        pushStack(VM.Stack, valVal, VM.MemTracker);
-        DictSet(dict, keyVal, valVal, VM.MemTracker);
-        Dec(VM.Stack.StackTop); // pop valVal
-        Dec(VM.Stack.StackTop); // pop keyVal
-      end;
-
-      // Append dict to array (GC-safe growth)
-      EnsureArrayCapacity(arr, VM.MemTracker);
-      arr^.Elements[arr^.Count] := CreateObject(pObj(dict));
-      Inc(arr^.Count);
-
-      // Pop dict from GC protection
-      Dec(VM.Stack.StackTop);
-
-      query.Next;
-    end;
-
-    query.Close;
-  except
-    on E: Exception do
-    begin
-      query.Free;
-      // Unwind stack to saved depth
-      while VM.Stack.StackTop > stackBase do
-        Dec(VM.Stack.StackTop);
-      RuntimeError('sqlQuery() failed: ' + E.Message);
-      Exit(CreateNilValue);
-    end;
-  end;
-  query.Free;
-
-  // Pop array from GC protection
-  Dec(VM.Stack.StackTop);
-  Result := CreateObject(pObj(arr));
-end;
-
-function sqlQueryParamsNative(argCount: integer; args: pValue): TValue;
-var
-  nativeObj : pObjNativeObject;
-  conn : TFDConnection;
-  query : TFDQuery;
-  sql : AnsiString;
-  arr : pObjArray;
-  params : pObjArray;
-  dict : pObjDictionary;
-  colCount, i, p : integer;
-  colName : AnsiString;
-  keyVal, valVal, paramVal : TValue;
-  newCap, oldSize, newSize : integer;
-  stackBase : pValue;
-begin
-  if argCount <> 3 then
-  begin
-    RuntimeError('sqlQueryParams() takes 3 arguments (connection, sql, params array).');
-    Exit(CreateNilValue);
-  end;
-  if not isNativeObject(args[0]) then
-  begin
-    RuntimeError('sqlQueryParams() first argument must be a SQL connection.');
-    Exit(CreateNilValue);
-  end;
-  nativeObj := pObjNativeObject(GetObject(args[0]));
-  if nativeObj^.classInfo^.name <> 'SqlConnection' then
-  begin
-    RuntimeError('sqlQueryParams() first argument must be a SQL connection.');
-    Exit(CreateNilValue);
-  end;
-  if not isString(args[1]) then
-  begin
-    RuntimeError('sqlQueryParams() second argument must be a SQL string.');
-    Exit(CreateNilValue);
-  end;
-  if not isArray(args[2]) then
-  begin
-    RuntimeError('sqlQueryParams() third argument must be a params array.');
-    Exit(CreateNilValue);
-  end;
-
-  conn := TFDConnection(nativeObj^.instance);
-  if not conn.Connected then
-  begin
-    RuntimeError('sqlQueryParams() connection is not open.');
-    Exit(CreateNilValue);
-  end;
-
-  sql := ObjStringToAnsiString(pObjString(GetObject(args[1])));
-  params := pObjArray(GetObject(args[2]));
-
-  // Save stack depth so we can unwind on any exit path
-  stackBase := VM.Stack.StackTop;
-
-  // Create result array and protect from GC
-  arr := newArray(VM.MemTracker);
-  pushStack(VM.Stack, CreateObject(pObj(arr)), VM.MemTracker);
-
-  query := TFDQuery.Create(nil);
-  try
-    query.Connection := conn;
-    query.SQL.Text := string(sql);
-
-    // Bind parameters: :p0, :p1, :p2, etc.
-    for p := 0 to params^.Count - 1 do
-    begin
-      paramVal := params^.Elements[p];
-      if isNumber(paramVal) then
-        query.ParamByName('p' + IntToStr(p)).AsFloat := GetNumber(paramVal)
-      else if isBoolean(paramVal) then
-        query.ParamByName('p' + IntToStr(p)).AsBoolean := GetBoolean(paramVal)
-      else if isNill(paramVal) then
-        query.ParamByName('p' + IntToStr(p)).Clear
-      else if isString(paramVal) then
-        query.ParamByName('p' + IntToStr(p)).AsString := string(ObjStringToAnsiString(pObjString(GetObject(paramVal))))
-      else
-      begin
-        RuntimeError('sqlQueryParams() parameter ' + IntToStr(p) + ' must be a string, number, boolean, or nil.');
-        query.Free;
-        while VM.Stack.StackTop > stackBase do
-          Dec(VM.Stack.StackTop);
-        Exit(CreateNilValue);
-      end;
-    end;
-
-    query.Open;
-
-    colCount := query.FieldCount;
-
-    while not query.Eof do
-    begin
-      dict := newDictionary(VM.MemTracker);
-      pushStack(VM.Stack, CreateObject(pObj(dict)), VM.MemTracker);
-
-      for i := 0 to colCount - 1 do
-      begin
-        colName := AnsiString(query.Fields[i].FieldName);
-        keyVal := CreateObject(pObj(CreateString(colName, VM.MemTracker)));
-        pushStack(VM.Stack, keyVal, VM.MemTracker);
-
-        if query.Fields[i].IsNull then
-          valVal := CreateNilValue
-        else if query.Fields[i].DataType in [ftInteger, ftSmallint, ftWord, ftLargeint,
-            ftFloat, ftCurrency, ftBCD, ftFMTBcd] then
-          valVal := CreateNumber(query.Fields[i].AsFloat)
-        else if query.Fields[i].DataType in [ftBoolean] then
-          valVal := CreateBoolean(query.Fields[i].AsBoolean)
-        else
-          valVal := CreateObject(pObj(CreateString(AnsiString(query.Fields[i].AsString), VM.MemTracker)));
-
-        // Protect valVal from GC during DictSet (which may trigger table growth)
-        pushStack(VM.Stack, valVal, VM.MemTracker);
-        DictSet(dict, keyVal, valVal, VM.MemTracker);
-        Dec(VM.Stack.StackTop); // pop valVal
-        Dec(VM.Stack.StackTop); // pop keyVal
-      end;
-
-      EnsureArrayCapacity(arr, VM.MemTracker);
-      arr^.Elements[arr^.Count] := CreateObject(pObj(dict));
-      Inc(arr^.Count);
-
-      Dec(VM.Stack.StackTop); // pop dict
-      query.Next;
-    end;
-
-    query.Close;
-  except
-    on E: Exception do
-    begin
-      query.Free;
-      // Unwind stack to saved depth
-      while VM.Stack.StackTop > stackBase do
-        Dec(VM.Stack.StackTop);
-      RuntimeError('sqlQueryParams() failed: ' + E.Message);
-      Exit(CreateNilValue);
-    end;
-  end;
-  query.Free;
-
-  Dec(VM.Stack.StackTop);
-  Result := CreateObject(pObj(arr));
-end;
 
 procedure InitVM;
-var
-  slMethods : array[0..3] of TNativeMethod;
-  sqlMethods : array of TNativeMethod;
 begin
   // Allow IEEE 754 semantics: NaN, Inf, -Inf instead of FPU exceptions
   SetExceptionMask(exAllArithmeticExceptions);
@@ -7980,13 +6113,21 @@ begin
   GCLogCycles := 0;
   {$ENDIF}
 
+  Assert(VM = nil, 'InitVM: VM is not nil — previous instance was not freed');
   new(VM); //we don't care about making this route through allocate
+  FillChar(VM^, SizeOf(TVirtualMachine), 0); // Zero all fields to prevent stale heap data (e.g. OnPrint)
+
+  {$IFDEF OPCODE_PROFILING}
+  FillChar(OpPairCounts, SizeOf(OpPairCounts), 0);
+  OpPrevOp := 255;
+  {$ENDIF}
   VM.FrameCount := 0;
   VM.Stack := nil;
   VM.MemTracker := nil;
   VM.Strings := nil;
   VM.Globals := nil;
   VM.OpenUpvalues := nil;
+  VM.OnPrint := nil;
   VM.RuntimeErrorStr := '';
   VM.PrintBuilder := TStringBuilder.Create;
 
@@ -8002,99 +6143,8 @@ begin
   // Seed random number generator
   Randomize;
 
-  // Define native functions
-  defineNative('clock', clockNative, 0);
-  defineNative('collectGarbage', collectGarbageNative, 0);
-  defineNative('assert', assertNative);           // 1-2 args, self-validates
-  defineNative('bytesAllocated', bytesAllocatedNative, 0);
-  defineNative('objectsAllocated', objectsAllocatedNative, 0);
-  defineNative('vmStackDepth', vmStackDepthNative, 0);
-  defineNative('vmStackCapacity', vmStackCapacityNative, 0);
-  defineNative('vmCallDepth', vmCallDepthNative, 0);
-  defineNative('vmOpenUpvalues', vmOpenUpvaluesNative, 0);
-  defineNative('gcNextThreshold', gcNextThresholdNative, 0);
-  defineNative('gcCollectionCount', gcCollectionCountNative, 0);
-  defineNative('internTableStats', internTableStatsNative, 0);
-
-  defineNative('env', envNative, 1);
-  defineNative('loadEnv', loadEnvNative, -1);
-
-
-
-
-  // Conversion native functions
-  defineNative('str', strNative, 1);
-  defineNative('num', numNative, 1);
-  defineNative('bool', boolNative, 1);
-  defineNative('type', typeNative, 1);
-
-  // Math native functions
-  defineNative('abs', absNative, 1);
-  defineNative('floor', floorNative, 1);
-  defineNative('ceil', ceilNative, 1);
-  defineNative('round', roundNative, 1);
-  defineNative('min', minNative, 2);
-  defineNative('max', maxNative, 2);
-  defineNative('sqrt', sqrtNative, 1);
-  defineNative('pow', powNative, 2);
-  defineNative('sin', sinNative, 1);
-  defineNative('cos', cosNative, 1);
-  defineNative('random', randomNative, 0);
-
-  // String manipulation native functions
-  defineNative('strlen', strlenNative, 1);
-  defineNative('substr', substrNative, 3);
-  defineNative('indexOf', indexOfNative, 2);
-  defineNative('charAt', charAtNative, 2);
-  defineNative('upper', upperNative, 1);
-  defineNative('lower', lowerNative, 1);
-  defineNative('trim', trimNative, 1);
-  defineNative('split', splitNative, 2);
-
-  // Array native functions
-  defineNative('newArray', arrayNewNative, 0);
-  defineNative('arrayPush', arrayPushNative, 2);
-  defineNative('arrayPop', arrayPopNative, 1);
-  defineNative('arrayGet', arrayGetNative, 2);
-  defineNative('arraySet', arraySetNative, 3);
-  defineNative('arrayLen', arrayLenNative, 1);
-  defineNative('arrayRemove', arrayRemoveNative, 2);
-
-  // Dictionary natives
-  defineNative('dictNew', dictNewNative, 0);
-  defineNative('dictSet', dictSetNative, 3);
-  defineNative('dictGet', dictGetNative, 2);
-  defineNative('dictHas', dictHasNative, 2);
-  defineNative('dictDelete', dictDeleteNative, 2);
-  defineNative('dictKeys', dictKeysNative, 1);
-  defineNative('dictSize', dictSizeNative, 1);
-  defineNative('dictValues', dictValuesNative, 1);
-
-  // Native object classes
-  slMethods[0].name := 'add';    slMethods[0].fn := SL_Add;
-  slMethods[1].name := 'get';    slMethods[1].fn := SL_Get;
-  slMethods[2].name := 'count';  slMethods[2].fn := SL_Count;
-  slMethods[3].name := 'remove'; slMethods[3].fn := SL_Remove;
-  registerNativeClass('StringList', slMethods, SL_Destroy);
-  // Enable RTTI on StringList for indexed property support (sl[i])
-  findNativeClass('StringList')^.rttiEnabled := True;
-  findNativeClass('StringList')^.rttiClass := TStringList;
-  defineNative('StringList', stringListNative, 0);
-
-  // SQL connection native object class
-  registerNativeClass('SqlConnection', sqlMethods, SQL_Destroy);
-  defineNative('sqlConnect', sqlConnectNative, 1);
-  defineNative('sqlQuery', sqlQueryNative, 2);
-  defineNative('sqlQueryParams', sqlQueryParamsNative, 3);
-  defineNative('sqlClose', sqlCloseNative, 1);
-
-  // Class discovery
-  defineNative('loxClasses', loxClassesNative, 0);
-  defineNative('loxClassInfo', loxClassInfoNative, 1);
-
-  // Object introspection
-  defineNative('loxObjects', loxObjectsNative, 0);
-  defineNative('loxObjectInfo', loxObjectInfoNative, 1);
+  // Register native functions
+  RegisterAllNatives;
 
   // ---- Exit assertions ----
   AssertVMIsAssigned;
@@ -8268,6 +6318,24 @@ begin
             while (Peek <> CHAR_LF) and (not IsAtEnd) do
               Advance;
           end
+          // Block comment "/* ... */"
+          else if PeekNext = '*' then
+          begin
+            Advance; // consume '/'
+            Advance; // consume '*'
+            while not IsAtEnd do
+            begin
+              if (Peek = '*') and (PeekNext = '/') then
+              begin
+                Advance; // consume '*'
+                Advance; // consume '/'
+                Break;
+              end;
+              if Peek = CHAR_LF then
+                Inc(scanner.Line);
+              Advance;
+            end;
+          end
           else
             Exit;
         end;
@@ -8302,8 +6370,20 @@ end;
 function ScanString: TToken;
 begin
   Assert(Assigned(scanner.current), 'ScanString: scanner.current is nil');
-  while (Peek <> CHAR_QUOTE) and (not IsAtEnd) do
+  while not IsAtEnd do
   begin
+    if Peek = CHAR_QUOTE then
+    begin
+      // Doubled quote ("") is an embedded quote - skip both and continue
+      if PeekNext = CHAR_QUOTE then
+      begin
+        Advance;
+        Advance;
+        Continue;
+      end;
+      // Single quote ends the string
+      Break;
+    end;
     if Peek = CHAR_LF then
       Inc(scanner.Line);
 
@@ -8795,9 +6875,11 @@ begin
   // strip leading and trailing quotes
   if (Length(lexeme) >= 2) and (lexeme[1] = '"') and (lexeme[Length(lexeme)] = '"') then
     lexeme := Copy(lexeme, 2, Length(lexeme) - 2);
+  // Collapse doubled quotes ("") into single quotes (")
+  lexeme := AnsiString(StringReplace(string(lexeme), '""', '"', [rfReplaceAll]));
   // Push string onto stack to protect from GC until stored in constants.
   strObj := CreateString(lexeme,VM.MemTracker);
-  pushStack(VM.Stack, StringToValue(strObj), VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(strObj));
   value := StringToValue(strObj);
   emitConstant(value);
   Dec(VM.Stack.StackTop);
@@ -8807,6 +6889,7 @@ procedure binary(canAssign: Boolean);
 var
   tokenType : TTokenType;
   rule : TParseRule;
+  slot, index : Byte;
 begin
   tokenType := parser.Previous.tokenType;
   rule := getRule(tokenType);
@@ -8843,10 +6926,39 @@ begin
 
       TOKEN_PLUS : begin
         emitByte(OP_ADD,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        lastAddOffset := CurrentChunk.count - 1;
       end;
 
       TOKEN_MINUS : begin
-        emitByte(OP_SUBTRACT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        // Peephole: fuse GET_LOCAL_N + CONSTANT + SUBTRACT into one opcode.
+        // Pattern in chunk: [GET_LOCAL_0..7 | GET_LOCAL,slot], OP_CONSTANT, idx
+        if (CurrentChunk.count >= 3) and
+           (CurrentChunk.code[CurrentChunk.count - 2] = OP_CONSTANT) and
+           (CurrentChunk.code[CurrentChunk.count - 3] >= OP_GET_LOCAL_0) and
+           (CurrentChunk.code[CurrentChunk.count - 3] <= OP_GET_LOCAL_7) then
+        begin
+          // Fast-slot variant: slot encoded in the opcode
+          slot := CurrentChunk.code[CurrentChunk.count - 3] - OP_GET_LOCAL_0;
+          index := CurrentChunk.code[CurrentChunk.count - 1]; // const idx
+          Dec(CurrentChunk.count, 3);
+          emitByte(OP_GET_LOCAL_CONST_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+          emitByte(slot, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+          emitByte(index, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+        end
+        else if (CurrentChunk.count >= 4) and
+                (CurrentChunk.code[CurrentChunk.count - 2] = OP_CONSTANT) and
+                (CurrentChunk.code[CurrentChunk.count - 4] = OP_GET_LOCAL) then
+        begin
+          // General GET_LOCAL variant: GET_LOCAL, slot, OP_CONSTANT, idx
+          slot := CurrentChunk.code[CurrentChunk.count - 3];
+          index := CurrentChunk.code[CurrentChunk.count - 1];
+          Dec(CurrentChunk.count, 4);
+          emitByte(OP_GET_LOCAL_CONST_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+          emitByte(slot, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+          emitByte(index, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+        end
+        else
+          emitByte(OP_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
       end;
 
       TOKEN_STAR : begin
@@ -9023,7 +7135,7 @@ begin
     bodyJump := emitJump(OP_JUMP);
     incrementStart := CurrentChunk.count;
     Expression();
-    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitPopWithPeephole;
     consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after for clauses.');
     emitLoop(loopStart);
     loopStart := incrementStart;
@@ -9073,6 +7185,7 @@ begin
   compiler^.funcType := funcType;
   compiler^.localCount := 0;
   compiler^.scopeDepth := 0;
+  lastAddOffset := -1;
   compiler^.func := newFunction(VM.MemTracker);
   Current := compiler;
 
@@ -9290,7 +7403,7 @@ var
 begin
   // Push string onto stack to protect from GC until stored in constants.
   strObj := CreateString(TokenToString(name), VM.MemTracker);
-  pushStack(VM.Stack, StringToValue(strObj), VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(strObj));
   idx := AddValueConstant(CurrentChunk.Constants, StringToValue(strObj), VM.MemTracker);
   Dec(VM.Stack.StackTop);
   Result := idx;
@@ -9431,11 +7544,41 @@ begin
   namedVariable(parser.previous, canAssign);
 end;
 
+procedure emitPopWithPeephole;
+var
+  slot: Byte;
+begin
+  // Peephole: fuse ADD + SET_LOCAL_N + POP into OP_ADD_SET_LOCAL_POP
+  // Guard: lastAddOffset must confirm the byte is genuinely OP_ADD, not an operand.
+  if (CurrentChunk.count >= 2) and
+     (lastAddOffset = CurrentChunk.count - 2) and
+     (CurrentChunk.code[CurrentChunk.count - 1] >= OP_SET_LOCAL_0) and
+     (CurrentChunk.code[CurrentChunk.count - 1] <= OP_SET_LOCAL_7) then
+  begin
+    slot := CurrentChunk.code[CurrentChunk.count - 1] - OP_SET_LOCAL_0;
+    Dec(CurrentChunk.count, 2);
+    emitByte(OP_ADD_SET_LOCAL_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(slot, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else if (CurrentChunk.count >= 3) and
+          (lastAddOffset = CurrentChunk.count - 3) and
+          (CurrentChunk.code[CurrentChunk.count - 2] = OP_SET_LOCAL) then
+  begin
+    slot := CurrentChunk.code[CurrentChunk.count - 1];
+    Dec(CurrentChunk.count, 3);
+    emitByte(OP_ADD_SET_LOCAL_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(slot, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  lastAddOffset := -1;
+end;
+
 procedure expressionStatement();
 begin
   Expression();
   consume(TOKEN_SEMICOLON, 'Expect '';'' after expression.');
-  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitPopWithPeephole;
 end;
 
 function argumentList() : byte;
@@ -9650,7 +7793,7 @@ begin
   Current := Current^.enclosing;
 
   // Push func onto stack to protect from GC until stored in constants.
-  pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(func)));
 
   closureIdx := AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker);
   if closureIdx <= High(Byte) then
@@ -9718,7 +7861,7 @@ begin
         Break;
       end;
       nameStr := CreateString(TokenToString(parser.previous), VM.MemTracker);
-      pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+      pushStack(VM.Stack, StringToValue(nameStr));
       fieldNameIndices[fieldCount] := AddValueConstant(CurrentChunk.Constants,
         StringToValue(nameStr), VM.MemTracker);
       Dec(VM.Stack.StackTop);
@@ -9730,7 +7873,7 @@ begin
 
   // Store the record type name as a constant
   nameStr := CreateString(TokenToString(nameToken), VM.MemTracker);
-  pushStack(VM.Stack, StringToValue(nameStr), VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr));
   var typeNameIdx : integer := AddValueConstant(CurrentChunk.Constants,
     StringToValue(nameStr), VM.MemTracker);
   Dec(VM.Stack.StackTop);
@@ -9892,7 +8035,7 @@ begin
   else
   begin
     // Push func onto stack to protect from GC during newClosure allocation.
-    pushStack(VM.Stack, CreateObject(pObj(func)), VM.MemTracker);
+    pushStack(VM.Stack, CreateObject(pObj(func)));
     Result := newClosure(func, VM.MemTracker);
     Dec(VM.Stack.StackTop);
   end;
