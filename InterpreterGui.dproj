@@ -147,9 +147,7 @@
         <DCCReference Include="Natives\MathNatives.pas"/>
         <DCCReference Include="Natives\SqlNatives.pas"/>
         <DCCReference Include="Natives\StringNatives.pas"/>
-        <DCCReference Include="Natives\FileNatives.pas">
-            <Form>/ProcessUtils in &apos;Natives\ProcessUtils.pas&apos;,</Form>
-        </DCCReference>
+        <DCCReference Include="Natives\FileNatives.pas"/>
         <DCCReference Include="Natives\SystemNatives.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
