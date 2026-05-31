@@ -1,6 +1,6 @@
 ﻿unit Chunk_Types;
 {$POINTERMATH ON}
-{$ASSERTIONS OFF}
+{$ASSERTIONS ON}
 {..$DEFINE DEBUG_LOG_GC}
 {..$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
@@ -113,8 +113,9 @@ const
   OP_LESS_JUMP_IF_FALSE = 65;  // Fused OP_LESS + OP_JUMP_IF_FALSE_POP. 2-byte offset operand. Pops both number operands, jumps if NOT (a < b).
   OP_GET_LOCAL_CONST_SUBTRACT = 66;  // Fused GET_LOCAL_N + CONSTANT + SUBTRACT. Operands: <slot> <const_idx>. Pushes locals[slot] - constants[const_idx].
   OP_ADD_SET_LOCAL_POP = 67;  // Fused ADD + SET_LOCAL_N + POP. Operand: <slot>. Adds top two stack values, stores to slot, pops both.
+  OP_ADD_RETURN = 68;  // Fused ADD + RETURN. No operands. Adds top two, returns result to caller.
 
-  OP_STRINGS : array[0..67] of string = (
+  OP_STRINGS : array[0..68] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -170,7 +171,8 @@ const
     'OP_SET_LOCAL_4','OP_SET_LOCAL_5','OP_SET_LOCAL_6','OP_SET_LOCAL_7',
     'OP_LESS_JUMP_IF_FALSE',
     'OP_GET_LOCAL_CONST_SUBTRACT',
-    'OP_ADD_SET_LOCAL_POP');
+    'OP_ADD_SET_LOCAL_POP',
+    'OP_ADD_RETURN');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 512;
@@ -2075,10 +2077,9 @@ begin
   {$IFOPT C+}
   // NaN-boxing assumes canonical lower-half userspace pointers (lower 48 bits).
   // Object pointers must not overlap the reserved tag region (upper 16 bits).
-  if (ptr and OBJ_TAG) <> 0 then
-    raise ELoxRuntimeError.Create(
-      'CreateObject: pointer incompatible with NaN boxing ($' +
-      IntToHex(ptr, 16) + ')');
+  Assert((ptr and OBJ_TAG) = 0,
+    'CreateObject: pointer incompatible with NaN boxing ($' +
+    IntToHex(ptr, 16) + ')');
   {$ENDIF}
 
   Result := OBJ_TAG or ptr;
@@ -3428,11 +3429,13 @@ var
   bits: UInt64;
 begin
   Move(Value, bits, SizeOf(UInt64));
-  // If raw bits collide with tag space, canonicalize to a safe NaN.
-  // Without this, 0/0 or NaN-propagation could produce payloads that
-  // satisfy (bits & QNAN) = QNAN, causing misclassification as
-  // nil/boolean/object and risking invalid pointer dereferences.
-  if (bits and QNAN) = QNAN then
+  // Canonicalize ALL NaN payloads to CANON_NAN. This serves two purposes:
+  // 1. Prevents misclassification: NaN payloads that satisfy (bits & QNAN)=QNAN
+  //    would be mistaken for nil/boolean/object tagged values.
+  // 2. Guarantees ValuesEqual's fast path: the only NaN at runtime is CANON_NAN,
+  //    so "a = b implies equality" holds for all values except CANON_NAN.
+  // Check: mask off sign bit, compare to infinity. Any value > +inf is NaN.
+  if (bits and $7FFFFFFFFFFFFFFF) > $7FF0000000000000 then
     Result := CANON_NAN
   else
     Result := bits;
@@ -3530,29 +3533,53 @@ end;
 
 
 function ValuesEqual(a, b : TValue) : boolean;
+var
+  objA, objB : pObj;
 begin
+  // Fast path: identical bit representations imply equality for all value
+  // types except NaN (IEEE-754 defines NaN ≠ NaN).
+  // Safe because: (1) all runtime strings are interned — equal content means
+  // same pointer, (2) every NaN is normalized to CANON_NAN by CreateNumber,
+  // so no non-canonical NaN payloads exist at runtime.
+  if a = b then
+    exit(a <> CANON_NAN);
+
   if isNumber(a) and isNumber(b) then
     result := GetNumber(a) = GetNumber(b)
   else if isObject(a) and isObject(b) then
   begin
-    AssertPointerIsNotNil(GetObject(a), 'A value in ValuesEqual');
-    AssertPointerIsNotNil(GetObject(b), 'B value in ValuesEqual');
-    case GetObject(a).ObjectKind of
+    objA := GetObject(a);
+    objB := GetObject(b);
+    AssertPointerIsNotNil(objA, 'A value in ValuesEqual');
+    AssertPointerIsNotNil(objB, 'B value in ValuesEqual');
+    case objA.ObjectKind of
       okString : begin
-        result := (GetObject(b).ObjectKind = okString) and
-                  (GetObject(a) = GetObject(b));
+        result := (objB.ObjectKind = okString) and (objA = objB);
       end;
       okNativeObject : begin
-        if GetObject(b).ObjectKind = okNativeObject then
-          result := pObjNativeObject(GetObject(a))^.instance =
-                    pObjNativeObject(GetObject(b))^.instance
+        if objB.ObjectKind = okNativeObject then
+          result := pObjNativeObject(objA)^.instance =
+                    pObjNativeObject(objB)^.instance
         else
           result := false;
-      end
-      else
-      begin
-        result := GetObject(a) = GetObject(b);
       end;
+      // All remaining object kinds use identity (pointer) equality.
+      // Listed explicitly so adding a new TObjectKind forces a decision here.
+      okFunction,
+      okNative,
+      okClosure,
+      okUpvalue,
+      okArray,
+      okRecordType,
+      okRecord,
+      okDictionary : begin
+        result := objA = objB;
+      end;
+    else
+      // Exhaustiveness guard: if a new TObjectKind is added but not handled
+      // above, this raises immediately rather than returning an undefined result.
+      raise Exception.CreateFmt('Unhandled ObjectKind %d in ValuesEqual',
+        [Ord(objA.ObjectKind)]);
     end
   end
   else
@@ -4489,6 +4516,46 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
+        end;
+
+        OP_ADD_RETURN: begin
+          // Fused ADD + RETURN. No operands.
+          // Adds top two stack values, then returns the result to the caller.
+          if isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2]) then
+            value := CreateNumber(
+              GetNumber(stack.StackTop[-2]) + GetNumber(stack.StackTop[-1]))
+          else if isString(stack.StackTop[-1]) and isString(stack.StackTop[-2]) then
+          begin
+            Concatenate(vm.stack, vm.MemTracker);
+            value := stack.StackTop[-1];
+          end
+          else
+          begin
+            runtimeError('Operands must be two numbers or two strings.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+
+          if VM.OpenUpvalues <> nil then
+            closeUpvalues(frame^.slots);
+
+          Dec(VM.FrameCount);
+          if VM.FrameCount = 0 then
+          begin
+            Dec(stack.StackTop);
+            Result.Code := INTERPRET_OK;
+            Result.value := value;
+            Exit(Result);
+          end;
+
+          stack.StackTop := frame^.slots;
+          Assert(NativeUInt(stack.StackTop) >= NativeUInt(stack.Values), 'OP_ADD_RETURN: StackTop before Values');
+          stack.StackTop^ := value;
+          Inc(stack.StackTop);
+
+          frame := @VM.Frames[VM.FrameCount - 1];
+          ip := frame^.ip;
+          constants := frame^.closure^.func^.chunk^.Constants^.Values;
         end;
 
         OP_LOOP: begin
@@ -7935,7 +8002,15 @@ begin
   begin
     Expression();
     consume(TOKEN_SEMICOLON, 'Expect '';'' after return value.');
-    emitByte(OP_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
+    // Peephole: fuse ADD + RETURN into OP_ADD_RETURN
+    if (lastAddOffset = CurrentChunk.count - 1) then
+    begin
+      Dec(CurrentChunk.count); // remove the OP_ADD
+      emitByte(OP_ADD_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+      emitByte(OP_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
+    lastAddOffset := -1;
   end;
 end;
 

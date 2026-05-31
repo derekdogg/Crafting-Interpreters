@@ -206,9 +206,8 @@
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: < in and/or within a for-loop condition
-// for (var i = 0; i < 10 and i < 5; ...) — unusual but valid
-// The for-loop itself uses < (peephole candidate), and the condition
+// Test 10: < in and/or within a for-loop body
+// The for-loop condition uses < (peephole candidate), and the body
 // also has `and` with another <.
 // ---------------------------------------------------------------------------
 {
@@ -268,6 +267,138 @@
     result = true;
   }
   assert(result == false, "T13b: middle < false, short-circuits");
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Zero-iteration loops — false path of fused opcode
+// Verifies the jump fires correctly when the condition is immediately false.
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  for (var i = 10; i < 10; i = i + 1) {
+    count = count + 1;
+  }
+  assert(count == 0, "T14a: zero-iteration for loop");
+
+  var j = 10;
+  while (j < 10) {
+    j = j + 1;
+  }
+  assert(j == 10, "T14b: zero-iteration while loop");
+
+  // Also test where initial value exceeds bound
+  count = 0;
+  for (var k = 100; k < 5; k = k + 1) {
+    count = count + 1;
+  }
+  assert(count == 0, "T14c: initial > bound, never enters");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Empty loop body
+// Jump target lands directly on the increment section.
+// ---------------------------------------------------------------------------
+{
+  var i = 0;
+  for (; i < 10; i = i + 1) {
+  }
+  assert(i == 10, "T15a: empty for-loop body");
+
+  var j = 0;
+  while (j < 5) {
+    j = j + 1;
+  }
+  assert(j == 5, "T15b: minimal while body");
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: < at end of longer boolean chain
+// Exercises jump patching when the fused instruction isn't the first term.
+// ---------------------------------------------------------------------------
+{
+  var entered = false;
+  if (true and true and 1 < 2) {
+    entered = true;
+  }
+  assert(entered == true, "T16a: two ands then < (all true)");
+
+  entered = false;
+  if (true and true and 5 < 3) {
+    entered = true;
+  }
+  assert(entered == false, "T16b: two ands then < (last false)");
+
+  entered = false;
+  if (false or false or 1 < 2) {
+    entered = true;
+  }
+  assert(entered == true, "T16c: two ors then < (last true)");
+
+  entered = false;
+  if (false or false or 5 < 3) {
+    entered = true;
+  }
+  assert(entered == false, "T16d: two ors then < (all false)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Nested short-circuit groups with parentheses
+// Verifies interaction between multiple patched jumps.
+// ---------------------------------------------------------------------------
+{
+  var entered = false;
+  if ((false and 1 < 2) or true) {
+    entered = true;
+  }
+  assert(entered == true, "T17a: (false and <) or true");
+
+  entered = false;
+  if ((true and 1 < 2) or false) {
+    entered = true;
+  }
+  assert(entered == true, "T17b: (true and <true) or false");
+
+  entered = false;
+  if ((true and 5 < 3) or false) {
+    entered = true;
+  }
+  assert(entered == false, "T17c: (true and <false) or false");
+
+  entered = false;
+  if ((false and 1 < 2) or (true and 3 < 5)) {
+    entered = true;
+  }
+  assert(entered == true, "T17d: (false and <) or (true and <true)");
+
+  entered = false;
+  if ((true and 5 < 3) or (true and 8 < 2)) {
+    entered = true;
+  }
+  assert(entered == false, "T17e: both groups false");
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Function return path — jump target before return
+// ---------------------------------------------------------------------------
+{
+  fun earlyReturn(a, b) {
+    if (a < b) return "less";
+    return "not less";
+  }
+  assert(earlyReturn(1, 5) == "less", "T18a: early return on <");
+  assert(earlyReturn(5, 1) == "not less", "T18b: falls through");
+  assert(earlyReturn(3, 3) == "not less", "T18c: equal falls through");
+
+  fun multiReturn(x) {
+    if (x < 0) return "negative";
+    if (x < 10) return "small";
+    if (x < 100) return "medium";
+    return "large";
+  }
+  assert(multiReturn(-5) == "negative", "T18d: first < triggers");
+  assert(multiReturn(5) == "small", "T18e: second < triggers");
+  assert(multiReturn(50) == "medium", "T18f: third < triggers");
+  assert(multiReturn(200) == "large", "T18g: none trigger");
 }
 
 print "pass: peephole_less_jump"; // expect: pass: peephole_less_jump

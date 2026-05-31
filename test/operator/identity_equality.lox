@@ -1,0 +1,234 @@
+// Tests for identity equality of all object kinds in ValuesEqual.
+// Covers the missing cases: closures, dictionaries, record types,
+// and native functions. Also verifies cross-type comparisons return false.
+
+// ---------------------------------------------------------------------------
+// Test 1: Closure identity equality
+// In Lox, all user functions are closures at runtime (okClosure).
+// Same reference == same reference; different closures with same body != .
+// ---------------------------------------------------------------------------
+{
+  fun add(a, b) { return a + b; }
+  fun add2(a, b) { return a + b; }
+
+  // Same closure reference
+  assert(add == add, "T1a: closure == itself");
+  var ref = add;
+  assert(ref == add, "T1b: alias == original");
+
+  // Different closures (even with identical body)
+  assert(!(add == add2), "T1c: different closures are not equal");
+  assert(add != add2, "T1d: different closures are not equal");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Closure equality with closures from factory functions
+// Each call to a factory produces a distinct closure object.
+// ---------------------------------------------------------------------------
+{
+  fun makeAdder(n) {
+    fun adder(x) { return x + n; }
+    return adder;
+  }
+
+  var add5a = makeAdder(5);
+  var add5b = makeAdder(5);
+
+  // Same reference
+  assert(add5a == add5a, "T2a: factory closure == itself");
+
+  // Different instances even with same captured value
+  assert(add5a != add5b, "T2b: different factory closures are not equal");
+
+  // Alias
+  var ref = add5a;
+  assert(ref == add5a, "T2c: alias == original factory closure");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Dictionary identity equality
+// Dictionaries use pointer equality, not structural equality.
+// ---------------------------------------------------------------------------
+{
+  var d1 = [:];
+  var d2 = [:];
+
+  // Same reference
+  assert(d1 == d1, "T3a: dict == itself");
+
+  // Different instances (even if both empty)
+  assert(d1 != d2, "T3b: different empty dicts are not equal");
+
+  // Alias
+  var ref = d1;
+  assert(ref == d1, "T3c: dict alias == original");
+
+  // Still not equal after both have same content
+  d1.Set("key", 42);
+  d2.Set("key", 42);
+  assert(d1 != d2, "T3d: dicts with same content still not equal");
+
+  // Mutation through alias preserves identity
+  var d3 = [:];
+  var alias = d3;
+  d3.Set("a", 1);
+  alias.Delete("a");
+  assert(d3 == alias, "T3e: alias identity stable after cross-mutation");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Record type identity equality
+// The record type itself (okRecordType) is a value that can be compared.
+// ---------------------------------------------------------------------------
+{
+  record Point(x, y);
+  record Vec2(x, y);
+
+  // Same record type
+  assert(Point == Point, "T4a: record type == itself");
+
+  // Different record types (even with same field layout)
+  assert(Point != Vec2, "T4b: different record types are not equal");
+
+  // Alias
+  var T = Point;
+  assert(T == Point, "T4c: record type alias == original");
+
+  // Double alias: both refer to same singleton type object
+  var T1 = Point;
+  var T2 = Point;
+  assert(T1 == T2, "T4d: two aliases of same record type are equal");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Native function equality (okNative)
+// Native functions are singleton objects in the global table.
+// ---------------------------------------------------------------------------
+{
+  // Same native reference
+  assert(clock == clock, "T5a: native == itself");
+
+  // Alias
+  var c = clock;
+  assert(c == clock, "T5b: native alias == original");
+
+  // Different natives
+  assert(clock != assert, "T5c: different natives are not equal");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Cross-type comparisons (all should be false)
+// Verifies that comparing objects of different kinds returns false.
+// ---------------------------------------------------------------------------
+{
+  fun f() {}
+  var arr = [1, 2, 3];
+  var dict = [:];
+  record Rec(val);
+  var rec = Rec(42);
+
+  // Closure vs other types
+  assert(f != arr, "T6a: closure != array");
+  assert(f != dict, "T6b: closure != dictionary");
+  assert(f != rec, "T6c: closure != record");
+  assert(f != "hello", "T6d: closure != string");
+  assert(f != 42, "T6e: closure != number");
+  assert(f != true, "T6f: closure != boolean");
+  assert(f != nil, "T6g: closure != nil");
+  assert(f != clock, "T6h: closure != native");
+
+  // Dictionary vs other types
+  assert(dict != arr, "T6i: dictionary != array");
+  assert(dict != rec, "T6j: dictionary != record");
+  assert(dict != "hello", "T6k: dictionary != string");
+  assert(dict != 42, "T6l: dictionary != number");
+
+  // Record type vs record instance
+  assert(Rec != rec, "T6m: record type != record instance");
+
+  // Native vs non-native
+  assert(clock != arr, "T6n: native != array");
+  assert(clock != 0, "T6o: native != number");
+
+  // Additional cross-type: closure vs record type, dict vs native,
+  // record instance vs native, record instance vs closure
+  assert(f != Rec, "T6p: closure != record type");
+  assert(!(f == Rec), "T6p-inv: closure != record type (via ==)");
+  assert(Rec != f, "T6p-rev: record type != closure (reverse)");
+  assert(!(Rec == f), "T6p-rev-inv: record type != closure (via ==, reverse)");
+  assert(dict != clock, "T6q: dictionary != native");
+  assert(rec != clock, "T6r: record instance != native");
+  assert(rec != f, "T6s: record instance != closure");
+
+  // Complete the cross-type matrix
+  assert(Rec != dict, "T6t: record type != dictionary");
+  assert(Rec != clock, "T6u: record type != native");
+  assert(arr != clock, "T6v: array != native");
+  assert(arr != f, "T6w: array != closure");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Closure equality survives being passed through functions
+// ---------------------------------------------------------------------------
+{
+  fun identity(x) { return x; }
+  fun greet() { return "hi"; }
+
+  var original = greet;
+  var passed = identity(greet);
+  assert(passed == original, "T7a: closure survives pass-through");
+
+  // Stored in array, retrieved
+  var arr = [greet, clock];
+  assert(arr[0] == greet, "T7b: closure survives array storage");
+  assert(arr[1] == clock, "T7c: native survives array storage");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: Dictionary equality with mutations
+// Identity doesn't change after mutations.
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  var ref = d;
+  d.Set("a", 1);
+  d.Set("b", 2);
+  d.Delete("a");
+  assert(d == ref, "T8: dict identity stable after mutations");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: == / != operator consistency
+// For each pair, both directions of the invariant must hold:
+//   a == b  ⇔  !(a != b)
+//   a != b  ⇔  !(a == b)
+// ---------------------------------------------------------------------------
+{
+  fun f() {}
+  fun g() {}
+  var d1 = [:];
+  var d2 = [:];
+  record R(v);
+
+  // Equal pairs: a == a and !(a != a)
+  assert(f == f, "T9a: closure == itself");
+  assert(!(f != f), "T9a-inv: closure == itself (via !=)");
+
+  assert(d1 == d1, "T9b: dict == itself");
+  assert(!(d1 != d1), "T9b-inv: dict == itself (via !=)");
+
+  assert(R == R, "T9c: record type == itself");
+  assert(!(R != R), "T9c-inv: record type == itself (via !=)");
+
+  assert(clock == clock, "T9d: native == itself");
+  assert(!(clock != clock), "T9d-inv: native == itself (via !=)");
+
+  // Unequal pairs: a != b and !(a == b)
+  assert(f != g, "T9e: different closures are not equal");
+  assert(!(f == g), "T9e-inv: different closures (via ==)");
+
+  assert(d1 != d2, "T9f: different dicts are not equal");
+  assert(!(d1 == d2), "T9f-inv: different dicts (via ==)");
+}
+
+print "pass: identity_equality"; // expect: pass: identity_equality

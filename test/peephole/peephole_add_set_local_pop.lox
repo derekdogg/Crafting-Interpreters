@@ -1,0 +1,368 @@
+// Tests for OP_ADD_SET_LOCAL_POP superinstruction.
+// The compiler fuses ADD + SET_LOCAL + POP into a single opcode when an
+// addition result is assigned to a local and the result is discarded.
+// Pattern: localVar = expr + expr;  (where the assignment result is not used)
+
+// ---------------------------------------------------------------------------
+// Test 1: Basic accumulator pattern (sum = sum + i)
+// This is the canonical trigger — loop accumulation.
+// ---------------------------------------------------------------------------
+{
+  fun sumTo(n) {
+    var sum = 0;
+    for (var i = 1; i <= n; i = i + 1) {
+      sum = sum + i;
+    }
+    return sum;
+  }
+  assert(sumTo(0) == 0, "T1: sum to 0");
+  assert(sumTo(1) == 1, "T1: sum to 1");
+  assert(sumTo(10) == 55, "T1: sum to 10");
+  assert(sumTo(100) == 5050, "T1: sum to 100");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Loop increment (i = i + 1)
+// The for-loop increment desugars to this pattern.
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  for (var i = 0; i < 50; i = i + 1) {
+    count = count + 1;
+  }
+  assert(count == 50, "T2: loop increment via fused add");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Step sizes other than 1
+// ---------------------------------------------------------------------------
+{
+  fun stepSum(n) {
+    var sum = 0;
+    for (var i = 0; i < n; i = i + 5) {
+      sum = sum + i;
+    }
+    return sum;
+  }
+  // 0 + 5 + 10 + 15 + 20 + 25 + 30 + 35 + 40 + 45 = 225
+  assert(stepSum(50) == 225, "T3: step by 5");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Floating point accumulation
+// ---------------------------------------------------------------------------
+{
+  fun floatAccum() {
+    var sum = 0;
+    for (var i = 0; i < 10; i = i + 1) {
+      sum = sum + 0.1;
+    }
+    // Due to float imprecision, check range
+    return sum > 0.99 and sum < 1.01;
+  }
+  assert(floatAccum(), "T4: float accumulation");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: String concatenation (ADD_SET_LOCAL_POP handles strings too)
+// ---------------------------------------------------------------------------
+{
+  fun buildString(n) {
+    var s = "";
+    for (var i = 0; i < n; i = i + 1) {
+      s = s + "x";
+    }
+    return s;
+  }
+  assert(buildString(0) == "", "T5: empty string build");
+  assert(buildString(1) == "x", "T5: single char");
+  assert(buildString(5) == "xxxxx", "T5: 5 chars");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: String concatenation with variables
+// ---------------------------------------------------------------------------
+{
+  fun concatWords() {
+    var result = "";
+    var words = ["hello", " ", "world", "!"];
+    for (var i = 0; i < arrayLen(words); i = i + 1) {
+      result = result + words[i];
+    }
+    return result;
+  }
+  assert(concatWords() == "hello world!", "T6: concat words");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Multiple accumulators in same scope
+// ---------------------------------------------------------------------------
+{
+  fun multiAccum(n) {
+    var a = 0;
+    var b = 0;
+    var c = 0;
+    for (var i = 1; i <= n; i = i + 1) {
+      a = a + i;
+      b = b + (i * 2);
+      c = c + (i * i);
+    }
+    return [a, b, c];
+  }
+  var r = multiAccum(5);
+  assert(r[0] == 15, "T7: sum of i");       // 1+2+3+4+5
+  assert(r[1] == 30, "T7: sum of 2*i");     // 2+4+6+8+10
+  assert(r[2] == 55, "T7: sum of i*i");     // 1+4+9+16+25
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: Slot >= 8 (generic SET_LOCAL path)
+// ---------------------------------------------------------------------------
+{
+  fun manyVars() {
+    var v0 = 0;
+    var v1 = 0;
+    var v2 = 0;
+    var v3 = 0;
+    var v4 = 0;
+    var v5 = 0;
+    var v6 = 0;
+    var v7 = 0;
+    var v8 = 0;  // slot 9 (slot 0 = fn self) — generic SET_LOCAL
+    v8 = v8 + 42;
+    return v8;
+  }
+  assert(manyVars() == 42, "T8: generic slot accumulation");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: NOT eligible — subtraction instead of addition
+// Verify no false peephole match.
+// ---------------------------------------------------------------------------
+{
+  fun subtract(n) {
+    var x = 100;
+    x = x - n;
+    return x;
+  }
+  assert(subtract(30) == 70, "T9: subtraction not fused");
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: NOT eligible — multiplication result
+// ---------------------------------------------------------------------------
+{
+  fun multiply() {
+    var x = 1;
+    for (var i = 1; i <= 5; i = i + 1) {
+      x = x * i;  // should NOT fuse as ADD_SET_LOCAL_POP
+    }
+    return x;
+  }
+  assert(multiply() == 120, "T10: multiply not fused");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Interaction with closures (upvalues)
+// The accumulator is closed over — SET_LOCAL applies to the local frame
+// before any close_upvalue.
+// ---------------------------------------------------------------------------
+{
+  fun closureAccum() {
+    var sum = 0;
+    var fns = [];
+    for (var i = 0; i < 5; i = i + 1) {
+      sum = sum + i;
+      var captured = sum;
+      fun getter() { return captured; }
+      arrayPush(fns, getter);
+    }
+    return [sum, fns[0](), fns[4]()];
+  }
+  var r = closureAccum();
+  assert(r[0] == 10, "T11: final sum");
+  assert(r[1] == 0, "T11: captured at i=0");
+  assert(r[2] == 10, "T11: captured at i=4");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: Mixed number and string add in different iterations
+// The fused op must check types correctly each iteration.
+// ---------------------------------------------------------------------------
+{
+  fun mixedAdd() {
+    var numSum = 0;
+    var strSum = "";
+    for (var i = 0; i < 5; i = i + 1) {
+      numSum = numSum + i;
+      strSum = strSum + str(i);
+    }
+    return [numSum, strSum];
+  }
+  var r = mixedAdd();
+  assert(r[0] == 10, "T12: numeric sum");
+  assert(r[1] == "01234", "T12: string concat");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Stack discipline — local usable immediately after fused assign
+// Verifies ADD_SET_LOCAL_POP leaves the stack in correct state for
+// subsequent operations on the same local.
+// ---------------------------------------------------------------------------
+{
+  fun stackCheck() {
+    var x = 1;
+    x = x + 2;    // fused: ADD_SET_LOCAL_POP
+    return x + 3;  // must read updated x correctly
+  }
+  assert(stackCheck() == 6, "T13: stack state after fused add");
+
+  fun stackCheck2() {
+    var x = 10;
+    x = x + 5;    // fused
+    var y = x * 2; // must see x == 15
+    return y;
+  }
+  assert(stackCheck2() == 30, "T13: local readable after fused add");
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Nested loops with independent accumulators
+// ---------------------------------------------------------------------------
+{
+  fun nestedAccum() {
+    var outer = 0;
+    for (var i = 0; i < 10; i = i + 1) {
+      var inner = 0;
+      for (var j = 0; j < 10; j = j + 1) {
+        inner = inner + 1;
+      }
+      outer = outer + inner;
+    }
+    return outer;
+  }
+  assert(nestedAccum() == 100, "T14: nested accumulators");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Recursive frame interaction
+// Each recursive call has its own frame with a fused ADD_SET_LOCAL_POP.
+// Verifies the fused op doesn't corrupt across call boundaries.
+// ---------------------------------------------------------------------------
+{
+  fun recursiveSum(n) {
+    if (n <= 0) return 0;
+    var partial = recursiveSum(n - 1);
+    var result = partial + n;  // ADD + SET_LOCAL + POP candidate
+    return result;
+  }
+  assert(recursiveSum(10) == 55, "T15: recursive frame accumulation");
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: Slot 7 / Slot 8 boundary
+// Slot 7 uses fast OP_SET_LOCAL_7; slot 8 uses generic OP_SET_LOCAL.
+// Both must work correctly with the fused instruction.
+// ---------------------------------------------------------------------------
+{
+  fun boundary() {
+    var v0 = 0;
+    var v1 = 0;
+    var v2 = 0;
+    var v3 = 0;
+    var v4 = 0;
+    var v5 = 0;
+    var v6 = 0;  // slot 7 (fast)
+    var v7 = 0;  // slot 8 (generic)
+    v6 = v6 + 10; // fast SET_LOCAL_7 path
+    v7 = v7 + 20; // generic SET_LOCAL path
+    return [v6, v7];
+  }
+  var r = boundary();
+  assert(r[0] == 10, "T16: slot 7 (fast) fused add");
+  assert(r[1] == 20, "T16: slot 8 (generic) fused add");
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Repeated operations on same high slot
+// Catches bugs where the slot index is read/written incorrectly
+// across multiple fused operations.
+// ---------------------------------------------------------------------------
+{
+  fun repeatedHigh() {
+    var a = 0; var b = 0; var c = 0; var d = 0;
+    var e = 0; var f = 0; var g = 0; var h = 0;
+    var target = 0;  // slot 9 (generic)
+    target = target + 1;
+    target = target + 2;
+    target = target + 3;
+    target = target + 4;
+    target = target + 5;
+    return target;
+  }
+  assert(repeatedHigh() == 15, "T17: repeated fused add on high slot");
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Chained accumulators with immediate verification
+// Verifies each fused write is visible to subsequent reads.
+// ---------------------------------------------------------------------------
+{
+  fun chainedVerify() {
+    var a = 0;
+    var b = 0;
+    var c = 0;
+    a = a + 10;
+    b = b + 20;
+    c = c + 30;
+    // All three must be readable with correct values
+    assert(a == 10, "T18: a after fused add");
+    assert(b == 20, "T18: b after fused add");
+    assert(c == 30, "T18: c after fused add");
+    // Second round
+    a = a + 1;
+    b = b + 2;
+    c = c + 3;
+    return [a, b, c];
+  }
+  var r = chainedVerify();
+  assert(r[0] == 11, "T18: a final");
+  assert(r[1] == 22, "T18: b final");
+  assert(r[2] == 33, "T18: c final");
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: Fused add in conditional branches
+// The fused op works inside if/else bodies, not just loop bodies.
+// ---------------------------------------------------------------------------
+{
+  fun conditionalAdd(x) {
+    var result = 0;
+    if (x > 0) {
+      result = result + x;
+    } else {
+      result = result + 100;
+    }
+    return result;
+  }
+  assert(conditionalAdd(5) == 5, "T19: fused add in if branch");
+  assert(conditionalAdd(-1) == 100, "T19: fused add in else branch");
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: NOT eligible — assignment value is used (not discarded)
+// Pattern: var y = (x = x + 2);  must NOT fuse because the assignment
+// result must remain on the stack for the outer initializer.
+// ADD + SET_LOCAL is correct; ADD + SET_LOCAL + POP would lose the value.
+// ---------------------------------------------------------------------------
+{
+  fun assignmentValue() {
+    var x = 1;
+    var y = (x = x + 2);
+    return x + y;
+  }
+  // x = 3, y = 3 (assignment expression produces the assigned value)
+  assert(assignmentValue() == 6, "T20: assignment result preserved");
+}
+
+print "pass: peephole_add_set_local_pop"; // expect: pass: peephole_add_set_local_pop
