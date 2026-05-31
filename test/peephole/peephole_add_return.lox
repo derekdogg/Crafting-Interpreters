@@ -1,0 +1,534 @@
+// Tests for OP_ADD_RETURN superinstruction.
+// The compiler fuses ADD + RETURN into a single opcode when a function's
+// return expression ends with an addition.
+// Pattern: return expr + expr;  (where the last operation is ADD)
+
+// ---------------------------------------------------------------------------
+// Test 1: Basic return of addition (the fibonacci tail pattern)
+// ---------------------------------------------------------------------------
+{
+  fun addReturn(a, b) {
+    return a + b;
+  }
+  assert(addReturn(1, 2) == 3, "T1: basic add return");
+  assert(addReturn(0, 0) == 0, "T1: zeros");
+  assert(addReturn(-5, 5) == 0, "T1: negative + positive");
+  assert(addReturn(-3, -7) == -10, "T1: two negatives");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Fibonacci (the primary motivation)
+// return fib(n-1) + fib(n-2) — the final ADD fuses with RETURN.
+// ---------------------------------------------------------------------------
+{
+  fun fib(n) {
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
+  }
+  assert(fib(0) == 0, "T2: fib(0)");
+  assert(fib(1) == 1, "T2: fib(1)");
+  assert(fib(2) == 1, "T2: fib(2)");
+  assert(fib(10) == 55, "T2: fib(10)");
+  assert(fib(15) == 610, "T2: fib(15)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Floating point add-return
+// ---------------------------------------------------------------------------
+{
+  fun addFloats(x, y) {
+    return x + y;
+  }
+  assert(addFloats(1.5, 2.5) == 4, "T3: float add return");
+  assert(addFloats(0.1, 0.2) > 0.29, "T3: float precision lower");
+  assert(addFloats(0.1, 0.2) < 0.31, "T3: float precision upper");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: String concatenation via add-return
+// ---------------------------------------------------------------------------
+{
+  fun concat(a, b) {
+    return a + b;
+  }
+  assert(concat("hello", " world") == "hello world", "T4: string concat return");
+  assert(concat("", "x") == "x", "T4: empty + string");
+  assert(concat("x", "") == "x", "T4: string + empty");
+  assert(concat("", "") == "", "T4: empty + empty");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Return add with complex sub-expressions
+// The ADD fuses with RETURN only for the *last* add in the expression.
+// ---------------------------------------------------------------------------
+{
+  fun complexReturn(a, b, c) {
+    return (a * 2) + (b * 3) + (c * 4);
+  }
+  // (1*2) + (2*3) + (3*4) = 2 + 6 + 12 = 20
+  assert(complexReturn(1, 2, 3) == 20, "T5: complex add return");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Return of function call results added together
+// ---------------------------------------------------------------------------
+{
+  fun double(x) { return x * 2; }
+  fun triple(x) { return x * 3; }
+
+  fun addCalls(n) {
+    return double(n) + triple(n);
+  }
+  // double(5) + triple(5) = 10 + 15 = 25
+  assert(addCalls(5) == 25, "T6: add function results");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Recursive with add-return (tree recursion)
+// ---------------------------------------------------------------------------
+{
+  fun trib(n) {
+    if (n < 2) return n;
+    if (n == 2) return 1;
+    return trib(n - 1) + trib(n - 2) + trib(n - 3);
+  }
+  // Note: the last + fuses, but there are two additions total.
+  // Only the final ADD (before RETURN) should fuse.
+  assert(trib(0) == 0, "T7: trib(0)");
+  assert(trib(1) == 1, "T7: trib(1)");
+  assert(trib(2) == 1, "T7: trib(2)");
+  assert(trib(7) == 24, "T7: trib(7)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: Return add with upvalues
+// ---------------------------------------------------------------------------
+{
+  fun makeAdder(x) {
+    fun add(y) {
+      return x + y;
+    }
+    return add;
+  }
+  var add5 = makeAdder(5);
+  var add10 = makeAdder(10);
+  assert(add5(3) == 8, "T8: closure add return");
+  assert(add10(7) == 17, "T8: closure add return 2");
+  assert(add5(0) == 5, "T8: closure add zero");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: Return add with string upvalue
+// ---------------------------------------------------------------------------
+{
+  fun makeGreeter(prefix) {
+    fun greet(name) {
+      return prefix + name;
+    }
+    return greet;
+  }
+  var hello = makeGreeter("Hello, ");
+  assert(hello("World") == "Hello, World", "T9: string closure add return");
+  assert(hello("") == "Hello, ", "T9: string + empty");
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: NOT eligible — return without add
+// Verify that non-add returns still work correctly.
+// ---------------------------------------------------------------------------
+{
+  fun noAdd(x) {
+    return x * 2;
+  }
+  assert(noAdd(5) == 10, "T10: multiply return (not fused)");
+
+  fun subReturn(a, b) {
+    return a - b;
+  }
+  assert(subReturn(10, 3) == 7, "T10: subtract return (not fused)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Large number of chained additions in return
+// ---------------------------------------------------------------------------
+{
+  fun chainAdd(a, b, c, d, e) {
+    return a + b + c + d + e;
+  }
+  assert(chainAdd(1, 2, 3, 4, 5) == 15, "T11: chain of 5 adds");
+  assert(chainAdd(10, 20, 30, 40, 50) == 150, "T11: larger chain");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: Return add from nested function
+// ---------------------------------------------------------------------------
+{
+  fun outer(x) {
+    fun inner(y) {
+      return x + y;
+    }
+    return inner(x + 1);
+  }
+  // outer(5): inner(6) = 5 + 6 = 11
+  assert(outer(5) == 11, "T12: nested add return");
+  assert(outer(0) == 1, "T12: nested add return zero");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Mixed types — verify type error on number + string
+// ---------------------------------------------------------------------------
+{
+  // This should NOT silently succeed
+  fun badMix(a, b) {
+    return a + b;
+  }
+  // Valid uses:
+  assert(badMix(1, 2) == 3, "T13: num + num OK");
+  assert(badMix("a", "b") == "ab", "T13: str + str OK");
+  // Invalid: badMix(1, "x") would be a runtime error
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Return add interacts correctly with GC
+// The addition creates a new string that must survive the return.
+// ---------------------------------------------------------------------------
+{
+  fun gcStress(n) {
+    if (n <= 0) return "";
+    return gcStress(n - 1) + "x";
+  }
+  var s = gcStress(100);
+  assert(strlen(s) == 100, "T14: GC stress string length");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Zero / identity values
+// ---------------------------------------------------------------------------
+{
+  fun addZero(x) {
+    return x + 0;
+  }
+  assert(addZero(42) == 42, "T15: add zero identity");
+  assert(addZero(-7) == -7, "T15: add zero negative");
+  assert(addZero(0) == 0, "T15: zero + zero");
+}
+
+// ===========================================================================
+// Compiler fusion boundary tests
+// These verify correctness for patterns that SHOULD and SHOULD NOT trigger
+// OP_ADD_RETURN. While we can't assert bytecode from Lox, incorrect fusion
+// would produce wrong results or runtime errors.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 16: Should fuse — constant + constant in return
+// ---------------------------------------------------------------------------
+{
+  fun constAdd() {
+    return 1 + 2;
+  }
+  assert(constAdd() == 3, "T16: const + const fuses");
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Should fuse — (expr * expr) + local
+// The final operation is ADD, so it should fuse with RETURN.
+// ---------------------------------------------------------------------------
+{
+  fun mulThenAdd(a, b, c) {
+    return (a * b) + c;
+  }
+  assert(mulThenAdd(3, 4, 5) == 17, "T17: (a*b)+c fuses");
+  assert(mulThenAdd(0, 100, 7) == 7, "T17: zero product");
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Should NOT fuse — add result stored to local, then returned
+// Bytecode: ADD, SET_LOCAL, GET_LOCAL, RETURN (not ADD_RETURN)
+// ---------------------------------------------------------------------------
+{
+  fun storeFirst(a, b) {
+    var x = a + b;
+    return x;
+  }
+  assert(storeFirst(10, 20) == 30, "T18: stored add not fused");
+  assert(storeFirst(-1, 1) == 0, "T18: stored add zero");
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: Should NOT fuse — negate after add
+// Bytecode: ADD, NEGATE, RETURN (last op before return is NEGATE, not ADD)
+// ---------------------------------------------------------------------------
+{
+  fun negateAdd(a, b) {
+    return -(a + b);
+  }
+  assert(negateAdd(3, 4) == -7, "T19: negate after add");
+  assert(negateAdd(-5, 5) == 0, "T19: negate zero");
+  assert(negateAdd(-3, -7) == 10, "T19: negate double negative");
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: Should NOT fuse — add result is not returned
+// The ADD result is used for a side effect; return is unrelated.
+// ---------------------------------------------------------------------------
+{
+  var captured = 0;
+  fun addNotReturned(a, b) {
+    captured = a + b;
+    return nil;
+  }
+  assert(addNotReturned(5, 6) == nil, "T20: returns nil, not add result");
+  assert(captured == 11, "T20: add was computed for side effect");
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: Should fuse — local + (expr * expr)
+// Final op is still ADD.
+// ---------------------------------------------------------------------------
+{
+  fun addMul(a, b, c) {
+    return a + (b * c);
+  }
+  assert(addMul(1, 2, 3) == 7, "T21: a + (b*c) fuses");
+  assert(addMul(100, 0, 999) == 100, "T21: zero product term");
+}
+
+// ===========================================================================
+// Stack-depth stress
+// Verify ADD_RETURN works when many locals are on the stack frame.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 22: Many locals before return add
+// ---------------------------------------------------------------------------
+{
+  fun deepStack() {
+    var a = 1; var b = 2; var c = 3; var d = 4;
+    var e = 5; var f = 6; var g = 7; var h = 8;
+    var i = 9; var j = 10; var k = 11; var l = 12;
+    return k + l;
+  }
+  assert(deepStack() == 23, "T22: deep stack add return");
+}
+
+// ---------------------------------------------------------------------------
+// Test 23: Deep stack with parameters
+// Use intermediate locals to ensure they occupy stack slots.
+// ---------------------------------------------------------------------------
+{
+  fun deepParams(a, b, c, d, e, f, g, h) {
+    var x = a + b;
+    var y = c + d;
+    var z = e + f;
+    // Anchor locals so they can't be optimized away
+    if (x + y + z < 0) return -1;
+    return g + h;
+  }
+  assert(deepParams(1, 2, 3, 4, 5, 6, 7, 8) == 15, "T23: deep params add return");
+}
+
+// ---------------------------------------------------------------------------
+// Test 24: Deep stack with add of non-top locals
+// ---------------------------------------------------------------------------
+{
+  fun midStack() {
+    var a = 10; var b = 20; var c = 30; var d = 40;
+    var e = 50; var f = 60; var g = 70; var h = 80;
+    // a and b are far from top-of-stack
+    return a + b;
+  }
+  assert(midStack() == 30, "T24: non-top locals add return");
+}
+
+// ===========================================================================
+// NaN-boxing edge cases
+// Verify ADD_RETURN handles special IEEE-754 values correctly.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 25: Negative zero
+// ---------------------------------------------------------------------------
+{
+  fun addNegZero(a, b) {
+    return a + b;
+  }
+  assert(addNegZero(0, -0) == 0, "T25: 0 + (-0) == 0");
+  assert(addNegZero(-0, 0) == 0, "T25: (-0) + 0 == 0");
+  assert(addNegZero(-0, -0) == 0, "T25: (-0) + (-0) == 0");
+}
+
+// ---------------------------------------------------------------------------
+// Test 26: Infinity
+// ---------------------------------------------------------------------------
+{
+  // Build infinity
+  var big = 1;
+  for (var i = 0; i < 1023; i = i + 1) big = big * 2;
+  var inf = big * big;
+
+  fun addInf(a, b) {
+    return a + b;
+  }
+  assert(addInf(inf, 1) == inf, "T26: inf + 1 == inf");
+  assert(addInf(1, inf) == inf, "T26: 1 + inf == inf");
+  assert(addInf(inf, inf) == inf, "T26: inf + inf == inf");
+  assert(addInf(-inf, -inf) == -inf, "T26: -inf + -inf == -inf");
+}
+
+// ---------------------------------------------------------------------------
+// Test 27: Very large numbers (near overflow)
+// ---------------------------------------------------------------------------
+{
+  // Build a very large number (~2^1023)
+  var huge = 1;
+  for (var i = 0; i < 1023; i = i + 1) huge = huge * 2;
+
+  fun addLarge(a, b) {
+    return a + b;
+  }
+  assert(addLarge(huge, huge) > 0, "T27: large + large > 0 (inf)");
+  assert(addLarge(-huge, -huge) < 0, "T27: -large + -large < 0 (-inf)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 28: NaN propagation through add-return
+// ---------------------------------------------------------------------------
+{
+  var nan = 0 / 0;
+  fun addNan(a, b) {
+    return a + b;
+  }
+  var r1 = addNan(nan, 1);
+  assert(r1 != r1, "T28: NaN + 1 is NaN");
+  var r2 = addNan(1, nan);
+  assert(r2 != r2, "T28: 1 + NaN is NaN");
+  var r3 = addNan(nan, nan);
+  assert(r3 != r3, "T28: NaN + NaN is NaN");
+}
+
+// ===========================================================================
+// Interaction with other peephole optimizations
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 29: ADD_RETURN after GET_LOCAL_CONST_SUBTRACT
+// fib pattern: return fib(n-1) + fib(n-2) uses both superinstructions.
+// ---------------------------------------------------------------------------
+{
+  fun fibBoth(n) {
+    if (n < 2) return n;
+    return fibBoth(n - 1) + fibBoth(n - 2);
+  }
+  assert(fibBoth(12) == 144, "T29: both peepholes cooperate");
+}
+
+// ---------------------------------------------------------------------------
+// Test 30: ADD_RETURN with string result used by caller
+// The returned string must be properly rooted / survive GC.
+// ---------------------------------------------------------------------------
+{
+  fun joinPair(a, b) {
+    return a + b;
+  }
+  fun buildSentence() {
+    var w1 = joinPair("Hello", ", ");
+    var w2 = joinPair("World", "!");
+    return joinPair(w1, w2);
+  }
+  assert(buildSentence() == "Hello, World!", "T30: chained string add-returns");
+}
+
+// ===========================================================================
+// Short-circuit guard tests
+// Verify that ADD + RETURN is NOT fused when the ADD is a jump target
+// from and_/or_ short-circuit evaluation. Without the guard, patchJump
+// sets lastPatchTarget = CurrentChunk.count and the fused opcode would
+// corrupt control flow.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 31: return false and (a + b) — short-circuits, returns false
+// The RHS (a + b) is not evaluated; the and_ jump lands at the ADD offset.
+// ---------------------------------------------------------------------------
+{
+  fun andShort(a, b) {
+    return false and (a + b);
+  }
+  assert(andShort(10, 20) == false, "T31a: false and (a+b) returns false");
+  assert(andShort(0, 0) == false, "T31b: false and (a+b) with zeros");
+}
+
+// ---------------------------------------------------------------------------
+// Test 32: return true and (a + b) — does NOT short-circuit, returns sum
+// ---------------------------------------------------------------------------
+{
+  fun andEval(a, b) {
+    return true and (a + b);
+  }
+  assert(andEval(3, 4) == 7, "T32a: true and (a+b) returns sum");
+  assert(andEval(-1, 1) == 0, "T32b: true and (a+b) zero result");
+}
+
+// ---------------------------------------------------------------------------
+// Test 33: return true or (a + b) — short-circuits, returns true
+// The RHS (a + b) is not evaluated; the or_ jump lands at the ADD offset.
+// ---------------------------------------------------------------------------
+{
+  fun orShort(a, b) {
+    return true or (a + b);
+  }
+  assert(orShort(10, 20) == true, "T33a: true or (a+b) returns true");
+  assert(orShort(0, 0) == true, "T33b: true or (a+b) with zeros");
+}
+
+// ---------------------------------------------------------------------------
+// Test 34: return false or (a + b) — does NOT short-circuit, returns sum
+// ---------------------------------------------------------------------------
+{
+  fun orEval(a, b) {
+    return false or (a + b);
+  }
+  assert(orEval(5, 6) == 11, "T34a: false or (a+b) returns sum");
+  assert(orEval(-3, -4) == -7, "T34b: false or (a+b) negative");
+}
+
+// ---------------------------------------------------------------------------
+// Test 35: return nil and (a + b) — nil is falsy, short-circuits
+// ---------------------------------------------------------------------------
+{
+  fun nilAnd(a, b) {
+    return nil and (a + b);
+  }
+  assert(nilAnd(1, 2) == nil, "T35: nil and (a+b) returns nil");
+}
+
+// ---------------------------------------------------------------------------
+// Test 36: Nested: return (x or y) and (a + b)
+// When x is truthy: (x or y) => x, then x and (a+b) => a+b
+// When x is falsy, y is falsy: (x or y) => y, then y and (a+b) => y
+// ---------------------------------------------------------------------------
+{
+  fun nestedLogic(x, y, a, b) {
+    return (x or y) and (a + b);
+  }
+  assert(nestedLogic(true, false, 3, 4) == 7, "T36a: truthy or => eval and => sum");
+  assert(nestedLogic(false, false, 3, 4) == false, "T36b: falsy or falsy => and short-circuits");
+  assert(nestedLogic(false, true, 10, 5) == 15, "T36c: falsy or truthy => eval and => sum");
+}
+
+// ---------------------------------------------------------------------------
+// Test 37: Variable condition — ensures runtime path correctness
+// ---------------------------------------------------------------------------
+{
+  fun condAdd(flag, a, b) {
+    return flag and (a + b);
+  }
+  assert(condAdd(true, 100, 200) == 300, "T37a: true flag => sum");
+  assert(condAdd(false, 100, 200) == false, "T37b: false flag => false");
+  assert(condAdd(nil, 100, 200) == nil, "T37c: nil flag => nil");
+  assert(condAdd(1, 2, 3) == 5, "T37d: truthy number => sum");
+  assert(condAdd(0, 2, 3) == 5, "T37e: 0 is truthy in lox => sum");
+}
+
+print "pass: peephole_add_return"; // expect: pass: peephole_add_return
