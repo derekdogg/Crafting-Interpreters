@@ -4542,6 +4542,9 @@ begin
           Dec(VM.FrameCount);
           if VM.FrameCount = 0 then
           begin
+            // Clean the stack window: drop the two operands (or concatenated
+            // result) plus the script-function slot, matching OP_RETURN.
+            stack.StackTop := frame^.slots;
             Dec(stack.StackTop);
             Result.Code := INTERPRET_OK;
             Result.value := value;
