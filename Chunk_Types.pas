@@ -8003,7 +8003,10 @@ begin
     Expression();
     consume(TOKEN_SEMICOLON, 'Expect '';'' after return value.');
     // Peephole: fuse ADD + RETURN into OP_ADD_RETURN
-    if (lastAddOffset = CurrentChunk.count - 1) then
+    // Guard: don't fuse if a jump was just patched to target this position
+    // (e.g. short-circuit and_/or_ lands here — fusing would corrupt the target)
+    if (lastAddOffset = CurrentChunk.count - 1)
+       and (lastPatchTarget <> CurrentChunk.count) then
     begin
       Dec(CurrentChunk.count); // remove the OP_ADD
       emitByte(OP_ADD_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);

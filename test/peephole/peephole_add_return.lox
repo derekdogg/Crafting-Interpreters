@@ -439,4 +439,96 @@
   assert(buildSentence() == "Hello, World!", "T30: chained string add-returns");
 }
 
+// ===========================================================================
+// Short-circuit guard tests
+// Verify that ADD + RETURN is NOT fused when the ADD is a jump target
+// from and_/or_ short-circuit evaluation. Without the guard, patchJump
+// sets lastPatchTarget = CurrentChunk.count and the fused opcode would
+// corrupt control flow.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 31: return false and (a + b) — short-circuits, returns false
+// The RHS (a + b) is not evaluated; the and_ jump lands at the ADD offset.
+// ---------------------------------------------------------------------------
+{
+  fun andShort(a, b) {
+    return false and (a + b);
+  }
+  assert(andShort(10, 20) == false, "T31a: false and (a+b) returns false");
+  assert(andShort(0, 0) == false, "T31b: false and (a+b) with zeros");
+}
+
+// ---------------------------------------------------------------------------
+// Test 32: return true and (a + b) — does NOT short-circuit, returns sum
+// ---------------------------------------------------------------------------
+{
+  fun andEval(a, b) {
+    return true and (a + b);
+  }
+  assert(andEval(3, 4) == 7, "T32a: true and (a+b) returns sum");
+  assert(andEval(-1, 1) == 0, "T32b: true and (a+b) zero result");
+}
+
+// ---------------------------------------------------------------------------
+// Test 33: return true or (a + b) — short-circuits, returns true
+// The RHS (a + b) is not evaluated; the or_ jump lands at the ADD offset.
+// ---------------------------------------------------------------------------
+{
+  fun orShort(a, b) {
+    return true or (a + b);
+  }
+  assert(orShort(10, 20) == true, "T33a: true or (a+b) returns true");
+  assert(orShort(0, 0) == true, "T33b: true or (a+b) with zeros");
+}
+
+// ---------------------------------------------------------------------------
+// Test 34: return false or (a + b) — does NOT short-circuit, returns sum
+// ---------------------------------------------------------------------------
+{
+  fun orEval(a, b) {
+    return false or (a + b);
+  }
+  assert(orEval(5, 6) == 11, "T34a: false or (a+b) returns sum");
+  assert(orEval(-3, -4) == -7, "T34b: false or (a+b) negative");
+}
+
+// ---------------------------------------------------------------------------
+// Test 35: return nil and (a + b) — nil is falsy, short-circuits
+// ---------------------------------------------------------------------------
+{
+  fun nilAnd(a, b) {
+    return nil and (a + b);
+  }
+  assert(nilAnd(1, 2) == nil, "T35: nil and (a+b) returns nil");
+}
+
+// ---------------------------------------------------------------------------
+// Test 36: Nested: return (x or y) and (a + b)
+// When x is truthy: (x or y) => x, then x and (a+b) => a+b
+// When x is falsy, y is falsy: (x or y) => y, then y and (a+b) => y
+// ---------------------------------------------------------------------------
+{
+  fun nestedLogic(x, y, a, b) {
+    return (x or y) and (a + b);
+  }
+  assert(nestedLogic(true, false, 3, 4) == 7, "T36a: truthy or => eval and => sum");
+  assert(nestedLogic(false, false, 3, 4) == false, "T36b: falsy or falsy => and short-circuits");
+  assert(nestedLogic(false, true, 10, 5) == 15, "T36c: falsy or truthy => eval and => sum");
+}
+
+// ---------------------------------------------------------------------------
+// Test 37: Variable condition — ensures runtime path correctness
+// ---------------------------------------------------------------------------
+{
+  fun condAdd(flag, a, b) {
+    return flag and (a + b);
+  }
+  assert(condAdd(true, 100, 200) == 300, "T37a: true flag => sum");
+  assert(condAdd(false, 100, 200) == false, "T37b: false flag => false");
+  assert(condAdd(nil, 100, 200) == nil, "T37c: nil flag => nil");
+  assert(condAdd(1, 2, 3) == 5, "T37d: truthy number => sum");
+  assert(condAdd(0, 2, 3) == 5, "T37e: 0 is truthy in lox => sum");
+}
+
 print "pass: peephole_add_return"; // expect: pass: peephole_add_return
