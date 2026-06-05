@@ -9,9 +9,16 @@ implementation
 uses
   System.SysUtils, Classes, Windows, Chunk_Types, NativeRegistry;
 
+var
+  QPCFrequency: Int64;
+  QPCStart: Int64;
+
 function clockNative(argCount: integer; args: pValue): TValue;
+var
+  now: Int64;
 begin
-  Result := CreateNumber(GetTickCount / 1000.0);
+  QueryPerformanceCounter(now);
+  Result := CreateNumber((now - QPCStart) / QPCFrequency);
 end;
 
 function collectGarbageNative(argCount: integer; args: pValue): TValue;
@@ -323,6 +330,8 @@ begin
 end;
 
 initialization
+  QueryPerformanceFrequency(QPCFrequency);
+  QueryPerformanceCounter(QPCStart);
   RegisterNativeModule(RegisterSystemNatives);
 
 end.
