@@ -1,5 +1,77 @@
 unit SystemNatives;
 
+// ============================================================
+// System Natives — core built-in functions available to every Lox script.
+//
+// Registered functions:
+//
+//   clock() -> number
+//     Returns elapsed time in seconds (fractional) since the VM process
+//     started. Uses QueryPerformanceCounter for sub-microsecond precision.
+//     Typical use: delta-time calculation in game loops.
+//       var t0 = clock();
+//       // ... work ...
+//       var elapsed = clock() - t0;
+//
+//   collectGarbage() -> nil
+//     Forces an immediate GC cycle. Useful for benchmarking or testing
+//     GC behaviour. Not normally needed in production scripts.
+//
+//   assert(condition, [message]) -> nil
+//     Halts with a runtime error if condition is falsey.
+//     Optional message string is included in the error.
+//
+//   bytesAllocated() -> number
+//     Current VM heap usage in bytes (tracked allocations only).
+//
+//   objectsAllocated() -> number
+//     Count of live heap objects (walks the object linked list).
+//
+//   vmStackDepth() -> number
+//     Current value stack depth (number of slots in use).
+//
+//   vmStackCapacity() -> number
+//     Total allocated value stack slots.
+//
+//   vmCallDepth() -> number
+//     Current call frame depth (how deep the call stack is).
+//
+//   vmOpenUpvalues() -> number
+//     Count of currently open (not yet closed) upvalues.
+//
+//   vmFramesMax() -> number
+//     Maximum call frame depth before stack overflow.
+//
+//   vmStackMax() -> number
+//     Maximum value stack slots (compile-time constant).
+//
+//   gcNextThreshold() -> number
+//     Byte threshold at which the next GC cycle will trigger.
+//
+//   gcCollectionCount() -> number
+//     Total number of GC cycles that have run this session.
+//
+//   internTableStats() -> dictionary
+//     Returns { "liveStrings": n, "slots": n, "tombstones": n }
+//     describing the string interning table's state.
+//
+//   env(name) -> string | nil
+//     Reads an environment variable. Returns nil if not set.
+//
+//   loadEnv([path]) -> nil
+//     Loads a .env file (KEY=VALUE lines) into the process environment.
+//     Defaults to ".env" next to the executable if no path given.
+//
+//   abort(message, [exitCode]) -> never
+//     Immediately halts the VM with ELoxHalt. Default exit code is 1.
+//
+//   getCwd() -> string
+//     Returns the current working directory.
+//
+//   chdir(path) -> true
+//     Changes the working directory. Runtime error if path doesn't exist.
+// ============================================================
+
 interface
 
 procedure RegisterSystemNatives;
@@ -10,9 +82,18 @@ uses
   System.SysUtils, Classes, Windows, Chunk_Types, NativeRegistry;
 
 var
+  // QueryPerformanceCounter state — initialized once at unit load.
+  // QPCFrequency is counts-per-second (typically 10MHz on modern Windows).
+  // QPCStart is the baseline counter so clock() returns a small value
+  // (avoids float64 precision loss from large raw counter values).
   QPCFrequency: Int64;
   QPCStart: Int64;
 
+// clock() -> number
+// High-resolution monotonic timer. Returns seconds elapsed since process
+// start. Resolution is sub-microsecond (~100ns on most hardware).
+// Previously used GetTickCount (15.6ms granularity) which caused visible
+// stutter in frame-paced game loops.
 function clockNative(argCount: integer; args: pValue): TValue;
 var
   now: Int64;
