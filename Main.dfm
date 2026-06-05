@@ -52,7 +52,10 @@ object Form4: TForm4
       Height = 915
       Anchors = [akLeft, akTop, akRight, akBottom]
       Indent = 19
+      MultiSelect = True
+      MultiSelectStyle = [msControlSelect, msShiftSelect]
       ReadOnly = True
+      RowSelect = True
       StateImages = StateImages
       TabOrder = 0
       OnClick = TestTreeClick

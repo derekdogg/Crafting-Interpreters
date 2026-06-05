@@ -10,7 +10,8 @@ uses
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait,
   System.ImageList,NativeObjects,
-  System.Generics.Collections;
+  System.Generics.Collections,
+  Vcl.Themes, Vcl.Styles;
 
 type
 
@@ -65,6 +66,9 @@ type
   private
     FLoxSyn: TSynLoxSyn;
     FScriptRunning: Boolean;
+    FStyleCombo: TComboBox;
+    procedure LoadStyles;
+    procedure StyleComboChange(Sender: TObject);
   public
     FClosing: Boolean;
     procedure HandleLivePrint(const Text: string);
@@ -251,6 +255,67 @@ begin
   // OnCreate handler sets up everything else.
   if frmGame = nil then
     frmGame := TfrmGame.Create(Application);
+
+  LoadStyles;
+end;
+
+procedure TForm4.LoadStyles;
+var
+  StyleDir: string;
+  Files: TStringDynArray;
+  F, StyleName: string;
+begin
+  // Create style combo on the toolbar
+  FStyleCombo := TComboBox.Create(Self);
+  FStyleCombo.Parent := PanelToolbar;
+  FStyleCombo.Style := csDropDownList;
+  FStyleCombo.Left := PanelToolbar.Width - 180;
+  FStyleCombo.Top := 4;
+  FStyleCombo.Width := 170;
+  FStyleCombo.Anchors := [akTop, akRight];
+  FStyleCombo.OnChange := StyleComboChange;
+
+  // Add default (no style) entry
+  FStyleCombo.Items.Add('Windows (Default)');
+
+  // Load .vsf files from styles/ folder relative to EXE
+  StyleDir := TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\styles');
+  if not TDirectory.Exists(StyleDir) then
+    StyleDir := TPath.Combine(ExtractFilePath(ParamStr(0)), 'styles');
+
+  if TDirectory.Exists(StyleDir) then
+  begin
+    Files := TDirectory.GetFiles(StyleDir, '*.vsf');
+    for F in Files do
+    begin
+      try
+        if TStyleManager.IsValidStyle(F) then
+          TStyleManager.LoadFromFile(F);
+      except
+        // Skip invalid style files silently
+      end;
+    end;
+  end;
+
+  // Populate combo from registered style names
+  for StyleName in TStyleManager.StyleNames do
+    if not SameText(StyleName, 'Windows') then
+      FStyleCombo.Items.Add(StyleName);
+
+  FStyleCombo.ItemIndex := 0;
+end;
+
+procedure TForm4.StyleComboChange(Sender: TObject);
+var
+  SelectedStyle: string;
+begin
+  if FStyleCombo.ItemIndex <= 0 then
+    TStyleManager.SetStyle(TStyleManager.SystemStyle)
+  else
+  begin
+    SelectedStyle := FStyleCombo.Items[FStyleCombo.ItemIndex];
+    TStyleManager.SetStyle(SelectedStyle);
+  end;
 end;
 
 procedure TForm4.FormDestroy(Sender: TObject);
@@ -378,6 +443,7 @@ end;
 procedure TForm4.HandleLivePrint(const Text: string);
 begin
   Memo2.Lines.Add(Text);
+  Memo2.Update;
   Application.ProcessMessages;
 end;
 
@@ -593,11 +659,48 @@ var
   HT: THitTests;
   Node: TTreeNode;
   FilePath: string;
+  i: Integer;
+  FileContent: TStringList;
 begin
   P := TestTree.ScreenToClient(Mouse.CursorPos);
   HT := TestTree.GetHitTestInfoAt(P.X, P.Y);
   if htOnStateIcon in HT then
-    ToggleCheck(TestTree.Selected)
+  begin
+    Node := TestTree.GetNodeAt(P.X, P.Y);
+    ToggleCheck(Node);
+  end
+  else if TestTree.SelectionCount > 1 then
+  begin
+    // Multi-select: concatenate all selected files into editor
+    FileContent := TStringList.Create;
+    try
+      for i := 0 to TestTree.SelectionCount - 1 do
+      begin
+        Node := TestTree.Selections[i];
+        if (Node <> nil) and (Node.Data <> nil) then
+        begin
+          FilePath := String(PChar(Node.Data));
+          if FileExists(FilePath) then
+          begin
+            if FileContent.Count > 0 then
+            begin
+              FileContent.Add('');
+              FileContent.Add('// ' + StringOfChar('=', 70));
+              FileContent.Add('// FILE: ' + ExtractFileName(FilePath));
+              FileContent.Add('// ' + StringOfChar('=', 70));
+              FileContent.Add('');
+            end
+            else
+              FileContent.Add('// FILE: ' + ExtractFileName(FilePath));
+            FileContent.AddStrings(TFile.ReadAllLines(FilePath));
+          end;
+        end;
+      end;
+      Memo1.Lines.Assign(FileContent);
+    finally
+      FileContent.Free;
+    end;
+  end
   else
   begin
     Node := TestTree.Selected;

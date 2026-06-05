@@ -1,0 +1,36 @@
+// Two sibling closures from the same invocation share the same captured variable.
+// Mutating through one is visible through the other.
+
+fun factory() {
+  var count = 0;
+
+  fun inc() {
+    count = count + 1;
+  }
+
+  fun get() {
+    return count;
+  }
+
+  fun reset() {
+    count = 0;
+  }
+
+  return [inc, get, reset];
+}
+
+var fns = factory();
+var inc = fns[0];
+var get = fns[1];
+var reset = fns[2];
+
+print get();  // expect: 0
+inc();
+print get();  // expect: 1
+inc();
+inc();
+print get();  // expect: 3
+reset();
+print get();  // expect: 0
+inc();
+print get();  // expect: 1

@@ -7,5 +7,7 @@ var start = clock();
 var result = fib(40);
 var elapsed = clock() - start;
 
+print elapsed;
+
 print "fib(40) = " + str(result);
 print "elapsed: " + str(elapsed) + "s";

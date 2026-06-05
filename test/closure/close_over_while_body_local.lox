@@ -1,0 +1,19 @@
+// Closures that close over variables from a while loop.
+// The variable is declared inside the while body, so each iteration
+// gets a fresh local.
+
+var closures = [];
+var i = 0;
+while (i < 4) {
+  var val = i * 10;
+  fun capture() {
+    return val;
+  }
+  arrayPush(closures, capture);
+  i = i + 1;
+}
+
+print closures[0](); // expect: 0
+print closures[1](); // expect: 10
+print closures[2](); // expect: 20
+print closures[3](); // expect: 30

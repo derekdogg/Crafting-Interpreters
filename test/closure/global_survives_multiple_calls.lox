@@ -1,0 +1,23 @@
+// A closure is stored in a global, then the defining function is called again.
+// Each invocation creates a new independent closure. Old one still works.
+
+var first;
+var second;
+
+fun factory(label) {
+  var count = 0;
+  fun tick() {
+    count = count + 1;
+    return label + ":" + str(count);
+  }
+  return tick;
+}
+
+first = factory("A");
+print first(); // expect: A:1
+print first(); // expect: A:2
+
+second = factory("B");
+print second(); // expect: B:1
+print first();  // expect: A:3
+print second(); // expect: B:2
