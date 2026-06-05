@@ -1,0 +1,19 @@
+// Classic "closure in a loop" test.
+// The for-loop variable 'i' lives in a single scope for the whole loop,
+// so all closures share the same 'i'. After the loop, i == 5.
+
+var closures = [];
+
+for (var i = 0; i < 5; i = i + 1) {
+  fun capture() {
+    return i;
+  }
+  arrayPush(closures, capture);
+}
+
+// All closures share 'i' — its final value is 5 (the exit condition).
+print closures[0](); // expect: 5
+print closures[1](); // expect: 5
+print closures[2](); // expect: 5
+print closures[3](); // expect: 5
+print closures[4](); // expect: 5

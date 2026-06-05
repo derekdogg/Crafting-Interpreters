@@ -1,0 +1,21 @@
+// Multiple closures in the same scope, each closing over DIFFERENT variables.
+// Ensures the upvalue mechanism tracks distinct slots independently.
+
+fun test() {
+  var a = "aaa";
+  var b = "bbb";
+  var c = "ccc";
+
+  fun readA() { return a; }
+  fun readB() { return b; }
+  fun readC() { return c; }
+
+  // Mutate one; others unaffected.
+  b = "BBB";
+
+  print readA(); // expect: aaa
+  print readB(); // expect: BBB
+  print readC(); // expect: ccc
+}
+
+test();

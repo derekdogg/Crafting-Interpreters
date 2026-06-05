@@ -1,0 +1,28 @@
+// Stress test: a closure captured deeply that outlives many intermediate scopes.
+
+fun test() {
+  var x = "alive";
+
+  fun a() {
+    fun b() {
+      fun c() {
+        fun d() {
+          fun e() {
+            return x;
+          }
+          return e;
+        }
+        return d;
+      }
+      return c;
+    }
+    return b;
+  }
+
+  var fn = a()()()();
+  x = "modified";
+  // fn is e(), the deeply nested closure that still references x (via upvalue chain).
+  print fn(); // expect: modified
+}
+
+test();

@@ -1,0 +1,28 @@
+// A closure that returns another closure, both closing over the same variable.
+// The inner closure can mutate the variable and the outer sees it.
+
+fun outer() {
+  var x = 0;
+
+  fun inc() {
+    x = x + 1;
+    return x;
+  }
+
+  fun getInc() {
+    return inc;
+  }
+
+  return getInc;
+}
+
+var getInc = outer();
+var inc = getInc();
+
+print inc(); // expect: 1
+print inc(); // expect: 2
+print inc(); // expect: 3
+
+// Getting it again returns the same closure (same upvalue chain).
+var inc2 = getInc();
+print inc2(); // expect: 4

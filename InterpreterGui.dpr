@@ -1,6 +1,8 @@
 program InterpreterGui;
 uses
   Vcl.Forms,
+  Vcl.Themes,
+  Vcl.Styles,
   Main in 'Main.pas' {Form4},
   SynHighlighterLox in 'SynHighlighterLox.pas',
   NativeObjects in 'NativeObjects.pas',

@@ -1,0 +1,23 @@
+// Closure captures a variable, then the enclosing scope exits.
+// The closure is the ONLY reference to the closed-over value (an object).
+// This tests that the GC doesn't collect the value while the closure is alive.
+
+fun makeHolder() {
+  var data = "important data that must survive GC";
+
+  fun read() {
+    return data;
+  }
+
+  return read;
+}
+
+var reader = makeHolder();
+
+// Force some allocations to potentially trigger GC.
+var junk1 = "aaaaaaaaaa" + "bbbbbbbbbb" + "cccccccccc";
+var junk2 = "dddddddddd" + "eeeeeeeeee" + "ffffffffff";
+var junk3 = "gggggggggg" + "hhhhhhhhhh" + "iiiiiiiiii";
+
+// Closure should still work — the string is only reachable via the upvalue.
+print reader(); // expect: important data that must survive GC

@@ -1,0 +1,20 @@
+// Test that the enclosing scope can mutate a variable after the closure
+// is created, and the closure sees the updated value.
+
+fun test() {
+  var x = "before";
+
+  fun reader() {
+    return x;
+  }
+
+  print reader(); // expect: before
+
+  x = "after";
+  print reader(); // expect: after
+
+  x = "final";
+  print reader(); // expect: final
+}
+
+test();
