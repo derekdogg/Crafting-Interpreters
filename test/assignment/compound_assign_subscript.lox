@@ -1,0 +1,151 @@
+// ============================================================
+// compound_assign_subscript.lox — Tests for += -= *= /= on dicts and arrays
+// ============================================================
+
+// --- Test 1: dict += ---
+var d = [:];
+d.Set("score", 10);
+d["score"] += 5;
+print d["score"]; // expect: 15
+
+// --- Test 2: dict -= ---
+d["score"] -= 3;
+print d["score"]; // expect: 12
+
+// --- Test 3: dict *= ---
+d["score"] *= 2;
+print d["score"]; // expect: 24
+
+// --- Test 4: dict /= ---
+d["score"] /= 6;
+print d["score"]; // expect: 4
+
+// --- Test 5: array += ---
+var a = newArray();
+arrayPush(a, 10);
+arrayPush(a, 20);
+arrayPush(a, 30);
+a[0] += 5;
+print a[0]; // expect: 15
+
+// --- Test 6: array -= ---
+a[1] -= 8;
+print a[1]; // expect: 12
+
+// --- Test 7: array *= ---
+a[2] *= 3;
+print a[2]; // expect: 90
+
+// --- Test 8: array /= ---
+a[2] /= 9;
+print a[2]; // expect: 10
+
+// --- Test 9: dict string concatenation ---
+var names = [:];
+names.Set("first", "Hello");
+names["first"] += " World";
+print names["first"]; // expect: Hello World
+
+// --- Test 10: compound assign with computed index ---
+var arr = newArray();
+arrayPush(arr, 100);
+arrayPush(arr, 200);
+arrayPush(arr, 300);
+var idx = 1;
+arr[idx] += 50;
+print arr[1]; // expect: 250
+
+// --- Test 11: compound assign in loop ---
+var counts = [:];
+counts.Set("a", 0);
+var i = 0;
+while (i < 5) {
+  counts["a"] += 1;
+  i += 1;
+}
+print counts["a"]; // expect: 5
+
+print "All subscript compound assignment tests passed."; // expect: All subscript compound assignment tests passed.
+
+// --- Test 12: Verify no stale caching in loop (read via function) ---
+var totals = [:];
+totals.Set("sum", 0);
+fun getSum() { return totals["sum"]; }
+var j = 1;
+while (j <= 4) {
+  totals["sum"] += j;
+  j += 1;
+}
+print getSum(); // expect: 10
+
+// --- Test 13: Compound assign with side-effecting index function ---
+var callCount = 0;
+var data = newArray();
+arrayPush(data, 100);
+arrayPush(data, 200);
+arrayPush(data, 300);
+fun getIdx() {
+  callCount += 1;
+  return 1;
+}
+data[getIdx()] += 50;
+print data[1]; // expect: 250
+print callCount; // expect: 1
+
+// --- Test 14: Nested subscript compound assign ---
+var grid = newArray();
+var row0 = newArray(); arrayPush(row0, 1); arrayPush(row0, 2);
+var row1 = newArray(); arrayPush(row1, 3); arrayPush(row1, 4);
+arrayPush(grid, row0);
+arrayPush(grid, row1);
+grid[1][0] += 10;
+print grid[1][0]; // expect: 13
+
+// --- Test 15: Compound assign on dict with expression key ---
+var cache = [:];
+cache.Set("key_0", 100);
+cache.Set("key_1", 200);
+var k = 0;
+cache["key_" + str(k)] += 50;
+print cache["key_0"]; // expect: 150
+
+// --- Test 16: Multiple compound assigns to same container in one scope ---
+var nums = newArray();
+arrayPush(nums, 1);
+arrayPush(nums, 2);
+arrayPush(nums, 3);
+nums[0] += 10;
+nums[1] += 20;
+nums[2] += 30;
+print nums[0]; // expect: 11
+print nums[1]; // expect: 22
+print nums[2]; // expect: 33
+
+// --- Test 17: Compound assign result is expression value ---
+var bag = [:];
+bag.Set("val", 10);
+var result = (bag["val"] += 5);
+print result; // expect: 15
+print bag["val"]; // expect: 15
+
+// --- Test 18: /= with float result ---
+var floats = newArray();
+arrayPush(floats, 7);
+floats[0] /= 2;
+print floats[0]; // expect: 3.5
+
+// --- Test 19: -= to negative ---
+var negs = [:];
+negs.Set("x", 3);
+negs["x"] -= 10;
+print negs["x"]; // expect: -7
+
+// --- Test 20: Compound assign preserves other dict entries ---
+var multi = [:];
+multi.Set("a", 1);
+multi.Set("b", 2);
+multi.Set("c", 3);
+multi["b"] += 100;
+print multi["a"]; // expect: 1
+print multi["b"]; // expect: 102
+print multi["c"]; // expect: 3
