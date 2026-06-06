@@ -1,5 +1,79 @@
 unit SystemNatives;
 
+// ============================================================
+// System Natives — core built-in functions available to every Lox script.
+//
+// Registered functions:
+//
+//   clock() -> number
+//     Returns elapsed seconds since VM startup. Monotonic, high-resolution.
+//     Typical use: delta-time calculation in game loops.
+//       var t0 = clock();
+//       // ... work ...
+//       var elapsed = clock() - t0;
+//
+//   collectGarbage() -> nil
+//     Forces an immediate GC cycle. Useful for benchmarking or testing
+//     GC behaviour. Not normally needed in production scripts.
+//
+//   assert(condition, [message]) -> nil
+//     Halts with a runtime error if condition is falsey.
+//     Optional message string is included in the error.
+//
+//   bytesAllocated() -> number
+//     Current VM heap usage in bytes (tracked allocations only).
+//
+//   objectsAllocated() -> number
+//     Count of live heap objects (walks the object linked list).
+//
+//   vmStackDepth() -> number
+//     Current value stack depth (number of slots in use).
+//
+//   vmStackCapacity() -> number
+//     Total allocated stack slots (not bytes).
+//
+//   vmCallDepth() -> number
+//     Current call frame depth (how deep the call stack is).
+//
+//   vmOpenUpvalues() -> number
+//     Count of currently open (not yet closed) upvalues.
+//
+//   vmFramesMax() -> number
+//     Maximum call frame depth before stack overflow.
+//
+//   vmStackMax() -> number
+//     Maximum value stack slots (compile-time constant).
+//
+//   gcNextThreshold() -> number
+//     Byte threshold at which the next GC cycle will trigger.
+//
+//   gcCollectionCount() -> number
+//     Total number of GC cycles that have run this session.
+//
+//   internTableStats() -> dictionary
+//     Returns { "liveStrings": n, "slots": n, "tombstones": n }
+//     describing the string interning table's state.
+//
+//   env(name) -> string | nil
+//     Reads an environment variable.
+//     Returns nil if the variable does not exist.
+//     Returns "" (empty string) if the variable exists but is empty.
+//
+//   loadEnv([path]) -> nil
+//     Loads a .env file (KEY=VALUE lines) into the process environment.
+//     Existing variables are overwritten.
+//     Defaults to ".env" next to the executable if no path given.
+//
+//   abort(message, [exitCode]) -> never
+//     Immediately halts the VM with ELoxHalt. Default exit code is 1.
+//
+//   getCwd() -> string
+//     Returns the current working directory.
+//
+//   chdir(path) -> true
+//     Changes the working directory. Runtime error if path doesn't exist.
+// ============================================================
+
 interface
 
 procedure RegisterSystemNatives;
@@ -9,9 +83,24 @@ implementation
 uses
   System.SysUtils, Classes, Windows, Chunk_Types, NativeRegistry;
 
+var
+  // QueryPerformanceCounter state — initialized once at startup.
+  // QPCFrequency is the counter frequency in counts-per-second.
+  // QPCStart is captured once so clock() returns elapsed time relative
+  // to initialization rather than large absolute counter values
+  // (avoids float64 precision loss).
+  QPCFrequency: Int64;
+  QPCStart: Int64;
+
+// clock() -> number
+// Returns elapsed seconds since VM startup using a high-resolution
+// monotonic timer (QueryPerformanceCounter).
 function clockNative(argCount: integer; args: pValue): TValue;
+var
+  now: Int64;
 begin
-  Result := CreateNumber(GetTickCount / 1000.0);
+  QueryPerformanceCounter(now);
+  Result := CreateNumber((now - QPCStart) / QPCFrequency);
 end;
 
 function collectGarbageNative(argCount: integer; args: pValue): TValue;
@@ -154,7 +243,10 @@ end;
 
 function envNative(argCount: integer; args: pValue): TValue;
 var
-  name, val : AnsiString;
+  name: AnsiString;
+  nameW: string;
+  len: DWORD;
+  buf: string;
 begin
   if argCount <> 1 then
   begin
@@ -167,11 +259,24 @@ begin
     Exit(CreateNilValue);
   end;
   name := AsAnsiString(args[0]);
-  val := AnsiString(GetEnvironmentVariable(String(name)));
-  if val = '' then
-    Result := CreateNilValue
+  nameW := String(name);
+  // Use Win32 API directly to distinguish missing vs empty.
+  // GetEnvironmentVariableW returns 0 + ERROR_ENVVAR_NOT_FOUND if missing,
+  // or 0 with no error if the variable exists but is empty.
+  len := Windows.GetEnvironmentVariable(PChar(nameW), nil, 0);
+  if len = 0 then
+  begin
+    if GetLastError = ERROR_ENVVAR_NOT_FOUND then
+      Exit(CreateNilValue);
+    // Variable exists but is empty string
+    Result := CreateStringValue('');
+  end
   else
-    Result := CreateStringValue(val);
+  begin
+    SetLength(buf, len - 1);
+    Windows.GetEnvironmentVariable(PChar(nameW), PChar(buf), len);
+    Result := CreateStringValue(AnsiString(buf));
+  end;
 end;
 
 function loadEnvNative(argCount: integer; args: pValue): TValue;
@@ -323,6 +428,8 @@ begin
 end;
 
 initialization
+  QueryPerformanceFrequency(QPCFrequency);
+  QueryPerformanceCounter(QPCStart);
   RegisterNativeModule(RegisterSystemNatives);
 
 end.

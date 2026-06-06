@@ -1,0 +1,4 @@
+// compound_assign_bool_error.lox — += on a boolean should fail
+
+var b = true;
+b += 1; // expect runtime error: Operands must be two numbers or two strings.

@@ -1,0 +1,4 @@
+// compound_assign_missing_key_error.lox — += on missing dict key should fail
+
+var d = [:];
+d["missing"] += 5; // expect runtime error: Key not found in dictionary.

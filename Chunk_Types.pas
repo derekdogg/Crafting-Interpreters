@@ -114,8 +114,10 @@ const
   OP_GET_LOCAL_CONST_SUBTRACT = 66;  // Fused GET_LOCAL_N + CONSTANT + SUBTRACT. Operands: <slot> <const_idx>. Pushes locals[slot] - constants[const_idx].
   OP_ADD_SET_LOCAL_POP = 67;  // Fused ADD + SET_LOCAL_N + POP. Operand: <slot>. Adds top two stack values, stores to slot, pops both.
   OP_ADD_RETURN = 68;  // Fused ADD + RETURN. No operands. Adds top two, returns result to caller.
+  OP_DUP = 69;  // Duplicate top of stack. Push copy of stack[-1].
+  OP_DUP2 = 70;  // Duplicate top two stack slots. Push copies of stack[-2] and stack[-1].
 
-  OP_STRINGS : array[0..68] of string = (
+  OP_STRINGS : array[0..70] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -172,7 +174,9 @@ const
     'OP_LESS_JUMP_IF_FALSE',
     'OP_GET_LOCAL_CONST_SUBTRACT',
     'OP_ADD_SET_LOCAL_POP',
-    'OP_ADD_RETURN');
+    'OP_ADD_RETURN',
+    'OP_DUP',
+    'OP_DUP2');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 512;
@@ -234,6 +238,8 @@ type
     TOKEN_EQUAL, TOKEN_EQUAL_EQUAL,
     TOKEN_GREATER, TOKEN_GREATER_EQUAL,
     TOKEN_LESS, TOKEN_LESS_EQUAL,
+    TOKEN_PLUS_EQUAL, TOKEN_MINUS_EQUAL,
+    TOKEN_STAR_EQUAL, TOKEN_SLASH_EQUAL,
 
     // Literals
     TOKEN_IDENTIFIER, TOKEN_STRING, TOKEN_NUMBER,
@@ -961,6 +967,18 @@ const
 
     { TOKEN_LESS_EQUAL }
     (Prefix: nil;      Infix: binary;     Precedence: PREC_COMPARISON),
+
+    { TOKEN_PLUS_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_MINUS_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_STAR_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_SLASH_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_IDENTIFIER }
     (Prefix: variable; Infix: nil;     Precedence: PREC_NONE),
@@ -4663,6 +4681,19 @@ begin
           Dec(stack.StackTop);
         end;
 
+        OP_DUP: begin
+          // Push a copy of the top of stack.
+          stack.StackTop^ := stack.StackTop[-1];
+          Inc(stack.StackTop);
+        end;
+
+        OP_DUP2: begin
+          // Duplicate top two stack slots.
+          stack.StackTop[0] := stack.StackTop[-2];
+          stack.StackTop[1] := stack.StackTop[-1];
+          Inc(stack.StackTop, 2);
+        end;
+
         OP_POP_N: begin
           // Bulk discard. 1-byte operand N (1..255). Emitted by endScope to
           // collapse runs of locals leaving scope into a single dispatch.
@@ -6803,6 +6834,18 @@ begin
       // Single quote ends the string
       Break;
     end;
+    // Backslash escape: skip the next character so \" doesn't end the string
+    if Peek = '\' then
+    begin
+      Advance; // consume the backslash
+      if not IsAtEnd then
+      begin
+        if Peek = CHAR_LF then
+          Inc(scanner.Line);
+        Advance; // consume the escaped character
+      end;
+      Continue;
+    end;
     if Peek = CHAR_LF then
       Inc(scanner.Line);
 
@@ -6960,13 +7003,33 @@ begin
 
       '.': result :=  makeToken(TOKEN_DOT);
 
-      '-': result :=  makeToken(TOKEN_MINUS);
+      '-': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_MINUS_EQUAL)
+          else
+            Result := MakeToken(TOKEN_MINUS);
+        end;
 
-      '+': result :=  makeToken(TOKEN_PLUS);
+      '+': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_PLUS_EQUAL)
+          else
+            Result := MakeToken(TOKEN_PLUS);
+        end;
 
-      '/': result :=  makeToken(TOKEN_SLASH);
+      '/': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_SLASH_EQUAL)
+          else
+            Result := MakeToken(TOKEN_SLASH);
+        end;
 
-      '*': result :=  makeToken(TOKEN_STAR);
+      '*': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_STAR_EQUAL)
+          else
+            Result := MakeToken(TOKEN_STAR);
+        end;
 
       '%': result :=  makeToken(TOKEN_PERCENT);
 
@@ -7298,6 +7361,42 @@ var
   lexeme  : ansiString;
   strObj : pObjString;
   value  : TValue;
+
+  function ProcessEscapes(const s: AnsiString): AnsiString;
+  var
+    i: Integer;
+    ch: AnsiChar;
+    buf: AnsiString;
+  begin
+    buf := '';
+    i := 1;
+    while i <= Length(s) do
+    begin
+      if (s[i] = '\') and (i < Length(s)) then
+      begin
+        Inc(i);
+        ch := s[i];
+        case ch of
+          'n': buf := buf + #10;
+          't': buf := buf + #9;
+          'r': buf := buf + #13;
+          '\': buf := buf + '\';
+          '"': buf := buf + '"';
+          '0': buf := buf + #0;
+        else
+          begin
+            errorAt(parser.previous, PAnsiChar(AnsiString('Unknown escape sequence: \' + ch)));
+            buf := buf + '\' + ch;
+          end;
+        end;
+      end
+      else
+        buf := buf + s[i];
+      Inc(i);
+    end;
+    Result := buf;
+  end;
+
 begin
   {$IFOPT C+}
   Assert(parser.previous.tokenType = TOKEN_STRING, 'ParseString: expected TOKEN_STRING');
@@ -7310,6 +7409,8 @@ begin
     lexeme := Copy(lexeme, 2, Length(lexeme) - 2);
   // Collapse doubled quotes ("") into single quotes (")
   lexeme := AnsiString(StringReplace(string(lexeme), '""', '"', [rfReplaceAll]));
+  // Process backslash escape sequences
+  lexeme := ProcessEscapes(lexeme);
   // Push string onto stack to protect from GC until stored in constants.
   strObj := CreateString(lexeme,VM.MemTracker);
   pushStack(VM.Stack, StringToValue(strObj));
@@ -7545,15 +7646,26 @@ end;
 procedure forStatement();
 var
   loopStart, exitJump, bodyJump, incrementStart : integer;
+  loopVarSlot : integer;
+  innerVarSlot : integer;
+  loopVarName : TToken;
+  hasLoopVar : boolean;
 begin
   beginScope();
   consume(TOKEN_LEFT_PAREN, 'Expect ''('' after ''for''.');
 
   // Initializer
+  hasLoopVar := false;
   if matchToken(TOKEN_SEMICOLON) then
     // No initializer
   else if matchToken(TOKEN_VAR) then
-    varDeclaration()
+  begin
+    varDeclaration();
+    // Remember the loop variable so we can copy it per iteration
+    hasLoopVar := true;
+    loopVarSlot := Current^.localCount - 1;
+    loopVarName := Current^.locals[loopVarSlot].name;
+  end
   else
     expressionStatement();
 
@@ -7581,7 +7693,34 @@ begin
     patchJump(bodyJump);
   end;
 
+  // Per-iteration scope: copy the loop variable so closures get a fresh binding
+  if hasLoopVar then
+  begin
+    beginScope();
+    emitByte(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(loopVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
+    // Inline addLocal + markInitialized (declared later in unit)
+    Current^.locals[Current^.localCount].name := loopVarName;
+    Current^.locals[Current^.localCount].depth := Current^.scopeDepth;
+    Current^.locals[Current^.localCount].isCaptured := false;
+    innerVarSlot := Current^.localCount;
+    Inc(Current^.localCount);
+  end;
+
   statement();
+
+  if hasLoopVar then
+  begin
+    // Write the (possibly mutated) inner copy back to the outer loop variable
+    // so the increment/condition see updates made inside the body.
+    emitByte(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(innerVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(OP_SET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(loopVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    endScope();
+  end;
+
   emitLoop(loopStart);
 
   if exitJump <> -1 then
@@ -7904,6 +8043,18 @@ var
   getOp, setOp : byte;
   IntBytes : TIntToByteResult;
   isGlobalLong : boolean;
+  compoundOp : Byte;
+
+  function MatchCompoundAssign(out ArithOp: Byte): Boolean;
+  begin
+    Result := True;
+    if matchToken(TOKEN_PLUS_EQUAL) then ArithOp := OP_ADD
+    else if matchToken(TOKEN_MINUS_EQUAL) then ArithOp := OP_SUBTRACT
+    else if matchToken(TOKEN_STAR_EQUAL) then ArithOp := OP_MULTIPLY
+    else if matchToken(TOKEN_SLASH_EQUAL) then ArithOp := OP_DIVIDE
+    else Result := False;
+  end;
+
 begin
   arg := resolveLocal(Current, name);
   isGlobalLong := false;
@@ -7915,6 +8066,14 @@ begin
       if canAssign and matchToken(TOKEN_EQUAL) then
       begin
         Expression();
+        emitByte(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+      end
+      else if canAssign and MatchCompoundAssign(compoundOp) then
+      begin
+        // GET, expression, arithmetic op, SET
+        emitByte(Byte(OP_GET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+        Expression();
+        emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
         emitByte(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
       end
       else
@@ -7952,6 +8111,32 @@ begin
   if canAssign and matchToken(TOKEN_EQUAL) then
   begin
     Expression();
+    emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    if isGlobalLong then
+    begin
+      IntBytes := IntToBytes(arg);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+      emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else if canAssign and MatchCompoundAssign(compoundOp) then
+  begin
+    // Emit GET, expression, arithmetic op, SET
+    emitByte(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    if isGlobalLong then
+    begin
+      IntBytes := IntToBytes(arg);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+      emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+    Expression();
+    emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if isGlobalLong then
     begin
@@ -8053,6 +8238,18 @@ var
   nameIdx : integer;
   argCount : byte;
   IntBytes : TIntToByteResult;
+  compoundOp : Byte;
+
+  function MatchCompoundAssign(out ArithOp: Byte): Boolean;
+  begin
+    Result := True;
+    if matchToken(TOKEN_PLUS_EQUAL) then ArithOp := OP_ADD
+    else if matchToken(TOKEN_MINUS_EQUAL) then ArithOp := OP_SUBTRACT
+    else if matchToken(TOKEN_STAR_EQUAL) then ArithOp := OP_MULTIPLY
+    else if matchToken(TOKEN_SLASH_EQUAL) then ArithOp := OP_DIVIDE
+    else Result := False;
+  end;
+
 begin
   consume(TOKEN_IDENTIFIER, 'Expect property name after ''.''.');
   nameIdx := identifierConstant(parser.previous);
@@ -8060,6 +8257,39 @@ begin
   if canAssign and matchToken(TOKEN_EQUAL) then
   begin
     Expression();
+    if nameIdx <= High(Byte) then
+    begin
+      emitByte(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+    begin
+      emitByte(OP_SET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      IntBytes := IntToBytes(nameIdx);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end;
+  end
+  else if canAssign and MatchCompoundAssign(compoundOp) then
+  begin
+    // obj.field += expr → DUP obj, GET_PROPERTY, expr, op, SET_PROPERTY
+    emitByte(OP_DUP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    if nameIdx <= High(Byte) then
+    begin
+      emitByte(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+    begin
+      emitByte(OP_GET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      IntBytes := IntToBytes(nameIdx);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end;
+    Expression();
+    emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if nameIdx <= High(Byte) then
     begin
       emitByte(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8175,6 +8405,19 @@ begin
 end;
 
 procedure subscript_(canAssign: Boolean);
+var
+  compoundOp: Byte;
+
+  function MatchCompoundAssign(out ArithOp: Byte): Boolean;
+  begin
+    Result := True;
+    if matchToken(TOKEN_PLUS_EQUAL) then ArithOp := OP_ADD
+    else if matchToken(TOKEN_MINUS_EQUAL) then ArithOp := OP_SUBTRACT
+    else if matchToken(TOKEN_STAR_EQUAL) then ArithOp := OP_MULTIPLY
+    else if matchToken(TOKEN_SLASH_EQUAL) then ArithOp := OP_DIVIDE
+    else Result := False;
+  end;
+
 begin
   // The object being subscripted is already on the stack.
   // Parse the index/key expression between [ and ]
@@ -8185,6 +8428,15 @@ begin
   begin
     // a[expr] = value
     Expression();
+    emitByte(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else if canAssign and MatchCompoundAssign(compoundOp) then
+  begin
+    // a[key] += expr → DUP2 [obj,key], GET_SUBSCRIPT, expr, op, SET_SUBSCRIPT
+    emitByte(OP_DUP2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(OP_GET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
+    Expression();
+    emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else

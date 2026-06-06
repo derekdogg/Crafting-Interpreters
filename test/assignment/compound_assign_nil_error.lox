@@ -1,0 +1,4 @@
+// compound_assign_nil_error.lox — += on nil should fail
+
+var n = nil;
+n += 5; // expect runtime error: Operands must be two numbers or two strings.
