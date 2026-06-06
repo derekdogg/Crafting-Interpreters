@@ -7646,15 +7646,26 @@ end;
 procedure forStatement();
 var
   loopStart, exitJump, bodyJump, incrementStart : integer;
+  loopVarSlot : integer;
+  innerVarSlot : integer;
+  loopVarName : TToken;
+  hasLoopVar : boolean;
 begin
   beginScope();
   consume(TOKEN_LEFT_PAREN, 'Expect ''('' after ''for''.');
 
   // Initializer
+  hasLoopVar := false;
   if matchToken(TOKEN_SEMICOLON) then
     // No initializer
   else if matchToken(TOKEN_VAR) then
-    varDeclaration()
+  begin
+    varDeclaration();
+    // Remember the loop variable so we can copy it per iteration
+    hasLoopVar := true;
+    loopVarSlot := Current^.localCount - 1;
+    loopVarName := Current^.locals[loopVarSlot].name;
+  end
   else
     expressionStatement();
 
@@ -7682,7 +7693,34 @@ begin
     patchJump(bodyJump);
   end;
 
+  // Per-iteration scope: copy the loop variable so closures get a fresh binding
+  if hasLoopVar then
+  begin
+    beginScope();
+    emitByte(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(loopVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
+    // Inline addLocal + markInitialized (declared later in unit)
+    Current^.locals[Current^.localCount].name := loopVarName;
+    Current^.locals[Current^.localCount].depth := Current^.scopeDepth;
+    Current^.locals[Current^.localCount].isCaptured := false;
+    innerVarSlot := Current^.localCount;
+    Inc(Current^.localCount);
+  end;
+
   statement();
+
+  if hasLoopVar then
+  begin
+    // Write the (possibly mutated) inner copy back to the outer loop variable
+    // so the increment/condition see updates made inside the body.
+    emitByte(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(innerVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(OP_SET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(loopVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    endScope();
+  end;
+
   emitLoop(loopStart);
 
   if exitJump <> -1 then

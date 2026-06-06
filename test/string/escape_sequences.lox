@@ -95,5 +95,4 @@ assert(charAt(got2, 4) == chr(34), "doubled-quote works");
 assert(got1 == got2, "both escape styles produce identical strings");
 print "PASS: both quote escapes"; // expect: PASS: both quote escapes
 
-print "";
 print "All escape sequence tests passed."; // expect: All escape sequence tests passed.
