@@ -6,8 +6,7 @@ unit SystemNatives;
 // Registered functions:
 //
 //   clock() -> number
-//     Returns elapsed time in seconds (fractional) since the VM process
-//     started. Uses QueryPerformanceCounter for sub-microsecond precision.
+//     Returns elapsed seconds since VM startup. Monotonic, high-resolution.
 //     Typical use: delta-time calculation in game loops.
 //       var t0 = clock();
 //       // ... work ...
@@ -31,7 +30,7 @@ unit SystemNatives;
 //     Current value stack depth (number of slots in use).
 //
 //   vmStackCapacity() -> number
-//     Total allocated value stack slots.
+//     Total allocated stack slots (not bytes).
 //
 //   vmCallDepth() -> number
 //     Current call frame depth (how deep the call stack is).
@@ -56,10 +55,13 @@ unit SystemNatives;
 //     describing the string interning table's state.
 //
 //   env(name) -> string | nil
-//     Reads an environment variable. Returns nil if not set.
+//     Reads an environment variable.
+//     Returns nil if the variable does not exist.
+//     Returns "" (empty string) if the variable exists but is empty.
 //
 //   loadEnv([path]) -> nil
 //     Loads a .env file (KEY=VALUE lines) into the process environment.
+//     Existing variables are overwritten.
 //     Defaults to ".env" next to the executable if no path given.
 //
 //   abort(message, [exitCode]) -> never
@@ -82,18 +84,17 @@ uses
   System.SysUtils, Classes, Windows, Chunk_Types, NativeRegistry;
 
 var
-  // QueryPerformanceCounter state — initialized once at unit load.
-  // QPCFrequency is counts-per-second (typically 10MHz on modern Windows).
-  // QPCStart is the baseline counter so clock() returns a small value
-  // (avoids float64 precision loss from large raw counter values).
+  // QueryPerformanceCounter state — initialized once at startup.
+  // QPCFrequency is the counter frequency in counts-per-second.
+  // QPCStart is captured once so clock() returns elapsed time relative
+  // to initialization rather than large absolute counter values
+  // (avoids float64 precision loss).
   QPCFrequency: Int64;
   QPCStart: Int64;
 
 // clock() -> number
-// High-resolution monotonic timer. Returns seconds elapsed since process
-// start. Resolution is sub-microsecond (~100ns on most hardware).
-// Previously used GetTickCount (15.6ms granularity) which caused visible
-// stutter in frame-paced game loops.
+// Returns elapsed seconds since VM startup using a high-resolution
+// monotonic timer (QueryPerformanceCounter).
 function clockNative(argCount: integer; args: pValue): TValue;
 var
   now: Int64;
@@ -242,7 +243,10 @@ end;
 
 function envNative(argCount: integer; args: pValue): TValue;
 var
-  name, val : AnsiString;
+  name: AnsiString;
+  nameW: string;
+  len: DWORD;
+  buf: string;
 begin
   if argCount <> 1 then
   begin
@@ -255,11 +259,24 @@ begin
     Exit(CreateNilValue);
   end;
   name := AsAnsiString(args[0]);
-  val := AnsiString(GetEnvironmentVariable(String(name)));
-  if val = '' then
-    Result := CreateNilValue
+  nameW := String(name);
+  // Use Win32 API directly to distinguish missing vs empty.
+  // GetEnvironmentVariableW returns 0 + ERROR_ENVVAR_NOT_FOUND if missing,
+  // or 0 with no error if the variable exists but is empty.
+  len := Windows.GetEnvironmentVariable(PChar(nameW), nil, 0);
+  if len = 0 then
+  begin
+    if GetLastError = ERROR_ENVVAR_NOT_FOUND then
+      Exit(CreateNilValue);
+    // Variable exists but is empty string
+    Result := CreateStringValue('');
+  end
   else
-    Result := CreateStringValue(val);
+  begin
+    SetLength(buf, len - 1);
+    Windows.GetEnvironmentVariable(PChar(nameW), PChar(buf), len);
+    Result := CreateStringValue(AnsiString(buf));
+  end;
 end;
 
 function loadEnvNative(argCount: integer; args: pValue): TValue;

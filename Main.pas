@@ -441,8 +441,17 @@ begin
 end;
 
 procedure TForm4.HandleLivePrint(const Text: string);
+var
+  Normalized: string;
+  Lines: TArray<string>;
+  i: Integer;
 begin
-  Memo2.Lines.Add(Text);
+  // Normalize all line-ending variants to LF, then split for display
+  Normalized := StringReplace(Text, #13#10, #10, [rfReplaceAll]);
+  Normalized := StringReplace(Normalized, #13, #10, [rfReplaceAll]);
+  Lines := Normalized.Split([#10]);
+  for i := 0 to High(Lines) do
+    Memo2.Lines.Add(Lines[i]);
   Memo2.Update;
   Application.ProcessMessages;
 end;
@@ -493,6 +502,35 @@ var
     StateImages.Add(bmp, nil);
   end;
 
+  procedure DrawTick;
+  begin
+    bmp.Canvas.Brush.Color := clWhite;
+    bmp.Canvas.FillRect(Rect(0, 0, 16, 16));
+    bmp.Canvas.Pen.Color := clGreen;
+    bmp.Canvas.Pen.Width := 2;
+    // Draw a checkmark: short stroke down-right, then long stroke up-right
+    bmp.Canvas.MoveTo(2, 8);
+    bmp.Canvas.LineTo(6, 12);
+    bmp.Canvas.LineTo(14, 3);
+    bmp.Canvas.Pen.Width := 1;
+    StateImages.Add(bmp, nil);
+  end;
+
+  procedure DrawCross;
+  begin
+    bmp.Canvas.Brush.Color := clWhite;
+    bmp.Canvas.FillRect(Rect(0, 0, 16, 16));
+    bmp.Canvas.Pen.Color := clRed;
+    bmp.Canvas.Pen.Width := 2;
+    // Draw an X
+    bmp.Canvas.MoveTo(3, 3);
+    bmp.Canvas.LineTo(13, 13);
+    bmp.Canvas.MoveTo(13, 3);
+    bmp.Canvas.LineTo(3, 13);
+    bmp.Canvas.Pen.Width := 1;
+    StateImages.Add(bmp, nil);
+  end;
+
   procedure DrawCircle(AColor: TColor);
   begin
     bmp.Canvas.Brush.Color := clWhite;
@@ -513,11 +551,16 @@ begin
     bmp.Height := 16;
     bmp.PixelFormat := pf24bit;
 
-    DrawBox(clGray, False, ' ');      // 0: unchecked
-    DrawBox(clBlue, True, #$2713);    // 1: checked (checkmark)
-    DrawCircle(clGreen);              // 2: pass
-    DrawCircle(clRed);                // 3: fail
-    DrawCircle(clSilver);             // 4: skipped
+    // Index 0: blank (StateIndex 0 = no visible state)
+    bmp.Canvas.Brush.Color := clWhite;
+    bmp.Canvas.FillRect(Rect(0, 0, 16, 16));
+    StateImages.Add(bmp, nil);
+
+    DrawBox(clGray, False, ' ');      // 1: unchecked  (STATE_UNCHECKED)
+    DrawBox(clBlue, True, #$2713);    // 2: checked    (STATE_CHECKED)
+    DrawTick;                          // 3: pass       (STATE_PASS)
+    DrawCross;                         // 4: fail       (STATE_FAIL)
+    DrawCircle(clSilver);             // 5: skipped
   finally
     bmp.Free;
   end;

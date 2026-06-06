@@ -234,6 +234,8 @@ type
     TOKEN_EQUAL, TOKEN_EQUAL_EQUAL,
     TOKEN_GREATER, TOKEN_GREATER_EQUAL,
     TOKEN_LESS, TOKEN_LESS_EQUAL,
+    TOKEN_PLUS_EQUAL, TOKEN_MINUS_EQUAL,
+    TOKEN_STAR_EQUAL, TOKEN_SLASH_EQUAL,
 
     // Literals
     TOKEN_IDENTIFIER, TOKEN_STRING, TOKEN_NUMBER,
@@ -961,6 +963,18 @@ const
 
     { TOKEN_LESS_EQUAL }
     (Prefix: nil;      Infix: binary;     Precedence: PREC_COMPARISON),
+
+    { TOKEN_PLUS_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_MINUS_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_STAR_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_SLASH_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_IDENTIFIER }
     (Prefix: variable; Infix: nil;     Precedence: PREC_NONE),
@@ -6803,6 +6817,18 @@ begin
       // Single quote ends the string
       Break;
     end;
+    // Backslash escape: skip the next character so \" doesn't end the string
+    if Peek = '\' then
+    begin
+      Advance; // consume the backslash
+      if not IsAtEnd then
+      begin
+        if Peek = CHAR_LF then
+          Inc(scanner.Line);
+        Advance; // consume the escaped character
+      end;
+      Continue;
+    end;
     if Peek = CHAR_LF then
       Inc(scanner.Line);
 
@@ -6960,13 +6986,33 @@ begin
 
       '.': result :=  makeToken(TOKEN_DOT);
 
-      '-': result :=  makeToken(TOKEN_MINUS);
+      '-': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_MINUS_EQUAL)
+          else
+            Result := MakeToken(TOKEN_MINUS);
+        end;
 
-      '+': result :=  makeToken(TOKEN_PLUS);
+      '+': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_PLUS_EQUAL)
+          else
+            Result := MakeToken(TOKEN_PLUS);
+        end;
 
-      '/': result :=  makeToken(TOKEN_SLASH);
+      '/': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_SLASH_EQUAL)
+          else
+            Result := MakeToken(TOKEN_SLASH);
+        end;
 
-      '*': result :=  makeToken(TOKEN_STAR);
+      '*': begin
+          if Match('=') then
+            Result := MakeToken(TOKEN_STAR_EQUAL)
+          else
+            Result := MakeToken(TOKEN_STAR);
+        end;
 
       '%': result :=  makeToken(TOKEN_PERCENT);
 
@@ -7298,6 +7344,42 @@ var
   lexeme  : ansiString;
   strObj : pObjString;
   value  : TValue;
+
+  function ProcessEscapes(const s: AnsiString): AnsiString;
+  var
+    i: Integer;
+    ch: AnsiChar;
+    buf: AnsiString;
+  begin
+    buf := '';
+    i := 1;
+    while i <= Length(s) do
+    begin
+      if (s[i] = '\') and (i < Length(s)) then
+      begin
+        Inc(i);
+        ch := s[i];
+        case ch of
+          'n': buf := buf + #10;
+          't': buf := buf + #9;
+          'r': buf := buf + #13;
+          '\': buf := buf + '\';
+          '"': buf := buf + '"';
+          '0': buf := buf + #0;
+        else
+          begin
+            errorAt(parser.previous, PAnsiChar(AnsiString('Unknown escape sequence: \' + ch)));
+            buf := buf + '\' + ch;
+          end;
+        end;
+      end
+      else
+        buf := buf + s[i];
+      Inc(i);
+    end;
+    Result := buf;
+  end;
+
 begin
   {$IFOPT C+}
   Assert(parser.previous.tokenType = TOKEN_STRING, 'ParseString: expected TOKEN_STRING');
@@ -7310,6 +7392,8 @@ begin
     lexeme := Copy(lexeme, 2, Length(lexeme) - 2);
   // Collapse doubled quotes ("") into single quotes (")
   lexeme := AnsiString(StringReplace(string(lexeme), '""', '"', [rfReplaceAll]));
+  // Process backslash escape sequences
+  lexeme := ProcessEscapes(lexeme);
   // Push string onto stack to protect from GC until stored in constants.
   strObj := CreateString(lexeme,VM.MemTracker);
   pushStack(VM.Stack, StringToValue(strObj));
@@ -7904,6 +7988,18 @@ var
   getOp, setOp : byte;
   IntBytes : TIntToByteResult;
   isGlobalLong : boolean;
+  compoundOp : Byte;
+
+  function MatchCompoundAssign(out ArithOp: Byte): Boolean;
+  begin
+    Result := True;
+    if matchToken(TOKEN_PLUS_EQUAL) then ArithOp := OP_ADD
+    else if matchToken(TOKEN_MINUS_EQUAL) then ArithOp := OP_SUBTRACT
+    else if matchToken(TOKEN_STAR_EQUAL) then ArithOp := OP_MULTIPLY
+    else if matchToken(TOKEN_SLASH_EQUAL) then ArithOp := OP_DIVIDE
+    else Result := False;
+  end;
+
 begin
   arg := resolveLocal(Current, name);
   isGlobalLong := false;
@@ -7915,6 +8011,14 @@ begin
       if canAssign and matchToken(TOKEN_EQUAL) then
       begin
         Expression();
+        emitByte(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+      end
+      else if canAssign and MatchCompoundAssign(compoundOp) then
+      begin
+        // GET, expression, arithmetic op, SET
+        emitByte(Byte(OP_GET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+        Expression();
+        emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
         emitByte(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
       end
       else
@@ -7952,6 +8056,32 @@ begin
   if canAssign and matchToken(TOKEN_EQUAL) then
   begin
     Expression();
+    emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    if isGlobalLong then
+    begin
+      IntBytes := IntToBytes(arg);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+      emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else if canAssign and MatchCompoundAssign(compoundOp) then
+  begin
+    // Emit GET, expression, arithmetic op, SET
+    emitByte(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    if isGlobalLong then
+    begin
+      IntBytes := IntToBytes(arg);
+      emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    end
+    else
+      emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+    Expression();
+    emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if isGlobalLong then
     begin

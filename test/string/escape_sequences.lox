@@ -1,0 +1,99 @@
+// ============================================================
+// escape_sequences.lox — Tests for backslash escape sequences
+// Verifies via file round-trip (writeFile/readFile) to avoid
+// any display-layer issues with TMemo.
+// ============================================================
+
+fun contains(haystack, needle) {
+  return indexOf(haystack, needle) >= 0;
+}
+
+// --- Test 1: \n produces a newline (LF) ---
+var nl = "hello\nworld";
+writeFile("test_esc.tmp", nl);
+var got = readFile("test_esc.tmp");
+assert(strlen(got) == 11, "\\n: length should be 11");
+assert(charAt(got, 5) == chr(10), "\\n: char at 5 should be LF");
+print "PASS: \\n"; // expect: PASS: \n
+
+// --- Test 2: \t produces a tab ---
+var tb = "col1\tcol2";
+writeFile("test_esc.tmp", tb);
+got = readFile("test_esc.tmp");
+assert(strlen(got) == 9, "\\t: length should be 9");
+assert(charAt(got, 4) == chr(9), "\\t: char at 4 should be TAB");
+print "PASS: \\t"; // expect: PASS: \t
+
+// --- Test 3: \r produces a carriage return ---
+var cr = "line\rback";
+writeFile("test_esc.tmp", cr);
+got = readFile("test_esc.tmp");
+assert(strlen(got) == 9, "\\r: length should be 9");
+assert(charAt(got, 4) == chr(13), "\\r: char at 4 should be CR");
+print "PASS: \\r"; // expect: PASS: \r
+
+// --- Test 4: \\ produces a literal backslash ---
+var bs = "C:\\Users\\file";
+writeFile("test_esc.tmp", bs);
+got = readFile("test_esc.tmp");
+assert(strlen(got) == 13, "\\\\: length should be 13");
+assert(charAt(got, 2) == chr(92), "\\\\: char at 2 should be backslash");
+print "PASS: \\\\"; // expect: PASS: \\
+
+// --- Test 5: \" produces a literal double quote ---
+var qt = "He said \"hi\"";
+writeFile("test_esc.tmp", qt);
+got = readFile("test_esc.tmp");
+assert(strlen(got) == 12, "\\\": length should be 12");
+assert(charAt(got, 8) == chr(34), "\\\": char at 8 should be double-quote");
+print "PASS: \\\""; // expect: PASS: \"
+
+// --- Test 6: \0 produces a null byte ---
+var nu = "ab\0cd";
+writeFile("test_esc.tmp", nu);
+got = readFile("test_esc.tmp");
+assert(strlen(got) == 5, "\\0: length should be 5");
+assert(charAt(got, 2) == chr(0), "\\0: char at 2 should be NULL");
+print "PASS: \\0"; // expect: PASS: \0
+
+// --- Test 7: Multiple escapes in one string ---
+var multi = "a\tb\nc\\d\"e";
+writeFile("test_esc.tmp", multi);
+got = readFile("test_esc.tmp");
+assert(strlen(got) == 9, "multi: length should be 9");
+assert(charAt(got, 1) == chr(9), "multi: pos 1 should be TAB");
+assert(charAt(got, 3) == chr(10), "multi: pos 3 should be LF");
+assert(charAt(got, 5) == chr(92), "multi: pos 5 should be backslash");
+assert(charAt(got, 7) == chr(34), "multi: pos 7 should be quote");
+print "PASS: multiple escapes"; // expect: PASS: multiple escapes
+
+// --- Test 8: Escape at start and end of string ---
+var edges = "\nedge\t";
+writeFile("test_esc.tmp", edges);
+got = readFile("test_esc.tmp");
+assert(charAt(got, 0) == chr(10), "edges: pos 0 should be LF");
+assert(charAt(got, 5) == chr(9), "edges: pos 5 should be TAB");
+print "PASS: edge positions"; // expect: PASS: edge positions
+
+// --- Test 9: Doubled-quote ("") still works for backwards compat ---
+var dq = "She said ""hello""";
+writeFile("test_esc.tmp", dq);
+got = readFile("test_esc.tmp");
+assert(strlen(got) == 16, "doubled quotes: length should be 16");
+assert(charAt(got, 9) == chr(34), "doubled quote produces double-quote char");
+print "PASS: doubled quotes"; // expect: PASS: doubled quotes
+
+// --- Test 10: \" and "" both produce the same quote character ---
+var esc_q = "say \"hi\"";
+var dbl_q = "say ""hi""";
+writeFile("test_esc.tmp", esc_q);
+var got1 = readFile("test_esc.tmp");
+writeFile("test_esc.tmp", dbl_q);
+var got2 = readFile("test_esc.tmp");
+assert(charAt(got1, 4) == chr(34), "backslash-quote works");
+assert(charAt(got2, 4) == chr(34), "doubled-quote works");
+assert(got1 == got2, "both escape styles produce identical strings");
+print "PASS: both quote escapes"; // expect: PASS: both quote escapes
+
+print "";
+print "All escape sequence tests passed."; // expect: All escape sequence tests passed.

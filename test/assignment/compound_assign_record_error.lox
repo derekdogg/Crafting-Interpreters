@@ -1,0 +1,5 @@
+// compound_assign_record_error.lox — -= on a record instance should fail
+
+record Point { x, y }
+var p = Point(1, 2);
+p -= 1; // expect runtime error: Operands must be numbers.

@@ -1,0 +1,4 @@
+// compound_assign_array_error.lox — += on an array should fail
+
+var a = newArray();
+a += 1; // expect runtime error: Operands must be two numbers or two strings.
