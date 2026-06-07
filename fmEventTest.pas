@@ -3,6 +3,7 @@ unit fmEventTest;
 // ============================================================
 // Lightweight test form for event-driven callback processing.
 // Uses TLoxEventEngine for reusable event dispatch.
+// Hosts a TLoxGameCanvas for rendering + canvas natives.
 // ============================================================
 
 interface
@@ -25,10 +26,17 @@ type
       Shift: TShiftState; X, Y: Integer);
     procedure Panel1MouseUp(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
+    procedure Panel1MouseMove(Sender: TObject; Shift: TShiftState;
+      X, Y: Integer);
     procedure Panel1Click(Sender: TObject);
   private
     FEngine: TLoxEventEngine;
     procedure Log(const Msg: string);
+    procedure CanvasKeyDown(Sender: TObject; const KeyName: string);
+    procedure CanvasKeyUp(Sender: TObject; const KeyName: string);
+    procedure CanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
+    procedure CanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
+    procedure CanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
   public
     function RunScript(const Source: AnsiString): TInterpretResult;
   end;
@@ -39,7 +47,7 @@ var
 implementation
 
 uses
-  Main;
+  LoxCanvas, LoxSound, Main;
 
 {$R *.dfm}
 
@@ -49,6 +57,7 @@ procedure TfrmEventTest.FormCreate(Sender: TObject);
 begin
   FEngine := TLoxEventEngine.Create;
   FEngine.OnLog := Log;
+  Panel1.OnMouseMove := Panel1MouseMove;
 end;
 
 procedure TfrmEventTest.FormDestroy(Sender: TObject);
@@ -108,9 +117,42 @@ begin
     FEngine.QueueMouseUp(btn, X, Y);
 end;
 
+procedure TfrmEventTest.Panel1MouseMove(Sender: TObject; Shift: TShiftState;
+  X, Y: Integer);
+begin
+  FEngine.QueueMouseMove(X, Y);
+end;
+
 procedure TfrmEventTest.Panel1Click(Sender: TObject);
 begin
   // Ensure focus stays on the form for key events
+end;
+
+// --- Canvas event handlers (forwarded to the event engine) ---
+
+procedure TfrmEventTest.CanvasKeyDown(Sender: TObject; const KeyName: string);
+begin
+  FEngine.QueueKeyDown(KeyName);
+end;
+
+procedure TfrmEventTest.CanvasKeyUp(Sender: TObject; const KeyName: string);
+begin
+  FEngine.QueueKeyUp(KeyName);
+end;
+
+procedure TfrmEventTest.CanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
+begin
+  FEngine.QueueMouseDown(Button, LX, LY);
+end;
+
+procedure TfrmEventTest.CanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
+begin
+  FEngine.QueueMouseUp(Button, LX, LY);
+end;
+
+procedure TfrmEventTest.CanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
+begin
+  FEngine.QueueMouseMove(LX, LY);
 end;
 
 procedure TfrmEventTest.Log(const Msg: string);
@@ -130,14 +172,25 @@ begin
   Show;
   BringToFront;
 
+  // Create the canvas parented to Panel1
+  InitCanvas(Panel1);
+  GameCanvas.OnGameKeyDown := CanvasKeyDown;
+  GameCanvas.OnGameKeyUp := CanvasKeyUp;
+  GameCanvas.OnGameMouseDown := CanvasMouseDown;
+  GameCanvas.OnGameMouseUp := CanvasMouseUp;
+  GameCanvas.OnGameMouseMove := CanvasMouseMove;
+
+  if GameCanvas.CanFocus then
+    GameCanvas.SetFocus;
+
   InitVM;
   try
     VM.OnPrint := Form4.HandleLivePrint;
 
-    // Register event natives (includes processEvents)
+    // Register canvas + sound + event natives
+    RegisterCanvasNatives;
+    RegisterSoundNatives;
     FEngine.RegisterNatives;
-
-    // GC-root the callback slots
     FEngine.RegisterGCRoots;
 
     Result := CompileAndRun(PAnsiChar(Source));
@@ -147,6 +200,8 @@ begin
   finally
     FEngine.UnregisterGCRoots;
     FreeVM;
+    StopAllSound;
+    FreeCanvas;
     FEngine.Running := False;
   end;
 end;

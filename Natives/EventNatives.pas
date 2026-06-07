@@ -3,10 +3,10 @@ unit EventNatives;
 // ============================================================
 // Native functions for the Lox event engine.
 // Registers: onKeyPressed, onKeyReleased, onKeyHeld,
-//            onMouseDown, onMouseUp, processEvents
+//            onMouseDown, onMouseUp, onMouseMove, processEvents
 // Also provides simulation natives for scripted testing:
 //            simulateKeyDown, simulateKeyUp,
-//            simulateMouseDown, simulateMouseUp
+//            simulateMouseDown, simulateMouseUp, simulateMouseMove
 // ============================================================
 
 interface
@@ -75,6 +75,17 @@ begin
     Exit(CreateNilValue);
   end;
   ActiveEngine.SetCallback(eckMouseUp, args[0]);
+  Result := CreateNilValue;
+end;
+
+function onMouseMoveNative(argCount: integer; args: pValue): TValue;
+begin
+  if (argCount <> 1) or not isClosure(args[0]) then
+  begin
+    RuntimeError('onMouseMove() takes 1 function argument.');
+    Exit(CreateNilValue);
+  end;
+  ActiveEngine.SetCallback(eckMouseMove, args[0]);
   Result := CreateNilValue;
 end;
 
@@ -162,6 +173,21 @@ begin
   Result := CreateNilValue;
 end;
 
+function simulateMouseMoveNative(argCount: integer; args: pValue): TValue;
+var
+  x, y: Integer;
+begin
+  if (argCount <> 2) or not isNumber(args[0]) or not isNumber(args[1]) then
+  begin
+    RuntimeError('simulateMouseMove() takes 2 number arguments (x, y).');
+    Exit(CreateNilValue);
+  end;
+  x := Trunc(GetNumber(args[0]));
+  y := Trunc(GetNumber(args[1]));
+  ActiveEngine.QueueMouseMove(x, y);
+  Result := CreateNilValue;
+end;
+
 // --- Registration ---
 
 procedure RegisterEventNatives;
@@ -171,12 +197,14 @@ begin
   defineNative('onKeyHeld', onKeyHeldNative, 1);
   defineNative('onMouseDown', onMouseDownNative, 1);
   defineNative('onMouseUp', onMouseUpNative, 1);
+  defineNative('onMouseMove', onMouseMoveNative, 1);
   defineNative('processEvents', processEventsNative, 0);
   // Simulation natives (for scripted testing — queue events without VCL)
   defineNative('simulateKeyDown', simulateKeyDownNative, 1);
   defineNative('simulateKeyUp', simulateKeyUpNative, 1);
   defineNative('simulateMouseDown', simulateMouseDownNative, 3);
   defineNative('simulateMouseUp', simulateMouseUpNative, 3);
+  defineNative('simulateMouseMove', simulateMouseMoveNative, 2);
 end;
 
 end.

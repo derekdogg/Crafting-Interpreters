@@ -105,6 +105,18 @@ begin
     begin
       Result := Form4.FClosing or FAbortScript;
     end;
+
+  // Ensure canvas is parented here (fmEventTest may have freed it)
+  if GameCanvas = nil then
+  begin
+    InitCanvas(Self);
+    GameCanvas.OnGameKeyDown := GameCanvasKeyDown;
+    GameCanvas.OnGameKeyUp := GameCanvasKeyUp;
+    GameCanvas.OnGameMouseDown := GameCanvasMouseDown;
+    GameCanvas.OnGameMouseUp := GameCanvasMouseUp;
+    GameCanvas.OnGameMouseMove := GameCanvasMouseMove;
+  end;
+
   InitVM;
   try
     VM.OnPrint := Form4.HandleLivePrint;
@@ -254,6 +266,7 @@ begin
   // processMessages() calls.
   if not FEventQueue.ReplaceTailIfPrefix('mousemove:', Msg) then
     FEventQueue.Enqueue(Msg);
+  FEngine.QueueMouseMove(LX, LY);
 end;
 
 procedure TfrmGame.EngineLog(const Msg: string);

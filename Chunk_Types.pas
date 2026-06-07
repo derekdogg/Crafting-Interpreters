@@ -6736,7 +6736,12 @@ begin
   if VM.MemTracker.GrayStack <> nil then
     FreeMem(VM.MemTracker.GrayStack);
   VM.MemTracker.GrayStack := nil;
-  Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
+//  Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
+  if VM.MemTracker.BytesAllocated <> 0 then
+  begin
+    raise Exception.Create('Mem Tracker has not disposed all bytes');
+  end;
+
   FreeMemTracker(VM.MemTracker);
   dispose(VM);
   VM := nil;

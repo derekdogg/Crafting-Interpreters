@@ -1,0 +1,34 @@
+// Test: onMouseMove fires once per frame with the latest position.
+// Multiple simulateMouseMove calls between processEvents() should coalesce.
+
+var lastX = -1;
+var lastY = -1;
+var moveCount = 0;
+
+onMouseMove(fun(x, y) {
+  lastX = x;
+  lastY = y;
+  moveCount = moveCount + 1;
+});
+
+// Simulate multiple moves before a single processEvents
+simulateMouseMove(10, 20);
+simulateMouseMove(30, 40);
+simulateMouseMove(50, 60);
+processEvents();
+
+// Only one callback fired, with the latest position
+print str(moveCount); // expect: 1
+print str(lastX);     // expect: 50
+print str(lastY);     // expect: 60
+
+// Second frame: no movement, no callback
+processEvents();
+print str(moveCount); // expect: 1
+
+// Third frame: new movement
+simulateMouseMove(100, 200);
+processEvents();
+print str(moveCount); // expect: 2
+print str(lastX);     // expect: 100
+print str(lastY);     // expect: 200
