@@ -526,6 +526,11 @@ type
     Globals         : pTable;
     OpenUpvalues    : pObjUpvalue;
     RuntimeErrorStr : String;
+    // External GC roots: Delphi-side TValue slots that hold Lox objects
+    // (e.g. closures stored by native libraries for callbacks). The mark
+    // phase walks these so the GC doesn't collect live callback closures.
+    ExtraRoots      : array of pValue;
+    ExtraRootCount  : Integer;
     // Print output is accumulated through a TStringBuilder to avoid the O(n^2)
     // copy cost of repeated `s := s + ...` on a managed string. Callers that
     // need the materialised text read VM.PrintBuilder.ToString; resets call
@@ -759,7 +764,11 @@ procedure InitVM();
 function CompileAndRun(source : pAnsiChar) : TInterpretResult;
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
 procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
-function Run : TInterpretResult;
+function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
+function InvokeCallback(closure: TValue; const args: array of TValue;
+  out returnVal: TValue): TInterpretResult;
+procedure RegisterGCRoot(var slot: TValue);
+procedure UnregisterGCRoot(var slot: TValue);
 procedure FreeObjects(objects: pObj);
 procedure FreeVM();
 
@@ -826,6 +835,7 @@ procedure call(canAssign: Boolean);
 procedure dot_(canAssign: Boolean);
 procedure subscript_(canAssign: Boolean);
 procedure arrayLiteral(canAssign: Boolean);
+procedure lambda(canAssign: Boolean);
 procedure and_(canAssign: Boolean);
 procedure or_(canAssign: Boolean);
 procedure beginScope(); inline;
@@ -877,6 +887,7 @@ function isNumber(const Value: TValue): Boolean; inline;
 function isBoolean(const Value: TValue): Boolean; inline;
 function isObject(value : TValue) : boolean; inline;
 function isNill(const Value: TValue): Boolean; inline;
+function isClosure(value : TValue) : boolean; inline;
 function GetNumber(Value : TValue) : double; inline;
 function GetBoolean(const Value : TValue) : Boolean; inline;
 function GetObject(const value : TValue) : pObj; inline;
@@ -1005,7 +1016,7 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_FUN }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: lambda;   Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_IF }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -4195,7 +4206,7 @@ end;
 
 
 
-function Run : TInterpretResult;
+function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
 var
   frame : pCallFrame;  // Cached pointer to current executing frame.
                         // Derived from VM.Frames[VM.FrameCount - 1].
@@ -4372,12 +4383,18 @@ begin
             closeUpvalues(frame^.slots);
 
           Dec(VM.FrameCount);
-          if VM.FrameCount = 0 then
+          if VM.FrameCount <= baselineFrameCount then
           begin
-            // Clean the stack window: drop the two operands (or concatenated
-            // result) plus the script-function slot, matching OP_RETURN.
+            // Clean the stack window
             stack.StackTop := frame^.slots;
-            Dec(stack.StackTop);
+            if baselineFrameCount = 0 then
+              Dec(stack.StackTop);
+            // For re-entrant calls, push return value so InvokeCallback can pop it.
+            if baselineFrameCount > 0 then
+            begin
+              stack.StackTop^ := value;
+              Inc(stack.StackTop);
+            end;
             Result.Code := INTERPRET_OK;
             Result.value := value;
             Exit(Result);
@@ -4402,9 +4419,19 @@ begin
             closeUpvalues(frame^.slots);
 
           Dec(VM.FrameCount);
-          if VM.FrameCount = 0 then
+          if VM.FrameCount <= baselineFrameCount then
           begin
-            Dec(stack.StackTop); // pop the script function
+            // Discard the returning function's stack window
+            stack.StackTop := frame^.slots;
+            if baselineFrameCount = 0 then
+              Dec(stack.StackTop); // pop the script function
+            // For re-entrant calls (baselineFrameCount > 0), push return
+            // value so InvokeCallback can pop it.
+            if baselineFrameCount > 0 then
+            begin
+              stack.StackTop^ := value;
+              Inc(stack.StackTop);
+            end;
             Result.Code := INTERPRET_OK;
             Result.value := value;
             Exit(Result);
@@ -5681,6 +5708,99 @@ begin
 
 end;
 
+function InvokeCallback(closure: TValue; const args: array of TValue;
+  out returnVal: TValue): TInterpretResult;
+var
+  closurePtr: pObjClosure;
+  i, argCount: Integer;
+begin
+  Result := Default(TInterpretResult);
+  returnVal := CreateNilValue;
+
+  // Validate closure
+  if not isClosure(closure) then
+  begin
+    runtimeError('InvokeCallback: value is not a callable closure.');
+    Result.code := INTERPRET_RUNTIME_ERROR;
+    Exit;
+  end;
+
+  closurePtr := pObjClosure(GetObject(closure));
+  argCount := Length(args);
+
+  // Arity check
+  if argCount <> closurePtr^.func^.arity then
+  begin
+    runtimeError('InvokeCallback: expected ' + IntToStr(closurePtr^.func^.arity) +
+      ' arguments but got ' + IntToStr(argCount) + '.');
+    Result.code := INTERPRET_RUNTIME_ERROR;
+    Exit;
+  end;
+
+  // Stack overflow check
+  if VM.FrameCount >= FRAMES_MAX then
+  begin
+    runtimeError('InvokeCallback: stack overflow (max ' + IntToStr(FRAMES_MAX) + ' frames).');
+    Result.code := INTERPRET_RUNTIME_ERROR;
+    Exit;
+  end;
+
+  // Push closure (slot 0 of new frame)
+  pushStack(VM.Stack, closure);
+  // Push arguments
+  for i := 0 to argCount - 1 do
+    pushStack(VM.Stack, args[i]);
+
+  // Set up call frame (same as OP_CALL closure fast-path)
+  VM.Frames[VM.FrameCount].closure := closurePtr;
+  VM.Frames[VM.FrameCount].ip := closurePtr^.func^.chunk^.Code;
+  VM.Frames[VM.FrameCount].slots := VM.Stack.StackTop;
+  Dec(VM.Frames[VM.FrameCount].slots, argCount + 1);
+  Inc(VM.FrameCount);
+
+  // Run until this frame returns
+  Result := Run(VM.FrameCount - 1);
+
+  // Pop return value (Run leaves it on the stack for re-entrant calls)
+  if Result.code = INTERPRET_OK then
+  begin
+    returnVal := Result.value;
+    // Clean up: return value was pushed by OP_RETURN onto the caller's stack
+    // position. For a re-entrant call, OP_RETURN already set StackTop to
+    // frame^.slots and pushed the value. We need to pop it.
+    Dec(VM.Stack.StackTop);
+  end;
+end;
+
+procedure RegisterGCRoot(var slot: TValue);
+begin
+  // Grow dynamic array if needed
+  if VM.ExtraRootCount >= Length(VM.ExtraRoots) then
+  begin
+    if Length(VM.ExtraRoots) = 0 then
+      SetLength(VM.ExtraRoots, 8)
+    else
+      SetLength(VM.ExtraRoots, Length(VM.ExtraRoots) * 2);
+  end;
+  VM.ExtraRoots[VM.ExtraRootCount] := @slot;
+  Inc(VM.ExtraRootCount);
+end;
+
+procedure UnregisterGCRoot(var slot: TValue);
+var
+  i: Integer;
+begin
+  for i := 0 to VM.ExtraRootCount - 1 do
+  begin
+    if VM.ExtraRoots[i] = @slot then
+    begin
+      // Swap with last and shrink
+      VM.ExtraRoots[i] := VM.ExtraRoots[VM.ExtraRootCount - 1];
+      Dec(VM.ExtraRootCount);
+      Exit;
+    end;
+  end;
+end;
 
 
 
@@ -6076,6 +6196,10 @@ begin
 
   // Mark globals table
   MarkTable(VM.Globals);
+
+  // Mark extra roots (externally-held closures for callbacks)
+  for i := 0 to VM.ExtraRootCount - 1 do
+    MarkValue(VM.ExtraRoots[i]^);
 
   // Mark compiler roots
   MarkCompilerRoots;
@@ -8526,6 +8650,21 @@ begin
   markInitialized();
   functionBody(TYPE_FUNCTION);
   defineVariable(global);
+end;
+
+procedure lambda(canAssign: Boolean);
+begin
+  // If followed by an identifier, this is a named function declaration
+  // misplaced in expression position — not a valid anonymous function.
+  if check(TOKEN_IDENTIFIER) then
+  begin
+    Error('Expect expression.');
+    Exit;
+  end;
+  // Anonymous function expression: fun(params) { body }
+  // Compiles exactly like a named function but without binding to a variable.
+  // The closure value is left on the stack as an expression result.
+  functionBody(TYPE_FUNCTION);
 end;
 
 procedure recordDeclaration();

@@ -1,0 +1,792 @@
+// ============================================================
+// Space Invaders — Event-Callback Edition
+// Uses onKeyPressed/onKeyHeld/onMouseDown instead of polling.
+// ============================================================
+
+setCanvasSize(480, 720);
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+var SPR = 2;
+
+// --- Player ---
+var playerW = 13 * SPR;
+var playerH = 7 * SPR;
+var playerX = w / 2 - playerW / 2;
+var playerY = h - 30;
+var playerSpeed = 140;
+
+// --- Input state (set by callbacks) ---
+var moveLeft = false;
+var moveRight = false;
+var fireRequested = false;
+var restartRequested = false;
+
+// --- Player bullets ---
+var maxPlayerBullets = 3;
+var bulletX = newArray();
+var bulletY = newArray();
+var bulletActive = newArray();
+var bulletW = 3;
+var bulletH = 8;
+var bulletSpeed = 260;
+
+var i = 0;
+while (i < maxPlayerBullets) {
+  arrayPush(bulletX, 0);
+  arrayPush(bulletY, 0);
+  arrayPush(bulletActive, false);
+  i = i + 1;
+}
+
+// --- Invaders grid ---
+var cols = 7;
+var rows = 4;
+var invW = 12 * SPR;
+var invH = 10 * SPR;
+var invPadX = 6;
+var invPadY = 6;
+var invGridW = cols * (invW + invPadX) - invPadX;
+
+var invCount = cols * rows;
+var invAlive = newArray();
+i = 0;
+while (i < invCount) {
+  arrayPush(invAlive, true);
+  i = i + 1;
+}
+var aliveCount = invCount;
+
+var invOffsetX = (w - invGridW) / 2;
+var invOffsetY = 40;
+var invDirX = 1;
+var invSpeedX = 18;
+var invDropAmount = 12;
+var invMoveTimer = 0;
+var invMoveInterval = 0.6;
+
+// --- Enemy bullets ---
+var maxEnemyBullets = 4;
+var eBulletX = newArray();
+var eBulletY = newArray();
+var eBulletActive = newArray();
+var eBulletW = 3;
+var eBulletH = 8;
+var eBulletSpeed = 130;
+var enemyShootTimer = 0;
+var enemyShootInterval = 1.2;
+
+i = 0;
+while (i < maxEnemyBullets) {
+  arrayPush(eBulletX, 0);
+  arrayPush(eBulletY, 0);
+  arrayPush(eBulletActive, false);
+  i = i + 1;
+}
+
+// --- Game state ---
+var score = 0;
+var lives = 3;
+var running = true;
+var gameOver = false;
+var lastTime = clock();
+
+// --- Helpers ---
+fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  if (ax + aw <= bx) return false;
+  if (bx + bw <= ax) return false;
+  if (ay + ah <= by) return false;
+  if (by + bh <= ay) return false;
+  return true;
+}
+
+fun invaderX(col) {
+  return invOffsetX + col * (invW + invPadX);
+}
+
+fun invaderY(row) {
+  return invOffsetY + row * (invH + invPadY);
+}
+
+fun pickShooterColumn() {
+  var r = rows - 1;
+  while (r >= 0) {
+    var aliveCols = newArray();
+    var c = 0;
+    while (c < cols) {
+      if (arrayGet(invAlive, r * cols + c)) {
+        arrayPush(aliveCols, c);
+      }
+      c = c + 1;
+    }
+    if (arrayLen(aliveCols) > 0) {
+      var pick = floor(random() * arrayLen(aliveCols));
+      return r * cols + arrayGet(aliveCols, pick);
+    }
+    r = r - 1;
+  }
+  return -1;
+}
+
+fun resetPlayer() {
+  playerX = w / 2 - playerW / 2;
+  var b = 0;
+  while (b < maxPlayerBullets) {
+    arraySet(bulletActive, b, false);
+    b = b + 1;
+  }
+}
+
+// --- Sprites ---
+var invSprites = newArray();
+var invFrame = 0;
+var marchStep = 0;
+
+setPaletteColor("R", 255, 50, 50);
+setPaletteColor("O", 255, 150, 50);
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  "....RRRR...." +
+  "..RRRRRRRR.." +
+  ".RRO.RR.ORR." +
+  ".RRRRRRRRRR." +
+  "..RRRRRRRR.." +
+  "...RRRRRR..." +
+  "..RR.RR.RR.." +
+  ".RR..RR..RR." +
+  "RR...RR...RR" +
+  ".R........R."
+));
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  "....RRRR...." +
+  "..RRRRRRRR.." +
+  ".RRO.RR.ORR." +
+  ".RRRRRRRRRR." +
+  "..RRRRRRRR.." +
+  "...RRRRRR..." +
+  ".RRR.RR.RRR." +
+  "RR...RR...RR" +
+  ".RR..RR..RR." +
+  "..R..RR..R.."
+));
+
+setPaletteColor("B", 255, 150, 50);
+setPaletteColor("Y", 255, 255, 50);
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  "....BBBB...." +
+  "..BBBBBBBB.." +
+  ".BBY.BB.YBB." +
+  "BBBBBBBBBBBB" +
+  ".BBBBBBBBBB." +
+  "..BBBBBBBB.." +
+  ".BB.BBBB.BB." +
+  "BB..BBBB..BB" +
+  ".B...BB...B." +
+  "B..........B"
+));
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  "....BBBB...." +
+  "..BBBBBBBB.." +
+  ".BBY.BB.YBB." +
+  "BBBBBBBBBBBB" +
+  ".BBBBBBBBBB." +
+  "..BBBBBBBB.." +
+  "..BB.BB.BB.." +
+  "..B.BBBB.B.." +
+  ".BB..BB..BB." +
+  "B....BB....B"
+));
+
+setPaletteColor("Y", 255, 255, 50);
+setPaletteColor("W", 255, 255, 255);
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  ".Y........Y." +
+  "..Y.YYYY.Y.." +
+  "..YYYYYYYY.." +
+  ".YYW.YY.WYY." +
+  ".YYYYYYYYYY." +
+  "YYYYYYYYYYYY" +
+  ".YYY.YY.YYY." +
+  "..YY.YY.YY.." +
+  "..Y..YY..Y.." +
+  ".Y...YY...Y."
+));
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  ".Y........Y." +
+  "..Y.YYYY.Y.." +
+  "..YYYYYYYY.." +
+  ".YYW.YY.WYY." +
+  ".YYYYYYYYYY." +
+  "YYYYYYYYYYYY" +
+  ".YYY.YY.YYY." +
+  "..YYYYYYYY.." +
+  ".Y...YY...Y." +
+  "..Y..YY..Y.."
+));
+
+setPaletteColor("G", 50, 255, 50);
+setPaletteColor("L", 150, 255, 100);
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  "...GGGGGG..." +
+  "..GGGGGGGG.." +
+  ".GGL.GG.LGG." +
+  "GGGGGGGGGGGG" +
+  "GGGGGGGGGGGG" +
+  ".GGG.GG.GGG." +
+  ".GG..GG..GG." +
+  "GG...GG...GG" +
+  "G....GG....G" +
+  ".G..G..G..G."
+));
+arrayPush(invSprites, createPaletteSprite(12, 10,
+  "...GGGGGG..." +
+  "..GGGGGGGG.." +
+  ".GGL.GG.LGG." +
+  "GGGGGGGGGGGG" +
+  "GGGGGGGGGGGG" +
+  ".GGG.GG.GGG." +
+  "GG...GG...GG" +
+  ".GG..GG..GG." +
+  "..GG.GG.GG.." +
+  ".G..G..G..G."
+));
+
+setPaletteColor("C", 0, 200, 255);
+setPaletteColor("W", 255, 255, 255);
+setPaletteColor("D", 0, 80, 160);
+var playerSprite = createPaletteSprite(13, 7,
+  "......W......" +
+  ".....CWC....." +
+  "...CCCCCCC..." +
+  "..CCCCCCCCC.." +
+  ".CCCCCCCCCCC." +
+  "DDDDDDDDDDDDD" +
+  "DDDDDDDDDDDDD"
+);
+
+setPaletteColor("Y", 255, 255, 100);
+setPaletteColor("O", 255, 200, 50);
+setPaletteColor("R", 255, 100, 0);
+var explSprite1 = createPaletteSprite(12, 10,
+  "R...O..O...R" +
+  "..O.YYYY.O.." +
+  ".O.YYYYYY.O." +
+  "O.YYYYYYYY.O" +
+  "..YYYYYYYY.." +
+  "..YYYYYYYY.." +
+  "O.YYYYYYYY.O" +
+  ".O.YYYYYY.O." +
+  "..O.YYYY.O.." +
+  "R...O..O...R"
+);
+var explSprite2 = createPaletteSprite(12, 10,
+  ".R........R." +
+  "....O..O...." +
+  "..O......O.." +
+  "...O.YY.O..." +
+  "....YYYY...." +
+  "....YYYY...." +
+  "...O.YY.O..." +
+  "..O......O.." +
+  "....O..O...." +
+  ".R........R."
+);
+
+clearPalette();
+
+// --- Explosions ---
+var maxExplosions = 8;
+var explX = newArray();
+var explY = newArray();
+var explTimer = newArray();
+var explActive = newArray();
+i = 0;
+while (i < maxExplosions) {
+  arrayPush(explX, 0);
+  arrayPush(explY, 0);
+  arrayPush(explTimer, 0);
+  arrayPush(explActive, false);
+  i = i + 1;
+}
+var explDuration = 0.3;
+
+// --- Starfield ---
+var numStars = 60;
+var starX = newArray();
+var starY = newArray();
+var starSpeed = newArray();
+var starBright = newArray();
+i = 0;
+while (i < numStars) {
+  arrayPush(starX, floor(random() * w));
+  arrayPush(starY, floor(random() * h));
+  var spd = 20 + random() * 60;
+  arrayPush(starSpeed, spd);
+  arrayPush(starBright, floor(80 + spd * 2));
+  i = i + 1;
+}
+
+// --- Shields ---
+var numShields = 4;
+var shieldCols = 11;
+var shieldRows = 8;
+var shieldCellSize = 3;
+var shieldW = shieldCols * shieldCellSize;
+var shieldH = shieldRows * shieldCellSize;
+var shieldY = playerY - 44;
+
+var shieldX_pos = newArray();
+var shieldCells = newArray();
+var cellsPerShield = shieldCols * shieldRows;
+
+var totalShieldsW = numShields * shieldW;
+var shieldSpacing = (w - totalShieldsW) / (numShields + 1);
+i = 0;
+while (i < numShields) {
+  arrayPush(shieldX_pos, floor(shieldSpacing + i * (shieldW + shieldSpacing)));
+  i = i + 1;
+}
+
+fun shieldCellAlive(row, col) {
+  if (row == 0 and (col == 0 or col == shieldCols - 1)) return false;
+  if (row >= shieldRows - 3) {
+    if (col >= 3 and col <= shieldCols - 4) return false;
+  }
+  return true;
+}
+
+fun resetShields() {
+  var s = 0;
+  while (s < numShields) {
+    var r = 0;
+    while (r < shieldRows) {
+      var c = 0;
+      while (c < shieldCols) {
+        var idx = s * cellsPerShield + r * shieldCols + c;
+        arraySet(shieldCells, idx, shieldCellAlive(r, c));
+        c = c + 1;
+      }
+      r = r + 1;
+    }
+    s = s + 1;
+  }
+}
+
+i = 0;
+while (i < numShields * cellsPerShield) {
+  arrayPush(shieldCells, false);
+  i = i + 1;
+}
+resetShields();
+
+fun bulletHitsShield(bx, by, bw, bh, dyDir) {
+  var s = 0;
+  while (s < numShields) {
+    var sx = arrayGet(shieldX_pos, s);
+    if (rectsOverlap(bx, by, bw, bh, sx, shieldY, shieldW, shieldH)) {
+      var base = s * cellsPerShield;
+      var rStart = 0;
+      var rEnd = shieldRows;
+      var rStep = 1;
+      if (dyDir < 0) {
+        rStart = shieldRows - 1;
+        rEnd = -1;
+        rStep = -1;
+      }
+      var r = rStart;
+      while (r != rEnd) {
+        var c = 0;
+        while (c < shieldCols) {
+          var idx = base + r * shieldCols + c;
+          if (arrayGet(shieldCells, idx)) {
+            var cx = sx + c * shieldCellSize;
+            var cy = shieldY + r * shieldCellSize;
+            if (rectsOverlap(bx, by, bw, bh, cx, cy, shieldCellSize, shieldCellSize)) {
+              arraySet(shieldCells, idx, false);
+              return true;
+            }
+          }
+          c = c + 1;
+        }
+        r = r + rStep;
+      }
+    }
+    s = s + 1;
+  }
+  return false;
+}
+
+fun spawnExplosion(x, y) {
+  var eSlot = 0;
+  while (eSlot < maxExplosions) {
+    if (!arrayGet(explActive, eSlot)) {
+      arraySet(explX, eSlot, x);
+      arraySet(explY, eSlot, y);
+      arraySet(explTimer, eSlot, explDuration);
+      arraySet(explActive, eSlot, true);
+      return;
+    }
+    eSlot = eSlot + 1;
+  }
+}
+
+fun fireBullet() {
+  var bSlot = 0;
+  while (bSlot < maxPlayerBullets) {
+    if (!arrayGet(bulletActive, bSlot)) {
+      arraySet(bulletActive, bSlot, true);
+      arraySet(bulletX, bSlot, playerX + playerW / 2 - bulletW / 2);
+      arraySet(bulletY, bSlot, playerY);
+      return;
+    }
+    bSlot = bSlot + 1;
+  }
+}
+
+fun resetWave() {
+  aliveCount = invCount;
+  i = 0;
+  while (i < invCount) {
+    arraySet(invAlive, i, true);
+    i = i + 1;
+  }
+  invOffsetX = (w - invGridW) / 2;
+  invOffsetY = 40;
+  invDirX = 1;
+  invMoveInterval = 0.6;
+  invMoveTimer = 0;
+  marchStep = 0;
+  var eb = 0;
+  while (eb < maxEnemyBullets) {
+    arraySet(eBulletActive, eb, false);
+    eb = eb + 1;
+  }
+}
+
+// ============================================================
+// EVENT CALLBACKS — This is the key difference from the polling version
+// ============================================================
+
+onKeyHeld(fun(key) {
+  if (key == "left")  moveLeft = true;
+  if (key == "right") moveRight = true;
+});
+
+onKeyPressed(fun(key) {
+  if (key == "escape") {
+    running = false;
+  }
+  if (key == "space" and !gameOver) {
+    fireRequested = true;
+  }
+  if (key == "enter" and gameOver) {
+    restartRequested = true;
+  }
+});
+
+// ============================================================
+// Game loop — uses processEvents() instead of processMessages()
+// ============================================================
+while (running) {
+  // Reset per-frame input flags
+  moveLeft = false;
+  moveRight = false;
+
+  // Pump messages + dispatch callbacks (sets moveLeft/Right, fireRequested, etc.)
+  processEvents();
+
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // --- Handle fire request ---
+  if (fireRequested) {
+    fireRequested = false;
+    fireBullet();
+  }
+
+  // --- Handle restart ---
+  if (restartRequested) {
+    restartRequested = false;
+    gameOver = false;
+    score = 0;
+    lives = 3;
+    resetWave();
+    resetShields();
+    resetPlayer();
+  }
+
+  if (!gameOver) {
+    // --- Update player from held keys ---
+    if (moveLeft)  playerX = playerX - playerSpeed * dt;
+    if (moveRight) playerX = playerX + playerSpeed * dt;
+    if (playerX < 0) playerX = 0;
+    if (playerX > w - playerW) playerX = w - playerW;
+
+    // --- Update player bullets ---
+    i = 0;
+    while (i < maxPlayerBullets) {
+      if (arrayGet(bulletActive, i)) {
+        arraySet(bulletY, i, arrayGet(bulletY, i) - bulletSpeed * dt);
+        if (arrayGet(bulletY, i) + bulletH < 0) arraySet(bulletActive, i, false);
+        if (arrayGet(bulletActive, i)) {
+          if (bulletHitsShield(arrayGet(bulletX, i), arrayGet(bulletY, i), bulletW, bulletH, -1)) {
+            arraySet(bulletActive, i, false);
+          }
+        }
+      }
+      i = i + 1;
+    }
+
+    // --- Invader movement ---
+    invMoveTimer = invMoveTimer + dt;
+    if (invMoveTimer >= invMoveInterval) {
+      invMoveTimer = invMoveTimer - invMoveInterval;
+      invOffsetX = invOffsetX + invSpeedX * invDirX;
+      invFrame = 1 - invFrame;
+      marchStep = (marchStep + 1) - floor((marchStep + 1) / 4) * 4;
+
+      var hitEdge = false;
+      var c = 0;
+      while (c < cols) {
+        var r = 0;
+        while (r < rows) {
+          if (arrayGet(invAlive, r * cols + c)) {
+            var ix = invaderX(c);
+            if (ix < 0 or ix + invW > w) hitEdge = true;
+          }
+          r = r + 1;
+        }
+        c = c + 1;
+      }
+      if (hitEdge) {
+        invDirX = -invDirX;
+        invOffsetX = invOffsetX + invSpeedX * invDirX * 2;
+        invOffsetY = invOffsetY + invDropAmount;
+      }
+    }
+
+    // --- Bullets vs invaders ---
+    var bi = 0;
+    while (bi < maxPlayerBullets) {
+      if (arrayGet(bulletActive, bi)) {
+        var r = 0;
+        while (r < rows) {
+          var c = 0;
+          while (c < cols) {
+            var idx = r * cols + c;
+            if (arrayGet(invAlive, idx)) {
+              var ix = invaderX(c);
+              var iy = invaderY(r);
+              if (rectsOverlap(arrayGet(bulletX, bi), arrayGet(bulletY, bi), bulletW, bulletH, ix, iy, invW, invH)) {
+                arraySet(invAlive, idx, false);
+                arraySet(bulletActive, bi, false);
+                aliveCount = aliveCount - 1;
+                score = score + 10;
+                spawnExplosion(ix, iy);
+                if (aliveCount > 0) {
+                  invMoveInterval = 0.6 * aliveCount / invCount;
+                  if (invMoveInterval < 0.05) invMoveInterval = 0.05;
+                }
+              }
+            }
+            c = c + 1;
+          }
+          r = r + 1;
+        }
+      }
+      bi = bi + 1;
+    }
+
+    // --- Enemy shooting ---
+    enemyShootTimer = enemyShootTimer + dt;
+    if (enemyShootTimer >= enemyShootInterval and aliveCount > 0) {
+      enemyShootTimer = 0;
+      var slot = -1;
+      var s = 0;
+      while (s < maxEnemyBullets) {
+        if (!arrayGet(eBulletActive, s)) {
+          slot = s;
+          s = maxEnemyBullets;
+        }
+        s = s + 1;
+      }
+      if (slot >= 0) {
+        var shooter = pickShooterColumn();
+        if (shooter >= 0) {
+          var sc = shooter - floor(shooter / cols) * cols;
+          var sr = floor(shooter / cols);
+          arraySet(eBulletX, slot, invaderX(sc) + invW / 2);
+          arraySet(eBulletY, slot, invaderY(sr) + invH);
+          arraySet(eBulletActive, slot, true);
+        }
+      }
+    }
+
+    // --- Update enemy bullets ---
+    i = 0;
+    while (i < maxEnemyBullets) {
+      if (arrayGet(eBulletActive, i)) {
+        arraySet(eBulletY, i, arrayGet(eBulletY, i) + eBulletSpeed * dt);
+        if (arrayGet(eBulletY, i) > h) {
+          arraySet(eBulletActive, i, false);
+        }
+        if (arrayGet(eBulletActive, i)) {
+          if (bulletHitsShield(arrayGet(eBulletX, i) - eBulletW / 2, arrayGet(eBulletY, i), eBulletW, eBulletH, 1)) {
+            arraySet(eBulletActive, i, false);
+          }
+        }
+        if (arrayGet(eBulletActive, i)) {
+          if (rectsOverlap(arrayGet(eBulletX, i) - eBulletW / 2, arrayGet(eBulletY, i), eBulletW, eBulletH, playerX, playerY - 2, playerW, playerH)) {
+            arraySet(eBulletActive, i, false);
+            lives = lives - 1;
+            if (lives <= 0) {
+              gameOver = true;
+            } else {
+              resetPlayer();
+            }
+          }
+        }
+      }
+      i = i + 1;
+    }
+
+    // --- Update explosions ---
+    i = 0;
+    while (i < maxExplosions) {
+      if (arrayGet(explActive, i)) {
+        arraySet(explTimer, i, arrayGet(explTimer, i) - dt);
+        if (arrayGet(explTimer, i) <= 0) {
+          arraySet(explActive, i, false);
+        }
+      }
+      i = i + 1;
+    }
+
+    // --- Invaders reach player = game over ---
+    var r = 0;
+    while (r < rows) {
+      var c = 0;
+      while (c < cols) {
+        if (arrayGet(invAlive, r * cols + c)) {
+          if (invaderY(r) + invH >= playerY) {
+            gameOver = true;
+          }
+        }
+        c = c + 1;
+      }
+      r = r + 1;
+    }
+
+    // --- All dead = new wave ---
+    if (aliveCount <= 0) {
+      resetWave();
+    }
+  }
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas();
+
+  // Starfield
+  i = 0;
+  while (i < numStars) {
+    arraySet(starY, i, arrayGet(starY, i) + arrayGet(starSpeed, i) * dt);
+    if (arrayGet(starY, i) >= h) {
+      arraySet(starY, i, 0);
+      arraySet(starX, i, floor(random() * w));
+    }
+    i = i + 1;
+  }
+  drawPixelsGray(starX, starY, starBright);
+
+  // Invaders
+  var r = 0;
+  while (r < rows) {
+    var c = 0;
+    while (c < cols) {
+      if (arrayGet(invAlive, r * cols + c)) {
+        drawSpriteScaled(arrayGet(invSprites, r * 2 + invFrame), invaderX(c), invaderY(r), SPR);
+      }
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+
+  // Explosions
+  i = 0;
+  while (i < maxExplosions) {
+    if (arrayGet(explActive, i)) {
+      var t = arrayGet(explTimer, i);
+      if (t > explDuration / 2) {
+        drawSpriteScaled(explSprite1, arrayGet(explX, i), arrayGet(explY, i), SPR);
+      } else {
+        drawSpriteScaled(explSprite2, arrayGet(explX, i), arrayGet(explY, i), SPR);
+      }
+    }
+    i = i + 1;
+  }
+
+  // Shields
+  setColor(60, 220, 90);
+  var sIdx = 0;
+  while (sIdx < numShields) {
+    var sx = arrayGet(shieldX_pos, sIdx);
+    var base = sIdx * cellsPerShield;
+    var r = 0;
+    while (r < shieldRows) {
+      var c = 0;
+      while (c < shieldCols) {
+        if (arrayGet(shieldCells, base + r * shieldCols + c)) {
+          fillRect(sx + c * shieldCellSize, shieldY + r * shieldCellSize,
+                   shieldCellSize, shieldCellSize);
+        }
+        c = c + 1;
+      }
+      r = r + 1;
+    }
+    sIdx = sIdx + 1;
+  }
+
+  // Player
+  drawSpriteScaled(playerSprite, floor(playerX), playerY - 2, SPR);
+
+  // Player bullets
+  setColor(255, 255, 255);
+  i = 0;
+  while (i < maxPlayerBullets) {
+    if (arrayGet(bulletActive, i)) {
+      fillRect(arrayGet(bulletX, i), arrayGet(bulletY, i), bulletW, bulletH);
+    }
+    i = i + 1;
+  }
+
+  // Enemy bullets
+  setColor(255, 80, 80);
+  i = 0;
+  while (i < maxEnemyBullets) {
+    if (arrayGet(eBulletActive, i)) {
+      fillRect(arrayGet(eBulletX, i) - eBulletW / 2, arrayGet(eBulletY, i), eBulletW, eBulletH);
+    }
+    i = i + 1;
+  }
+
+  // HUD
+  setColor(255, 255, 255);
+  drawText(4, 4, "SCORE: " + str(score));
+  drawText(w - 60, 4, "LIVES: " + str(lives));
+
+  // Game over overlay
+  if (gameOver) {
+    setColor(255, 0, 0);
+    drawText(w / 2 - 27, h / 2 - 8, "GAME OVER");
+    setColor(255, 255, 255);
+    drawText(w / 2 - 78, h / 2 + 4, "ENTER to restart, ESC to quit");
+  }
+
+  present();
+}
+
+print "Final score: " + str(score);

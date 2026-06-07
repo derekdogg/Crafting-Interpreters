@@ -1,0 +1,22 @@
+// Test: Multiple independent closures share one upvalue
+var shared = 0;
+
+onKeyPressed(fun(key) {
+  shared = shared + 10;
+});
+
+onKeyReleased(fun(key) {
+  shared = shared + 1;
+});
+
+onKeyHeld(fun(key) {
+  shared = shared + 100;
+});
+
+simulateKeyDown("a");
+processEvents();   // pressed(+10), held(+100) = 110
+processEvents();   // held(+100) = 210
+simulateKeyUp("a");
+processEvents();   // released(+1) = 211
+
+print str(shared); // expect: 211

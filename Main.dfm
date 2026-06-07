@@ -181,6 +181,15 @@ object Form4: TForm4
         TabOrder = 3
         OnClick = Button3Click
       end
+      object Button4: TButton
+        Left = 760
+        Top = 5
+        Width = 121
+        Height = 25
+        Caption = 'Event Call Back Test'
+        TabOrder = 4
+        OnClick = Button4Click
+      end
     end
     object Memo1: TSynEdit
       Left = 0

@@ -1,0 +1,43 @@
+// Event-driven callback test
+// Run this with the Event Test form.
+// Press keys and click the panel — callbacks fire in real time.
+
+var running = true;
+var keyCount = 0;
+var clickCount = 0;
+
+onKeyPressed(fun(key) {
+  keyCount = keyCount + 1;
+  print "KEY DOWN: " + key + " (total: " + str(keyCount) + ")";
+  if (key == "escape") {
+    running = false;
+  }
+});
+
+onKeyReleased(fun(key) {
+  print "KEY UP:   " + key;
+});
+
+onMouseDown(fun(btn, x, y) {
+  clickCount = clickCount + 1;
+  print "MOUSE DOWN: btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
+});
+
+onKeyHeld(fun(key) {
+  if (key == "left")  print "moving left";
+  if (key == "right") print "moving right";
+  if (key == "up")  print "moving up";
+  if (key == "down") print "moving down";
+});
+
+onMouseUp(fun(btn, x, y) {
+  print "MOUSE UP:   btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
+});
+
+print "Event test started. Press keys or click. ESC to quit.";
+
+while (running) {
+  processEvents();
+}
+
+print "Done! Keys pressed: " + str(keyCount) + ", Clicks: " + str(clickCount);

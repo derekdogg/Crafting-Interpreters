@@ -1,0 +1,29 @@
+// Test: Rapid key switch — release left, press right in same frame
+var presses = "";
+var releases = "";
+var held = "";
+
+onKeyPressed(fun(key) {
+  presses = presses + key + " ";
+});
+
+onKeyReleased(fun(key) {
+  releases = releases + key + " ";
+});
+
+onKeyHeld(fun(key) {
+  held = held + key + " ";
+});
+
+// Frame 1: press left
+simulateKeyDown("left");
+processEvents();
+
+// Frame 2: release left + press right in same frame
+simulateKeyUp("left");
+simulateKeyDown("right");
+processEvents();
+
+print presses;  // expect: left right 
+print releases; // expect: left 
+print held;     // expect: left right 

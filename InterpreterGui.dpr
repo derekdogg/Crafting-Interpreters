@@ -18,7 +18,11 @@ uses
   SqlNatives in 'Natives\SqlNatives.pas',
   StringNatives in 'Natives\StringNatives.pas',
   FileNatives in 'Natives\FileNatives.pas',
-  SystemNatives in 'Natives\SystemNatives.pas';
+  SystemNatives in 'Natives\SystemNatives.pas',
+  CallbackNatives in 'Natives\CallbackNatives.pas',
+  EventNatives in 'Natives\EventNatives.pas',
+  LoxEventEngine in 'LoxEventEngine.pas',
+  fmEventTest in 'fmEventTest.pas' {frmEventTest};
 
 {$R *.res}
 

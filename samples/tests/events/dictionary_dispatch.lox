@@ -1,0 +1,34 @@
+// Test: Dictionary used as event dispatch table
+var handlers = [:];
+var log = "";
+
+handlers["left"] = fun() { log = log + "L"; };
+handlers["right"] = fun() { log = log + "R"; };
+handlers["up"] = fun() { log = log + "U"; };
+handlers["down"] = fun() { log = log + "D"; };
+
+onKeyPressed(fun(key) {
+  if (key == "left" or key == "right" or key == "up" or key == "down") {
+    handlers[key]();
+  }
+});
+
+simulateKeyDown("left");
+processEvents();
+simulateKeyUp("left");
+processEvents();
+
+simulateKeyDown("right");
+processEvents();
+simulateKeyUp("right");
+processEvents();
+
+simulateKeyDown("up");
+processEvents();
+simulateKeyUp("up");
+processEvents();
+
+simulateKeyDown("q");  // no handler — should be ignored
+processEvents();
+
+print log; // expect: LRU

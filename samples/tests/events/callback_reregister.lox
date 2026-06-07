@@ -1,0 +1,20 @@
+// Test: Callback re-registers a different callback mid-dispatch
+var log = "";
+
+onKeyPressed(fun(key) {
+  log = log + "A:" + key + " ";
+  // Re-register a different handler
+  onKeyPressed(fun(key) {
+    log = log + "B:" + key + " ";
+  });
+});
+
+simulateKeyDown("x");
+processEvents();
+simulateKeyUp("x");
+processEvents();
+
+simulateKeyDown("y");
+processEvents();
+
+print log; // expect: A:x B:y 
