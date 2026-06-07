@@ -1,0 +1,13 @@
+// Test: Holding a key does NOT re-fire onKeyPressed (auto-repeat suppression)
+var pressCount = 0;
+
+onKeyPressed(fun(key) {
+  pressCount = pressCount + 1;
+});
+
+simulateKeyDown("left");
+simulateKeyDown("left");  // duplicate — should be ignored
+simulateKeyDown("left");  // duplicate — should be ignored
+processEvents();
+
+print str(pressCount); // expect: 1

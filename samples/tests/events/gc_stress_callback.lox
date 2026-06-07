@@ -1,0 +1,21 @@
+// Test: Allocations inside callback don't break GC
+var results = [];
+
+onKeyHeld(fun(key) {
+  // Create new strings and arrays each frame to stress GC
+  var msg = "held:" + key + ":" + str(arrayLen(results));
+  results = arrayPush(results, msg);
+});
+
+simulateKeyDown("x");
+
+// Run 50 frames — lots of allocations
+var i = 0;
+while (i < 50) {
+  processEvents();
+  i = i + 1;
+}
+
+print str(arrayLen(results)); // expect: 50
+print results[0];             // expect: held:x:0
+print results[49];            // expect: held:x:49

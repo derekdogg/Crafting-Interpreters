@@ -1,0 +1,37 @@
+// Test: InvokeCallback via callWith() and invoke() natives
+
+// --- Basic callback ---
+var result = callWith(fun(n) { return n * 2; }, 21);
+print result;  // expect: 42
+
+// --- Closure capturing upvalue ---
+var multiplier = 10;
+var scaled = callWith(fun(n) { return n * multiplier; }, 7);
+print scaled;  // expect: 70
+
+// --- Nested callback (callback within a callback) ---
+var nested = callWith(fun(x) {
+  return callWith(fun(y) { return x + y; }, 100);
+}, 5);
+print nested;  // expect: 105
+
+// --- invoke() variadic ---
+var sum = invoke(fun(a, b, c) { return a + b + c; }, 10, 20, 30);
+print sum;  // expect: 60
+
+// --- Callback that modifies outer state ---
+var counter = 0;
+callWith(fun(n) {
+  counter = counter + n;
+  return nil;
+}, 5);
+print counter;  // expect: 5
+
+// --- Callback returning a closure ---
+var makeAdder = callWith(fun(n) {
+  return fun(x) { return x + n; };
+}, 100);
+var added = makeAdder(7);
+print added;  // expect: 107
+
+print "All callback tests passed!"; // expect: All callback tests passed!

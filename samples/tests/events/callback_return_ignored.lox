@@ -1,0 +1,15 @@
+// Test: Callback that returns a value (ignored, but shouldn't crash)
+var log = "";
+
+onKeyPressed(fun(key) {
+  log = log + key;
+  return 42;  // return value should be silently discarded
+});
+
+simulateKeyDown("a");
+processEvents();
+simulateKeyUp("a");
+simulateKeyDown("b");
+processEvents();
+
+print log; // expect: ab

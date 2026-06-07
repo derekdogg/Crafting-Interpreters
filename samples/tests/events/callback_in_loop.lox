@@ -1,0 +1,13 @@
+// Test: Callback registered inside a loop — only last binding sticks
+var lastKey = "";
+
+for (var i = 0; i < 5; i = i + 1) {
+  onKeyPressed(fun(key) {
+    lastKey = key + str(i);  // captures final value of i (5 after loop)
+  });
+}
+
+simulateKeyDown("z");
+processEvents();
+
+print lastKey; // expect: z4
