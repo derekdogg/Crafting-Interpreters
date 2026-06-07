@@ -1,6 +1,6 @@
 # Crafting Interpreters — Bytecode VM in Delphi Pascal
 
-A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting Interpreters](https://craftinginterpreters.com/) (Chapters 14–26), implemented in Delphi Pascal — extended with a 2D game engine, SQL database access, NaN boxing, and peephole optimizations.
+A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting Interpreters](https://craftinginterpreters.com/) (Chapters 14–26), implemented in Delphi Pascal — extended with a 2D game engine, event-driven callbacks, file I/O, SQL database access, NaN boxing, and peephole optimizations.
 
 ![Lox Interpreter — Space Invaders](images/MainScreen.png)
 
@@ -19,6 +19,8 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Records** — Immutable-structure value types via `record Name(field1, field2);` syntax with dot access and field mutation
 - **Native Objects** — Inject Delphi classes as GC-tracked Lox objects with automatic RTTI-based property and method dispatch
 - **RTTI Injection** — Any Delphi `TObject` descendant can be injected into a Lox script via `InjectObject()`; published properties and methods are automatically accessible without wrapper code. Supports nested objects, object-typed method arguments, sets, dynamic arrays, property mutation, method invocation with marshaling between Lox and Delphi types. Denylist prevents scripts from calling `Free`/`Destroy` and other lifecycle methods.
+- **Anonymous Functions** — First-class lambda expressions: `fun(params) { body }` usable anywhere an expression is valid — assigned to variables, passed as arguments, returned from functions, or immediately invoked
+- **Callbacks** — `InvokeCallback` re-entrant VM dispatch allowing Delphi natives to call Lox closures; `callWith(fn, arg)` and `invoke(fn, ...)` variadic natives for host-to-script function invocation
 
 ### Performance Optimizations
 
@@ -38,6 +40,12 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Input** — `keyHeld()`, `keyPressed()`, `mouseX/Y()`, `mouseDown()`, `mouseClicked()` — edge-triggered per frame
 - **Sound** — 4-channel waveform synthesizer: `playNote(freq, duration, waveform, channel)`, `playSequence()` for melodies, `stopSound()`, `stopAllSound()`
 - **Game Loop** — `processMessages()` pumps the Windows message queue mid-script; scripts run as cooperative game loops with event polling
+- **Event Engine** — Decoupled `TLoxEventEngine` with callback-driven input: `onKeyPressed`, `onKeyReleased`, `onKeyHeld`, `onMouseDown`, `onMouseUp` callbacks invoked per-frame via `processEvents()`; held-key tracking with snapshot-based dispatch to prevent re-entrancy crashes
+
+### File I/O & Process Execution
+
+- **File Operations** — `fileExists(path)`, `directoryExists(path)`, `readFile(path)`, `writeFile(path, content)`, `writeCsv(path, rows)` (RFC 4180 compliant)
+- **Process Execution** — `exec(cmd)` returns stdout as string; `execResult(cmd)` returns dictionary with `output`, `exitCode`, `success` fields — non-zero exit is not a runtime error
 
 ### Database Access
 
@@ -50,6 +58,7 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 - **Event Queue** — `TLoxQueue` native object enables Delphi-to-Lox event passing; Delphi code enqueues string events from form handlers, Lox scripts poll via `events.hasItems()` / `events.dequeue()`
 - **Interactive Script Execution** — `processMessages()` enables interactive scripts; automatic print output flushing; script abort on form close
 - **Script Runtime Safety** — Run button, test buttons, and editor are disabled while a script is running
+- **Modular Native Registry** — Each native domain lives in its own unit (`Natives/*.pas`); `NativeRegistry.RegisterAllNatives` auto-discovers and registers all modules at startup
 - **VM Introspection** — `vmStackDepth()`, `vmStackCapacity()`, `vmCallDepth()`, `vmOpenUpvalues()`, `gcNextThreshold()`, `gcCollectionCount()`, `internTableStats()`, `loxClasses()`, `loxClassInfo()`, `loxObjects()`, `loxObjectInfo()`
 - **Long-Operand Opcodes** — 24-bit constant indices for globals, closures, literals, and dot access (16M constant limit)
 
@@ -76,14 +85,20 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 |---------|-------------|
 | NaN Boxing | `TValue = UInt64`, IEEE-754 bit encoding, NaN canonicalization, defensive `CreateObject` |
 | Peephole Optimizations | Fused opcodes (`OP_JUMP_IF_FALSE_POP`, `OP_LESS_JUMP_IF_FALSE`, `OP_POP_N`), fast local slots (0–7) |
+| Anonymous Functions | `fun(params) { body }` as expression — first-class lambdas, closures, IIFEs |
+| Callbacks | Re-entrant `InvokeCallback` dispatch, `callWith`/`invoke` natives for host→script calls |
 | Arrays | Literal syntax, subscript operators, native API, GC-integrated |
 | Dictionaries | Literal syntax, subscript, method dispatch, tombstones, rehashing, GC-integrated |
 | Records | `record Name(fields);`, dot access, field mutation, GC-integrated |
 | Native Objects | Delphi class wrapping, `StringList()`, `OP_INVOKE`, GC-integrated |
 | RTTI Injection | `InjectObject()`, auto-registration, property/method dispatch, nested objects, denylist |
 | 2D Game Engine | Canvas, sprites, tilemaps, surfaces, camera, input, sound — full retro game development |
+| Event Engine | `TLoxEventEngine` with callback-driven input, held-key tracking, snapshot dispatch |
+| File I/O | `readFile`, `writeFile`, `writeCsv` (RFC 4180), `fileExists`, `directoryExists` |
+| Process Execution | `exec`, `execResult` — run child processes with captured stdout/exitCode |
 | SQL Database | FireDAC-based SQL Server access with parameterized queries |
 | Environment | `.env` file loading, `env()` variable access |
+| Native Registry | Modular `NativeRegistry` pattern — each domain in its own unit, auto-registered |
 | VM Introspection | Runtime inspection of stack, GC, intern table, and native class registry |
 | Modulo Operator | `%` for integers and floats |
 | Conversion Functions | `str`, `num`, `bool`, `type` |
@@ -91,12 +106,12 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | Math Library | `abs`, `floor`, `ceil`, `round`, `min`, `max`, `sqrt`, `pow`, `sin`, `cos`, `random` |
 | Long-Operand Opcodes | `OP_*_LONG` for >255 constants per chunk |
 
-## Native Functions (90+)
+## Native Functions (110+)
 
 | Category | Functions |
 |----------|-----------|
 | Core | `clock`, `collectGarbage`, `assert`, `bytesAllocated`, `objectsAllocated` |
-| VM Introspection | `vmStackDepth`, `vmStackCapacity`, `vmCallDepth`, `vmOpenUpvalues`, `gcNextThreshold`, `gcCollectionCount`, `internTableStats`, `loxClasses`, `loxClassInfo`, `loxObjects`, `loxObjectInfo` |
+| VM Introspection | `vmStackDepth`, `vmStackCapacity`, `vmCallDepth`, `vmOpenUpvalues`, `vmFramesMax`, `vmStackMax`, `gcNextThreshold`, `gcCollectionCount`, `internTableStats`, `loxClasses`, `loxClassInfo`, `loxObjects`, `loxObjectInfo` |
 | Environment | `env`, `loadEnv` |
 | Conversion | `str`, `num`, `bool`, `type` |
 | Math | `abs`, `floor`, `ceil`, `round`, `min`, `max`, `sqrt`, `pow`, `sin`, `cos`, `random` |
@@ -105,35 +120,59 @@ A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting I
 | Dictionary | `dictNew`, `dictSet`, `dictGet`, `dictHas`, `dictDelete`, `dictKeys`, `dictValues`, `dictSize` |
 | Native Objects | `StringList` |
 | SQL | `sqlConnect`, `sqlQuery`, `sqlQueryParams`, `sqlClose` |
+| File I/O | `fileExists`, `directoryExists`, `readFile`, `writeFile`, `writeCsv` |
+| Process | `exec`, `execResult` |
+| Callbacks | `callWith`, `invoke` |
 | Canvas | `canvasWidth`, `canvasHeight`, `setCanvasSize`, `clearCanvas`, `setColor`, `fillRect`, `drawRect`, `drawText`, `drawLine`, `drawCircle`, `fillCircle`, `drawPixel`, `drawPixels`, `drawPixelsGray`, `present`, `measureText`, `setCamera`, `setClipRect`, `clearClipRect` |
 | Sprites | `createSprite`, `drawSprite`, `drawSpriteScaled`, `drawSpriteRotated`, `flipSprite`, `freeSprite`, `spriteWidth`, `spriteHeight`, `loadSpriteFromPNG`, `loadSpriteFromPNGRegion`, `createPaletteSprite`, `setPaletteColor`, `clearPalette` |
 | Tilemaps | `createTilemap`, `setTile`, `getTile`, `drawTilemap` |
 | Surfaces | `createSurface`, `setRenderTarget`, `drawSurface`, `freeSurface` |
-| Input | `keyHeld`, `keyPressed`, `mouseX`, `mouseY`, `mouseDown`, `mouseClicked` |
+| Input (Polling) | `keyHeld`, `keyPressed`, `mouseX`, `mouseY`, `mouseDown`, `mouseClicked` |
+| Input (Callbacks) | `onKeyPressed`, `onKeyReleased`, `onKeyHeld`, `onMouseDown`, `onMouseUp`, `processEvents` |
+| Event Simulation | `simulateKeyDown`, `simulateKeyUp`, `simulateMouseDown`, `simulateMouseUp` |
 | Sound | `playNote`, `playSequence`, `stopSound`, `stopAllSound` |
 | Game Loop | `processMessages` |
 
 ## Project Structure
 
 ```
-Chunk_Types.pas        — Core unit: scanner, parser, compiler, VM, GC, hash table, SQL natives
-LoxCanvas.pas          — 2D game engine: canvas, sprites, tilemaps, surfaces, input
-LoxSound.pas           — 4-channel waveform sound synthesizer
-NativeObjects.pas      — Native Delphi classes exposed to Lox (TLoxQueue, TCustomer, TAddress)
-fmGame.pas / fmGame.dfm — Game window: hosts canvas, input events, script lifecycle
-Main.pas / Main.dfm    — Editor form with interpreter REPL, test runner, syntax highlighting
-SynHighlighterLox.pas  — Custom SynEdit Lox syntax highlighter
-InterpreterGui.dpr     — Delphi project file
-docs/                  — Architecture documentation (11 chapters)
-samples/               — Custom Lox test programs (auto-run on startup)
-samples/demos/         — Game demos (Space Invaders, Manic Cavern, Mario, slots, etc.)
-samples/errors/        — Expected-error test programs
-samples/stress/        — GC stress patterns (run via Button2)
-samples/introspection/ — VM introspection scripts (GC monitor, stack probe, dashboard)
-samples/Profiler/      — Performance benchmarks
-test/                  — Official Crafting Interpreters test suite + extensions
-test/native/           — RTTI injection tests
-test/record/           — Record type tests (23 files)
+Chunk_Types.pas          — Core unit: scanner, parser, compiler, VM, GC, hash table
+LoxCanvas.pas            — 2D game engine: canvas, sprites, tilemaps, surfaces, input
+LoxSound.pas             — 4-channel waveform sound synthesizer
+LoxEventEngine.pas       — Reusable event-dispatching engine (key/mouse callbacks)
+NativeObjects.pas        — Native Delphi classes exposed to Lox (TLoxQueue, TCustomer, TAddress)
+fmGame.pas / fmGame.dfm  — Game window: hosts canvas, input, event engine, script lifecycle
+fmEventTest.pas          — Lightweight event-engine test form
+Main.pas / Main.dfm      — Editor form with interpreter REPL, test runner, syntax highlighting
+SynHighlighterLox.pas    — Custom SynEdit Lox syntax highlighter
+InterpreterGui.dpr       — Delphi project file
+
+Natives/                 — Native function modules (one unit per domain):
+  NativeRegistry.pas     — Central registration system (RegisterAllNatives)
+  SystemNatives.pas      — clock, assert, GC, VM introspection, env
+  ArrayNatives.pas       — Array manipulation natives
+  DictNatives.pas        — Dictionary manipulation natives
+  StringNatives.pas      — String library natives
+  MathNatives.pas        — Math library natives
+  ConversionNatives.pas  — str, num, bool, type
+  IntrospectionNatives.pas — loxClasses, loxObjects, internTableStats
+  SqlNatives.pas         — SQL Server access via FireDAC
+  FileNatives.pas        — File I/O: read, write, CSV export
+  ProcessNatives.pas     — exec, execResult (child process execution)
+  EventNatives.pas       — Event callback natives + simulation natives
+  CallbackNatives.pas    — callWith, invoke (host-to-script function calls)
+
+docs/                    — Architecture documentation (11 chapters)
+samples/                 — Custom Lox test programs (auto-run on startup)
+samples/demos/           — Game demos (Space Invaders, Manic Cavern, Mario, slots, etc.)
+samples/tests/events/    — Event engine callback tests (27 files)
+samples/errors/          — Expected-error test programs
+samples/stress/          — GC stress patterns (run via Button2)
+samples/introspection/   — VM introspection scripts (GC monitor, stack probe, dashboard)
+samples/Profiler/        — Performance benchmarks
+test/                    — Official Crafting Interpreters test suite + extensions
+test/native/             — RTTI injection tests
+test/record/             — Record type tests (23 files)
 ```
 
 ## NaN Boxing
@@ -196,25 +235,40 @@ The test runner parses `// expect:`, `// expect runtime error:`, and `// [line N
 
 ### Custom Sample Tests
 
-**44 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
+**46 samples** in `samples/` — expected to pass (`INTERPRET_OK`):
 
 | Category | Files | Coverage |
 |----------|-------|----------|
 | Basics | hello, arithmetic, variables, strings, scoping, control_flow, functions, closures, counter, fibonacci, modulo | Core language features |
+| Anonymous Functions | anonymous_functions | Lambdas: assignment, arguments, factories, IIFEs, arrays, map/filter/reduce, composition |
 | Arrays | arrays, arrays_advanced | Creation, nesting, closures, function args |
 | Records | records | Declaration, construction, field access, mutation |
 | Native Objects | native_objects, native_objects_stress | StringList, multi-instance, loops, GC pressure |
+| Callbacks | test_callbacks | callWith, invoke, closures, re-entrancy, error handling |
 | GC | gc_basic, gc_functions, gc_reclaim, gc_stress, gc_interning, gc_upvalue_closing, gc_args_and_temps, gc_scopes_and_natives, gc_edge_cases, gc_torture, gc_gray_stack, gc_arrays, gc_records, gc_coverage_gaps, gc_simple_log, gc_stress_collections | 16 dedicated GC test files |
 | SQL | sql_connect, sql_query, sql_filter, sql_aggregation, sql_params, sql_null_handling, sql_multi_query, sql_field_access | Database access patterns |
 | Introspection | gc_monitor, intern_table_observer, stack_depth_probe, vm_dashboard | VM runtime inspection |
 
+### Event Engine Tests
+
+**27 tests** in `samples/tests/events/` — callback-driven input system:
+
+| Category | Tests |
+|----------|-------|
+| Basic Input | key_pressed_once, key_down_up_same_frame, no_repeat_keydown, key_held_every_frame, key_held_stops_on_release, multiple_keys_held, rapid_key_switch, mouse_down_up |
+| Callback Mechanics | no_callbacks_noop, overwrite_callback, callback_reregister, callback_return_ignored, release_without_press |
+| Closures & State | callback_captures_upvalue, closure_factory_callback, method_like_callback, shared_upvalue_multiple_callbacks, deeply_nested_closure, closure_timer |
+| Advanced Patterns | callback_in_loop, chained_callback_registration, state_machine, dictionary_dispatch, callback_modifies_array, higher_order_wrapper |
+| Stress | gc_stress_callback, flood_events |
+
 ### Game Demos
 
-**20 demos** in `samples/demos/` — interactive game scripts:
+**21 demos** in `samples/demos/` — interactive game scripts:
 
 | File | Description |
 |------|-------------|
-| space_invaders.lox | Classic Space Invaders with sprites, sound, and scoring |
+| space_invaders.lox | Classic Space Invaders with sprites, sound, and scoring (polling input) |
+| space_invaders_events.lox | Space Invaders rewritten with event callbacks (`onKeyHeld`, `onKeyPressed`) |
 | manic_cavern.lox | Platformer with tilemaps and gravity |
 | mario_walk.lox | Animated sprite walking demo |
 | dk_proto.lox | Donkey Kong prototype |
