@@ -1,0 +1,165 @@
+// ============================================================
+// locals_stress.lox — Stress tests for local variable scoping
+// Inspired by Lua's locals.lua test suite
+// ============================================================
+
+// --- Test 1: Assign nil to parameter ---
+fun assignNilToParam(x) { x = nil; return x; }
+print assignNilToParam(10); // expect: nil
+
+// --- Test 2: Uninitialized local is nil ---
+fun uninitLocal() { var x; return x; }
+print uninitLocal(); // expect: nil
+
+// --- Test 3: Nested block shadowing ---
+{
+  var i = 10;
+  { var i = 100; print i; } // expect: 100
+  { var i = 1000; print i; } // expect: 1000
+  print i; // expect: 10
+}
+
+// --- Test 4: Shadowing in if/else branches ---
+{
+  var i = 10;
+  if (i == 10) {
+    var i = 30;
+    print i; // expect: 30
+  } else {
+    var i = 40;
+    print i;
+  }
+  print i; // expect: 10
+}
+
+// --- Test 5: Many locals in one function (register pressure) ---
+fun manyLocals(a) {
+  var _1; var _2; var _3; var _4; var _5;
+  var _6; var _7; var _8; var _9; var _10;
+  var x = 3;
+  var b = a;
+  var c = a;
+  var d = b;
+  if (d == b) {
+    var x = b;
+    print x; // expect: 2
+  }
+  print x; // expect: 3
+}
+manyLocals(2);
+
+// --- Test 6: Variable in middle of block ---
+{
+  var a = 1;
+  var b = 2;
+  print a + b; // expect: 3
+  var c = 3;
+  print a + b + c; // expect: 6
+}
+
+// --- Test 7: Slot reuse after block exits ---
+{
+  { var a = 1; print a; } // expect: 1
+  { var a = 2; print a; } // expect: 2
+  { var a = 3; print a; } // expect: 3
+}
+
+// --- Test 8: Deep nesting with shadowed names ---
+{
+  var x = 1;
+  {
+    var x = 2;
+    {
+      var x = 3;
+      {
+        var x = 4;
+        {
+          var x = 5;
+          print x; // expect: 5
+        }
+        print x; // expect: 4
+      }
+      print x; // expect: 3
+    }
+    print x; // expect: 2
+  }
+  print x; // expect: 1
+}
+
+// --- Test 9: Locals across multiple function calls don't interfere ---
+fun getA() { var a = 100; return a; }
+fun getB() { var a = 200; return a; }
+fun getC() { var a = 300; return a; }
+print getA(); // expect: 100
+print getB(); // expect: 200
+print getC(); // expect: 300
+
+// --- Test 10: Stress - 20 locals in one scope ---
+fun twentyLocals() {
+  var a1 = 1; var a2 = 2; var a3 = 3; var a4 = 4; var a5 = 5;
+  var a6 = 6; var a7 = 7; var a8 = 8; var a9 = 9; var a10 = 10;
+  var a11 = 11; var a12 = 12; var a13 = 13; var a14 = 14; var a15 = 15;
+  var a16 = 16; var a17 = 17; var a18 = 18; var a19 = 19; var a20 = 20;
+  return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 +
+         a11 + a12 + a13 + a14 + a15 + a16 + a17 + a18 + a19 + a20;
+}
+print twentyLocals(); // expect: 210
+
+// --- Test 11: Local assigned from expression using previous locals ---
+{
+  var a = 5;
+  var b = a * 2;
+  var c = a + b;
+  print c; // expect: 15
+}
+
+// --- Test 12: Parameter and local with same name in different scopes ---
+fun paramShadow(x) {
+  print x; // expect: 42
+  {
+    var x = 99;
+    print x; // expect: 99
+  }
+  print x; // expect: 42
+}
+paramShadow(42);
+
+// --- Test 13: Locals survive across nested function calls ---
+fun outer() {
+  var before = "before";
+  fun inner() { return "inner"; }
+  var result = inner();
+  var after = "after";
+  print before; // expect: before
+  print result; // expect: inner
+  print after;  // expect: after
+}
+outer();
+
+// --- Test 14: Loop doesn't corrupt locals declared before it ---
+{
+  var sentinel = 999;
+  for (var i = 0; i < 10; i += 1) {
+    var tmp = i;
+  }
+  print sentinel; // expect: 999
+}
+
+// --- Test 15: Locals at max depth with closures ---
+fun deepClosure() {
+  var a = 1;
+  {
+    var b = 2;
+    {
+      var c = 3;
+      {
+        var d = 4;
+        fun capture() { return a + b + c + d; }
+        print capture(); // expect: 10
+      }
+    }
+  }
+}
+deepClosure();
+
+print "All locals stress tests passed."; // expect: All locals stress tests passed.

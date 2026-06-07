@@ -1,8 +1,8 @@
 ﻿unit Chunk_Types;
 {$POINTERMATH ON}
-{$ASSERTIONS OFF}
+{$ASSERTIONS ON}
 {..$DEFINE DEBUG_LOG_GC}
-{..$DEFINE DEBUG_STRESS_GC}
+{$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
 {..$DEFINE OPCODE_PROFILING}
 interface
@@ -645,7 +645,7 @@ procedure AssertValueArrayCount(ValueArray : pValueArray);
 //Object assertions
 procedure AssertObjectIsAssigned(Obj : pObj);
 procedure AssertObjStringIsAssigned(ObjString : pObjString);
-procedure AssertValidObjPointer(obj : pObj; const context : string);
+
 
 //Index and range assertions
 procedure AssertIndexIsNotNegative(Index : integer);
@@ -692,7 +692,7 @@ procedure AssertDistanceInRange(Distance, MaxValue : integer);
 procedure AssertTable(Table : pTable);inline;
 {$ENDIF}
 
-
+procedure AssertValidObjPointer(obj : pObj; const context : string);
 
 //Memory creation routines
 procedure ClearMem(p: PByte; FromIndex, Count: Integer);
@@ -751,7 +751,7 @@ procedure BlackenObject(obj : pObj);inline;
 procedure TraceReferences;inline;
 procedure TableRemoveWhite(Table : pTable);inline;
 procedure Sweep;inline;
-procedure CollectGarbage;inline;
+procedure CollectGarbage;
 
 
 //Virtual Machine
@@ -1400,12 +1400,6 @@ begin
   Assert(Assigned(ObjString), 'ObjString is not assigned');
 end;
 
-procedure AssertValidObjPointer(obj : pObj; const context : string);
-begin
-  if obj = nil then Exit;
-  Assert(Ord(obj^.ObjectKind) <= Ord(High(TObjectKind)),
-    context + ': invalid ObjectKind (corrupt or freed pointer)');
-end;
 
 //Index and range assertions
 procedure AssertIndexIsNotNegative(Index : integer);
@@ -1517,6 +1511,13 @@ end;
 
 {$ENDIF}
 
+procedure AssertValidObjPointer(obj : pObj; const context : string);
+begin
+  if obj = nil then Exit;
+  Assert(Ord(obj^.ObjectKind) <= Ord(High(TObjectKind)),
+    context + ': invalid ObjectKind (corrupt or freed pointer)');
+end;
+
 
 function IntToBytes(const value: Integer): TIntToByteResult;
 begin
@@ -1614,8 +1615,10 @@ begin
   if (NewSize > OldSize) then
   begin
     {$IFDEF DEBUG_STRESS_GC}
-    CollectGarbage;
-    AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
+      CollectGarbage;
+      {$IFOPT C+}
+        AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
+      {$ENDIF}
     {$ENDIF}
     if MemTracker.BytesAllocated > MemTracker.NextGC then
     begin
@@ -6332,7 +6335,9 @@ begin
     var verifyObj : pObj := VM.MemTracker.CreatedObjects;
     while verifyObj <> nil do
     begin
+
       AssertValidObjPointer(verifyObj, 'Post-sweep verify surviving object');
+
       // After sweep, IsMarked is cleared for the next cycle ? do not check it
       verifyObj := verifyObj^.Next;
     end;
@@ -6345,9 +6350,13 @@ begin
     begin
       if VM.Strings.Entries[strIdx].key <> nil then
       begin
+
         AssertValidObjPointer(pObj(VM.Strings.Entries[strIdx].key), 'Post-sweep VM.Strings entry');
+
+
         Assert(VM.Strings.Entries[strIdx].key^.Obj.ObjectKind = okString,
           'Post-sweep VM.Strings: entry key is not okString');
+
       end;
     end;
   end;

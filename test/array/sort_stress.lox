@@ -1,0 +1,158 @@
+// ============================================================
+// sort_stress.lox — Quicksort in pure Lox with GC stress
+// Exercises: recursion, closures, subscripts, compound assign,
+//            for-loop variable capture, GC during comparisons
+// ============================================================
+
+// --- Quicksort implementation ---
+fun arraySort(arr, compare) {
+  fun swap(i, j) {
+    var tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+
+  fun quicksort(lo, hi) {
+    if (lo >= hi) return;
+    var pivot = arr[hi];
+    var i = lo;
+    for (var j = lo; j < hi; j += 1) {
+      if (compare(arr[j], pivot)) {
+        swap(i, j);
+        i += 1;
+      }
+    }
+    swap(i, hi);
+    quicksort(lo, i - 1);
+    quicksort(i + 1, hi);
+  }
+
+  quicksort(0, arrayLen(arr) - 1);
+}
+
+// --- Helper: check array is sorted ---
+fun isSorted(arr, compare) {
+  for (var i = 1; i < arrayLen(arr); i += 1) {
+    if (compare(arr[i], arr[i - 1])) return false;
+  }
+  return true;
+}
+
+// --- Comparators ---
+fun lessThan(x, y) { return x < y; }
+fun greaterThan(x, y) { return x > y; }
+
+// --- Test 1: Basic numeric sort ---
+var a = newArray();
+arrayPush(a, 30); arrayPush(a, 10); arrayPush(a, 20);
+arraySort(a, lessThan);
+print a[0]; // expect: 10
+print a[1]; // expect: 20
+print a[2]; // expect: 30
+
+// --- Test 2: Reverse sort ---
+var b = newArray();
+arrayPush(b, 1); arrayPush(b, 5); arrayPush(b, 3); arrayPush(b, 2); arrayPush(b, 4);
+arraySort(b, greaterThan);
+print b[0]; // expect: 5
+print b[1]; // expect: 4
+print b[2]; // expect: 3
+print b[3]; // expect: 2
+print b[4]; // expect: 1
+
+// --- Test 3: Already sorted ---
+var c = newArray();
+arrayPush(c, 1); arrayPush(c, 2); arrayPush(c, 3); arrayPush(c, 4);
+arraySort(c, lessThan);
+print isSorted(c, lessThan); // expect: true
+
+// --- Test 4: All equal elements ---
+var d = newArray();
+arrayPush(d, 7); arrayPush(d, 7); arrayPush(d, 7); arrayPush(d, 7);
+arraySort(d, lessThan);
+print d[0]; // expect: 7
+print d[3]; // expect: 7
+print isSorted(d, lessThan); // expect: true
+
+// --- Test 5: Single element ---
+var e = newArray();
+arrayPush(e, 42);
+arraySort(e, lessThan);
+print e[0]; // expect: 42
+
+// --- Test 6: Two elements (swap needed) ---
+var f = newArray();
+arrayPush(f, 9); arrayPush(f, 1);
+arraySort(f, lessThan);
+print f[0]; // expect: 1
+print f[1]; // expect: 9
+
+// --- Test 7: Negative numbers ---
+var s = newArray();
+arrayPush(s, -5); arrayPush(s, 3); arrayPush(s, -10); arrayPush(s, 0); arrayPush(s, 7);
+arraySort(s, lessThan);
+print s[0]; // expect: -10
+print s[1]; // expect: -5
+print s[2]; // expect: 0
+print s[3]; // expect: 3
+print s[4]; // expect: 7
+
+// --- Test 8: GC during comparison (the scary one) ---
+// This mimics Lua's sort test (sort.lua) which calls collectgarbage() inside
+// the comparator. The goal is to verify that:
+//   1. Array element pointers remain valid after GC compacts/sweeps the heap
+//   2. The ObjArray itself isn't freed while the sort is in progress
+//   3. Temporary strings/closures created during recursion don't corrupt
+//      live data when collected mid-operation
+//   4. Upvalues (callCount, gcInterval) survive GC cycles triggered from
+//      inside a deeply-nested call stack (quicksort → compare → GC)
+var callCount = 0;
+var gcInterval = 5;
+fun gcCompare(x, y) {
+  callCount += 1;
+  // Force GC every 5 comparisons — exercises the mark phase while
+  // the call stack holds references to array slots and pivot values
+  gcInterval -= 1;
+  if (gcInterval == 0) {
+    collectGarbage();
+    gcInterval = 5;
+  }
+  return x < y;
+}
+
+var g = newArray();
+arrayPush(g, 50); arrayPush(g, 10); arrayPush(g, 80);
+arrayPush(g, 30); arrayPush(g, 70); arrayPush(g, 20);
+arrayPush(g, 60); arrayPush(g, 40); arrayPush(g, 90);
+arrayPush(g, 5);
+arraySort(g, gcCompare);
+print isSorted(g, lessThan); // expect: true
+print g[0]; // expect: 5
+print g[9]; // expect: 90
+
+// --- Test 9: Larger array with GC stress ---
+var h = newArray();
+arrayPush(h, 99); arrayPush(h, 3); arrayPush(h, 45); arrayPush(h, 12);
+arrayPush(h, 78); arrayPush(h, 1); arrayPush(h, 56); arrayPush(h, 34);
+arrayPush(h, 90); arrayPush(h, 23); arrayPush(h, 67); arrayPush(h, 8);
+arrayPush(h, 44); arrayPush(h, 15); arrayPush(h, 72); arrayPush(h, 5);
+callCount = 0;
+gcInterval = 5;
+arraySort(h, gcCompare);
+print isSorted(h, lessThan); // expect: true
+print h[0]; // expect: 1
+print h[15]; // expect: 99
+print "comparisons: " + str(callCount > 0); // expect: comparisons: true
+
+// --- Test 10: Sort preserves all elements (no data loss) ---
+var orig = newArray();
+arrayPush(orig, 50); arrayPush(orig, 40); arrayPush(orig, 30);
+arrayPush(orig, 20); arrayPush(orig, 10);
+arraySort(orig, lessThan);
+var sum = 0;
+for (var i = 0; i < arrayLen(orig); i += 1) {
+  sum += orig[i];
+}
+print sum; // expect: 150
+
+print "All sort tests passed."; // expect: All sort tests passed.

@@ -1,4 +1,4 @@
-unit LoxCanvas;
+﻿unit LoxCanvas;
 
 interface
 
@@ -467,7 +467,7 @@ begin
   begin
     SetKeyState(KeyName, True);
     if Assigned(FOnGameKeyDown) then FOnGameKeyDown(Self, KeyName);
-    Key := 0;  // consume so it doesn't bubble to the form / editor
+    Key := 0;  // consume so it doesn't bubble to the form / editor --need to revisit this.
   end else
     inherited;
 end;
