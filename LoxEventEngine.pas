@@ -26,7 +26,8 @@ type
     eckKeyReleased,
     eckKeyHeld,
     eckMouseDown,
-    eckMouseUp
+    eckMouseUp,
+    eckMouseMove
   );
 
   TLoxEventEngine = class
@@ -36,6 +37,10 @@ type
     FOnKeyHeld: TValue;
     FOnMouseDown: TValue;
     FOnMouseUp: TValue;
+    FOnMouseMove: TValue;
+    FMouseMoveX: Integer;
+    FMouseMoveY: Integer;
+    FMouseMoved: Boolean;
     FHeldKeys: TStringList;
     FPendingKeys: TStringList;
     FPendingMouse: TStringList;
@@ -60,6 +65,7 @@ type
     procedure QueueKeyUp(const KeyName: string);
     procedure QueueMouseDown(btn, x, y: Integer);
     procedure QueueMouseUp(btn, x, y: Integer);
+    procedure QueueMouseMove(x, y: Integer);
 
     // Dispatch all pending events via InvokeCallback
     procedure DispatchPendingEvents;
@@ -118,6 +124,10 @@ begin
   FOnKeyHeld := CreateNilValue;
   FOnMouseDown := CreateNilValue;
   FOnMouseUp := CreateNilValue;
+  FOnMouseMove := CreateNilValue;
+  FMouseMoved := False;
+  FMouseMoveX := 0;
+  FMouseMoveY := 0;
   FRunning := True;
 end;
 
@@ -151,6 +161,14 @@ end;
 procedure TLoxEventEngine.QueueMouseUp(btn, x, y: Integer);
 begin
   FPendingMouse.Add('up:' + IntToStr(btn) + ':' + IntToStr(x) + ':' + IntToStr(y));
+end;
+
+procedure TLoxEventEngine.QueueMouseMove(x, y: Integer);
+begin
+  // Coalesce: only keep the latest position per frame
+  FMouseMoveX := x;
+  FMouseMoveY := y;
+  FMouseMoved := True;
 end;
 
 procedure TLoxEventEngine.DispatchPendingEvents;
@@ -217,6 +235,18 @@ begin
   end;
   FPendingMouse.Clear;
 
+  // Dispatch mouse move (coalesced — one event per frame with latest position)
+  if FMouseMoved and isClosure(FOnMouseMove) then
+  begin
+    FMouseMoved := False;
+    args[0] := CreateNumber(FMouseMoveX);
+    args[1] := CreateNumber(FMouseMoveY);
+    InvokeCallback(FOnMouseMove, [args[0], args[1]], dummy);
+    if VM.RuntimeErrorStr <> '' then Exit;
+  end
+  else
+    FMouseMoved := False;
+
   // Dispatch held keys every frame (for continuous movement)
   if isClosure(FOnKeyHeld) and (FHeldKeys.Count > 0) then
   begin
@@ -249,6 +279,7 @@ begin
     eckKeyHeld:     FOnKeyHeld := Value;
     eckMouseDown:   FOnMouseDown := Value;
     eckMouseUp:     FOnMouseUp := Value;
+    eckMouseMove:   FOnMouseMove := Value;
   end;
 end;
 
@@ -268,6 +299,7 @@ begin
   Chunk_Types.RegisterGCRoot(FOnKeyHeld);
   Chunk_Types.RegisterGCRoot(FOnMouseDown);
   Chunk_Types.RegisterGCRoot(FOnMouseUp);
+  Chunk_Types.RegisterGCRoot(FOnMouseMove);
 end;
 
 procedure TLoxEventEngine.UnregisterGCRoots;
@@ -277,6 +309,7 @@ begin
   Chunk_Types.UnregisterGCRoot(FOnKeyHeld);
   Chunk_Types.UnregisterGCRoot(FOnMouseDown);
   Chunk_Types.UnregisterGCRoot(FOnMouseUp);
+  Chunk_Types.UnregisterGCRoot(FOnMouseMove);
 end;
 
 class function TLoxEventEngine.MapVKToName(Key: Word): string;

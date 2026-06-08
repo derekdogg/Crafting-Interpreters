@@ -1,0 +1,20 @@
+// Stress: many locals in a single scope (near the 256 limit).
+// Uses 250 locals in one function — should compile fine.
+
+fun manyLocals() {
+  var a0=0; var a1=1; var a2=2; var a3=3; var a4=4; var a5=5; var a6=6; var a7=7; var a8=8; var a9=9;
+  var b0=10; var b1=11; var b2=12; var b3=13; var b4=14; var b5=15; var b6=16; var b7=17; var b8=18; var b9=19;
+  var c0=20; var c1=21; var c2=22; var c3=23; var c4=24; var c5=25; var c6=26; var c7=27; var c8=28; var c9=29;
+  var d0=30; var d1=31; var d2=32; var d3=33; var d4=34; var d5=35; var d6=36; var d7=37; var d8=38; var d9=39;
+  var e0=40; var e1=41; var e2=42; var e3=43; var e4=44; var e5=45; var e6=46; var e7=47; var e8=48; var e9=49;
+  var f0=50; var f1=51; var f2=52; var f3=53; var f4=54; var f5=55; var f6=56; var f7=57; var f8=58; var f9=59;
+  var g0=60; var g1=61; var g2=62; var g3=63; var g4=64; var g5=65; var g6=66; var g7=67; var g8=68; var g9=69;
+  var h0=70; var h1=71; var h2=72; var h3=73; var h4=74; var h5=75; var h6=76; var h7=77; var h8=78; var h9=79;
+  var i0=80; var i1=81; var i2=82; var i3=83; var i4=84; var i5=85; var i6=86; var i7=87; var i8=88; var i9=89;
+  var j0=90; var j1=91; var j2=92; var j3=93; var j4=94; var j5=95; var j6=96; var j7=97; var j8=98; var j9=99;
+  // Sum a selection from across the range
+  return a0 + a9 + b9 + c9 + d9 + e9 + f9 + g9 + h9 + i9 + j9;
+}
+
+// 0 + 9 + 19 + 29 + 39 + 49 + 59 + 69 + 79 + 89 + 99 = 540
+print str(manyLocals()); // expect: 540

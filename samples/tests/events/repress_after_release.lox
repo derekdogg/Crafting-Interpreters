@@ -1,0 +1,22 @@
+// Test: after key-up, the same key can trigger onKeyPressed again.
+// Verifies that the held-set dedup resets properly on release.
+
+var pressCount = 0;
+
+onKeyPressed(fun(key) {
+  pressCount = pressCount + 1;
+});
+
+// First press
+simulateKeyDown("a");
+processEvents();
+
+// Release
+simulateKeyUp("a");
+processEvents();
+
+// Second press of same key — should fire onKeyPressed again
+simulateKeyDown("a");
+processEvents();
+
+print str(pressCount); // expect: 2

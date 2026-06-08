@@ -474,23 +474,17 @@ end;
 procedure TForm4.Button4Click(Sender: TObject);
 var
   IR: TInterpretResult;
-  ScriptPath: string;
   ScriptText: AnsiString;
 begin
   Memo2.Lines.Clear;
 
-  ScriptPath := TPath.Combine(ExtractFilePath(ParamStr(0)),
-    '..\..\samples\test_events.lox');
+  ScriptText := AnsiString(Memo1.Lines.Text);
 
-  if not TFile.Exists(ScriptPath) then
+  if Length(Trim(string(ScriptText))) = 0 then
   begin
-    Memo2.Lines.Add('Script not found: ' + ScriptPath);
+    Memo2.Lines.Add('No script to run. Enter code in the editor first.');
     Exit;
   end;
-
-  ScriptText := AnsiString(TFile.ReadAllText(ScriptPath));
-
-  Memo1.Lines.Text := string(ScriptText);
 
   if frmEventTest = nil then
     frmEventTest := TfrmEventTest.Create(Self);

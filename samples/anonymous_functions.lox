@@ -1,0 +1,105 @@
+// ============================================================
+// Anonymous Functions (Lambdas) in Lox
+// Demonstrates using fun(...) { } as expressions.
+// ============================================================
+
+// --- 1. Assign to a variable ---
+var square = fun(x) { return x * x; };
+print str(square(7)); // expect: 49
+
+// --- 2. Pass directly as an argument ---
+fun apply(f, value) {
+  return f(value);
+}
+print str(apply(fun(n) { return n + 10; }, 5)); // expect: 15
+
+// --- 3. Return from a function (closure factory) ---
+fun multiplier(factor) {
+  return fun(x) { return x * factor; };
+}
+var triple = multiplier(3);
+var tenX = multiplier(10);
+print str(triple(7));  // expect: 21
+print str(tenX(4));    // expect: 40
+
+// --- 4. Immediately invoked ---
+var result = (fun(a, b) { return a + b; })(3, 4);
+print str(result); // expect: 7
+
+// --- 5. Array of functions ---
+var ops = [
+  fun(a, b) { return a + b; },
+  fun(a, b) { return a - b; },
+  fun(a, b) { return a * b; }
+];
+print str(ops[0](10, 3)); // expect: 13
+print str(ops[1](10, 3)); // expect: 7
+print str(ops[2](10, 3)); // expect: 30
+
+// --- 6. Higher-order: map over an array ---
+fun map(arr, f) {
+  var out = [];
+  var i = 0;
+  while (i < arrayLen(arr)) {
+    out = arrayPush(out, f(arrayGet(arr, i)));
+    i = i + 1;
+  }
+  return out;
+}
+
+var nums = [1, 2, 3, 4, 5];
+var doubled = map(nums, fun(x) { return x * 2; });
+print str(arrayGet(doubled, 0)) + " " + str(arrayGet(doubled, 4)); // expect: 2 10
+
+// --- 7. Higher-order: filter ---
+fun filter(arr, pred) {
+  var out = [];
+  var i = 0;
+  while (i < arrayLen(arr)) {
+    var item = arrayGet(arr, i);
+    if (pred(item)) {
+      out = arrayPush(out, item);
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+var evens = filter(nums, fun(x) { return x - floor(x / 2) * 2 == 0; });
+print str(arrayLen(evens));      // expect: 2
+print str(arrayGet(evens, 0));   // expect: 2
+print str(arrayGet(evens, 1));   // expect: 4
+
+// --- 8. Higher-order: reduce/fold ---
+fun reduce(arr, initial, f) {
+  var acc = initial;
+  var i = 0;
+  while (i < arrayLen(arr)) {
+    acc = f(acc, arrayGet(arr, i));
+    i = i + 1;
+  }
+  return acc;
+}
+
+var sum = reduce(nums, 0, fun(acc, x) { return acc + x; });
+var product = reduce(nums, 1, fun(acc, x) { return acc * x; });
+print str(sum);     // expect: 15
+print str(product); // expect: 120
+
+// --- 9. Composing functions ---
+fun compose(f, g) {
+  return fun(x) { return f(g(x)); };
+}
+var addOne = fun(x) { return x + 1; };
+var double = fun(x) { return x * 2; };
+var doubleAndAdd = compose(addOne, double);
+print str(doubleAndAdd(5)); // expect: 11
+
+// --- 10. Callbacks via callWith (the motivating use case) ---
+var log = "";
+var handler = fun(msg) {
+  log = log + msg + " ";
+};
+callWith(handler, "hello");
+callWith(handler, "world");
+print trim(log); // expect: hello world

@@ -1,0 +1,6 @@
+// includeTrailingBackslash() ensures a path ends with a backslash
+
+print includeTrailingBackslash("C:\\temp"); // expect: C:\temp\
+print includeTrailingBackslash("C:\\temp\\"); // expect: C:\temp\
+print includeTrailingBackslash(""); // expect: \
+print includeTrailingBackslash("foo"); // expect: foo\

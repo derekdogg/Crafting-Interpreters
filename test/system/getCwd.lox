@@ -1,0 +1,4 @@
+// getCwd() returns a non-empty string
+var cwd = getCwd();
+print strlen(cwd) > 0; // expect: true
+print type(cwd); // expect: string

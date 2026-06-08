@@ -1,0 +1,18 @@
+// Test: the same closure registered for multiple event types.
+// Each event type has its own slot, so one closure can handle several.
+
+var log = "";
+
+var handler = fun(key) {
+  log = log + key + " ";
+};
+
+onKeyPressed(handler);
+onKeyReleased(handler);
+
+simulateKeyDown("a");
+simulateKeyUp("a");
+processEvents();
+
+// "a" fires for both pressed and released through the same closure
+print log; // expect: a a 

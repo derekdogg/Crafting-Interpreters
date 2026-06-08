@@ -1,0 +1,42 @@
+// Stress: callWith/invoke with edge-case arguments.
+
+// callWith with a closure that returns nil
+var r1 = callWith(fun(x) { return nil; }, 5);
+print str(r1 == nil); // expect: true
+
+// invoke with zero extra arguments (just the closure)
+var r2 = invoke(fun() { return 77; });
+print str(r2); // expect: 77
+
+// invoke with many arguments
+var r3 = invoke(fun(a, b, c, d, e) { return a + b + c + d + e; }, 1, 2, 3, 4, 5);
+print str(r3); // expect: 15
+
+// callWith where the callback itself calls callWith (nested)
+var r4 = callWith(fun(x) {
+  return callWith(fun(y) {
+    return callWith(fun(z) {
+      return x + y + z;
+    }, 3);
+  }, 2);
+}, 1);
+print str(r4); // expect: 6
+
+// callWith with a closure that captures and mutates upvalue
+var counter = 0;
+var inc = fun(n) { counter = counter + n; return counter; };
+print str(callWith(inc, 10)); // expect: 10
+print str(callWith(inc, 5));  // expect: 15
+print str(counter);           // expect: 15
+
+// invoke where callback creates an array
+var r5 = invoke(fun(n) {
+  var arr = [];
+  var i = 0;
+  while (i < n) {
+    arrayPush(arr, i * i);
+    i = i + 1;
+  }
+  return arrayLen(arr);
+}, 10);
+print str(r5); // expect: 10

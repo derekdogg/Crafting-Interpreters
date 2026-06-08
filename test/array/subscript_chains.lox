@@ -1,0 +1,45 @@
+// Subscript chains: nested array/dict access and assignment.
+
+// Nested array access
+var a = [[1, 2], [3, 4], [5, 6]];
+print str(a[0][0]); // expect: 1
+print str(a[1][1]); // expect: 4
+print str(a[2][0]); // expect: 5
+
+// Nested dict access
+var d = ["a": ["x": 10, "y": 20], "b": ["x": 30, "y": 40]];
+print str(d["a"]["x"]); // expect: 10
+print str(d["b"]["y"]); // expect: 40
+
+// Mixed array-in-dict
+var mixed = ["items": [100, 200, 300]];
+print str(mixed["items"][1]); // expect: 200
+
+// Mixed dict-in-array
+var arr = [["name": "alice"], ["name": "bob"]];
+print arr[0]["name"]; // expect: alice
+print arr[1]["name"]; // expect: bob
+
+// Triple-nested subscript
+var triple = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+print str(triple[0][1][0]); // expect: 3
+print str(triple[1][0][1]); // expect: 6
+
+// Subscript assignment through chain
+var m = [["a": 0]];
+m[0]["a"] = 99;
+print str(m[0]["a"]); // expect: 99
+
+// Array of closures accessed by subscript
+var ops = [
+  fun(a, b) { return a + b; },
+  fun(a, b) { return a - b; },
+  fun(a, b) { return a * b; }
+];
+print str(ops[0](3, 4)); // expect: 7
+print str(ops[1](10, 3)); // expect: 7
+print str(ops[2](5, 6)); // expect: 30
+
+// Dict value is closure, called via subscript
+var actions = ["greet": fun(name) { return "hi " + name; }];
+print actions["greet"]("world"); // expect: hi world

@@ -1,0 +1,30 @@
+// VM introspection natives return sensible values
+
+// vmFramesMax() returns the compile-time constant (512)
+print str(vmFramesMax()); // expect: 512
+
+// vmStackMax() returns FRAMES_MAX * 256 = 131072
+print str(vmStackMax()); // expect: 131072
+
+// vmStackDepth() returns current stack depth (> 0 since we're running code)
+print vmStackDepth() > 0; // expect: true
+
+// vmCallDepth() at top-level is 1 (the script frame)
+print str(vmCallDepth()); // expect: 1
+
+// vmCallDepth() inside a function is 2
+fun checkDepth() {
+  return vmCallDepth();
+}
+print str(checkDepth()); // expect: 2
+
+// gcCollectionCount() is a non-negative number
+print gcCollectionCount() >= 0; // expect: true
+
+// gcNextThreshold() is positive
+print gcNextThreshold() > 0; // expect: true
+
+// After collectGarbage(), collection count increases
+var before = gcCollectionCount();
+collectGarbage();
+print gcCollectionCount() > before; // expect: true

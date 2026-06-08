@@ -23,6 +23,11 @@ onMouseDown(fun(btn, x, y) {
   print "MOUSE DOWN: btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
 });
 
+onMouseMove(fun(x, y) {
+  print "MOUSE MOVE: at (" + str(x) + "," + str(y) + ")";
+});
+
+
 onKeyHeld(fun(key) {
   if (key == "left")  print "moving left";
   if (key == "right") print "moving right";
