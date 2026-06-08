@@ -6,6 +6,7 @@
 {..$DEFINE DEBUG_STRESS_TABLE}
 {..$DEFINE OPCODE_PROFILING}
 {..$DEFINE DEBUG_ASSERT_INVARIANTS}
+
 interface
  
 uses
@@ -4261,7 +4262,7 @@ var
   idxDelphiArgs : array[0..0] of System.Rtti.TValue;
   idxDelphiVal  : System.Rtti.TValue;
   {$IFDEF DEBUG_ASSERT_INVARIANTS}
-  savedNativeStackTop : pValue;
+  savedNativeStackDepth : NativeInt;
   {$ENDIF}
 
   function CurrentFrame: pCallFrame;
@@ -4510,7 +4511,10 @@ begin
             end;
             native := pObjNative(GetObject(value))^.func;
             {$IFDEF DEBUG_ASSERT_INVARIANTS}
-            savedNativeStackTop := stack.StackTop;
+            // Save depth (not raw pointer) — realloc-safe. A native may
+            // allocate strings which pushStack for GC protection, causing
+            // a stack realloc that rebases StackTop.
+            savedNativeStackDepth := NativeInt(stack.StackTop) - NativeInt(stack.Values);
             {$ENDIF}
             nativeResult := native(argCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount) * SizeOf(TValue)));
             // Check if native signalled a runtime error
@@ -4520,10 +4524,11 @@ begin
               exit;
             end;
             {$IFDEF DEBUG_ASSERT_INVARIANTS}
-            // Natives must not modify the stack — they receive a pointer to
-            // args and return a single TValue. VM does all stack manipulation.
-            Assert(stack.StackTop = savedNativeStackTop,
-              'OP_CALL native: native function modified StackTop');
+            // Natives must not change logical stack depth — they receive a
+            // pointer to args and return a single TValue. VM does all stack
+            // manipulation. Uses offset from Values (realloc-safe).
+            Assert((NativeInt(stack.StackTop) - NativeInt(stack.Values)) = savedNativeStackDepth,
+              'OP_CALL native: native function modified stack depth');
             {$ENDIF}
             // pop args + callee, push result
             stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount + 1) * SizeOf(TValue));
