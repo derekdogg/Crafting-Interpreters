@@ -1,0 +1,7 @@
+// cos() returns the cosine of an angle in radians
+
+print cos(0); // expect: 1
+print cos(1) > 0.54; // expect: true
+print cos(1) < 0.55; // expect: true
+print cos(-1) > 0.54; // expect: true
+print cos(-1) < 0.55; // expect: true

@@ -5,6 +5,7 @@
 {..$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
 {..$DEFINE OPCODE_PROFILING}
+{$DEFINE DEBUG_ASSERT_INVARIANTS}
 interface
  
 uses
@@ -4259,6 +4260,9 @@ var
   idxParams : TArray<TRttiParameter>;
   idxDelphiArgs : array[0..0] of System.Rtti.TValue;
   idxDelphiVal  : System.Rtti.TValue;
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  savedNativeStackTop : pValue;
+  {$ENDIF}
 
   function CurrentFrame: pCallFrame;
   begin
@@ -4477,6 +4481,15 @@ begin
             VM.Frames[VM.FrameCount].ip := closure^.func^.chunk^.Code;
             VM.Frames[VM.FrameCount].slots := stack.StackTop;
             Dec(VM.Frames[VM.FrameCount].slots, argCount + 1);
+            {$IFDEF DEBUG_ASSERT_INVARIANTS}
+            Assert(NativeUInt(VM.Frames[VM.FrameCount].slots) >= NativeUInt(stack.Values),
+              'OP_CALL: frame slots below stack base');
+            Assert(NativeUInt(VM.Frames[VM.FrameCount].slots) < NativeUInt(stack.StackTop),
+              'OP_CALL: frame slots at or above StackTop');
+            // Exact position: slots must point at callee (StackTop - argCount - 1)
+            Assert(VM.Frames[VM.FrameCount].slots = pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount + 1) * SizeOf(TValue)),
+              'OP_CALL: frame slots not positioned at callee');
+            {$ENDIF}
             Inc(VM.FrameCount);
           end
           else if isNative(value) then
@@ -4496,6 +4509,9 @@ begin
               exit;
             end;
             native := pObjNative(GetObject(value))^.func;
+            {$IFDEF DEBUG_ASSERT_INVARIANTS}
+            savedNativeStackTop := stack.StackTop;
+            {$ENDIF}
             nativeResult := native(argCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount) * SizeOf(TValue)));
             // Check if native signalled a runtime error
             if VM.RuntimeErrorStr <> '' then
@@ -4503,6 +4519,12 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
+            {$IFDEF DEBUG_ASSERT_INVARIANTS}
+            // Natives must not modify the stack — they receive a pointer to
+            // args and return a single TValue. VM does all stack manipulation.
+            Assert(stack.StackTop = savedNativeStackTop,
+              'OP_CALL native: native function modified StackTop');
+            {$ENDIF}
             // pop args + callee, push result
             stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount + 1) * SizeOf(TValue));
             pushStack(stack, nativeResult);
@@ -5713,9 +5735,19 @@ function InvokeCallback(closure: TValue; const args: array of TValue;
 var
   closurePtr: pObjClosure;
   i, argCount: Integer;
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  savedStackDepth: NativeInt;
+  savedFrameCount: Integer;
+  {$ENDIF}
 begin
   Result := Default(TInterpretResult);
   returnVal := CreateNilValue;
+
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  // Use depth (offset from Values) rather than raw pointer — realloc-safe.
+  savedStackDepth := NativeInt(VM.Stack.StackTop) - NativeInt(VM.Stack.Values);
+  savedFrameCount := VM.FrameCount;
+  {$ENDIF}
 
   // Validate closure
   if not isClosure(closure) then
@@ -5770,6 +5802,19 @@ begin
     // frame^.slots and pushed the value. We need to pop it.
     Dec(VM.Stack.StackTop);
   end;
+
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  // Stack balance: after callback, stack depth must match saved depth.
+  // Uses offset from Values (not raw pointer) so it's realloc-safe.
+  if Result.code = INTERPRET_OK then
+  begin
+    Assert((NativeInt(VM.Stack.StackTop) - NativeInt(VM.Stack.Values)) = savedStackDepth,
+      'InvokeCallback: stack not balanced after return (leak or underflow)');
+    // Frame balance: must return to original frame count
+    Assert(VM.FrameCount = savedFrameCount,
+      'InvokeCallback: FrameCount not balanced after return');
+  end;
+  {$ENDIF}
 end;
 
 procedure RegisterGCRoot(var slot: TValue);
@@ -5881,6 +5926,21 @@ begin
      Result := Run;
      {$IFDEF OPCODE_PROFILING}
      DumpOpcodePairs;
+     {$ENDIF}
+     {$IFDEF DEBUG_ASSERT_INVARIANTS}
+     // After successful top-level run, verify no stack leaks.
+     // Note: OP_RETURN at baselineFrameCount=0 does Dec(StackTop) to pop
+     // the script function, leaving StackTop at Values-1. This is expected.
+     // We check for LEAKS (StackTop above Values) which indicate real bugs.
+     if Result.code = INTERPRET_OK then
+     begin
+       Assert(VM.FrameCount = 0,
+         'CompileAndRun: FrameCount not 0 after successful run');
+       Assert(NativeInt(VM.Stack.StackTop) <= NativeInt(VM.Stack.Values),
+         'CompileAndRun: stack leak detected after successful run');
+       Assert(VM.OpenUpvalues = nil,
+         'CompileAndRun: open upvalues remain after successful run');
+     end;
      {$ENDIF}
    except
      // Stack overflow (or any other VM-internal abort raised as

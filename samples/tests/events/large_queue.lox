@@ -1,0 +1,25 @@
+// Test: large number of events queued between frames.
+// 100 key-down/up pairs should all dispatch correctly without loss.
+
+var pressCount = 0;
+var releaseCount = 0;
+
+onKeyPressed(fun(key) {
+  pressCount = pressCount + 1;
+});
+
+onKeyReleased(fun(key) {
+  releaseCount = releaseCount + 1;
+});
+
+// Queue 100 down/up pairs (different keys so dedup doesn't suppress)
+var i = 0;
+while (i < 100) {
+  simulateKeyDown(str(i));
+  simulateKeyUp(str(i));
+  i = i + 1;
+}
+processEvents();
+
+print str(pressCount);   // expect: 100
+print str(releaseCount); // expect: 100

@@ -1,0 +1,7 @@
+// sin() returns the sine of an angle in radians
+
+print sin(0); // expect: 0
+print sin(1) > 0.84; // expect: true
+print sin(1) < 0.85; // expect: true
+print sin(-1) > -0.85; // expect: true
+print sin(-1) < -0.84; // expect: true
