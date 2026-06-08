@@ -124,6 +124,10 @@ begin
   FOnKeyHeld := CreateNilValue;
   FOnMouseDown := CreateNilValue;
   FOnMouseUp := CreateNilValue;
+  FOnMouseMove := CreateNilValue;
+  FMouseMoved := False;
+  FMouseMoveX := 0;
+  FMouseMoveY := 0;
   FRunning := True;
 end;
 
