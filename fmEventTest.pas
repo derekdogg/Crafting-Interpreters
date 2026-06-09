@@ -17,6 +17,9 @@ type
   TfrmEventTest = class(TForm)
     Memo1: TMemo;
     Panel1: TPanel;
+    PanelButtons: TPanel;
+    Button1: TButton;
+    Button2: TButton;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
@@ -29,6 +32,8 @@ type
     procedure Panel1MouseMove(Sender: TObject; Shift: TShiftState;
       X, Y: Integer);
     procedure Panel1Click(Sender: TObject);
+    procedure Button1Click(Sender: TObject);
+    procedure Button2Click(Sender: TObject);
   private
     FEngine: TLoxEventEngine;
     procedure Log(const Msg: string);
@@ -99,7 +104,7 @@ begin
   else btn := -1;
   end;
   if btn >= 0 then
-    FEngine.QueueMouseDown(btn, X, Y);
+    FEngine.QueueMouseDown(btn, X, Y, 'panel1');
 end;
 
 procedure TfrmEventTest.Panel1MouseUp(Sender: TObject; Button: TMouseButton;
@@ -114,18 +119,28 @@ begin
   else btn := -1;
   end;
   if btn >= 0 then
-    FEngine.QueueMouseUp(btn, X, Y);
+    FEngine.QueueMouseUp(btn, X, Y, 'panel1');
 end;
 
 procedure TfrmEventTest.Panel1MouseMove(Sender: TObject; Shift: TShiftState;
   X, Y: Integer);
 begin
-  FEngine.QueueMouseMove(X, Y);
+  FEngine.QueueMouseMove(X, Y, 'panel1');
 end;
 
 procedure TfrmEventTest.Panel1Click(Sender: TObject);
 begin
   // Ensure focus stays on the form for key events
+end;
+
+procedure TfrmEventTest.Button1Click(Sender: TObject);
+begin
+  FEngine.QueueClick('button1');
+end;
+
+procedure TfrmEventTest.Button2Click(Sender: TObject);
+begin
+  FEngine.QueueClick('button2');
 end;
 
 // --- Canvas event handlers (forwarded to the event engine) ---

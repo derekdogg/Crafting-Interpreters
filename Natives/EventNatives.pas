@@ -3,10 +3,20 @@ unit EventNatives;
 // ============================================================
 // Native functions for the Lox event engine.
 // Registers: onKeyPressed, onKeyReleased, onKeyHeld,
-//            onMouseDown, onMouseUp, onMouseMove, processEvents
+//            onMouseDown, onMouseUp, onMouseMove, onClick,
+//            processEvents
 // Also provides simulation natives for scripted testing:
 //            simulateKeyDown, simulateKeyUp,
 //            simulateMouseDown, simulateMouseUp, simulateMouseMove
+//
+// Named-target support
+// --------------------
+// All callback registration natives accept an optional leading
+// string argument naming the target VCL control:
+//   onMouseDown(fun(btn,x,y) { ... })            -- canvas/form default
+//   onMouseDown("btnSave", fun(btn,x,y) { ... })  -- specific control
+// onClick always requires a control name:
+//   onClick("btnSave", fun() { ... })
 // ============================================================
 
 interface
@@ -21,71 +31,105 @@ implementation
 uses
   Vcl.Forms, System.SysUtils, LoxEventEngine;
 
+// --- Helper: parse optional (controlName, closure) or (closure) ---
+// Returns True if args are valid; sets controlName and closure.
+
+function ParseCallbackArgs(const NativeName: string; argCount: Integer;
+  args: pValue; out controlName: string; out closure: TValue): Boolean;
+begin
+  Result := False;
+  if (argCount = 1) and isClosure(args[0]) then
+  begin
+    controlName := '';
+    closure := args[0];
+    Result := True;
+  end
+  else if (argCount = 2) and isString(args[0]) and isClosure(args[1]) then
+  begin
+    controlName := string(AsAnsiString(args[0]));
+    closure := args[1];
+    Result := True;
+  end
+  else
+    RuntimeError(NativeName + '() takes an optional control name and 1 function argument.');
+end;
+
 // --- Callback registration natives ---
 
 function onKeyPressedNative(argCount: integer; args: pValue): TValue;
+var
+  controlName: string;
+  closure: TValue;
 begin
-  if (argCount <> 1) or not isClosure(args[0]) then
-  begin
-    RuntimeError('onKeyPressed() takes 1 function argument.');
-    Exit(CreateNilValue);
-  end;
-  ActiveEngine.SetCallback(eckKeyPressed, args[0]);
+  if ParseCallbackArgs('onKeyPressed', argCount, args, controlName, closure) then
+    ActiveEngine.SetCallback(eckKeyPressed, controlName, closure);
   Result := CreateNilValue;
 end;
 
 function onKeyReleasedNative(argCount: integer; args: pValue): TValue;
+var
+  controlName: string;
+  closure: TValue;
 begin
-  if (argCount <> 1) or not isClosure(args[0]) then
-  begin
-    RuntimeError('onKeyReleased() takes 1 function argument.');
-    Exit(CreateNilValue);
-  end;
-  ActiveEngine.SetCallback(eckKeyReleased, args[0]);
+  if ParseCallbackArgs('onKeyReleased', argCount, args, controlName, closure) then
+    ActiveEngine.SetCallback(eckKeyReleased, controlName, closure);
   Result := CreateNilValue;
 end;
 
 function onKeyHeldNative(argCount: integer; args: pValue): TValue;
+var
+  controlName: string;
+  closure: TValue;
 begin
-  if (argCount <> 1) or not isClosure(args[0]) then
-  begin
-    RuntimeError('onKeyHeld() takes 1 function argument.');
-    Exit(CreateNilValue);
-  end;
-  ActiveEngine.SetCallback(eckKeyHeld, args[0]);
+  if ParseCallbackArgs('onKeyHeld', argCount, args, controlName, closure) then
+    ActiveEngine.SetCallback(eckKeyHeld, controlName, closure);
   Result := CreateNilValue;
 end;
 
 function onMouseDownNative(argCount: integer; args: pValue): TValue;
+var
+  controlName: string;
+  closure: TValue;
 begin
-  if (argCount <> 1) or not isClosure(args[0]) then
-  begin
-    RuntimeError('onMouseDown() takes 1 function argument.');
-    Exit(CreateNilValue);
-  end;
-  ActiveEngine.SetCallback(eckMouseDown, args[0]);
+  if ParseCallbackArgs('onMouseDown', argCount, args, controlName, closure) then
+    ActiveEngine.SetCallback(eckMouseDown, controlName, closure);
   Result := CreateNilValue;
 end;
 
 function onMouseUpNative(argCount: integer; args: pValue): TValue;
+var
+  controlName: string;
+  closure: TValue;
 begin
-  if (argCount <> 1) or not isClosure(args[0]) then
-  begin
-    RuntimeError('onMouseUp() takes 1 function argument.');
-    Exit(CreateNilValue);
-  end;
-  ActiveEngine.SetCallback(eckMouseUp, args[0]);
+  if ParseCallbackArgs('onMouseUp', argCount, args, controlName, closure) then
+    ActiveEngine.SetCallback(eckMouseUp, controlName, closure);
   Result := CreateNilValue;
 end;
 
 function onMouseMoveNative(argCount: integer; args: pValue): TValue;
+var
+  controlName: string;
+  closure: TValue;
 begin
-  if (argCount <> 1) or not isClosure(args[0]) then
+  if ParseCallbackArgs('onMouseMove', argCount, args, controlName, closure) then
+    ActiveEngine.SetCallback(eckMouseMove, controlName, closure);
+  Result := CreateNilValue;
+end;
+
+function onClickNative(argCount: integer; args: pValue): TValue;
+var
+  controlName: string;
+  closure: TValue;
+begin
+  // onClick always requires a control name: onClick("btnSave", fun() { ... })
+  if (argCount = 2) and isString(args[0]) and isClosure(args[1]) then
   begin
-    RuntimeError('onMouseMove() takes 1 function argument.');
-    Exit(CreateNilValue);
-  end;
-  ActiveEngine.SetCallback(eckMouseMove, args[0]);
+    controlName := string(AsAnsiString(args[0]));
+    closure := args[1];
+    ActiveEngine.SetCallback(eckClick, controlName, closure);
+  end
+  else
+    RuntimeError('onClick() takes a control name and 1 function argument.');
   Result := CreateNilValue;
 end;
 
@@ -192,12 +236,14 @@ end;
 
 procedure RegisterEventNatives;
 begin
-  defineNative('onKeyPressed', onKeyPressedNative, 1);
-  defineNative('onKeyReleased', onKeyReleasedNative, 1);
-  defineNative('onKeyHeld', onKeyHeldNative, 1);
-  defineNative('onMouseDown', onMouseDownNative, 1);
-  defineNative('onMouseUp', onMouseUpNative, 1);
-  defineNative('onMouseMove', onMouseMoveNative, 1);
+  // Callback natives: arity -1 = variadic (1 or 2 args accepted)
+  defineNative('onKeyPressed', onKeyPressedNative, -1);
+  defineNative('onKeyReleased', onKeyReleasedNative, -1);
+  defineNative('onKeyHeld', onKeyHeldNative, -1);
+  defineNative('onMouseDown', onMouseDownNative, -1);
+  defineNative('onMouseUp', onMouseUpNative, -1);
+  defineNative('onMouseMove', onMouseMoveNative, -1);
+  defineNative('onClick', onClickNative, 2);
   defineNative('processEvents', processEventsNative, 0);
   // Simulation natives (for scripted testing — queue events without VCL)
   defineNative('simulateKeyDown', simulateKeyDownNative, 1);
