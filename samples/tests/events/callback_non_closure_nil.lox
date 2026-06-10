@@ -1,2 +1,2 @@
 // Passing nil to callback native.
-onMouseDown(nil); // expect runtime error: onMouseDown() takes 1 function argument.
+onMouseDown(nil); // expect runtime error: onMouseDown() takes an optional control name and 1 function argument.

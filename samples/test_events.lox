@@ -1,10 +1,12 @@
 // Event-driven callback test
 // Run this with the Event Test form.
-// Press keys and click the panel — callbacks fire in real time.
+// Press keys, click the canvas, and click the buttons.
 
 var running = true;
 var keyCount = 0;
 var clickCount = 0;
+
+// --- Canvas / form-level events (no control name = default) ---
 
 onKeyPressed(fun(key) {
   keyCount = keyCount + 1;
@@ -20,26 +22,41 @@ onKeyReleased(fun(key) {
 
 onMouseDown(fun(btn, x, y) {
   clickCount = clickCount + 1;
-  print "MOUSE DOWN: btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
+  print "CANVAS MOUSE DOWN: btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
 });
 
 onMouseMove(fun(x, y) {
-  print "MOUSE MOVE: at (" + str(x) + "," + str(y) + ")";
+  // Uncomment to see move events:
+  // print "MOUSE MOVE: at (" + str(x) + "," + str(y) + ")";
 });
-
 
 onKeyHeld(fun(key) {
   if (key == "left")  print "moving left";
   if (key == "right") print "moving right";
-  if (key == "up")  print "moving up";
-  if (key == "down") print "moving down";
+  if (key == "up")    print "moving up";
+  if (key == "down")  print "moving down";
 });
 
 onMouseUp(fun(btn, x, y) {
-  print "MOUSE UP:   btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
+  print "CANVAS MOUSE UP:   btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
 });
 
-print "Event test started. Press keys or click. ESC to quit.";
+// --- Named-target events (control name as first argument) ---
+
+onClick("button1", fun() {
+  print "[BUTTON1] clicked!";
+});
+
+onClick("button2", fun() {
+  print "[BUTTON2] clicked!";
+});
+
+// You can also hook mouse events on specific controls:
+onMouseDown("panel1", fun(btn, x, y) {
+  print "[PANEL1] mouse down: btn=" + str(btn) + " at (" + str(x) + "," + str(y) + ")";
+});
+
+print "Event test started. Press keys, click canvas or buttons. ESC to quit.";
 
 while (running) {
   processEvents();

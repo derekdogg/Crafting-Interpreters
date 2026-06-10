@@ -2,4 +2,4 @@
 // Each should produce a clean runtime error.
 
 // Number instead of function
-onKeyPressed(42); // expect runtime error: onKeyPressed() takes 1 function argument.
+onKeyPressed(42); // expect runtime error: onKeyPressed() takes an optional control name and 1 function argument.
