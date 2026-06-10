@@ -1,28 +1,10 @@
-// Test: calling processEvents() inside a callback causes re-entrant dispatch.
-// The inner processEvents() calls DispatchPendingEvents() again while the
-// outer is mid-iteration. Since FPendingKeys hasn't been cleared yet,
-// the inner dispatch re-iterates the same events (double fire).
-// The inner call then clears the list, so the outer loop finishes without
-// visiting further items.
-//
-// This documents current (known) behavior. A guard flag could prevent
-// re-entrant dispatch, but for now we just verify it doesn't crash.
-
-var pressCount = 0;
-var reentrantCalled = false;
+// Test: calling processEvents() inside a callback is a runtime error.
+// Re-entrant dispatch caused queue corruption and silent event loss,
+// so it is now explicitly forbidden.
 
 onKeyPressed(fun(key) {
-  pressCount = pressCount + 1;
-  if (!reentrantCalled) {
-    reentrantCalled = true;
-    processEvents(); // re-entrant — will re-dispatch pending events
-  }
+  processEvents(); // expect runtime error: processEvents() cannot be called from inside an event callback.
 });
 
 simulateKeyDown("x");
 processEvents();
-
-// "x" fires once in outer, then the re-entrant processEvents re-dispatches
-// "x" again (inner). The guard flag prevents infinite recursion.
-// Total: 2 fires of onKeyPressed.
-print str(pressCount); // expect: 2

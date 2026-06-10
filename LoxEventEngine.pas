@@ -47,17 +47,20 @@ type
     Callback: TValue;
   end;
 
+  // Per-sender coalesced mouse-move state.
+  TMouseMoveEntry = record
+    X, Y: Integer;
+  end;
+
   TLoxEventEngine = class
   private
     FCallbackSlots: TObjectDictionary<string, TCallbackSlot>;
-    FMouseMoveX: Integer;
-    FMouseMoveY: Integer;
-    FMouseMoveSender: string;
-    FMouseMoved: Boolean;
+    FPendingMoves: TDictionary<string, TMouseMoveEntry>;
     FHeldKeys: TStringList;
     FPendingKeys: TStringList;
     FPendingMouse: TStringList;
     FPendingClicks: TStringList;
+    FDispatching: Boolean;
     FRunning: Boolean;
     FOnLog: TLogEvent;
     FOnCheckAbort: TCheckAbortFunc;
@@ -99,6 +102,7 @@ type
     class function MapVKToName(Key: Word): string;
 
     property Running: Boolean read FRunning write FRunning;
+    property Dispatching: Boolean read FDispatching;
     property OnLog: TLogEvent read FOnLog write FOnLog;
     property OnCheckAbort: TCheckAbortFunc read FOnCheckAbort write FOnCheckAbort;
   end;
@@ -117,6 +121,7 @@ constructor TLoxEventEngine.Create;
 begin
   inherited Create;
   FCallbackSlots := TObjectDictionary<string, TCallbackSlot>.Create([doOwnsValues]);
+  FPendingMoves := TDictionary<string, TMouseMoveEntry>.Create;
   FPendingKeys := TStringList.Create;
   FPendingMouse := TStringList.Create;
   FPendingClicks := TStringList.Create;
@@ -129,6 +134,7 @@ end;
 destructor TLoxEventEngine.Destroy;
 begin
   FCallbackSlots.Free;
+  FPendingMoves.Free;
   FPendingKeys.Free;
   FPendingMouse.Free;
   FPendingClicks.Free;
@@ -158,12 +164,9 @@ begin
   FPendingKeys.Clear;
   FPendingMouse.Clear;
   FPendingClicks.Clear;
+  FPendingMoves.Clear;
   FHeldKeys.Clear;
   FCallbackSlots.Clear;  // TObjectDictionary frees owned slots
-  FMouseMoved := False;
-  FMouseMoveX := 0;
-  FMouseMoveY := 0;
-  FMouseMoveSender := '';
   FRunning := True;
 end;
 
@@ -207,12 +210,13 @@ end;
 
 procedure TLoxEventEngine.QueueMouseMove(x, y: Integer;
   const Sender: string);
+var
+  entry: TMouseMoveEntry;
 begin
-  // Coalesce: only keep the latest position per frame
-  FMouseMoveX := x;
-  FMouseMoveY := y;
-  FMouseMoveSender := Sender;
-  FMouseMoved := True;
+  // Coalesce per sender: only keep the latest position per frame per control
+  entry.X := x;
+  entry.Y := y;
+  FPendingMoves.AddOrSetValue(LowerCase(Sender), entry);
 end;
 
 procedure TLoxEventEngine.QueueClick(const Sender: string);
@@ -230,7 +234,10 @@ var
   btn, x, y: Integer;
   args: array[0..2] of TValue;
   snapshot: TStringList;
+  moveEntry: TMouseMoveEntry;
 begin
+  FDispatching := True;
+  try
   // Dispatch key events  (format: 'down:sender:keyname' / 'up:sender:keyname')
   for i := 0 to FPendingKeys.Count - 1 do
   begin
@@ -313,19 +320,20 @@ begin
   end;
   FPendingClicks.Clear;
 
-  // Dispatch mouse move (coalesced — one event per frame with latest position)
-  if FMouseMoved then
+  // Dispatch mouse moves (coalesced per sender — one event per control per frame)
+  for sender in FPendingMoves.Keys do
   begin
-    cb := GetCallback(eckMouseMove, FMouseMoveSender);
-    FMouseMoved := False;
+    cb := GetCallback(eckMouseMove, sender);
     if isClosure(cb) then
     begin
-      args[0] := CreateNumber(FMouseMoveX);
-      args[1] := CreateNumber(FMouseMoveY);
+      moveEntry := FPendingMoves[sender];
+      args[0] := CreateNumber(moveEntry.X);
+      args[1] := CreateNumber(moveEntry.Y);
       InvokeCallback(cb, [args[0], args[1]], dummy);
       if VM.RuntimeErrorStr <> '' then Exit;
     end;
   end;
+  FPendingMoves.Clear;
 
   // Dispatch held keys every frame (for continuous movement)
   cb := GetCallback(eckKeyHeld, '');
@@ -343,6 +351,9 @@ begin
     finally
       snapshot.Free;
     end;
+  end;
+  finally
+    FDispatching := False;
   end;
 end;
 
@@ -387,12 +398,12 @@ procedure TLoxEventEngine.RegisterGCRoots;
 var
   slot: TCallbackSlot;
 begin
-  // Slots created during script execution self-register in SetCallback.
-  // This method re-registers any that survived a previous run (unusual
-  // but harmless to call — duplicates are cheap via the linear scan in
-  // UnregisterGCRoot).
+  // Only register slots that aren't already rooted. SetCallback self-registers
+  // new slots, so calling this after callbacks exist must not create duplicates
+  // (UnregisterGCRoot only removes the first match, leaving orphans behind).
   for slot in FCallbackSlots.Values do
-    Chunk_Types.RegisterGCRoot(slot.Callback);
+    if not Chunk_Types.IsGCRootRegistered(slot.Callback) then
+      Chunk_Types.RegisterGCRoot(slot.Callback);
 end;
 
 procedure TLoxEventEngine.UnregisterGCRoots;

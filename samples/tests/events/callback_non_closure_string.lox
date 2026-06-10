@@ -1,2 +1,2 @@
 // Passing string instead of function to callback native.
-onKeyHeld("not a function"); // expect runtime error: onKeyHeld() takes an optional control name and 1 function argument.
+onKeyHeld("not a function"); // expect runtime error: onKeyHeld() takes exactly 1 function argument (named targets not supported).

@@ -78,11 +78,17 @@ end;
 
 function onKeyHeldNative(argCount: integer; args: pValue): TValue;
 var
-  controlName: string;
   closure: TValue;
 begin
-  if ParseCallbackArgs('onKeyHeld', argCount, args, controlName, closure) then
-    ActiveEngine.SetCallback(eckKeyHeld, controlName, closure);
+  // onKeyHeld only supports canvas-level (no named target) because
+  // FHeldKeys does not track sender — dispatch always uses empty ControlName.
+  if (argCount = 1) and isClosure(args[0]) then
+  begin
+    closure := args[0];
+    ActiveEngine.SetCallback(eckKeyHeld, '', closure);
+  end
+  else
+    RuntimeError('onKeyHeld() takes exactly 1 function argument (named targets not supported).');
   Result := CreateNilValue;
 end;
 
@@ -135,6 +141,11 @@ end;
 
 function processEventsNative(argCount: integer; args: pValue): TValue;
 begin
+  if ActiveEngine.Dispatching then
+  begin
+    RuntimeError('processEvents() cannot be called from inside an event callback.');
+    Exit(CreateNilValue);
+  end;
   // Flush print output
   ActiveEngine.FlushOutput;
   // Pump Windows messages (delivers key/mouse to VCL handlers)
@@ -239,7 +250,7 @@ begin
   // Callback natives: arity -1 = variadic (1 or 2 args accepted)
   defineNative('onKeyPressed', onKeyPressedNative, -1);
   defineNative('onKeyReleased', onKeyReleasedNative, -1);
-  defineNative('onKeyHeld', onKeyHeldNative, -1);
+  defineNative('onKeyHeld', onKeyHeldNative, 1);
   defineNative('onMouseDown', onMouseDownNative, -1);
   defineNative('onMouseUp', onMouseUpNative, -1);
   defineNative('onMouseMove', onMouseMoveNative, -1);

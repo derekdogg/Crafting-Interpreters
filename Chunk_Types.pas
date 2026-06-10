@@ -770,6 +770,7 @@ function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
 function InvokeCallback(closure: TValue; const args: array of TValue;
   out returnVal: TValue): TInterpretResult;
 procedure RegisterGCRoot(var slot: TValue);
+function IsGCRootRegistered(var slot: TValue): Boolean;
 procedure UnregisterGCRoot(var slot: TValue);
 procedure FreeObjects(objects: pObj);
 procedure FreeVM();
@@ -5834,6 +5835,16 @@ begin
   end;
   VM.ExtraRoots[VM.ExtraRootCount] := @slot;
   Inc(VM.ExtraRootCount);
+end;
+
+function IsGCRootRegistered(var slot: TValue): Boolean;
+var
+  i: Integer;
+begin
+  for i := 0 to VM.ExtraRootCount - 1 do
+    if VM.ExtraRoots[i] = @slot then
+      Exit(True);
+  Result := False;
 end;
 
 procedure UnregisterGCRoot(var slot: TValue);
