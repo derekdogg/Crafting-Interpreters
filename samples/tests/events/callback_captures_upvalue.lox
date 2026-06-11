@@ -1,0 +1,19 @@
+// Test: Callback with upvalue captures state correctly
+var counter = 0;
+
+onKeyPressed(fun(key) {
+  counter = counter + 1;
+});
+
+simulateKeyDown("a");
+processEvents();
+simulateKeyUp("a");
+processEvents();
+simulateKeyDown("b");
+processEvents();
+simulateKeyUp("b");
+processEvents();
+simulateKeyDown("c");
+processEvents();
+
+print str(counter); // expect: 3

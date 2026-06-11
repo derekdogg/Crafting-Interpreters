@@ -5,6 +5,8 @@
 {$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
 {..$DEFINE OPCODE_PROFILING}
+{..$DEFINE DEBUG_ASSERT_INVARIANTS}
+
 interface
  
 uses
@@ -526,6 +528,11 @@ type
     Globals         : pTable;
     OpenUpvalues    : pObjUpvalue;
     RuntimeErrorStr : String;
+    // External GC roots: Delphi-side TValue slots that hold Lox objects
+    // (e.g. closures stored by native libraries for callbacks). The mark
+    // phase walks these so the GC doesn't collect live callback closures.
+    ExtraRoots      : array of pValue;
+    ExtraRootCount  : Integer;
     // Print output is accumulated through a TStringBuilder to avoid the O(n^2)
     // copy cost of repeated `s := s + ...` on a managed string. Callers that
     // need the materialised text read VM.PrintBuilder.ToString; resets call
@@ -759,7 +766,12 @@ procedure InitVM();
 function CompileAndRun(source : pAnsiChar) : TInterpretResult;
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
 procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
-function Run : TInterpretResult;
+function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
+function InvokeCallback(closure: TValue; const args: array of TValue;
+  out returnVal: TValue): TInterpretResult;
+procedure RegisterGCRoot(var slot: TValue);
+function IsGCRootRegistered(var slot: TValue): Boolean;
+procedure UnregisterGCRoot(var slot: TValue);
 procedure FreeObjects(objects: pObj);
 procedure FreeVM();
 
@@ -826,6 +838,7 @@ procedure call(canAssign: Boolean);
 procedure dot_(canAssign: Boolean);
 procedure subscript_(canAssign: Boolean);
 procedure arrayLiteral(canAssign: Boolean);
+procedure lambda(canAssign: Boolean);
 procedure and_(canAssign: Boolean);
 procedure or_(canAssign: Boolean);
 procedure beginScope(); inline;
@@ -877,6 +890,7 @@ function isNumber(const Value: TValue): Boolean; inline;
 function isBoolean(const Value: TValue): Boolean; inline;
 function isObject(value : TValue) : boolean; inline;
 function isNill(const Value: TValue): Boolean; inline;
+function isClosure(value : TValue) : boolean; inline;
 function GetNumber(Value : TValue) : double; inline;
 function GetBoolean(const Value : TValue) : Boolean; inline;
 function GetObject(const value : TValue) : pObj; inline;
@@ -1005,7 +1019,7 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_FUN }
-    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+    (Prefix: lambda;   Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_IF }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
@@ -4198,7 +4212,7 @@ end;
 
 
 
-function Run : TInterpretResult;
+function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
 var
   frame : pCallFrame;  // Cached pointer to current executing frame.
                         // Derived from VM.Frames[VM.FrameCount - 1].
@@ -4251,6 +4265,9 @@ var
   idxParams : TArray<TRttiParameter>;
   idxDelphiArgs : array[0..0] of System.Rtti.TValue;
   idxDelphiVal  : System.Rtti.TValue;
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  savedNativeStackDepth : NativeInt;
+  {$ENDIF}
 
   function CurrentFrame: pCallFrame;
   begin
@@ -4375,12 +4392,18 @@ begin
             closeUpvalues(frame^.slots);
 
           Dec(VM.FrameCount);
-          if VM.FrameCount = 0 then
+          if VM.FrameCount <= baselineFrameCount then
           begin
-            // Clean the stack window: drop the two operands (or concatenated
-            // result) plus the script-function slot, matching OP_RETURN.
+            // Clean the stack window
             stack.StackTop := frame^.slots;
-            Dec(stack.StackTop);
+            if baselineFrameCount = 0 then
+              Dec(stack.StackTop);
+            // For re-entrant calls, push return value so InvokeCallback can pop it.
+            if baselineFrameCount > 0 then
+            begin
+              stack.StackTop^ := value;
+              Inc(stack.StackTop);
+            end;
             Result.Code := INTERPRET_OK;
             Result.value := value;
             Exit(Result);
@@ -4405,9 +4428,19 @@ begin
             closeUpvalues(frame^.slots);
 
           Dec(VM.FrameCount);
-          if VM.FrameCount = 0 then
+          if VM.FrameCount <= baselineFrameCount then
           begin
-            Dec(stack.StackTop); // pop the script function
+            // Discard the returning function's stack window
+            stack.StackTop := frame^.slots;
+            if baselineFrameCount = 0 then
+              Dec(stack.StackTop); // pop the script function
+            // For re-entrant calls (baselineFrameCount > 0), push return
+            // value so InvokeCallback can pop it.
+            if baselineFrameCount > 0 then
+            begin
+              stack.StackTop^ := value;
+              Inc(stack.StackTop);
+            end;
             Result.Code := INTERPRET_OK;
             Result.value := value;
             Exit(Result);
@@ -4453,6 +4486,15 @@ begin
             VM.Frames[VM.FrameCount].ip := closure^.func^.chunk^.Code;
             VM.Frames[VM.FrameCount].slots := stack.StackTop;
             Dec(VM.Frames[VM.FrameCount].slots, argCount + 1);
+            {$IFDEF DEBUG_ASSERT_INVARIANTS}
+            Assert(NativeUInt(VM.Frames[VM.FrameCount].slots) >= NativeUInt(stack.Values),
+              'OP_CALL: frame slots below stack base');
+            Assert(NativeUInt(VM.Frames[VM.FrameCount].slots) < NativeUInt(stack.StackTop),
+              'OP_CALL: frame slots at or above StackTop');
+            // Exact position: slots must point at callee (StackTop - argCount - 1)
+            Assert(VM.Frames[VM.FrameCount].slots = pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount + 1) * SizeOf(TValue)),
+              'OP_CALL: frame slots not positioned at callee');
+            {$ENDIF}
             Inc(VM.FrameCount);
           end
           else if isNative(value) then
@@ -4472,6 +4514,12 @@ begin
               exit;
             end;
             native := pObjNative(GetObject(value))^.func;
+            {$IFDEF DEBUG_ASSERT_INVARIANTS}
+            // Save depth (not raw pointer) — realloc-safe. A native may
+            // allocate strings which pushStack for GC protection, causing
+            // a stack realloc that rebases StackTop.
+            savedNativeStackDepth := NativeInt(stack.StackTop) - NativeInt(stack.Values);
+            {$ENDIF}
             nativeResult := native(argCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount) * SizeOf(TValue)));
             // Check if native signalled a runtime error
             if VM.RuntimeErrorStr <> '' then
@@ -4479,6 +4527,13 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
+            {$IFDEF DEBUG_ASSERT_INVARIANTS}
+            // Natives must not change logical stack depth — they receive a
+            // pointer to args and return a single TValue. VM does all stack
+            // manipulation. Uses offset from Values (realloc-safe).
+            Assert((NativeInt(stack.StackTop) - NativeInt(stack.Values)) = savedNativeStackDepth,
+              'OP_CALL native: native function modified stack depth');
+            {$ENDIF}
             // pop args + callee, push result
             stack.StackTop := pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount + 1) * SizeOf(TValue));
             pushStack(stack, nativeResult);
@@ -5684,6 +5739,132 @@ begin
 
 end;
 
+function InvokeCallback(closure: TValue; const args: array of TValue;
+  out returnVal: TValue): TInterpretResult;
+var
+  closurePtr: pObjClosure;
+  i, argCount: Integer;
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  savedStackDepth: NativeInt;
+  savedFrameCount: Integer;
+  {$ENDIF}
+begin
+  Result := Default(TInterpretResult);
+  returnVal := CreateNilValue;
+
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  // Use depth (offset from Values) rather than raw pointer — realloc-safe.
+  savedStackDepth := NativeInt(VM.Stack.StackTop) - NativeInt(VM.Stack.Values);
+  savedFrameCount := VM.FrameCount;
+  {$ENDIF}
+
+  // Validate closure
+  if not isClosure(closure) then
+  begin
+    runtimeError('InvokeCallback: value is not a callable closure.');
+    Result.code := INTERPRET_RUNTIME_ERROR;
+    Exit;
+  end;
+
+  closurePtr := pObjClosure(GetObject(closure));
+  argCount := Length(args);
+
+  // Arity check
+  if argCount <> closurePtr^.func^.arity then
+  begin
+    runtimeError('InvokeCallback: expected ' + IntToStr(closurePtr^.func^.arity) +
+      ' arguments but got ' + IntToStr(argCount) + '.');
+    Result.code := INTERPRET_RUNTIME_ERROR;
+    Exit;
+  end;
+
+  // Stack overflow check
+  if VM.FrameCount >= FRAMES_MAX then
+  begin
+    runtimeError('InvokeCallback: stack overflow (max ' + IntToStr(FRAMES_MAX) + ' frames).');
+    Result.code := INTERPRET_RUNTIME_ERROR;
+    Exit;
+  end;
+
+  // Push closure (slot 0 of new frame)
+  pushStack(VM.Stack, closure);
+  // Push arguments
+  for i := 0 to argCount - 1 do
+    pushStack(VM.Stack, args[i]);
+
+  // Set up call frame (same as OP_CALL closure fast-path)
+  VM.Frames[VM.FrameCount].closure := closurePtr;
+  VM.Frames[VM.FrameCount].ip := closurePtr^.func^.chunk^.Code;
+  VM.Frames[VM.FrameCount].slots := VM.Stack.StackTop;
+  Dec(VM.Frames[VM.FrameCount].slots, argCount + 1);
+  Inc(VM.FrameCount);
+
+  // Run until this frame returns
+  Result := Run(VM.FrameCount - 1);
+
+  // Pop return value (Run leaves it on the stack for re-entrant calls)
+  if Result.code = INTERPRET_OK then
+  begin
+    returnVal := Result.value;
+    // Clean up: return value was pushed by OP_RETURN onto the caller's stack
+    // position. For a re-entrant call, OP_RETURN already set StackTop to
+    // frame^.slots and pushed the value. We need to pop it.
+    Dec(VM.Stack.StackTop);
+  end;
+
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  // Stack balance: after callback, stack depth must match saved depth.
+  // Uses offset from Values (not raw pointer) so it's realloc-safe.
+  if Result.code = INTERPRET_OK then
+  begin
+    Assert((NativeInt(VM.Stack.StackTop) - NativeInt(VM.Stack.Values)) = savedStackDepth,
+      'InvokeCallback: stack not balanced after return (leak or underflow)');
+    // Frame balance: must return to original frame count
+    Assert(VM.FrameCount = savedFrameCount,
+      'InvokeCallback: FrameCount not balanced after return');
+  end;
+  {$ENDIF}
+end;
+
+procedure RegisterGCRoot(var slot: TValue);
+begin
+  // Grow dynamic array if needed
+  if VM.ExtraRootCount >= Length(VM.ExtraRoots) then
+  begin
+    if Length(VM.ExtraRoots) = 0 then
+      SetLength(VM.ExtraRoots, 8)
+    else
+      SetLength(VM.ExtraRoots, Length(VM.ExtraRoots) * 2);
+  end;
+  VM.ExtraRoots[VM.ExtraRootCount] := @slot;
+  Inc(VM.ExtraRootCount);
+end;
+
+function IsGCRootRegistered(var slot: TValue): Boolean;
+var
+  i: Integer;
+begin
+  for i := 0 to VM.ExtraRootCount - 1 do
+    if VM.ExtraRoots[i] = @slot then
+      Exit(True);
+  Result := False;
+end;
+
+procedure UnregisterGCRoot(var slot: TValue);
+var
+  i: Integer;
+begin
+  for i := 0 to VM.ExtraRootCount - 1 do
+  begin
+    if VM.ExtraRoots[i] = @slot then
+    begin
+      // Swap with last and shrink
+      VM.ExtraRoots[i] := VM.ExtraRoots[VM.ExtraRootCount - 1];
+      Dec(VM.ExtraRootCount);
+      Exit;
+    end;
+  end;
+end;
 
 
 
@@ -5764,6 +5945,21 @@ begin
      Result := Run;
      {$IFDEF OPCODE_PROFILING}
      DumpOpcodePairs;
+     {$ENDIF}
+     {$IFDEF DEBUG_ASSERT_INVARIANTS}
+     // After successful top-level run, verify no stack leaks.
+     // Note: OP_RETURN at baselineFrameCount=0 does Dec(StackTop) to pop
+     // the script function, leaving StackTop at Values-1. This is expected.
+     // We check for LEAKS (StackTop above Values) which indicate real bugs.
+     if Result.code = INTERPRET_OK then
+     begin
+       Assert(VM.FrameCount = 0,
+         'CompileAndRun: FrameCount not 0 after successful run');
+       Assert(NativeInt(VM.Stack.StackTop) <= NativeInt(VM.Stack.Values),
+         'CompileAndRun: stack leak detected after successful run');
+       Assert(VM.OpenUpvalues = nil,
+         'CompileAndRun: open upvalues remain after successful run');
+     end;
      {$ENDIF}
    except
      // Stack overflow (or any other VM-internal abort raised as
@@ -6079,6 +6275,10 @@ begin
 
   // Mark globals table
   MarkTable(VM.Globals);
+
+  // Mark extra roots (externally-held closures for callbacks)
+  for i := 0 to VM.ExtraRootCount - 1 do
+    MarkValue(VM.ExtraRoots[i]^);
 
   // Mark compiler roots
   MarkCompilerRoots;
@@ -6621,7 +6821,12 @@ begin
   if VM.MemTracker.GrayStack <> nil then
     FreeMem(VM.MemTracker.GrayStack);
   VM.MemTracker.GrayStack := nil;
-  Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
+//  Assert(VM.MemTracker.BytesAllocated = 0, 'VM has not disposed of all mem allocation');
+  if VM.MemTracker.BytesAllocated <> 0 then
+  begin
+    raise Exception.Create('Mem Tracker has not disposed all bytes');
+  end;
+
   FreeMemTracker(VM.MemTracker);
   dispose(VM);
   VM := nil;
@@ -8535,6 +8740,21 @@ begin
   markInitialized();
   functionBody(TYPE_FUNCTION);
   defineVariable(global);
+end;
+
+procedure lambda(canAssign: Boolean);
+begin
+  // If followed by an identifier, this is a named function declaration
+  // misplaced in expression position — not a valid anonymous function.
+  if check(TOKEN_IDENTIFIER) then
+  begin
+    Error('Expect expression.');
+    Exit;
+  end;
+  // Anonymous function expression: fun(params) { body }
+  // Compiles exactly like a named function but without binding to a variable.
+  // The closure value is left on the stack as an expression result.
+  functionBody(TYPE_FUNCTION);
 end;
 
 procedure recordDeclaration();

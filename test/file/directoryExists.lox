@@ -1,0 +1,7 @@
+// directoryExists() returns true/false for directory existence
+
+// C:/Windows always exists
+print directoryExists("C:/Windows"); // expect: true
+
+// A non-existent directory
+print directoryExists("C:/nonexistent_dir_xyz_12345"); // expect: false

@@ -1,0 +1,22 @@
+// Test: Overwriting a callback replaces the old one
+var result = "";
+
+onKeyPressed(fun(key) {
+  result = result + "first:" + key + " ";
+});
+
+simulateKeyDown("a");
+processEvents();
+
+// Overwrite with new callback
+onKeyPressed(fun(key) {
+  result = result + "second:" + key + " ";
+});
+
+simulateKeyUp("a");  // release so next down is fresh
+processEvents();
+
+simulateKeyDown("b");
+processEvents();
+
+print result; // expect: first:a second:b 

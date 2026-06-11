@@ -1,0 +1,23 @@
+// Test: Higher-order function wraps a callback with logging
+var output = "";
+
+fun withLogging(fn) {
+  return fun(key) {
+    output = output + "[" + key + "]";
+    fn(key);
+  };
+}
+
+fun handleKey(key) {
+  output = output + key;
+}
+
+onKeyPressed(withLogging(handleKey));
+
+simulateKeyDown("a");
+processEvents();
+simulateKeyUp("a");
+simulateKeyDown("b");
+processEvents();
+
+print output; // expect: [a]a[b]b

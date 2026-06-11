@@ -1,0 +1,29 @@
+// Test: Callback registered inside a method-like closure on a record
+var player = ["x": 0, "y": 0, "moves": 0];
+
+// "Method" that registers movement handler
+fun bindMovement(obj) {
+  onKeyHeld(fun(key) {
+    if (key == "left")  obj["x"] = obj["x"] - 1;
+    if (key == "right") obj["x"] = obj["x"] + 1;
+    if (key == "up")    obj["y"] = obj["y"] - 1;
+    if (key == "down")  obj["y"] = obj["y"] + 1;
+    obj["moves"] = obj["moves"] + 1;
+  });
+}
+
+bindMovement(player);
+
+simulateKeyDown("right");
+processEvents();
+processEvents();
+processEvents();
+
+simulateKeyUp("right");
+simulateKeyDown("up");
+processEvents();
+processEvents();
+
+print str(player["x"]);     // expect: 3
+print str(player["y"]);     // expect: -2
+print str(player["moves"]); // expect: 5

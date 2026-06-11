@@ -1,0 +1,16 @@
+// Test: Key down + up in same frame dispatches both callbacks
+var result = "";
+
+onKeyPressed(fun(key) {
+  result = result + "down:" + key + " ";
+});
+
+onKeyReleased(fun(key) {
+  result = result + "up:" + key + " ";
+});
+
+simulateKeyDown("space");
+simulateKeyUp("space");
+processEvents();
+
+print result; // expect: down:space up:space 

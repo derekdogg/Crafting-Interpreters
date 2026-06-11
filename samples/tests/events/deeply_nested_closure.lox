@@ -1,0 +1,29 @@
+// Test: Deeply nested closure as callback (3 levels of upvalues)
+fun outer() {
+  var a = "O";
+  fun middle() {
+    var b = "M";
+    fun inner() {
+      var c = "I";
+      onKeyPressed(fun(key) {
+        // Captures a, b, c from 3 enclosing scopes
+        print a + b + c + ":" + key;
+      });
+    }
+    return inner;
+  }
+  return middle;
+}
+
+var mid = outer();
+var inn = mid();
+inn();  // registers the callback
+
+simulateKeyDown("x");
+processEvents();
+simulateKeyUp("x");
+simulateKeyDown("y");
+processEvents();
+
+// expect: OMI:x
+// expect: OMI:y

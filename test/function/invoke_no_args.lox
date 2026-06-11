@@ -1,0 +1,2 @@
+// invoke() called with no arguments at all.
+invoke(); // expect runtime error: invoke() takes at least 1 argument (fn, ...).

@@ -1,0 +1,13 @@
+// Test: onKeyHeld fires every frame for held keys
+var heldCount = 0;
+
+onKeyHeld(fun(key) {
+  heldCount = heldCount + 1;
+});
+
+simulateKeyDown("right");
+processEvents();  // frame 1: held fires once
+processEvents();  // frame 2: held fires again
+processEvents();  // frame 3: held fires again
+
+print str(heldCount); // expect: 3

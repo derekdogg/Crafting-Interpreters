@@ -1,0 +1,11 @@
+// Test: Key down fires onKeyPressed once
+var result = "";
+
+onKeyPressed(fun(key) {
+  result = result + "pressed:" + key + " ";
+});
+
+simulateKeyDown("left");
+processEvents();
+
+print result; // expect: pressed:left 

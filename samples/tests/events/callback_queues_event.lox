@@ -1,0 +1,27 @@
+// Test: a callback that queues new events via simulate* during dispatch.
+// simulateKeyDown("b") inside onKeyPressed("a") adds "b" to both
+// FPendingKeys and FHeldKeys. The for-loop bound is already fixed so
+// "b"'s pending entry is not visited. Then FPendingKeys.Clear wipes it.
+// However, "b" IS in FHeldKeys, so onKeyHeld("b") fires in the same frame.
+// Net result: onKeyPressed("b") is skipped but onKeyHeld("b") fires.
+
+var pressLog = "";
+var heldLog = "";
+
+onKeyPressed(fun(key) {
+  pressLog = pressLog + key;
+  if (key == "a") {
+    simulateKeyDown("b");
+  }
+});
+
+onKeyHeld(fun(key) {
+  heldLog = heldLog + key;
+});
+
+simulateKeyDown("a");
+processEvents();
+
+// "a" pressed and held; "b" only held (pressed event was lost to Clear)
+print pressLog; // expect: a
+print heldLog;  // expect: ab

@@ -1,0 +1,17 @@
+// Test: Mouse down and up callbacks
+var result = "";
+
+onMouseDown(fun(btn, x, y) {
+  result = result + "down:" + str(btn) + ":" + str(x) + ":" + str(y) + " ";
+});
+
+onMouseUp(fun(btn, x, y) {
+  result = result + "up:" + str(btn) + ":" + str(x) + ":" + str(y) + " ";
+});
+
+simulateMouseDown(0, 100, 200);
+simulateMouseUp(0, 100, 200);
+simulateMouseDown(1, 50, 75);
+processEvents();
+
+print result; // expect: down:0:100:200 up:0:100:200 down:1:50:75 

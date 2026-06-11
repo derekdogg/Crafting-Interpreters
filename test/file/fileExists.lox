@@ -1,0 +1,7 @@
+// fileExists() returns true/false for file existence
+
+// cmd.exe always exists on Windows
+print fileExists("C:/Windows/System32/cmd.exe"); // expect: true
+
+// A non-existent file
+print fileExists("C:/does_not_exist_xyz_12345.txt"); // expect: false

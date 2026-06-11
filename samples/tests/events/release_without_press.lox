@@ -1,0 +1,12 @@
+// Test: onKeyReleased for a key that was never pressed (edge case)
+var result = "";
+
+onKeyReleased(fun(key) {
+  result = result + "up:" + key + " ";
+});
+
+// Release without prior down — should still fire (queue accepts it)
+simulateKeyUp("z");
+processEvents();
+
+print result; // expect: up:z 

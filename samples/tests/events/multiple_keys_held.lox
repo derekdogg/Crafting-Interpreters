@@ -1,0 +1,14 @@
+// Test: Multiple keys held simultaneously
+var keys = "";
+
+onKeyHeld(fun(key) {
+  keys = keys + key + " ";
+});
+
+simulateKeyDown("left");
+simulateKeyDown("up");
+simulateKeyDown("space");
+processEvents();
+
+// FHeldKeys is sorted, so alphabetical order: left, space, up
+print keys; // expect: left space up 

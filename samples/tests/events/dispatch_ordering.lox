@@ -1,0 +1,40 @@
+// Test: dispatch ordering within a single frame.
+// Order is: key events (in queue order), mouse events, mouse move, held keys.
+
+var log = "";
+
+onKeyPressed(fun(key) {
+  log = log + "kp:" + key + " ";
+});
+
+onKeyReleased(fun(key) {
+  log = log + "kr:" + key + " ";
+});
+
+onMouseDown(fun(btn, x, y) {
+  log = log + "md:" + str(btn) + " ";
+});
+
+onMouseUp(fun(btn, x, y) {
+  log = log + "mu:" + str(btn) + " ";
+});
+
+onMouseMove(fun(x, y) {
+  log = log + "mm:" + str(x) + "," + str(y) + " ";
+});
+
+onKeyHeld(fun(key) {
+  log = log + "kh:" + key + " ";
+});
+
+// Queue a mix of events
+simulateKeyDown("a");
+simulateMouseDown(0, 10, 20);
+simulateMouseMove(50, 60);
+simulateKeyDown("b");
+simulateMouseUp(0, 30, 40);
+processEvents();
+
+// Expected order: key events first (a down, b down), then mouse (down, up),
+// then mouse move, then held keys (a, b alphabetical since sorted list)
+print log; // expect: kp:a kp:b md:0 mu:0 mm:50,60 kh:a kh:b 

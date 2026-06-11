@@ -1,0 +1,66 @@
+// Test: State machine via callbacks — transition between states
+var state = "idle";
+var transitions = "";
+
+fun enterIdle() {
+  onKeyPressed(fun(key) {
+    if (key == "space") {
+      state = "running";
+      transitions = transitions + "idle>running ";
+      enterRunning();
+    }
+  });
+}
+
+fun enterRunning() {
+  onKeyPressed(fun(key) {
+    if (key == "space") {
+      state = "jumping";
+      transitions = transitions + "running>jumping ";
+      enterJumping();
+    }
+    if (key == "escape") {
+      state = "idle";
+      transitions = transitions + "running>idle ";
+      enterIdle();
+    }
+  });
+}
+
+fun enterJumping() {
+  onKeyPressed(fun(key) {
+    if (key == "space") {
+      state = "running";
+      transitions = transitions + "jumping>running ";
+      enterRunning();
+    }
+  });
+}
+
+// Start in idle
+enterIdle();
+
+// idle -> running (space)
+simulateKeyDown("space");
+processEvents();
+simulateKeyUp("space");
+processEvents();
+
+// running -> jumping (space)
+simulateKeyDown("space");
+processEvents();
+simulateKeyUp("space");
+processEvents();
+
+// jumping -> running (space)
+simulateKeyDown("space");
+processEvents();
+simulateKeyUp("space");
+processEvents();
+
+// running -> idle (escape)
+simulateKeyDown("escape");
+processEvents();
+
+print state;       // expect: idle
+print transitions; // expect: idle>running running>jumping jumping>running running>idle 

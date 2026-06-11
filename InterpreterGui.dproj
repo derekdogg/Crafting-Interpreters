@@ -152,6 +152,12 @@
         <DCCReference Include="Natives\StringNatives.pas"/>
         <DCCReference Include="Natives\FileNatives.pas"/>
         <DCCReference Include="Natives\SystemNatives.pas"/>
+        <DCCReference Include="Natives\CallbackNatives.pas"/>
+        <DCCReference Include="Natives\EventNatives.pas"/>
+        <DCCReference Include="LoxEventEngine.pas"/>
+        <DCCReference Include="fmEventTest.pas">
+            <Form>frmEventTest</Form>
+        </DCCReference>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

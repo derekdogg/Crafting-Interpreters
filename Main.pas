@@ -36,6 +36,7 @@ type
     Button3: TButton;
     SplitterOutput: TSplitter;
     Memo2: TMemo;
+    Button4: TButton;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -51,6 +52,7 @@ type
     procedure Button2Click(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure Button3Click(Sender: TObject);
+    procedure Button4Click(Sender: TObject);
   private
     procedure PopulateTestTree;
     procedure AddTestFiles(ParentNode: TTreeNode; const Dir, Pattern: string;
@@ -79,7 +81,8 @@ var
 
 implementation
 uses
-  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, fmGame;
+  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, fmGame, fmEventTest,
+  LoxEventEngine;
 
 {$R *.dfm}
 
@@ -466,6 +469,41 @@ end;
 procedure TForm4.Button3Click(Sender: TObject);
 begin
   frmGame.FEventQueue.Enqueue('keydown:escape');
+end;
+
+procedure TForm4.Button4Click(Sender: TObject);
+var
+  IR: TInterpretResult;
+  ScriptText: AnsiString;
+begin
+  Memo2.Lines.Clear;
+
+  ScriptText := AnsiString(Memo1.Lines.Text);
+
+  if Length(Trim(string(ScriptText))) = 0 then
+  begin
+    Memo2.Lines.Add('No script to run. Enter code in the editor first.');
+    Exit;
+  end;
+
+  if frmEventTest = nil then
+    frmEventTest := TfrmEventTest.Create(Self);
+  FScriptRunning := True;
+  Button4.Enabled := False;
+  try
+    IR := frmEventTest.RunScript(ScriptText);
+  finally
+    FScriptRunning := False;
+    Button4.Enabled := True;
+  end;
+  case IR.code of
+    INTERPRET_OK:
+      Memo2.Lines.Add('== Script finished OK ==');
+    INTERPRET_RUNTIME_ERROR:
+      Memo2.Lines.Add('Runtime error: ' + IR.ErrorStr);
+    INTERPRET_COMPILE_ERROR:
+      Memo2.Lines.Add('Compile error: ' + IR.ErrorStr);
+  end;
 end;
 
 procedure TForm4.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
@@ -1138,7 +1176,30 @@ begin
       f1 := 0;
 
       try
-        if IsInject then
+        if Pos('\events\', LowerCase(F)) > 0 then
+        begin
+          // Event engine test — run with engine active
+          Content := TFile.ReadAllText(F);
+          InitVM;
+          try
+            var Engine := TLoxEventEngine.Create;
+            try
+              Engine.RegisterNatives;
+              Engine.RegisterGCRoots;
+              IR := CompileAndRun(PAnsiChar(AnsiString(Content)));
+              Engine.UnregisterGCRoots;
+            finally
+              Engine.Free;
+            end;
+          finally
+            FreeVM;
+          end;
+          if CheckExpectedOutput(Content, IR, Memo2) then
+            p1 := 1
+          else
+            f1 := 1;
+        end
+        else if IsInject then
         begin
           // inject_stringlist test
           if Pos('inject_stringlist', LowerCase(FileName)) > 0 then

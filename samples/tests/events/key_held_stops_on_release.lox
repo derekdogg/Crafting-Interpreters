@@ -1,0 +1,16 @@
+// Test: onKeyHeld stops after key release
+var heldCount = 0;
+
+onKeyHeld(fun(key) {
+  heldCount = heldCount + 1;
+});
+
+simulateKeyDown("up");
+processEvents();  // frame 1: held fires
+processEvents();  // frame 2: held fires
+
+simulateKeyUp("up");
+processEvents();  // frame 3: key released, no held fire
+processEvents();  // frame 4: still released
+
+print str(heldCount); // expect: 2
