@@ -3655,10 +3655,12 @@ begin
 end;
 
 function CreateNumber(Value: Double): TValue; inline;
+// `absolute` aliases bits over Value's storage (zero-cost type-pun;
+// replaces a call Move that the optimizer couldn't inline and that
+// was producing 30+ instructions per arithmetic op).
 var
-  bits: UInt64;
+  bits: UInt64 absolute Value;
 begin
-  Move(Value, bits, SizeOf(UInt64));
   // Canonicalize ALL NaN payloads to CANON_NAN. This serves two purposes:
   // 1. Prevents misclassification: NaN payloads that satisfy (bits & QNAN)=QNAN
   //    would be mistaken for nil/boolean/object tagged values.
@@ -3672,8 +3674,10 @@ begin
 end;
 
 function GetNumber(Value : TValue) : double; inline;
+var
+  d: Double absolute Value;
 begin
-  Move(Value, Result, SizeOf(Double));
+  Result := d;
 end;
 
 function CreateNilValue : TValue; inline;

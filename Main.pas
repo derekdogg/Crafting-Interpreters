@@ -37,6 +37,8 @@ type
     SplitterOutput: TSplitter;
     Memo2: TMemo;
     Button4: TButton;
+    BtnSave: TButton;
+    SaveDialog1: TSaveDialog;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -53,6 +55,7 @@ type
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure Button3Click(Sender: TObject);
     procedure Button4Click(Sender: TObject);
+    procedure BtnSaveClick(Sender: TObject);
   private
     procedure PopulateTestTree;
     procedure AddTestFiles(ParentNode: TTreeNode; const Dir, Pattern: string;
@@ -68,6 +71,7 @@ type
   private
     FLoxSyn: TSynLoxSyn;
     FScriptRunning: Boolean;
+    FCurrentFilePath: string;
     FStyleCombo: TComboBox;
     procedure LoadStyles;
     procedure StyleComboChange(Sender: TObject);
@@ -506,6 +510,31 @@ begin
   end;
 end;
 
+procedure TForm4.BtnSaveClick(Sender: TObject);
+var
+  TargetPath: string;
+begin
+  if FCurrentFilePath <> '' then
+  begin
+    if MessageDlg('Save changes to ' + FCurrentFilePath + '?',
+      mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+      Memo1.Lines.SaveToFile(FCurrentFilePath);
+  end
+  else
+  begin
+    if SaveDialog1.Execute then
+    begin
+      TargetPath := SaveDialog1.FileName;
+      if MessageDlg('Save to ' + TargetPath + '?',
+        mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+      begin
+        Memo1.Lines.SaveToFile(TargetPath);
+        FCurrentFilePath := TargetPath;
+      end;
+    end;
+  end;
+end;
+
 procedure TForm4.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 begin
   if FScriptRunning then
@@ -778,6 +807,7 @@ begin
         end;
       end;
       Memo1.Lines.Assign(FileContent);
+      FCurrentFilePath := '';
     finally
       FileContent.Free;
     end;
@@ -789,7 +819,10 @@ begin
     begin
       FilePath := String(PChar(Node.Data));
       if FileExists(FilePath) then
+      begin
         Memo1.Lines.LoadFromFile(FilePath);
+        FCurrentFilePath := FilePath;
+      end;
     end;
   end;
 end;
