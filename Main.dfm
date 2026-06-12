@@ -190,6 +190,15 @@ object Form4: TForm4
         TabOrder = 4
         OnClick = Button4Click
       end
+      object BtnSave: TButton
+        Left = 370
+        Top = 5
+        Width = 75
+        Height = 25
+        Caption = 'Save'
+        TabOrder = 5
+        OnClick = BtnSaveClick
+      end
     end
     object Memo1: TSynEdit
       Left = 0
@@ -1433,6 +1442,13 @@ object Form4: TForm4
   end
   object StateImages: TImageList
     Left = 200
+    Top = 40
+  end
+  object SaveDialog1: TSaveDialog
+    DefaultExt = 'lox'
+    Filter = 'Lox Scripts (*.lox)|*.lox|All Files (*.*)|*.*'
+    Options = [ofOverwritePrompt, ofHideReadOnly, ofEnableSizing]
+    Left = 260
     Top = 40
   end
 end
