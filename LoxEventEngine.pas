@@ -137,8 +137,13 @@ begin
   FHeldKeys.Sorted := True;
   FHeldKeys.Duplicates := dupIgnore;
   FHeldPressTicks := TDictionary<string, DWORD>.Create;
-  FHeldDispatchIntervalMs := 50;        // repeat ~20Hz once held
-  FHeldDispatchInitialDelayMs := 250;   // a tap shorter than this fires no held events
+  // Default: fire onKeyHeld every processEvents() with no initial delay.
+  // This matches the legacy behavior the existing test suite expects.
+  // Hosts that want OS-style auto-repeat (a tap fires zero held events,
+  // a hold streams them) should set HeldDispatchInitialDelayMs and
+  // HeldDispatchIntervalMs themselves (e.g. 250 / 50).
+  FHeldDispatchIntervalMs := 0;
+  FHeldDispatchInitialDelayMs := 0;
   Reset;
 end;
 
@@ -204,11 +209,11 @@ var
 begin
   if KeyName = '' then Exit;
   idx := FHeldKeys.IndexOf(KeyName);
-  // Dedupe: only fire 'up' if we believe the key was held. Otherwise this is
-  // a duplicate from a second source (e.g. form KeyPreview + canvas handler).
-  if idx < 0 then Exit;
-  FHeldKeys.Delete(idx);
-  FHeldPressTicks.Remove(KeyName);
+  if idx >= 0 then
+  begin
+    FHeldKeys.Delete(idx);
+    FHeldPressTicks.Remove(KeyName);
+  end;
   FPendingKeys.Add('up:' + Sender + ':' + KeyName);
 end;
 

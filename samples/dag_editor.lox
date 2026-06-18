@@ -1,0 +1,222 @@
+// Interactive DAG / scheduling-graph editor.
+//
+// Drag any node with the left mouse button. Edges (with arrowheads) re-route
+// to the node's new position every frame.
+//
+// Node kinds: 0 = task (rectangle), 1 = event (circle).
+//
+// Run from the Event Test form.
+
+setCanvasSize(1200, 800);
+
+// --- Records -------------------------------------------------------------
+
+record Node(x, y, w, h, kind, label);
+record Edge(fromIdx, toIdx);
+
+// --- Geometry helpers (free functions, since records have no methods) ----
+
+fun nodeCx(n) { return n.x + n.w / 2; }
+fun nodeCy(n) { return n.y + n.h / 2; }
+
+fun nodeContains(n, px, py) {
+  if (n.kind == 1) {
+    var dx = px - nodeCx(n);
+    var dy = py - nodeCy(n);
+    var r  = n.w / 2;
+    return dx*dx + dy*dy <= r*r;
+  }
+  return px >= n.x and px <= n.x + n.w
+     and py >= n.y and py <= n.y + n.h;
+}
+
+// Returns a 2-element array [x, y] where a line from node centre toward
+// (tx, ty) crosses the node's boundary, so edges start/end on the outline
+// of the shape rather than at the centre.
+fun clipPoint(n, tx, ty) {
+  var cx = nodeCx(n);
+  var cy = nodeCy(n);
+  var dx = tx - cx;
+  var dy = ty - cy;
+  var out = newArray();
+
+  if (n.kind == 1) {
+    var d = sqrt(dx*dx + dy*dy);
+    if (d == 0) d = 1;
+    var r = n.w / 2;
+    arrayPush(out, cx + dx * r / d);
+    arrayPush(out, cy + dy * r / d);
+  } else {
+    var ax = abs(dx);
+    var ay = abs(dy);
+    var hw = n.w / 2;
+    var hh = n.h / 2;
+    var t;
+    if (ay == 0)                  t = hw / ax;
+    else if (ax == 0)             t = hh / ay;
+    else if (ax * hh > ay * hw)   t = hw / ax;
+    else                          t = hh / ay;
+    arrayPush(out, cx + dx * t);
+    arrayPush(out, cy + dy * t);
+  }
+  return out;
+}
+
+// --- Graph ---------------------------------------------------------------
+
+var nodes = newArray();
+var edges = newArray();
+
+fun addNode(x, y, w, h, kind, label) {
+  arrayPush(nodes, Node(x, y, w, h, kind, label));
+  return arrayLen(nodes) - 1;
+}
+
+fun addEdge(a, b) {
+  arrayPush(edges, Edge(a, b));
+}
+
+var nStart = addNode( 20,  88, 24, 24, 1, "S");
+var nA     = addNode( 70,  40, 80, 28, 0, "Build");
+var nB     = addNode( 70, 132, 80, 28, 0, "Test");
+var nC     = addNode(200,  86, 80, 28, 0, "Package");
+var nD     = addNode(320,  40, 80, 28, 0, "Deploy");
+var nE     = addNode(320, 132, 80, 28, 0, "Notify");
+var nEnd   = addNode(440,  88, 24, 24, 1, "E");
+
+addEdge(nStart, nA);
+addEdge(nStart, nB);
+addEdge(nA,    nC);
+addEdge(nB,    nC);
+addEdge(nC,    nD);
+addEdge(nC,    nE);
+addEdge(nD,    nEnd);
+addEdge(nE,    nEnd);
+
+// --- Interaction state ---------------------------------------------------
+
+var running   = true;
+var dragIdx   = -1;
+var dragOffX  = 0;
+var dragOffY  = 0;
+
+fun nodeAt(x, y) {
+  // Walk in reverse so a node drawn on top wins the hit-test.
+  var i = arrayLen(nodes) - 1;
+  while (i >= 0) {
+    if (nodeContains(arrayGet(nodes, i), x, y)) return i;
+    i = i - 1;
+  }
+  return -1;
+}
+
+// --- Rendering -----------------------------------------------------------
+
+// cos/sin of ~25°, used to splay the arrowhead.
+var kCos = 0.906;
+var kSin = 0.423;
+var kArrLen = 8;
+
+fun drawArrowhead(sx, sy, tx, ty) {
+  var dx = tx - sx;
+  var dy = ty - sy;
+  var d  = sqrt(dx*dx + dy*dy);
+  if (d == 0) return;
+  // Unit vector pointing back from target toward source.
+  var ux = -dx / d;
+  var uy = -dy / d;
+  var ax1 = ux * kCos - uy * kSin;
+  var ay1 = ux * kSin + uy * kCos;
+  var ax2 = ux * kCos + uy * kSin;
+  var ay2 = -ux * kSin + uy * kCos;
+  drawLine(tx, ty, tx + ax1 * kArrLen, ty + ay1 * kArrLen);
+  drawLine(tx, ty, tx + ax2 * kArrLen, ty + ay2 * kArrLen);
+}
+
+fun drawEdge(a, b) {
+  var aClip = clipPoint(a, nodeCx(b), nodeCy(b));
+  var bClip = clipPoint(b, nodeCx(a), nodeCy(a));
+  var sx = arrayGet(aClip, 0);
+  var sy = arrayGet(aClip, 1);
+  var tx = arrayGet(bClip, 0);
+  var ty = arrayGet(bClip, 1);
+  drawLine(sx, sy, tx, ty);
+  drawArrowhead(sx, sy, tx, ty);
+}
+
+fun drawNode(n, highlighted) {
+  if (n.kind == 1) {
+    var r = n.w / 2;
+    if (highlighted) setColor(255, 220, 120);
+    else             setColor(220, 180, 60);
+    fillCircle(nodeCx(n), nodeCy(n), r);
+    setColor(255, 255, 255);
+    drawCircle(nodeCx(n), nodeCy(n), r);
+    drawText(nodeCx(n) - 3, nodeCy(n) - 4, n.label);
+  } else {
+    if (highlighted) setColor(120, 170, 240);
+    else             setColor(80, 130, 200);
+    fillRect(n.x, n.y, n.w, n.h);
+    setColor(255, 255, 255);
+    drawRect(n.x, n.y, n.w, n.h);
+    drawText(n.x + 6, n.y + n.h / 2 - 4, n.label);
+  }
+}
+
+fun render() {
+  clearCanvas(28, 28, 36);
+
+  // Edges first so they sit behind nodes.
+  setColor(180, 180, 200);
+  var i = 0;
+  while (i < arrayLen(edges)) {
+    var e = arrayGet(edges, i);
+    drawEdge(arrayGet(nodes, e.fromIdx), arrayGet(nodes, e.toIdx));
+    i = i + 1;
+  }
+
+  i = 0;
+  while (i < arrayLen(nodes)) {
+    drawNode(arrayGet(nodes, i), i == dragIdx);
+    i = i + 1;
+  }
+
+  setColor(180, 180, 180);
+  drawText(6, 4, "Drag any node. ESC to quit.");
+  present();
+}
+
+// --- Event handlers ------------------------------------------------------
+
+onMouseDown(fun(btn, x, y) {
+  if (btn != 0) return;
+  var idx = nodeAt(x, y);
+  if (idx < 0) return;
+  dragIdx  = idx;
+  var n    = arrayGet(nodes, idx);
+  dragOffX = x - n.x;
+  dragOffY = y - n.y;
+});
+
+onMouseMove(fun(x, y) {
+  if (dragIdx < 0) return;
+  var n = arrayGet(nodes, dragIdx);
+  n.x = x - dragOffX;
+  n.y = y - dragOffY;
+});
+
+onMouseUp(fun(btn, x, y) {
+  if (btn == 0) dragIdx = -1;
+});
+
+onKeyPressed(fun(key) {
+  if (key == "escape") running = false;
+});
+
+// --- Main loop -----------------------------------------------------------
+
+render();
+while (running) {
+  processEvents();
+  render();
+}
