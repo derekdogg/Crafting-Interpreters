@@ -730,6 +730,7 @@ procedure Concatenate(stack : pStack; MemTracker : pMemTracker); inline;
 procedure initChunk(var chunk: pChunk;MemTracker : pMemTracker);inline;
 procedure freeChunk(var chunk: pChunk;MemTracker : pMemTracker);inline
 procedure emitByte(value : byte; Chunk : pChunk; Line : integer; MemTracker : pMemTracker );inline;
+procedure emitOpcode(value : byte; Chunk : pChunk; Line : integer; MemTracker : pMemTracker );inline;
 procedure EmitReturn(Chunk : pChunk; Line : integer; MemTracker : pMemTracker);inline;
 
 procedure writeChunk(chunk: pChunk; value: byte; Line : Integer;MemTracker : pMemTracker);inline;
@@ -1070,6 +1071,12 @@ var
   Current : pCompiler;
   lastPatchTarget : integer = -1;
   lastAddOffset   : integer = -1;
+  // Tracks opcode boundaries so peepholes can verify the bytes they're
+  // matching are genuinely at opcode offsets, not operand bytes. Both are
+  // -1 when unknown (function entry, after a patched jump target lands here,
+  // or after a fusion that erased the byte they pointed at).
+  lastOpcodeOffset : integer = -1;
+  prevOpcodeOffset : integer = -1;
   //Output : TStrings;
   {$IFDEF DEBUG_LOG_GC}
   GCLogFile : TextFile;
@@ -3881,11 +3888,15 @@ begin
 
   if idx <= high(Byte) then
   begin
+    prevOpcodeOffset := lastOpcodeOffset;
+    lastOpcodeOffset := Chunk.Count;
     writeChunk(Chunk, OP_CONSTANT,Line,MemTracker);
     WriteChunk(Chunk,idx,Line,memTracker);
   end
   else
   begin
+    prevOpcodeOffset := lastOpcodeOffset;
+    lastOpcodeOffset := Chunk.Count;
     writeChunk(Chunk, OP_CONSTANT_LONG,Line,MemTracker);
     IntBytes := IntToBytes(idx);     //we can't store an int in a byte array, so we split it now.
     WriteChunk(Chunk, IntBytes.byte0 , Line, MemTracker);
@@ -4371,6 +4382,7 @@ begin
       Inc(OpPairCounts[OpPrevOp, instruction]);
       OpPrevOp := instruction;
       {$ENDIF}
+      try
       case instruction of
         OP_ADD_RETURN: begin
           // Fused ADD + RETURN. No operands.
@@ -4521,7 +4533,17 @@ begin
             // a stack realloc that rebases StackTop.
             savedNativeStackDepth := NativeInt(stack.StackTop) - NativeInt(stack.Values);
             {$ENDIF}
-            nativeResult := native(argCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount) * SizeOf(TValue)));
+            try
+              nativeResult := native(argCount, pValue(NativeUInt(stack.StackTop) - NativeUInt(argCount) * SizeOf(TValue)));
+            except
+              on E: Exception do
+              begin
+                runtimeError(String(AnsiString(pObjNative(GetObject(value))^.name)) +
+                  '() raised ' + E.ClassName + ': ' + E.Message);
+                result.code := INTERPRET_RUNTIME_ERROR;
+                exit;
+              end;
+            end;
             // Check if native signalled a runtime error
             if VM.RuntimeErrorStr <> '' then
             begin
@@ -4765,11 +4787,19 @@ begin
         end;
 
         OP_GET_GLOBAL: begin
-          value := constants[ip^];
+          i := ip^;
           Inc(ip);
-          {$IFOPT C+}
-          AssertValueIsString(value);
-          {$ENDIF}
+          value := constants[i];
+          if not isString(value) then
+          begin
+            runtimeError('OP_GET_GLOBAL: constant[' + IntToStr(i) +
+              '] is not a string (raw=' + IntToHex(value, 16) +
+              '). function=''' + String(ObjStringToAnsiString(frame^.closure^.func^.name)) +
+              ''' offset=' + IntToStr(NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 2) +
+              ' constantsCount=' + IntToStr(frame^.closure^.func^.chunk^.Constants^.Count) + '.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
           if not TableGet(vm.Globals, ValueToString(value), ValueB) then
           begin
             runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
@@ -4780,11 +4810,19 @@ begin
         end;
 
         OP_SET_GLOBAL: begin
-          value := constants[ip^];
+          i := ip^;
           Inc(ip);
-          {$IFOPT C+}
-          AssertValueIsString(value);
-          {$ENDIF}
+          value := constants[i];
+          if not isString(value) then
+          begin
+            runtimeError('OP_SET_GLOBAL: constant[' + IntToStr(i) +
+              '] is not a string (raw=' + IntToHex(value, 16) +
+              '). function=''' + String(ObjStringToAnsiString(frame^.closure^.func^.name)) +
+              ''' offset=' + IntToStr(NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 2) +
+              ' constantsCount=' + IntToStr(frame^.closure^.func^.chunk^.Constants^.Count) + '.');
+            result.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
           if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
           begin
             TableDelete(vm.Globals, ValueToString(value));
@@ -5732,6 +5770,42 @@ begin
       else
         begin
           runtimeError('Unknown opcode: ' + IntToStr(instruction));
+          result.code := INTERPRET_RUNTIME_ERROR;
+          exit;
+        end;
+      end;
+      except
+        on E: Exception do
+        begin
+          // The original exception may have left `frame` / `ip` pointing at
+          // garbage, so build the diagnostic defensively — never let the
+          // catch handler raise its own AV and escape.
+          try
+            if instruction <= High(OP_STRINGS) then
+              runtimeError('Host exception in ' + OP_STRINGS[instruction] +
+                ' (opcode ' + IntToStr(instruction) + ') in function ''' +
+                String(ObjStringToAnsiString(frame^.closure^.func^.name)) +
+                ''' at offset ' +
+                IntToStr(NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 1) +
+                ': ' + E.ClassName + ': ' + E.Message)
+            else
+              runtimeError('Host exception in opcode ' + IntToStr(instruction) +
+                ': ' + E.ClassName + ': ' + E.Message);
+          except
+            on E2: Exception do
+            begin
+              // Fallback: omit frame metadata when it's unreadable.
+              if instruction <= High(OP_STRINGS) then
+                runtimeError('Host exception in ' + OP_STRINGS[instruction] +
+                  ' (opcode ' + IntToStr(instruction) + '): ' +
+                  E.ClassName + ': ' + E.Message +
+                  ' [diagnostic-builder also raised ' + E2.ClassName + ': ' + E2.Message + ']')
+              else
+                runtimeError('Host exception in opcode ' + IntToStr(instruction) +
+                  ': ' + E.ClassName + ': ' + E.Message +
+                  ' [diagnostic-builder also raised ' + E2.ClassName + ': ' + E2.Message + ']');
+            end;
+          end;
           result.code := INTERPRET_RUNTIME_ERROR;
           exit;
         end;
@@ -7431,6 +7505,15 @@ begin
   {$ENDIF}
 end;
 
+procedure emitOpcode(value : byte; Chunk : pChunk; Line : integer; MemTracker : pMemTracker); inline;
+begin
+  // Record where this opcode lives so peepholes can confirm an opcode
+  // boundary later. Slide the previous boundary down one slot.
+  prevOpcodeOffset := lastOpcodeOffset;
+  lastOpcodeOffset := Chunk.Count;
+  emitByte(value, Chunk, Line, MemTracker);
+end;
+
 procedure EmitReturn(Chunk : pChunk; Line : integer; MemTracker : pMemTracker);inline;
 var
   oldCount : integer;
@@ -7440,7 +7523,11 @@ begin
   AssertMemTrackerIsNotNil(MemTracker);
   {$ENDIF}
   oldCount := Chunk.Count;
+  prevOpcodeOffset := lastOpcodeOffset;
+  lastOpcodeOffset := Chunk.Count;
   writeChunk(Chunk, OP_NIL, line, Memtracker);
+  prevOpcodeOffset := lastOpcodeOffset;
+  lastOpcodeOffset := Chunk.Count;
   writeChunk(Chunk, OP_RETURN, line, Memtracker);
 
   // ---- Exit assertions ----
@@ -7559,8 +7646,8 @@ begin
   operatorType := parser.Previous.tokenType;
   parsePrecedence(PREC_UNARY);
   case operatortype of
-    TOKEN_MINUS: emitByte(OP_NEGATE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-    TOKEN_BANG: emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_MINUS: emitOpcode(OP_NEGATE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_BANG: emitOpcode(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
   end;
 end;
 
@@ -7641,79 +7728,94 @@ begin
   case tokenType of
 
       TOKEN_BANG_EQUAL: begin
-        emitByte(OP_EQUAL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-        emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_EQUAL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_EQUAL_EQUAL: begin
-        emitByte(OP_EQUAL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_EQUAL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_GREATER:    begin
-        emitByte(OP_GREATER,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_GREATER,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_GREATER_EQUAL: begin
-        emitByte(OP_LESS,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-        emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_LESS,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_LESS: begin
-        emitByte(OP_LESS,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_LESS,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_LESS_EQUAL: begin
-          emitByte(OP_GREATER,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-          emitByte(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+          emitOpcode(OP_GREATER,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+          emitOpcode(OP_NOT,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_PLUS : begin
-        emitByte(OP_ADD,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_ADD,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
         lastAddOffset := CurrentChunk.count - 1;
       end;
 
       TOKEN_MINUS : begin
-        // Peephole: fuse GET_LOCAL_N + CONSTANT + SUBTRACT into one opcode.
-        // Pattern in chunk: [GET_LOCAL_0..7 | GET_LOCAL,slot], OP_CONSTANT, idx
-        if (CurrentChunk.count >= 3) and
-           (CurrentChunk.code[CurrentChunk.count - 2] = OP_CONSTANT) and
-           (CurrentChunk.code[CurrentChunk.count - 3] >= OP_GET_LOCAL_0) and
-           (CurrentChunk.code[CurrentChunk.count - 3] <= OP_GET_LOCAL_7) then
+        // Peephole: fuse [GET_LOCAL_N | GET_LOCAL slot] + OP_CONSTANT idx + OP_SUBTRACT
+        // into OP_GET_LOCAL_CONST_SUBTRACT. Uses lastOpcodeOffset /
+        // prevOpcodeOffset so we KNOW the bytes we're matching are opcode
+        // boundaries, not operand bytes that happen to equal an opcode value.
+        if (lastOpcodeOffset = CurrentChunk.count - 2) and
+           (CurrentChunk.code[lastOpcodeOffset] = OP_CONSTANT) and
+           (prevOpcodeOffset >= 0) and
+           (prevOpcodeOffset = lastOpcodeOffset - 1) and
+           (CurrentChunk.code[prevOpcodeOffset] >= OP_GET_LOCAL_0) and
+           (CurrentChunk.code[prevOpcodeOffset] <= OP_GET_LOCAL_7) and
+           (lastPatchTarget <> lastOpcodeOffset) and
+           (lastPatchTarget <> prevOpcodeOffset) then
         begin
           // Fast-slot variant: slot encoded in the opcode
-          slot := CurrentChunk.code[CurrentChunk.count - 3] - OP_GET_LOCAL_0;
-          index := CurrentChunk.code[CurrentChunk.count - 1]; // const idx
+          slot := CurrentChunk.code[prevOpcodeOffset] - OP_GET_LOCAL_0;
+          index := CurrentChunk.code[CurrentChunk.count - 1];
           Dec(CurrentChunk.count, 3);
-          emitByte(OP_GET_LOCAL_CONST_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+          // Erased the previous two opcodes; their boundaries are gone.
+          lastOpcodeOffset := -1;
+          prevOpcodeOffset := -1;
+          emitOpcode(OP_GET_LOCAL_CONST_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
           emitByte(slot, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
           emitByte(index, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
         end
-        else if (CurrentChunk.count >= 4) and
-                (CurrentChunk.code[CurrentChunk.count - 2] = OP_CONSTANT) and
-                (CurrentChunk.code[CurrentChunk.count - 4] = OP_GET_LOCAL) then
+        else if (lastOpcodeOffset = CurrentChunk.count - 2) and
+                (CurrentChunk.code[lastOpcodeOffset] = OP_CONSTANT) and
+                (prevOpcodeOffset >= 0) and
+                (prevOpcodeOffset = lastOpcodeOffset - 2) and
+                (CurrentChunk.code[prevOpcodeOffset] = OP_GET_LOCAL) and
+                (lastPatchTarget <> lastOpcodeOffset) and
+                (lastPatchTarget <> prevOpcodeOffset) then
         begin
           // General GET_LOCAL variant: GET_LOCAL, slot, OP_CONSTANT, idx
-          slot := CurrentChunk.code[CurrentChunk.count - 3];
+          slot := CurrentChunk.code[prevOpcodeOffset + 1];
           index := CurrentChunk.code[CurrentChunk.count - 1];
           Dec(CurrentChunk.count, 4);
-          emitByte(OP_GET_LOCAL_CONST_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+          lastOpcodeOffset := -1;
+          prevOpcodeOffset := -1;
+          emitOpcode(OP_GET_LOCAL_CONST_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
           emitByte(slot, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
           emitByte(index, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
         end
         else
-          emitByte(OP_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
+          emitOpcode(OP_SUBTRACT, CurrentChunk, Parser.Previous.Line, vm.MemTracker);
       end;
 
       TOKEN_STAR : begin
-        emitByte(OP_MULTIPLY,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_MULTIPLY,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_SLASH : begin
-        emitByte(OP_DIVIDE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_DIVIDE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end;
 
       TOKEN_PERCENT : begin
-        emitByte(OP_MODULO,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+        emitOpcode(OP_MODULO,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
       end
       else
       begin
@@ -7731,9 +7833,9 @@ begin
          (parser.previous.tokenType = TOKEN_NIL),
     'literal: expected TOKEN_FALSE, TOKEN_TRUE, or TOKEN_NIL');
   case parser.previous.tokenType of
-    TOKEN_FALSE : emitByte(OP_FALSE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-    TOKEN_TRUE  : emitByte(OP_TRUE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
-    TOKEN_NIL   : emitByte(OP_NIL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_FALSE : emitOpcode(OP_FALSE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_TRUE  : emitOpcode(OP_TRUE,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
+    TOKEN_NIL   : emitOpcode(OP_NIL,CurrentChunk,Parser.Previous.Line,vm.MemTracker);
   end;
 end;
 
@@ -7742,7 +7844,7 @@ procedure printStatement();
 begin
   Expression();
   consume(TOKEN_SEMICOLON, 'Expect '';'' after value.');
-  emitByte(OP_PRINT, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitOpcode(OP_PRINT, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
 
 
@@ -7750,22 +7852,29 @@ end;
 
 function emitJump(instruction : byte) : integer; inline;
 begin
-
-  // Peephole: fuse OP_LESS + OP_JUMP_IF_FALSE_POP into OP_LESS_JUMP_IF_FALSE
-  // Guard: don't fuse if a jump was just patched to target this position
-  // (e.g. and_ short-circuit lands here — fusing would corrupt the target)
-  if (instruction = OP_JUMP_IF_FALSE_POP) and (CurrentChunk.count > 0)
-     and (CurrentChunk.code[CurrentChunk.count - 1] = OP_LESS)
-     and (lastPatchTarget <> CurrentChunk.count) then
+  // Peephole: fuse OP_LESS + OP_JUMP_IF_FALSE_POP into OP_LESS_JUMP_IF_FALSE.
+  // Guards (all required):
+  //   - lastOpcodeOffset = count-1 confirms the previous byte is genuinely
+  //     an opcode boundary, not an operand byte that happens to equal
+  //     OP_LESS (13).
+  //   - lastPatchTarget checks that the OP_LESS position is not a jump
+  //     landing point (fusing would corrupt the target).
+  if (instruction = OP_JUMP_IF_FALSE_POP) and
+     (lastOpcodeOffset >= 0) and
+     (lastOpcodeOffset = CurrentChunk.count - 1) and
+     (CurrentChunk.code[lastOpcodeOffset] = OP_LESS) and
+     (lastPatchTarget <> CurrentChunk.count) and
+     (lastPatchTarget <> lastOpcodeOffset) then
   begin
-    // Overwrite the OP_LESS we already emitted with the fused opcode
-    CurrentChunk.code[CurrentChunk.count - 1] := OP_LESS_JUMP_IF_FALSE;
+    // Overwrite OP_LESS in place with the fused opcode. Its offset is still
+    // a valid opcode boundary, so lastOpcodeOffset stays as-is.
+    CurrentChunk.code[lastOpcodeOffset] := OP_LESS_JUMP_IF_FALSE;
     emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
     Result := CurrentChunk.count - 2;
     Exit;
   end;
-  emitByte(instruction, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitOpcode(instruction, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
   Result := CurrentChunk.count - 2;
@@ -7794,6 +7903,10 @@ begin
   CurrentChunk.code[offset]     := (jump shr 8) and $FF;
   CurrentChunk.code[offset + 1] := jump and $FF;
   lastPatchTarget := CurrentChunk.count;
+  // The jump target lands HERE, so whatever opcode the trackers point at
+  // is no longer adjacent to the next emitted instruction. Invalidate.
+  lastOpcodeOffset := -1;
+  prevOpcodeOffset := -1;
 end;
 
 procedure emitLoop(loopStart : integer); inline;
@@ -7801,7 +7914,7 @@ var
   offset : integer;
 begin
   Assert(loopStart >= 0, 'emitLoop: loopStart is negative');
-  emitByte(OP_LOOP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitOpcode(OP_LOOP, CurrentChunk, parser.previous.line, vm.MemTracker);
   offset := CurrentChunk.count - loopStart + 2;
   if offset > MAX_JUMP_OFFSET then
     Error('Loop body too large.');
@@ -7906,7 +8019,7 @@ begin
   if hasLoopVar then
   begin
     beginScope();
-    emitByte(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(loopVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
     // Inline addLocal + markInitialized (declared later in unit)
     Current^.locals[Current^.localCount].name := loopVarName;
@@ -7922,11 +8035,11 @@ begin
   begin
     // Write the (possibly mutated) inner copy back to the outer loop variable
     // so the increment/condition see updates made inside the body.
-    emitByte(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_GET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(innerVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(OP_SET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_SET_LOCAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(loopVarSlot), CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
     endScope();
   end;
 
@@ -7945,7 +8058,7 @@ var
   endJump : integer;
 begin
   endJump := emitJump(OP_JUMP_IF_FALSE);
-  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitOpcode(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
   parsePrecedence(PREC_AND);
   patchJump(endJump);
 end;
@@ -7957,7 +8070,7 @@ begin
   elseJump := emitJump(OP_JUMP_IF_FALSE);
   endJump := emitJump(OP_JUMP);
   patchJump(elseJump);
-  emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitOpcode(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
   parsePrecedence(PREC_OR);
   patchJump(endJump);
 end;
@@ -7973,6 +8086,8 @@ begin
   compiler^.localCount := 0;
   compiler^.scopeDepth := 0;
   lastAddOffset := -1;
+  lastOpcodeOffset := -1;
+  prevOpcodeOffset := -1;
   compiler^.func := newFunction(VM.MemTracker);
   Current := compiler;
 
@@ -8016,13 +8131,13 @@ var
     begin
       if pendingPops = 1 then
       begin
-        emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+        emitOpcode(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
         pendingPops := 0;
       end
       else
       begin
         if pendingPops > 255 then chunkN := 255 else chunkN := pendingPops;
-        emitByte(OP_POP_N, CurrentChunk, parser.previous.line, vm.MemTracker);
+        emitOpcode(OP_POP_N, CurrentChunk, parser.previous.line, vm.MemTracker);
         emitByte(Byte(chunkN), CurrentChunk, parser.previous.line, vm.MemTracker);
         Dec(pendingPops, chunkN);
       end;
@@ -8046,7 +8161,7 @@ begin
       // run of plain pops first so the captured local sits at the top of
       // the stack when OP_CLOSE_UPVALUE fires.
       FlushPendingPops;
-      emitByte(OP_CLOSE_UPVALUE, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_CLOSE_UPVALUE, CurrentChunk, parser.previous.line, vm.MemTracker);
     end
     else
       Inc(pendingPops);
@@ -8218,12 +8333,12 @@ begin
   end;
   if global <= High(Byte) then
   begin
-    emitByte(OP_DEFINE_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_DEFINE_GLOBAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(global), CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else
   begin
-    emitByte(OP_DEFINE_GLOBAL_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_DEFINE_GLOBAL_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
     IntBytes := IntToBytes(global);
     emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8240,7 +8355,7 @@ begin
   if matchToken(TOKEN_EQUAL) then
     Expression()
   else
-    emitByte(OP_NIL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_NIL, CurrentChunk, parser.previous.line, vm.MemTracker);
 
   consume(TOKEN_SEMICOLON, 'Expect '';'' after variable declaration.');
   defineVariable(global);
@@ -8390,7 +8505,7 @@ begin
   begin
     slot := CurrentChunk.code[CurrentChunk.count - 1] - OP_SET_LOCAL_0;
     Dec(CurrentChunk.count, 2);
-    emitByte(OP_ADD_SET_LOCAL_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_ADD_SET_LOCAL_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(slot, CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else if (CurrentChunk.count >= 3) and
@@ -8399,11 +8514,11 @@ begin
   begin
     slot := CurrentChunk.code[CurrentChunk.count - 1];
     Dec(CurrentChunk.count, 3);
-    emitByte(OP_ADD_SET_LOCAL_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_ADD_SET_LOCAL_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(slot, CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else
-    emitByte(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_POP, CurrentChunk, parser.previous.line, vm.MemTracker);
   lastAddOffset := -1;
 end;
 
@@ -8438,7 +8553,7 @@ var
   argCount : byte;
 begin
   argCount := argumentList();
-  emitByte(OP_CALL, CurrentChunk, parser.previous.line, vm.MemTracker);
+  emitOpcode(OP_CALL, CurrentChunk, parser.previous.line, vm.MemTracker);
   emitByte(argCount, CurrentChunk, parser.previous.line, vm.MemTracker);
 end;
 
@@ -8468,12 +8583,12 @@ begin
     Expression();
     if nameIdx <= High(Byte) then
     begin
-      emitByte(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
     end
     else
     begin
-      emitByte(OP_SET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_SET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
       IntBytes := IntToBytes(nameIdx);
       emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8483,15 +8598,15 @@ begin
   else if canAssign and MatchCompoundAssign(compoundOp) then
   begin
     // obj.field += expr → DUP obj, GET_PROPERTY, expr, op, SET_PROPERTY
-    emitByte(OP_DUP, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_DUP, CurrentChunk, parser.previous.line, vm.MemTracker);
     if nameIdx <= High(Byte) then
     begin
-      emitByte(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
     end
     else
     begin
-      emitByte(OP_GET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_GET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
       IntBytes := IntToBytes(nameIdx);
       emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8501,12 +8616,12 @@ begin
     emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if nameIdx <= High(Byte) then
     begin
-      emitByte(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
     end
     else
     begin
-      emitByte(OP_SET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_SET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
       IntBytes := IntToBytes(nameIdx);
       emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8518,13 +8633,13 @@ begin
     argCount := argumentList();
     if nameIdx <= High(Byte) then
     begin
-      emitByte(OP_INVOKE, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_INVOKE, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(argCount, CurrentChunk, parser.previous.line, vm.MemTracker);
     end
     else
     begin
-      emitByte(OP_INVOKE_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_INVOKE_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
       IntBytes := IntToBytes(nameIdx);
       emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8536,12 +8651,12 @@ begin
   begin
     if nameIdx <= High(Byte) then
     begin
-      emitByte(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_GET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(Byte(nameIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
     end
     else
     begin
-      emitByte(OP_GET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_GET_PROPERTY_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
       IntBytes := IntToBytes(nameIdx);
       emitByte(IntBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
       emitByte(IntBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8559,7 +8674,7 @@ begin
   if matchToken(TOKEN_COLON) then
   begin
     consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after empty dictionary literal.');
-    emitByte(OP_DICT_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_DICT_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(0, CurrentChunk, parser.previous.line, vm.MemTracker);
     Exit;
   end;
@@ -8568,7 +8683,7 @@ begin
   if check(TOKEN_RIGHT_BRACKET) then
   begin
     consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after array elements.');
-    emitByte(OP_ARRAY_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_ARRAY_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(0, CurrentChunk, parser.previous.line, vm.MemTracker);
     Exit;
   end;
@@ -8592,7 +8707,7 @@ begin
         Inc(pairCount);
     end;
     consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after dictionary entries.');
-    emitByte(OP_DICT_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_DICT_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(pairCount), CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else
@@ -8608,7 +8723,7 @@ begin
         Inc(elemCount);
     end;
     consume(TOKEN_RIGHT_BRACKET, 'Expect '']'' after array elements.');
-    emitByte(OP_ARRAY_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_ARRAY_LITERAL, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(elemCount), CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
 end;
@@ -8637,21 +8752,21 @@ begin
   begin
     // a[expr] = value
     Expression();
-    emitByte(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else if canAssign and MatchCompoundAssign(compoundOp) then
   begin
     // a[key] += expr → DUP2 [obj,key], GET_SUBSCRIPT, expr, op, SET_SUBSCRIPT
-    emitByte(OP_DUP2, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(OP_GET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_DUP2, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_GET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
     Expression();
     emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else
   begin
     // a[expr]
-    emitByte(OP_GET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_GET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
   end;
 end;
 
@@ -8700,12 +8815,12 @@ begin
   closureIdx := AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker);
   if closureIdx <= High(Byte) then
   begin
-    emitByte(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(closureIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else
   begin
-    emitByte(OP_CLOSURE_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_CLOSURE_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
     closureBytes := IntToBytes(closureIdx);
     emitByte(closureBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(closureBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8808,7 +8923,7 @@ begin
   if not needsLong then
   begin
     // Short form: 1 byte per index
-    emitByte(OP_RECORD, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_RECORD, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(fieldCount), CurrentChunk, parser.previous.line, vm.MemTracker);
     for i := 0 to fieldCount - 1 do
       emitByte(Byte(fieldNameIndices[i]), CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8818,7 +8933,7 @@ begin
   begin
     // Long form: 3 bytes per index (24-bit little-endian)
     var intBytes : TIntToByteResult;
-    emitByte(OP_RECORD_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(OP_RECORD_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte(Byte(fieldCount), CurrentChunk, parser.previous.line, vm.MemTracker);
     for i := 0 to fieldCount - 1 do
     begin
@@ -8859,10 +8974,10 @@ begin
        and (lastPatchTarget <> CurrentChunk.count) then
     begin
       Dec(CurrentChunk.count); // remove the OP_ADD
-      emitByte(OP_ADD_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_ADD_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
     end
     else
-      emitByte(OP_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
+      emitOpcode(OP_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
     lastAddOffset := -1;
   end;
 end;
