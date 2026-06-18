@@ -183,6 +183,60 @@ fun nodeAtScreen(sx, sy) {
   return -1;
 }
 
+// --- Overlap resolution --------------------------------------------------
+//
+// Resolution runs ONCE, on mouse-up, not during the drag. While the user is
+// dragging we just let the ghost float wherever the cursor goes; the moment
+// they release, we shove anything underneath the dropped node rightward and
+// let those displacements cascade. This keeps the layout stable visually
+// (no nodes squirming around under the cursor) and matches the left-to-right
+// reading direction of the DAG -- downstream tasks slide further downstream.
+
+var nodeGap = 8;            // visual padding between separated nodes
+var resolveMaxIters = 32;   // upper bound on relaxation passes per drop
+
+// AABB overlap test with gap inflation.
+fun nodesOverlap(a, b) {
+  return (a.x + a.w + nodeGap) > b.x
+     and (b.x + b.w + nodeGap) > a.x
+     and (a.y + a.h + nodeGap) > b.y
+     and (b.y + b.h + nodeGap) > a.y;
+}
+
+fun resolveOverlaps(pinnedIdx) {
+  var iters = 0;
+  while (iters < resolveMaxIters) {
+    var moved = false;
+    var i = 0;
+    while (i < arrayLen(nodes)) {
+      var j = i + 1;
+      while (j < arrayLen(nodes)) {
+        var a = arrayGet(nodes, i);
+        var b = arrayGet(nodes, j);
+        if (nodesOverlap(a, b)) {
+          // Rightward push: the non-pinned node jumps to just past the other's
+          // right edge. If neither is pinned, the node currently further to
+          // the right yields (preserves left-to-right ordering).
+          if (i == pinnedIdx) {
+            b.x = a.x + a.w + nodeGap;
+          } else if (j == pinnedIdx) {
+            a.x = b.x + b.w + nodeGap;
+          } else if (a.x <= b.x) {
+            b.x = a.x + a.w + nodeGap;
+          } else {
+            a.x = b.x + b.w + nodeGap;
+          }
+          moved = true;
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+    if (!moved) return;
+    iters = iters + 1;
+  }
+}
+
 // --- Rendering -----------------------------------------------------------
 
 var kCos = 0.906;
@@ -218,29 +272,62 @@ fun drawEdge(a, b) {
   var maxy; if (a.y + a.h > b.y + b.h) maxy = a.y + a.h; else maxy = b.y + b.h;
   if (!aabbVisible(minx, miny, maxx - minx, maxy - miny)) return;
 
-  var aClip = clipPoint(a, nodeCx(b), nodeCy(b));
-  var bClip = clipPoint(b, nodeCx(a), nodeCy(a));
-  var sx = arrayGet(aClip, 0);
-  var sy = arrayGet(aClip, 1);
-  var tx = arrayGet(bClip, 0);
-  var ty = arrayGet(bClip, 1);
-  drawLineAA(sx, sy, tx, ty);
-  drawArrowhead(sx, sy, tx, ty);
+  // Orthogonal routing: connect on the horizontal sides of each node and
+  // bend through a midpoint column. Source connector is on the side facing
+  // the target; same for the target connector.
+  var sx; var tx;
+  if (nodeCx(a) <= nodeCx(b)) {
+    sx = a.x + a.w;     // right side of a
+    tx = b.x;           // left side of b
+  } else {
+    sx = a.x;           // left side of a
+    tx = b.x + b.w;     // right side of b
+  }
+  var sy = nodeCy(a);
+  var ty = nodeCy(b);
+
+  if (sy == ty) {
+    // Same row -- a single horizontal segment looks cleaner than an elbow.
+    drawLineAA(sx, sy, tx, ty);
+  } else {
+    // H-V-H elbow through the column midway between the two connectors.
+    var midX = (sx + tx) / 2;
+    drawLineAA(sx, sy, midX, sy);
+    drawLineAA(midX, sy, midX, ty);
+    drawLineAA(midX, ty, tx, ty);
+  }
+
+  // Arrowhead points along the final (horizontal) segment.
+  drawArrowhead(tx - (tx - sx) / 8, ty, tx, ty);
 }
 
 fun drawNode(n, highlighted) {
   if (!aabbVisible(n.x, n.y, n.w, n.h)) return;
+  if (highlighted) {
+    // Ghost: outline-only, no fill. Makes it obvious the node is floating
+    // above the layout and that collisions haven't been resolved yet.
+    setColor(255, 220, 120);
+    if (n.kind == 1) {
+      var rad = n.w / 2;
+      drawCircle(nodeCx(n), nodeCy(n), rad);
+      drawText(nodeCx(n) - 3, nodeCy(n) - 4, n.label);
+    } else {
+      drawRect(n.x, n.y, n.w, n.h);
+      // Faint inner rect for the dashed-ish ghost feel.
+      drawRect(n.x + 2, n.y + 2, n.w - 4, n.h - 4);
+      drawText(n.x + 8, n.y + n.h / 2 - 4, n.label);
+    }
+    return;
+  }
   if (n.kind == 1) {
     var rad = n.w / 2;
-    if (highlighted) setColor(255, 220, 120);
-    else             setColor(220, 180, 60);
+    setColor(220, 180, 60);
     fillCircle(nodeCx(n), nodeCy(n), rad);
     setColor(255, 255, 255);
     drawCircle(nodeCx(n), nodeCy(n), rad);
     drawText(nodeCx(n) - 3, nodeCy(n) - 4, n.label);
   } else {
-    if (highlighted) setColor(120, 170, 240);
-    else             setColor(80, 130, 200);
+    setColor(80, 130, 200);
     fillRect(n.x, n.y, n.w, n.h);
     setColor(255, 255, 255);
     drawRect(n.x, n.y, n.w, n.h);
@@ -350,7 +437,11 @@ onMouseMove(fun(x, y) {
 });
 
 onMouseUp(fun(btn, x, y) {
-  if (btn == 0) dragIdx = -1;
+  if (btn == 0) {
+    // Resolve collisions once, on drop: ghost commits, neighbours shove right.
+    if (dragIdx >= 0) resolveOverlaps(dragIdx);
+    dragIdx = -1;
+  }
   if (btn == 1) panning = false;
 });
 
