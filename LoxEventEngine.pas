@@ -66,7 +66,11 @@ type
     FOnCheckAbort: TCheckAbortFunc;
     FHeldDispatchIntervalMs: DWORD;
     FHeldDispatchInitialDelayMs: DWORD;
-    FHeldPressTicks: TDictionary<string, DWORD>;
+    // Per-key tick (GetTickCount domain) at which onKeyHeld becomes eligible
+    // to fire next. Seeded on key-down to (now + initial delay) so the initial
+    // delay is a one-time gate; advanced by FHeldDispatchIntervalMs after each
+    // dispatch so subsequent fires are spaced by the interval only.
+    FHeldNextDispatchTick: TDictionary<string, DWORD>;
     function CallbackKey(Kind: TEventCallbackKind; const ControlName: string): string;
     function GetCallback(Kind: TEventCallbackKind; const ControlName: string): TValue;
   public
@@ -136,7 +140,7 @@ begin
   FHeldKeys := TStringList.Create;
   FHeldKeys.Sorted := True;
   FHeldKeys.Duplicates := dupIgnore;
-  FHeldPressTicks := TDictionary<string, DWORD>.Create;
+  FHeldNextDispatchTick := TDictionary<string, DWORD>.Create;
   // Default: fire onKeyHeld every processEvents() with no initial delay.
   // This matches the legacy behavior the existing test suite expects.
   // Hosts that want OS-style auto-repeat (a tap fires zero held events,
@@ -155,7 +159,7 @@ begin
   FPendingMouse.Free;
   FPendingClicks.Free;
   FHeldKeys.Free;
-  FHeldPressTicks.Free;
+  FHeldNextDispatchTick.Free;
   inherited;
 end;
 
@@ -183,7 +187,7 @@ begin
   FPendingClicks.Clear;
   FPendingMoves.Clear;
   FHeldKeys.Clear;
-  FHeldPressTicks.Clear;
+  FHeldNextDispatchTick.Clear;
   FCallbackSlots.Clear;  // TObjectDictionary frees owned slots
   FRunning := True;
 end;
@@ -196,8 +200,12 @@ begin
   if FHeldKeys.IndexOf(KeyName) < 0 then
   begin
     FHeldKeys.Add(KeyName);
-    // Mark the press time so onKeyHeld can apply an initial-repeat delay.
-    FHeldPressTicks.AddOrSetValue(KeyName, GetTickCount);
+    // Seed the per-key timer to the first eligible held-dispatch tick:
+    // (now + initial delay). DispatchPendingEvents compares against this
+    // directly, so the initial delay is a one-time gate rather than being
+    // re-applied after every held dispatch.
+    FHeldNextDispatchTick.AddOrSetValue(KeyName,
+      GetTickCount + FHeldDispatchInitialDelayMs);
     FPendingKeys.Add('down:' + Sender + ':' + KeyName);
   end;
 end;
@@ -212,7 +220,7 @@ begin
   if idx >= 0 then
   begin
     FHeldKeys.Delete(idx);
-    FHeldPressTicks.Remove(KeyName);
+    FHeldNextDispatchTick.Remove(KeyName);
   end;
   FPendingKeys.Add('up:' + Sender + ':' + KeyName);
 end;
@@ -372,17 +380,18 @@ begin
       for i := 0 to snapshot.Count - 1 do
       begin
         keyName := snapshot[i];
-        if not FHeldPressTicks.TryGetValue(keyName, pressTick) then
+        if not FHeldNextDispatchTick.TryGetValue(keyName, pressTick) then
           Continue;
         nowTick := GetTickCount;
-        if (nowTick - pressTick) < FHeldDispatchInitialDelayMs then
+        // Tick-wrap-safe comparison: signed delta < 0 means not yet eligible.
+        if Integer(nowTick - pressTick) < 0 then
           Continue; // still inside the initial-press delay window
         args[0] := CreateStringValue(AnsiString(keyName));
         InvokeCallback(cb, [args[0]], dummy);
         if VM.RuntimeErrorStr <> '' then Exit;
-        // Advance the per-key timer by one interval (not to "now") so we
-        // catch up if processEvents was called less frequently than the rate.
-        FHeldPressTicks[keyName] := pressTick + FHeldDispatchIntervalMs;
+        // Advance by exactly one interval (not to 'now') so we catch up if
+        // processEvents was called less frequently than the rate.
+        FHeldNextDispatchTick[keyName] := pressTick + FHeldDispatchIntervalMs;
       end;
     finally
       snapshot.Free;
