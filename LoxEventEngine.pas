@@ -64,6 +64,13 @@ type
     FRunning: Boolean;
     FOnLog: TLogEvent;
     FOnCheckAbort: TCheckAbortFunc;
+    FHeldDispatchIntervalMs: DWORD;
+    FHeldDispatchInitialDelayMs: DWORD;
+    // Per-key tick (GetTickCount domain) at which onKeyHeld becomes eligible
+    // to fire next. Seeded on key-down to (now + initial delay) so the initial
+    // delay is a one-time gate; advanced by FHeldDispatchIntervalMs after each
+    // dispatch so subsequent fires are spaced by the interval only.
+    FHeldNextDispatchTick: TDictionary<string, DWORD>;
     function CallbackKey(Kind: TEventCallbackKind; const ControlName: string): string;
     function GetCallback(Kind: TEventCallbackKind; const ControlName: string): TValue;
   public
@@ -105,6 +112,11 @@ type
     property Dispatching: Boolean read FDispatching;
     property OnLog: TLogEvent read FOnLog write FOnLog;
     property OnCheckAbort: TCheckAbortFunc read FOnCheckAbort write FOnCheckAbort;
+    // Minimum gap (ms) between repeat onKeyHeld dispatches for a held key.
+    property HeldDispatchIntervalMs: DWORD read FHeldDispatchIntervalMs write FHeldDispatchIntervalMs;
+    // Delay (ms) after KeyDown before the first onKeyHeld fires for that key.
+    // Set high enough that a quick tap fires zero held events.
+    property HeldDispatchInitialDelayMs: DWORD read FHeldDispatchInitialDelayMs write FHeldDispatchInitialDelayMs;
   end;
 
 var
@@ -128,6 +140,14 @@ begin
   FHeldKeys := TStringList.Create;
   FHeldKeys.Sorted := True;
   FHeldKeys.Duplicates := dupIgnore;
+  FHeldNextDispatchTick := TDictionary<string, DWORD>.Create;
+  // Default: fire onKeyHeld every processEvents() with no initial delay.
+  // This matches the legacy behavior the existing test suite expects.
+  // Hosts that want OS-style auto-repeat (a tap fires zero held events,
+  // a hold streams them) should set HeldDispatchInitialDelayMs and
+  // HeldDispatchIntervalMs themselves (e.g. 250 / 50).
+  FHeldDispatchIntervalMs := 0;
+  FHeldDispatchInitialDelayMs := 0;
   Reset;
 end;
 
@@ -139,6 +159,7 @@ begin
   FPendingMouse.Free;
   FPendingClicks.Free;
   FHeldKeys.Free;
+  FHeldNextDispatchTick.Free;
   inherited;
 end;
 
@@ -166,6 +187,7 @@ begin
   FPendingClicks.Clear;
   FPendingMoves.Clear;
   FHeldKeys.Clear;
+  FHeldNextDispatchTick.Clear;
   FCallbackSlots.Clear;  // TObjectDictionary frees owned slots
   FRunning := True;
 end;
@@ -178,6 +200,12 @@ begin
   if FHeldKeys.IndexOf(KeyName) < 0 then
   begin
     FHeldKeys.Add(KeyName);
+    // Seed the per-key timer to the first eligible held-dispatch tick:
+    // (now + initial delay). DispatchPendingEvents compares against this
+    // directly, so the initial delay is a one-time gate rather than being
+    // re-applied after every held dispatch.
+    FHeldNextDispatchTick.AddOrSetValue(KeyName,
+      GetTickCount + FHeldDispatchInitialDelayMs);
     FPendingKeys.Add('down:' + Sender + ':' + KeyName);
   end;
 end;
@@ -190,7 +218,10 @@ begin
   if KeyName = '' then Exit;
   idx := FHeldKeys.IndexOf(KeyName);
   if idx >= 0 then
+  begin
     FHeldKeys.Delete(idx);
+    FHeldNextDispatchTick.Remove(KeyName);
+  end;
   FPendingKeys.Add('up:' + Sender + ':' + KeyName);
 end;
 
@@ -235,6 +266,7 @@ var
   args: array[0..2] of TValue;
   snapshot: TStringList;
   moveEntry: TMouseMoveEntry;
+  pressTick, nowTick: DWORD;
 begin
   FDispatching := True;
   try
@@ -320,22 +352,37 @@ begin
   end;
   FPendingClicks.Clear;
 
-  // Dispatch mouse moves (coalesced per sender — one event per control per frame)
-  for sender in FPendingMoves.Keys do
+  // Dispatch mouse moves (coalesced per sender — one event per control per frame).
+  // Snapshot keys + drain the dictionary BEFORE invoking any callback: a Lox
+  // print inside a callback pumps Windows messages (via VM.OnPrint), which can
+  // queue fresh mouse moves and mutate FPendingMoves mid-iteration.
+  if FPendingMoves.Count > 0 then
   begin
-    cb := GetCallback(eckMouseMove, sender);
-    if isClosure(cb) then
-    begin
-      moveEntry := FPendingMoves[sender];
-      args[0] := CreateNumber(moveEntry.X);
-      args[1] := CreateNumber(moveEntry.Y);
-      InvokeCallback(cb, [args[0], args[1]], dummy);
-      if VM.RuntimeErrorStr <> '' then Exit;
+    snapshot := TStringList.Create;
+    try
+      for sender in FPendingMoves.Keys do
+        snapshot.AddObject(sender, nil);
+      for i := 0 to snapshot.Count - 1 do
+      begin
+        sender := snapshot[i];
+        if not FPendingMoves.TryGetValue(sender, moveEntry) then Continue;
+        cb := GetCallback(eckMouseMove, sender);
+        if not isClosure(cb) then Continue;
+        args[0] := CreateNumber(moveEntry.X);
+        args[1] := CreateNumber(moveEntry.Y);
+        InvokeCallback(cb, [args[0], args[1]], dummy);
+        if VM.RuntimeErrorStr <> '' then Exit;
+      end;
+    finally
+      snapshot.Free;
     end;
+    FPendingMoves.Clear;
   end;
-  FPendingMoves.Clear;
 
-  // Dispatch held keys every frame (for continuous movement)
+  // Dispatch held keys at a capped rate (for continuous movement).
+  // Each key has its own timer so the initial delay (HeldDispatchInitialDelayMs)
+  // prevents a quick tap from firing onKeyHeld at all, and subsequent fires are
+  // spaced by HeldDispatchIntervalMs. Mirrors OS keyboard auto-repeat.
   cb := GetCallback(eckKeyHeld, '');
   if isClosure(cb) and (FHeldKeys.Count > 0) then
   begin
@@ -344,9 +391,24 @@ begin
       snapshot.Assign(FHeldKeys);
       for i := 0 to snapshot.Count - 1 do
       begin
-        args[0] := CreateStringValue(AnsiString(snapshot[i]));
+        keyName := snapshot[i];
+        if not FHeldNextDispatchTick.TryGetValue(keyName, pressTick) then
+          Continue;
+        nowTick := GetTickCount;
+        // Tick-wrap-safe comparison: signed delta < 0 means not yet eligible.
+        if Integer(nowTick - pressTick) < 0 then
+          Continue; // still inside the initial-press delay window
+        args[0] := CreateStringValue(AnsiString(keyName));
         InvokeCallback(cb, [args[0]], dummy);
         if VM.RuntimeErrorStr <> '' then Exit;
+        // The callback may have pumped Windows messages (e.g. via a Lox print
+        // hooked to a UI memo) and delivered a WM_KEYUP, which removes the
+        // entry from FHeldNextDispatchTick. Only re-arm if the key is still
+        // held; use AddOrSetValue rather than the indexer setter, which would
+        // raise EListError on a missing key.
+        if FHeldKeys.IndexOf(keyName) >= 0 then
+          FHeldNextDispatchTick.AddOrSetValue(keyName,
+            pressTick + FHeldDispatchIntervalMs);
       end;
     finally
       snapshot.Free;

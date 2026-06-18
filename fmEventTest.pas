@@ -62,6 +62,11 @@ procedure TfrmEventTest.FormCreate(Sender: TObject);
 begin
   FEngine := TLoxEventEngine.Create;
   FEngine.OnLog := Log;
+  // Game-style auto-repeat for the interactive event-test form: a tap shorter
+  // than 250ms fires zero onKeyHeld events; holding past that streams them at
+  // ~20Hz. Tests leave the defaults (every frame, no delay).
+  FEngine.HeldDispatchInitialDelayMs := 250;
+  FEngine.HeldDispatchIntervalMs := 50;
   Panel1.OnMouseMove := Panel1MouseMove;
 end;
 
@@ -189,8 +194,9 @@ begin
 
   // Create the canvas parented to Panel1
   InitCanvas(Panel1);
-  GameCanvas.OnGameKeyDown := CanvasKeyDown;
-  GameCanvas.OnGameKeyUp := CanvasKeyUp;
+  // Note: do NOT wire GameCanvas.OnGameKeyDown/OnGameKeyUp here. The form has
+  // KeyPreview=True and FormKeyDown/FormKeyUp already queue every keystroke;
+  // wiring the canvas as well would double-queue each key event.
   GameCanvas.OnGameMouseDown := CanvasMouseDown;
   GameCanvas.OnGameMouseUp := CanvasMouseUp;
   GameCanvas.OnGameMouseMove := CanvasMouseMove;

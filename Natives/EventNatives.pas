@@ -29,7 +29,7 @@ procedure RegisterEventNatives;
 implementation
 
 uses
-  Vcl.Forms, System.SysUtils, LoxEventEngine;
+  Vcl.Forms, System.SysUtils, System.Classes, LoxEventEngine;
 
 // --- Helper: parse optional (controlName, closure) or (closure) ---
 // Returns True if args are valid; sets controlName and closure.
@@ -152,6 +152,8 @@ begin
   Application.ProcessMessages;
   // Dispatch any pending events as callbacks
   ActiveEngine.DispatchPendingEvents;
+  // Yield a millisecond so `while (running) processEvents();` doesn't peg a CPU core.
+  TThread.Sleep(1);
   // Check for abort (engine stopped or host app closing)
   if not ActiveEngine.Running then
   begin

@@ -1,0 +1,468 @@
+// Interactive DAG / scheduling-graph editor (pannable, ~100 nodes).
+//
+// Controls
+//   Left mouse drag on a node       -- move that node
+//   Right mouse drag on background  -- pan the camera
+//   Arrow keys (held)               -- pan the camera
+//   ESC                             -- quit
+//
+// World is 4000x2400; viewport is 1200x800.
+// Node kinds: 0 = task (rectangle), 1 = event (circle).
+
+setCanvasSize(1200, 800);
+
+// --- Records -------------------------------------------------------------
+
+record Node(x, y, w, h, kind, label);
+record Edge(fromIdx, toIdx);
+
+// --- Geometry helpers ----------------------------------------------------
+
+fun nodeCx(n) { return n.x + n.w / 2; }
+fun nodeCy(n) { return n.y + n.h / 2; }
+
+fun nodeContains(n, px, py) {
+  if (n.kind == 1) {
+    var dx = px - nodeCx(n);
+    var dy = py - nodeCy(n);
+    var r  = n.w / 2;
+    return dx*dx + dy*dy <= r*r;
+  }
+  return px >= n.x and px <= n.x + n.w
+     and py >= n.y and py <= n.y + n.h;
+}
+
+// Returns [x, y] where a line from node centre toward (tx, ty) crosses the
+// node's outline.
+fun clipPoint(n, tx, ty) {
+  var cx = nodeCx(n);
+  var cy = nodeCy(n);
+  var dx = tx - cx;
+  var dy = ty - cy;
+  var out = newArray();
+
+  if (n.kind == 1) {
+    var d = sqrt(dx*dx + dy*dy);
+    if (d == 0) d = 1;
+    var r = n.w / 2;
+    arrayPush(out, cx + dx * r / d);
+    arrayPush(out, cy + dy * r / d);
+  } else {
+    var ax = abs(dx);
+    var ay = abs(dy);
+    var hw = n.w / 2;
+    var hh = n.h / 2;
+    var t;
+    if (ay == 0)                  t = hw / ax;
+    else if (ax == 0)             t = hh / ay;
+    else if (ax * hh > ay * hw)   t = hw / ax;
+    else                          t = hh / ay;
+    arrayPush(out, cx + dx * t);
+    arrayPush(out, cy + dy * t);
+  }
+  return out;
+}
+
+// --- Graph ---------------------------------------------------------------
+
+var nodes = newArray();
+var edges = newArray();
+
+fun addNode(x, y, w, h, kind, label) {
+  arrayPush(nodes, Node(x, y, w, h, kind, label));
+  return arrayLen(nodes) - 1;
+}
+
+fun addEdge(a, b) {
+  arrayPush(edges, Edge(a, b));
+}
+
+// Build a 10x10 grid of "stages". Each cell gets a task box, plus a few
+// edges that mostly flow left-to-right (so it reads like a schedule).
+var cols = 10;
+var rows = 10;
+var dx   = 360;
+var dy   = 220;
+var x0   = 80;
+var y0   = 80;
+var nodeW = 120;
+var nodeH = 36;
+
+// Bookend events.
+var nStart = addNode(x0 - 60,                  y0 + (rows - 1) * dy / 2 + 4, 32, 32, 1, "S");
+var nEnd   = addNode(x0 + cols * dx + 28,      y0 + (rows - 1) * dy / 2 + 4, 32, 32, 1, "E");
+
+// Track the index of each grid cell.
+var grid = newArray();   // grid[r * cols + c] = node index
+var r = 0;
+while (r < rows) {
+  var c = 0;
+  while (c < cols) {
+    var nx = x0 + c * dx;
+    var ny = y0 + r * dy;
+    var idx = addNode(nx, ny, nodeW, nodeH, 0,
+                      "T" + str(r) + "." + str(c));
+    arrayPush(grid, idx);
+    c = c + 1;
+  }
+  r = r + 1;
+}
+
+// Connect Start to the leftmost column.
+var rr = 0;
+while (rr < rows) {
+  addEdge(nStart, arrayGet(grid, rr * cols));
+  rr = rr + 1;
+}
+
+// Forward edges within the grid.
+r = 0;
+while (r < rows) {
+  var c = 0;
+  while (c < cols - 1) {
+    var here = arrayGet(grid, r * cols + c);
+    // straight right
+    addEdge(here, arrayGet(grid, r * cols + (c + 1)));
+    // diagonal down-right (every other column, to keep the picture readable)
+    if (r < rows - 1 and (c % 2 == 0)) {
+      addEdge(here, arrayGet(grid, (r + 1) * cols + (c + 1)));
+    }
+    c = c + 1;
+  }
+  r = r + 1;
+}
+
+// Final column to End.
+rr = 0;
+while (rr < rows) {
+  addEdge(arrayGet(grid, rr * cols + (cols - 1)), nEnd);
+  rr = rr + 1;
+}
+
+// --- Camera / interaction state ------------------------------------------
+
+var running   = true;
+
+var camX      = 0;
+var camY      = 0;
+var worldW    = x0 + cols * dx + 120;
+var worldH    = y0 + rows * dy + 60;
+var viewW     = 1200;
+var viewH     = 800;
+
+var dragIdx   = -1;
+var dragOffX  = 0;
+var dragOffY  = 0;
+
+var panning   = false;
+var panAnchorX = 0;
+var panAnchorY = 0;
+var panCamX0   = 0;
+var panCamY0   = 0;
+
+fun clampCam() {
+  if (camX < 0) camX = 0;
+  if (camY < 0) camY = 0;
+  var maxX = worldW - viewW;
+  var maxY = worldH - viewH;
+  if (maxX < 0) maxX = 0;
+  if (maxY < 0) maxY = 0;
+  if (camX > maxX) camX = maxX;
+  if (camY > maxY) camY = maxY;
+}
+
+// Hit-test in WORLD coordinates (mouse already comes in screen coords).
+fun nodeAtScreen(sx, sy) {
+  var wx = sx + camX;
+  var wy = sy + camY;
+  var i = arrayLen(nodes) - 1;
+  while (i >= 0) {
+    if (nodeContains(arrayGet(nodes, i), wx, wy)) return i;
+    i = i - 1;
+  }
+  return -1;
+}
+
+// --- Overlap resolution --------------------------------------------------
+//
+// Resolution runs ONCE, on mouse-up, not during the drag. While the user is
+// dragging we just let the ghost float wherever the cursor goes; the moment
+// they release, we shove anything underneath the dropped node rightward and
+// let those displacements cascade. This keeps the layout stable visually
+// (no nodes squirming around under the cursor) and matches the left-to-right
+// reading direction of the DAG -- downstream tasks slide further downstream.
+
+var nodeGap = 8;            // visual padding between separated nodes
+var resolveMaxIters = 32;   // upper bound on relaxation passes per drop
+
+// AABB overlap test with gap inflation.
+fun nodesOverlap(a, b) {
+  return (a.x + a.w + nodeGap) > b.x
+     and (b.x + b.w + nodeGap) > a.x
+     and (a.y + a.h + nodeGap) > b.y
+     and (b.y + b.h + nodeGap) > a.y;
+}
+
+fun resolveOverlaps(pinnedIdx) {
+  var iters = 0;
+  while (iters < resolveMaxIters) {
+    var moved = false;
+    var i = 0;
+    while (i < arrayLen(nodes)) {
+      var j = i + 1;
+      while (j < arrayLen(nodes)) {
+        var a = arrayGet(nodes, i);
+        var b = arrayGet(nodes, j);
+        if (nodesOverlap(a, b)) {
+          // Rightward push: the non-pinned node jumps to just past the other's
+          // right edge. If neither is pinned, the node currently further to
+          // the right yields (preserves left-to-right ordering).
+          if (i == pinnedIdx) {
+            b.x = a.x + a.w + nodeGap;
+          } else if (j == pinnedIdx) {
+            a.x = b.x + b.w + nodeGap;
+          } else if (a.x <= b.x) {
+            b.x = a.x + a.w + nodeGap;
+          } else {
+            a.x = b.x + b.w + nodeGap;
+          }
+          moved = true;
+        }
+        j = j + 1;
+      }
+      i = i + 1;
+    }
+    if (!moved) return;
+    iters = iters + 1;
+  }
+}
+
+// --- Rendering -----------------------------------------------------------
+
+var kCos = 0.906;
+var kSin = 0.423;
+var kArrLen = 10;
+
+fun drawArrowhead(sx, sy, tx, ty) {
+  var ddx = tx - sx;
+  var ddy = ty - sy;
+  var d   = sqrt(ddx*ddx + ddy*ddy);
+  if (d == 0) return;
+  var ux = -ddx / d;
+  var uy = -ddy / d;
+  var ax1 = ux * kCos - uy * kSin;
+  var ay1 = ux * kSin + uy * kCos;
+  var ax2 = ux * kCos + uy * kSin;
+  var ay2 = -ux * kSin + uy * kCos;
+  drawLineAA(tx, ty, tx + ax1 * kArrLen, ty + ay1 * kArrLen);
+  drawLineAA(tx, ty, tx + ax2 * kArrLen, ty + ay2 * kArrLen);
+}
+
+// Quick AABB-vs-viewport reject in world coords.
+fun aabbVisible(x, y, w, h) {
+  return (x + w >= camX) and (x <= camX + viewW)
+     and (y + h >= camY) and (y <= camY + viewH);
+}
+
+fun drawEdge(a, b) {
+  // Cull lines whose joint bbox lies entirely outside the viewport.
+  var minx; if (a.x < b.x) minx = a.x; else minx = b.x;
+  var miny; if (a.y < b.y) miny = a.y; else miny = b.y;
+  var maxx; if (a.x + a.w > b.x + b.w) maxx = a.x + a.w; else maxx = b.x + b.w;
+  var maxy; if (a.y + a.h > b.y + b.h) maxy = a.y + a.h; else maxy = b.y + b.h;
+  if (!aabbVisible(minx, miny, maxx - minx, maxy - miny)) return;
+
+  // Orthogonal routing: connect on the horizontal sides of each node and
+  // bend through a midpoint column. Source connector is on the side facing
+  // the target; same for the target connector.
+  var sx; var tx;
+  if (nodeCx(a) <= nodeCx(b)) {
+    sx = a.x + a.w;     // right side of a
+    tx = b.x;           // left side of b
+  } else {
+    sx = a.x;           // left side of a
+    tx = b.x + b.w;     // right side of b
+  }
+  var sy = nodeCy(a);
+  var ty = nodeCy(b);
+
+  if (sy == ty) {
+    // Same row -- a single horizontal segment looks cleaner than an elbow.
+    drawLineAA(sx, sy, tx, ty);
+  } else {
+    // H-V-H elbow through the column midway between the two connectors.
+    var midX = (sx + tx) / 2;
+    drawLineAA(sx, sy, midX, sy);
+    drawLineAA(midX, sy, midX, ty);
+    drawLineAA(midX, ty, tx, ty);
+  }
+
+  // Arrowhead points along the final (horizontal) segment.
+  drawArrowhead(tx - (tx - sx) / 8, ty, tx, ty);
+}
+
+fun drawNode(n, highlighted) {
+  if (!aabbVisible(n.x, n.y, n.w, n.h)) return;
+  if (highlighted) {
+    // Ghost: outline-only, no fill. Makes it obvious the node is floating
+    // above the layout and that collisions haven't been resolved yet.
+    setColor(255, 220, 120);
+    if (n.kind == 1) {
+      var rad = n.w / 2;
+      drawCircle(nodeCx(n), nodeCy(n), rad);
+      drawText(nodeCx(n) - 3, nodeCy(n) - 4, n.label);
+    } else {
+      drawRect(n.x, n.y, n.w, n.h);
+      // Faint inner rect for the dashed-ish ghost feel.
+      drawRect(n.x + 2, n.y + 2, n.w - 4, n.h - 4);
+      drawText(n.x + 8, n.y + n.h / 2 - 4, n.label);
+    }
+    return;
+  }
+  if (n.kind == 1) {
+    var rad = n.w / 2;
+    setColor(220, 180, 60);
+    fillCircle(nodeCx(n), nodeCy(n), rad);
+    setColor(255, 255, 255);
+    drawCircle(nodeCx(n), nodeCy(n), rad);
+    drawText(nodeCx(n) - 3, nodeCy(n) - 4, n.label);
+  } else {
+    setColor(80, 130, 200);
+    fillRect(n.x, n.y, n.w, n.h);
+    setColor(255, 255, 255);
+    drawRect(n.x, n.y, n.w, n.h);
+    drawText(n.x + 8, n.y + n.h / 2 - 4, n.label);
+  }
+}
+
+// Mini-map showing the viewport position within the world.
+fun drawMinimap() {
+  var mw = 220;
+  var mh = mw * worldH / worldW;
+  var mx = viewW - mw - 12;
+  var my = viewH - mh - 12;
+
+  // Mini-map is HUD: drawn in screen space, so reset the camera locally.
+  setCamera(0, 0);
+
+  setColor(20, 20, 28);
+  fillRect(mx, my, mw, mh);
+  setColor(80, 80, 100);
+  drawRect(mx, my, mw, mh);
+
+  // Draw nodes as tiny pixels.
+  setColor(140, 160, 200);
+  var i = 0;
+  while (i < arrayLen(nodes)) {
+    var n = arrayGet(nodes, i);
+    var px = mx + nodeCx(n) * mw / worldW;
+    var py = my + nodeCy(n) * mh / worldH;
+    fillRect(px, py, 2, 2);
+    i = i + 1;
+  }
+
+  // Viewport rectangle.
+  setColor(255, 220, 120);
+  var vx = mx + camX * mw / worldW;
+  var vy = my + camY * mh / worldH;
+  var vw = viewW * mw / worldW;
+  var vh = viewH * mh / worldH;
+  drawRect(vx, vy, vw, vh);
+
+  // Restore the camera for the next frame's world rendering.
+  setCamera(camX, camY);
+}
+
+fun render() {
+  setCamera(camX, camY);
+  clearCanvas(28, 28, 36);
+
+  // Edges first so they sit behind nodes.
+  setColor(180, 180, 200);
+  var i = 0;
+  while (i < arrayLen(edges)) {
+    var e = arrayGet(edges, i);
+    drawEdge(arrayGet(nodes, e.fromIdx), arrayGet(nodes, e.toIdx));
+    i = i + 1;
+  }
+
+  i = 0;
+  while (i < arrayLen(nodes)) {
+    drawNode(arrayGet(nodes, i), i == dragIdx);
+    i = i + 1;
+  }
+
+  drawMinimap();
+
+  // HUD text
+  setColor(200, 200, 200);
+  drawText(8, 6, "Drag node: LMB. Pan: RMB drag or arrow keys. ESC quits.");
+  drawText(8, 22, "Camera: " + str(camX) + ", " + str(camY)
+                  + "   World: " + str(worldW) + "x" + str(worldH));
+
+  present();
+}
+
+// --- Event handlers ------------------------------------------------------
+
+onMouseDown(fun(btn, x, y) {
+  if (btn == 0) {
+    var idx = nodeAtScreen(x, y);
+    if (idx < 0) return;
+    dragIdx  = idx;
+    var n    = arrayGet(nodes, idx);
+    dragOffX = (x + camX) - n.x;
+    dragOffY = (y + camY) - n.y;
+  } else if (btn == 1) {
+    panning    = true;
+    panAnchorX = x;
+    panAnchorY = y;
+    panCamX0   = camX;
+    panCamY0   = camY;
+  }
+});
+
+onMouseMove(fun(x, y) {
+  if (dragIdx >= 0) {
+    var n = arrayGet(nodes, dragIdx);
+    n.x = (x + camX) - dragOffX;
+    n.y = (y + camY) - dragOffY;
+    return;
+  }
+  if (panning) {
+    camX = panCamX0 - (x - panAnchorX);
+    camY = panCamY0 - (y - panAnchorY);
+    clampCam();
+  }
+});
+
+onMouseUp(fun(btn, x, y) {
+  if (btn == 0) {
+    // Resolve collisions once, on drop: ghost commits, neighbours shove right.
+    if (dragIdx >= 0) resolveOverlaps(dragIdx);
+    dragIdx = -1;
+  }
+  if (btn == 1) panning = false;
+});
+
+var panStep = 30;
+
+onKeyHeld(fun(key) {
+  if (key == "left")  { camX = camX - panStep; clampCam(); }
+  if (key == "right") { camX = camX + panStep; clampCam(); }
+  if (key == "up")    { camY = camY - panStep; clampCam(); }
+  if (key == "down")  { camY = camY + panStep; clampCam(); }
+});
+
+onKeyPressed(fun(key) {
+  if (key == "escape") running = false;
+});
+
+// --- Main loop -----------------------------------------------------------
+
+clampCam();
+render();
+while (running) {
+  processEvents();
+  render();
+}
