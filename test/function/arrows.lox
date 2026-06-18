@@ -1,0 +1,148 @@
+// Arrow function expressions
+// =========================
+// (params) => expr        — expression body, implicit return
+// (params) => { body }    — block body, explicit return / nil
+// ident    => expr        — single-param shorthand, no parens
+
+// --- Single param, expression body ---
+var inc = (x) => x + 1;
+print str(inc(5)); // expect: 6
+
+// --- Single param, no parens ---
+var dbl = x => x * 2;
+print str(dbl(7)); // expect: 14
+
+// --- Multiple params ---
+var add = (a, b) => a + b;
+print str(add(3, 4)); // expect: 7
+
+// --- Three params ---
+var triadd = (a, b, c) => a + b + c;
+print str(triadd(1, 2, 3)); // expect: 6
+
+// --- Zero params ---
+var answer = () => 42;
+print str(answer()); // expect: 42
+
+// --- Block body with explicit return ---
+var greet = (name) => {
+  return "Hello, " + name;
+};
+print greet("Lox"); // expect: Hello, Lox
+
+// --- Block body with multiple statements ---
+var counter = (start) => {
+  var n = start;
+  n = n + 1;
+  n = n + 1;
+  return n;
+};
+print str(counter(10)); // expect: 12
+
+// --- Block body with no explicit return — implicit nil ---
+var sideEffect = () => {
+  var ignored = 99;
+};
+print sideEffect(); // expect: nil
+
+// --- Closure capturing outer variable ---
+var multiplier = 10;
+var scale = x => x * multiplier;
+print str(scale(7)); // expect: 70
+
+// --- Closure: mutating captured variable ---
+var counter2 = 0;
+var bump = () => counter2 = counter2 + 1;
+bump();
+bump();
+bump();
+print str(counter2); // expect: 3
+
+// --- Nested arrows (curried add) ---
+var makeAdder = n => x => x + n;
+var add5 = makeAdder(5);
+print str(add5(3)); // expect: 8
+print str(makeAdder(100)(7)); // expect: 107
+
+// --- Arrow returning arrow returning value ---
+var deep = () => () => () => "yo";
+print deep()()(); // expect: yo
+
+// --- Immediately invoked arrow ---
+print str((x => x * x)(6)); // expect: 36
+print str(((a, b) => a - b)(10, 3)); // expect: 7
+
+// --- Arrow as argument to user-level higher-order function ---
+fun forEach(arr, fn) {
+  for (var i = 0; i < arrayLen(arr); i = i + 1) {
+    fn(arr[i]);
+  }
+}
+
+forEach([1, 2, 3], x => { print str(x); });
+// expect: 1
+// expect: 2
+// expect: 3
+
+fun map(arr, fn) {
+  var out = [];
+  for (var i = 0; i < arrayLen(arr); i = i + 1) {
+    arrayPush(out, fn(arr[i]));
+  }
+  return out;
+}
+
+var doubled = map([1, 2, 3], n => n * 2);
+print str(doubled[0]); // expect: 2
+print str(doubled[1]); // expect: 4
+print str(doubled[2]); // expect: 6
+
+fun reduce(arr, fn, init) {
+  var acc = init;
+  for (var i = 0; i < arrayLen(arr); i = i + 1) {
+    acc = fn(acc, arr[i]);
+  }
+  return acc;
+}
+
+var sum = reduce([1, 2, 3, 4, 5], (a, b) => a + b, 0);
+print str(sum); // expect: 15
+
+// --- Arrow handed to a native callback ---
+print str(callWith(x => x * x, 9)); // expect: 81
+print str(invoke((a, b, c) => a + b + c, 4, 5, 6)); // expect: 15
+
+// --- Arrow in array literal ---
+var fns = [x => x, x => x + 1, x => x + 2];
+print str(fns[0](10)); // expect: 10
+print str(fns[1](10)); // expect: 11
+print str(fns[2](10)); // expect: 12
+
+// --- Arrow in dict value ---
+var ops = ["inc": x => x + 1, "dec": x => x - 1];
+print str(ops["inc"](100)); // expect: 101
+print str(ops["dec"](100)); // expect: 99
+
+// --- Arrow capturing loop variable ---
+var closures = [];
+var i = 0;
+while (i < 3) {
+  var captured = i;
+  arrayPush(closures, () => captured);
+  i = i + 1;
+}
+print str(closures[0]()); // expect: 0
+print str(closures[1]()); // expect: 1
+print str(closures[2]()); // expect: 2
+
+// --- Mixed: ordinary grouping still works ---
+print str((1 + 2) * 3); // expect: 9
+print str((4)); // expect: 4
+
+// --- Mix arrow + fun on same expression line ---
+var twice = (fn) => x => fn(fn(x));
+print str(twice(n => n + 10)(5)); // expect: 25
+
+// --- Long chain via reduce ---
+var product = reduce([1, 2, 3, 4], (a, b) => a * b, 1);
+print str(product); // expect: 24

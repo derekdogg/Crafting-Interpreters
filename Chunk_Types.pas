@@ -242,6 +242,7 @@ type
     TOKEN_LESS, TOKEN_LESS_EQUAL,
     TOKEN_PLUS_EQUAL, TOKEN_MINUS_EQUAL,
     TOKEN_STAR_EQUAL, TOKEN_SLASH_EQUAL,
+    TOKEN_ARROW,                                  // =>
 
     // Literals
     TOKEN_IDENTIFIER, TOKEN_STRING, TOKEN_NUMBER,
@@ -819,6 +820,7 @@ procedure synchronize();
 procedure varDeclaration();
 procedure funDeclaration();
 procedure functionBody(funcType : TFunctionType);
+procedure arrowFinish(hasBareParam : Boolean; const bareParam : TToken);
 procedure returnStatement();
 procedure statement();
 procedure block();
@@ -993,6 +995,9 @@ const
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_SLASH_EQUAL }
+    (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
+
+    { TOKEN_ARROW }
     (Prefix: nil;      Infix: nil;     Precedence: PREC_NONE),
 
     { TOKEN_IDENTIFIER }
@@ -7328,6 +7333,8 @@ begin
         begin
           if Match('=') then
             Result := MakeToken(TOKEN_EQUAL_EQUAL)
+          else if Match('>') then
+            Result := MakeToken(TOKEN_ARROW)
           else
             Result := MakeToken(TOKEN_EQUAL);
         end;
@@ -7632,7 +7639,63 @@ begin
 end;
 
 procedure grouping(canAssign: Boolean);
+var
+  savedScanner       : TScanner;
+  savedPrevious      : TToken;
+  savedCurrent       : TToken;
+  savedHadError      : boolean;
+  savedPanicMode     : boolean;
+  savedErrorStr      : string;
+  isArrow            : boolean;
+
+  function looksLikeArrowParams : boolean;
+  begin
+    // Empty list: ( ) =>
+    if check(TOKEN_RIGHT_PAREN) then
+    begin
+      AdvanceParser;
+      Exit(check(TOKEN_ARROW));
+    end;
+    // Non-empty list: ident (, ident)* ) =>
+    if not check(TOKEN_IDENTIFIER) then Exit(False);
+    AdvanceParser;
+    while check(TOKEN_COMMA) do
+    begin
+      AdvanceParser;
+      if not check(TOKEN_IDENTIFIER) then Exit(False);
+      AdvanceParser;
+    end;
+    if not check(TOKEN_RIGHT_PAREN) then Exit(False);
+    AdvanceParser;
+    Result := check(TOKEN_ARROW);
+  end;
+
 begin
+  // After the prefix dispatcher, parser.previous is '(' and parser.current
+  // is the first token inside the parens. Tentatively scan ahead to decide
+  // whether this is an arrow parameter list or an ordinary grouped expression.
+  savedScanner   := Scanner;
+  savedPrevious  := parser.Previous;
+  savedCurrent   := parser.Current;
+  savedHadError  := parser.HadError;
+  savedPanicMode := parser.PanicMode;
+  savedErrorStr  := parser.ErrorStr;
+
+  isArrow := looksLikeArrowParams;
+
+  Scanner         := savedScanner;
+  parser.Previous := savedPrevious;
+  parser.Current  := savedCurrent;
+  parser.HadError := savedHadError;
+  parser.PanicMode:= savedPanicMode;
+  parser.ErrorStr := savedErrorStr;
+
+  if isArrow then
+  begin
+    arrowFinish(False, parser.Previous);
+    Exit;
+  end;
+
   expression;
   consume(TOKEN_RIGHT_PAREN,'Expect '')'' after expression.');
 end;
@@ -8489,6 +8552,12 @@ end;
 
 procedure variable(canAssign: Boolean);
 begin
+  // Single-param arrow with no parens:  x => expr
+  if check(TOKEN_ARROW) then
+  begin
+    arrowFinish(True, parser.previous);
+    Exit;
+  end;
   namedVariable(parser.previous, canAssign);
 end;
 
@@ -8865,6 +8934,94 @@ begin
   // Compiles exactly like a named function but without binding to a variable.
   // The closure value is left on the stack as an expression result.
   functionBody(TYPE_FUNCTION);
+end;
+
+procedure arrowFinish(hasBareParam : Boolean; const bareParam : TToken);
+// Compiles an arrow function expression starting from one of two states:
+//   hasBareParam = True : caller has just consumed a single bare identifier
+//                         (parser.previous = bareParam, parser.current = '=>').
+//   hasBareParam = False: caller has just consumed '(' (parser.previous = '(',
+//                         parser.current = first token after '(').
+// Emits OP_CLOSURE for the resulting function so the closure value lands on
+// the stack as the expression result, exactly like `lambda`.
+var
+  compiler     : pCompiler;
+  func         : pObjFunction;
+  i, j         : integer;
+  closureIdx   : integer;
+  closureBytes : TIntToByteResult;
+begin
+  compiler := nil;
+  initCompiler(compiler, TYPE_FUNCTION);
+  beginScope();
+
+  if hasBareParam then
+  begin
+    Inc(Current^.func^.arity);
+    addLocal(bareParam);
+    markInitialized();
+  end
+  else
+  begin
+    if not check(TOKEN_RIGHT_PAREN) then
+    begin
+      repeat
+        Inc(Current^.func^.arity);
+        if Current^.func^.arity > MAX_BYTE_OPERAND then
+          errorAtCurrent('Can''t have more than 255 parameters.');
+        i := parseVariable('Expect parameter name.');
+        defineVariable(i);
+      until not matchToken(TOKEN_COMMA);
+    end;
+    consume(TOKEN_RIGHT_PAREN, 'Expect '')'' after arrow parameters.');
+  end;
+
+  consume(TOKEN_ARROW, 'Expect ''=>'' after arrow parameters.');
+
+  if matchToken(TOKEN_LEFT_BRACE) then
+    block()
+  else
+  begin
+    // Expression body: evaluate the expression and return it.
+    expression;
+    emitOpcode(OP_RETURN, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+
+  // Trailing implicit nil-return — dead code if the body already returned,
+  // but cheap insurance and keeps layout identical to functionBody.
+  emitReturn(CurrentChunk, parser.previous.line, VM.MemTracker);
+  func := Current^.func;
+  Current := Current^.enclosing;
+
+  // Push func onto stack to protect from GC until stored in constants.
+  pushStack(VM.Stack, CreateObject(pObj(func)));
+
+  closureIdx := AddValueConstant(CurrentChunk.Constants, CreateObject(pObj(func)), VM.MemTracker);
+  if closureIdx <= High(Byte) then
+  begin
+    emitOpcode(OP_CLOSURE, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(Byte(closureIdx), CurrentChunk, parser.previous.line, vm.MemTracker);
+  end
+  else
+  begin
+    emitOpcode(OP_CLOSURE_LONG, CurrentChunk, parser.previous.line, vm.MemTracker);
+    closureBytes := IntToBytes(closureIdx);
+    emitByte(closureBytes.byte0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(closureBytes.byte1, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(closureBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+
+  for j := 0 to func^.upvalueCount - 1 do
+  begin
+    if compiler^.upvalues[j].isLocal then
+      emitByte(1, CurrentChunk, parser.previous.line, vm.MemTracker)
+    else
+      emitByte(0, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitByte(compiler^.upvalues[j].index, CurrentChunk, parser.previous.line, vm.MemTracker);
+  end;
+
+  Dec(VM.Stack.StackTop);
+  Dispose(compiler);
 end;
 
 procedure recordDeclaration();
