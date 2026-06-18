@@ -64,6 +64,9 @@ type
     FRunning: Boolean;
     FOnLog: TLogEvent;
     FOnCheckAbort: TCheckAbortFunc;
+    FHeldDispatchIntervalMs: DWORD;
+    FHeldDispatchInitialDelayMs: DWORD;
+    FHeldPressTicks: TDictionary<string, DWORD>;
     function CallbackKey(Kind: TEventCallbackKind; const ControlName: string): string;
     function GetCallback(Kind: TEventCallbackKind; const ControlName: string): TValue;
   public
@@ -105,6 +108,11 @@ type
     property Dispatching: Boolean read FDispatching;
     property OnLog: TLogEvent read FOnLog write FOnLog;
     property OnCheckAbort: TCheckAbortFunc read FOnCheckAbort write FOnCheckAbort;
+    // Minimum gap (ms) between repeat onKeyHeld dispatches for a held key.
+    property HeldDispatchIntervalMs: DWORD read FHeldDispatchIntervalMs write FHeldDispatchIntervalMs;
+    // Delay (ms) after KeyDown before the first onKeyHeld fires for that key.
+    // Set high enough that a quick tap fires zero held events.
+    property HeldDispatchInitialDelayMs: DWORD read FHeldDispatchInitialDelayMs write FHeldDispatchInitialDelayMs;
   end;
 
 var
@@ -128,6 +136,9 @@ begin
   FHeldKeys := TStringList.Create;
   FHeldKeys.Sorted := True;
   FHeldKeys.Duplicates := dupIgnore;
+  FHeldPressTicks := TDictionary<string, DWORD>.Create;
+  FHeldDispatchIntervalMs := 50;        // repeat ~20Hz once held
+  FHeldDispatchInitialDelayMs := 250;   // a tap shorter than this fires no held events
   Reset;
 end;
 
@@ -139,6 +150,7 @@ begin
   FPendingMouse.Free;
   FPendingClicks.Free;
   FHeldKeys.Free;
+  FHeldPressTicks.Free;
   inherited;
 end;
 
@@ -166,6 +178,7 @@ begin
   FPendingClicks.Clear;
   FPendingMoves.Clear;
   FHeldKeys.Clear;
+  FHeldPressTicks.Clear;
   FCallbackSlots.Clear;  // TObjectDictionary frees owned slots
   FRunning := True;
 end;
@@ -178,6 +191,8 @@ begin
   if FHeldKeys.IndexOf(KeyName) < 0 then
   begin
     FHeldKeys.Add(KeyName);
+    // Mark the press time so onKeyHeld can apply an initial-repeat delay.
+    FHeldPressTicks.AddOrSetValue(KeyName, GetTickCount);
     FPendingKeys.Add('down:' + Sender + ':' + KeyName);
   end;
 end;
@@ -189,8 +204,11 @@ var
 begin
   if KeyName = '' then Exit;
   idx := FHeldKeys.IndexOf(KeyName);
-  if idx >= 0 then
-    FHeldKeys.Delete(idx);
+  // Dedupe: only fire 'up' if we believe the key was held. Otherwise this is
+  // a duplicate from a second source (e.g. form KeyPreview + canvas handler).
+  if idx < 0 then Exit;
+  FHeldKeys.Delete(idx);
+  FHeldPressTicks.Remove(KeyName);
   FPendingKeys.Add('up:' + Sender + ':' + KeyName);
 end;
 
@@ -235,6 +253,7 @@ var
   args: array[0..2] of TValue;
   snapshot: TStringList;
   moveEntry: TMouseMoveEntry;
+  pressTick, nowTick: DWORD;
 begin
   FDispatching := True;
   try
@@ -335,7 +354,10 @@ begin
   end;
   FPendingMoves.Clear;
 
-  // Dispatch held keys every frame (for continuous movement)
+  // Dispatch held keys at a capped rate (for continuous movement).
+  // Each key has its own timer so the initial delay (HeldDispatchInitialDelayMs)
+  // prevents a quick tap from firing onKeyHeld at all, and subsequent fires are
+  // spaced by HeldDispatchIntervalMs. Mirrors OS keyboard auto-repeat.
   cb := GetCallback(eckKeyHeld, '');
   if isClosure(cb) and (FHeldKeys.Count > 0) then
   begin
@@ -344,9 +366,18 @@ begin
       snapshot.Assign(FHeldKeys);
       for i := 0 to snapshot.Count - 1 do
       begin
-        args[0] := CreateStringValue(AnsiString(snapshot[i]));
+        keyName := snapshot[i];
+        if not FHeldPressTicks.TryGetValue(keyName, pressTick) then
+          Continue;
+        nowTick := GetTickCount;
+        if (nowTick - pressTick) < FHeldDispatchInitialDelayMs then
+          Continue; // still inside the initial-press delay window
+        args[0] := CreateStringValue(AnsiString(keyName));
         InvokeCallback(cb, [args[0]], dummy);
         if VM.RuntimeErrorStr <> '' then Exit;
+        // Advance the per-key timer by one interval (not to "now") so we
+        // catch up if processEvents was called less frequently than the rate.
+        FHeldPressTicks[keyName] := pressTick + FHeldDispatchIntervalMs;
       end;
     finally
       snapshot.Free;
