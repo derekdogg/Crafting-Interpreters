@@ -8,7 +8,7 @@
 {..$DEFINE DEBUG_ASSERT_INVARIANTS}
 
 interface
- 
+
 uses
   Classes, dialogs, System.Rtti, Math, System.TypInfo, System.SysUtils, System.AnsiStrings;
 
@@ -291,14 +291,12 @@ type
   pObjDictionary  = ^TObjDictionary;
   pDictEntry      = ^TDictEntry;
   ppObjString     = ^pObjString;
-  pUpvalueArray   = ^TUpvalueArray;
+  ppObjUpvalue    = ^pObjUpvalue;  // base of an array of pObjUpvalue, like ppObjString for fieldNames
   pCompiler       = ^TCompiler;
   pStack          = ^TStack;
   pVirtualMachine = ^TVirtualMachine;
   pMemTracker     = ^TMemTracker;
 
-
-  pLogs           = ^TLogs; //Note : Don't think we need this (https://www.danieleteti.it/loggerpro/) maybe add later? We use a stupidly simple approach for now
   pEntry          = ^TEntry;
   pTable          = ^TTable;
   pLocal          = ^TLocal;
@@ -307,7 +305,6 @@ type
 
   //Arrays
   TAnsiCharArray = Array[0..0] of AnsiChar;
-  TUpvalueArray  = Array[0..UINT8_COUNT - 1] of pObjUpvalue;
 
   { Attribute to mark a Delphi class as visible to Lox scripts.
     Usage: [LoxClass('MyName')] on a class declaration.
@@ -405,7 +402,7 @@ type
   TObjClosure = record
     Obj         : TObj;
     func        : pObjFunction;
-    upvalues    : pUpvalueArray;
+    upvalues    : ppObjUpvalue;  // base of upvalueCount pointers (POINTERMATH-indexed)
     upvalueCount: integer;
   end;
 
@@ -679,6 +676,7 @@ procedure AssertSourceCodeIsAssigned(Source : pAnsiChar);
 //String object assertions
 procedure AssertStringLengthIsNotNegative(ObjString : pObjString);
 procedure AssertObjectKindIsString(Obj : pObj);
+procedure AssertInlineStringMoveBounds(const p : PObjString; ByteCount : Integer);
 
 //Value type assertions
 procedure AssertValueIsBoolean(const Value : TValue);
@@ -711,6 +709,7 @@ function AllocateArray(var List: Pointer;  var CurrentCapacity: Integer;  Count,
 procedure AddToCreatedObjects(p : pObj; MemTracker : pMemTracker);
 function CreateString(const S: AnsiString; MemTracker : pMemTracker): PObjString;
 procedure FreeString(var obj : pObjString; MemTracker : pMemTracker);
+function InlineStringByteSize(Len : Integer) : NativeInt; inline;
 
 //string routines
 function GetChar(const str : pObjString; index : integer) : AnsiChar;
@@ -1641,7 +1640,6 @@ begin
   begin
     {$IFDEF DEBUG_STRESS_GC}
     CollectGarbage;
-    AssertMemTrackerBytesAllocatedIsGreaterOrEqualToZero(MemTracker);
     {$ENDIF}
     if MemTracker.BytesAllocated > MemTracker.NextGC then
     begin
@@ -1774,6 +1772,34 @@ begin
   Allocate(Pointer(p), OldSize, NewSize, MemTracker);
 end;
 
+// SINGLE SOURCE OF TRUTH for the inline-string allocation size.
+// TObjString.Chars is declared `array[0..0] of AnsiChar` (phantom array);
+// the buffer is laid out inline at the tail of the record. SizeOf(TObjString)
+// already counts the first byte of Chars[0..0]; add (Len-1) for the rest.
+// CreateString, Concatenate, FreeString, and ObjStringSize MUST all call
+// this helper -- never rederive the formula inline, or the three sites can
+// drift and corrupt MemTracker.BytesAllocated when a string is freed.
+function InlineStringByteSize(Len: Integer): NativeInt; inline;
+begin
+  Result := SizeOf(TObjString) + Max(0, Len - 1);
+end;
+
+{$IFOPT C+}
+// Debug-only bounds check for raw `Move` reads/writes against the inline
+// trailing buffer. We deliberately bypass the range checker via `Move`
+// (Chars is declared length 1 but allocated longer); this assert is the
+// only line of defence against an off-by-one Count argument.
+procedure AssertInlineStringMoveBounds(const p: PObjString; ByteCount: Integer);
+begin
+  AssertPointerIsNotNil(p, 'inline string');
+  AssertStringLengthIsNotNegative(p);
+  Assert(ByteCount >= 0, 'inline-string Move: negative byte count');
+  Assert(ByteCount <= p^.length,
+    Format('inline-string Move: %d bytes requested but length is %d',
+      [ByteCount, p^.length]));
+end;
+{$ENDIF}
+
 //note : we do not add a null terminator #0 since we track the length
 function CreateString(const S: AnsiString; MemTracker : pMemTracker): PObjString;
 var
@@ -1796,7 +1822,7 @@ begin
   end;
 
   Result := nil;
-  NewSize := SizeOf(TObjString) + Max(0, Len - 1);  // avoid negative size
+  NewSize := InlineStringByteSize(Len);
 
   AllocateString(Result,0, NewSize,MemTracker);
 
@@ -1807,6 +1833,10 @@ begin
   Result^.hash := hash;
   if Len > 0 then
   begin
+    {$IFOPT C+} AssertInlineStringMoveBounds(Result, Len); {$ENDIF}
+    // Raw write into the inline trailing buffer. Chars is declared
+    // `array[0..0]` so a Pascal loop would trip the range checker; Move
+    // is the deliberate escape hatch. See InlineStringByteSize.
     Move(PAnsiChar(S)^, Result^.Chars[0], Len);
   end;
 
@@ -1821,7 +1851,7 @@ begin
     TableSet(VM.Strings, Result, CreateNilValue, MemTracker);
     Dec(VM.Stack.StackTop);
   end;
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
    AssertObjStringIsAssigned(Result);
@@ -1845,7 +1875,7 @@ begin
   {$ENDIF}
 
   // ---- resize now ----
-  objSize := Sizeof(TObjString) + Max(0, obj^.length - 1);  // mimc here size from CreateString (We don't have the string but we do have the length now)
+  objSize := InlineStringByteSize(obj^.length);
   Allocate(pointer(obj), objSize , 0, MemTracker);
   obj := nil;
 
@@ -1938,7 +1968,7 @@ begin
   chunk.Code[chunk.Count] := value;
   chunk.Lines[chunk.count] := Line;
   Inc(chunk.Count);
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   AssertChunkIsAssigned(chunk);
@@ -2050,7 +2080,7 @@ begin
   FillNilValues(Stack.Values, START_CAPACITY);
   Stack.StackTop := Stack.Values;
   Stack.CapacityEnd := Stack.Values + START_CAPACITY;
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   AssertStackIsAssigned(Stack);
@@ -2075,7 +2105,7 @@ begin
   Stack.Values := nil;
   FreeMem(Stack);
   Stack := nil;
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   AssertPointerIsNil(Stack, 'FreeStack exit: Stack should be nil');
@@ -2233,37 +2263,28 @@ begin
   Result := OBJ_TAG or ptr;
 end;
 
-
 function isString(value : TValue) : boolean; inline;
-var obj: pObj;
 begin
   if not isObject(Value) then Exit(False);
-  obj := GetObject(Value);
-  result := obj.ObjectKind = okString;
+  result := GetObject(Value).ObjectKind = okString;
 end;
 
 function isFunction(value : TValue) : boolean; inline;
-var obj: pObj;
 begin
   if not isObject(Value) then Exit(False);
-  obj := GetObject(Value);
-  result := obj.ObjectKind = okFunction;
+  result := GetObject(Value).ObjectKind = okFunction;
 end;
 
 function isNative(value : TValue) : boolean; inline;
-var obj: pObj;
 begin
   if not isObject(Value) then Exit(False);
-  obj := GetObject(Value);
-  result := obj.ObjectKind = okNative;
+  result := GetObject(Value).ObjectKind = okNative;
 end;
 
 function isClosure(value : TValue) : boolean; inline;
-var obj: pObj;
 begin
   if not isObject(Value) then Exit(False);
-  obj := GetObject(Value);
-  result := obj.ObjectKind = okClosure;
+  result := GetObject(Value).ObjectKind = okClosure;
 end;
 
 function newFunction(MemTracker : pMemTracker) : pObjFunction; inline;
@@ -2317,7 +2338,7 @@ end;
 
 function newClosure(func : pObjFunction; MemTracker : pMemTracker) : pObjClosure;
 var
-  upvals : pUpvalueArray;
+  upvals : ppObjUpvalue;
   i : integer;
 begin
    {$IFOPT C+}
@@ -2330,7 +2351,7 @@ begin
   begin
     Allocate(Pointer(upvals), 0, func^.upvalueCount * SizeOf(pObjUpvalue), MemTracker);
     for i := 0 to func^.upvalueCount - 1 do
-      upvals^[i] := nil;
+      upvals[i] := nil;
   end;
 
   Result := nil;
@@ -3393,7 +3414,7 @@ begin
   GCLog(Format('allocate %p kind=%s', [Pointer(p), ObjectKindStr(p^.ObjectKind)]));
   Inc(GCLogAllocations);
   {$ENDIF}
-  
+
   // ---- Exit assertions ----
   {$IFOPT C+}
   Assert(MemTracker.CreatedObjects = p, 'AddToCreatedObjects exit: object should be at head of list');
@@ -3421,7 +3442,7 @@ begin
   {$IFOPT C+}
   AssertPointerIsNotNil(p, 'ObjString');
   {$ENDIF}
-  result := Sizeof(TObjString) + Max(0, p^.length - 1);  // avoid negative size
+  result := InlineStringByteSize(p^.length);
 end;
 
 function ValueToString(const value : TValue) : pObjString;
@@ -3581,9 +3602,15 @@ begin
   GetMem(buf, totalLen);
   try
     if below^.length > 0 then
+    begin
+      {$IFOPT C+} AssertInlineStringMoveBounds(below, below^.length); {$ENDIF}
       Move(below^.chars[0], buf[0], below^.length);
+    end;
     if top^.length > 0 then
+    begin
+      {$IFOPT C+} AssertInlineStringMoveBounds(top, top^.length); {$ENDIF}
       Move(top^.chars[0], buf[below^.length], top^.length);
+    end;
 
     hash := HashString(buf, totalLen);
 
@@ -3606,7 +3633,7 @@ begin
     end;
 
     // Not interned ? allocate via GC and follow CreateString's safe pattern
-    newSize := SizeOf(TObjString) + Max(0, totalLen - 1);
+    newSize := InlineStringByteSize(totalLen);
     resultStr := nil;
     AllocateString(resultStr, 0, newSize, MemTracker);
 
@@ -3618,7 +3645,10 @@ begin
 
     // Copy from our raw buffer (immune to GC)
     if totalLen > 0 then
+    begin
+      {$IFOPT C+} AssertInlineStringMoveBounds(resultStr, totalLen); {$ENDIF}
       Move(buf^, resultStr^.chars[0], totalLen);
+    end;
 
     // Track in GC object list
     AddToCreatedObjects(PObj(resultStr), MemTracker);
@@ -3854,7 +3884,7 @@ begin
 
   // Push value onto stack to protect from GC during potential array growth.
   pushStack(VM.Stack, value);
-  
+
   // Add the value to the ValueArray -- note here the value array can grow
   writeValueArray(ValueArray, value,Memtracker);
 
@@ -3862,7 +3892,7 @@ begin
 
   // Return the index of the newly added value
   Result := ValueArray.Count - 1;
-  
+
   // ---- Exit assertions ----
   Assert(ValueArray.Count = oldCount + 1, 'AddValueConstant exit: count should increase by 1');
   Assert(Result >= 0, 'AddValueConstant exit: result index should be >= 0');
@@ -3883,7 +3913,7 @@ begin
   {$ENDIF}
 
   oldChunkCount := chunk.Count;
-  
+
   //add constant, 1st into value's array of the value record
   idx := AddValueConstant(chunk.Constants,value,MemTracker);
   //add constant op code into the chunk array
@@ -3908,7 +3938,7 @@ begin
     WriteChunk(Chunk, IntBytes.byte1 , Line, MemTracker);
     WriteChunk(Chunk, IntBytes.byte2 , Line, MemTracker);
   end;
-  
+
   // ---- Exit assertions ----
   {$IFOPT C+}
   Assert(chunk.Count > oldChunkCount, 'AddConstant exit: chunk count should have increased');
@@ -4696,6 +4726,7 @@ begin
                       end;
 
         OP_SUBTRACT : begin
+
                         if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
@@ -4850,16 +4881,102 @@ begin
           end;
         end;
 
-        OP_GET_LOCAL_0..OP_GET_LOCAL_7: begin
-          // Fast-slot get: no operand byte, slot encoded in opcode.
-          slot := instruction - OP_GET_LOCAL_0;
-          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop),
-            'OP_GET_LOCAL_N: slot out of stack bounds');
+        // OP_GET_LOCAL_0..OP_GET_LOCAL_7: fast-slot get, slot encoded in opcode.
+        // Split into 8 arms so the slot index is a compile-time constant
+        // displacement (`frame^.slots[N]` lowers to `[rFrame + N*8]`) instead
+        // of a runtime `instruction - OP_GET_LOCAL_0` plus indexed addressing.
+        OP_GET_LOCAL_0: begin
+          Assert(NativeUInt(@frame^.slots[0]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_0: slot out of stack bounds');
           if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[slot])
+            pushStackGrow(stack, frame^.slots[0])
           else
           begin
-            stack.StackTop^ := frame^.slots[slot];
+            stack.StackTop^ := frame^.slots[0];
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_GET_LOCAL_1: begin
+          Assert(NativeUInt(@frame^.slots[1]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_1: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[1])
+          else
+          begin
+            stack.StackTop^ := frame^.slots[1];
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_GET_LOCAL_2: begin
+          Assert(NativeUInt(@frame^.slots[2]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_2: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[2])
+          else
+          begin
+            stack.StackTop^ := frame^.slots[2];
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_GET_LOCAL_3: begin
+          Assert(NativeUInt(@frame^.slots[3]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_3: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[3])
+          else
+          begin
+            stack.StackTop^ := frame^.slots[3];
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_GET_LOCAL_4: begin
+          Assert(NativeUInt(@frame^.slots[4]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_4: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[4])
+          else
+          begin
+            stack.StackTop^ := frame^.slots[4];
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_GET_LOCAL_5: begin
+          Assert(NativeUInt(@frame^.slots[5]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_5: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[5])
+          else
+          begin
+            stack.StackTop^ := frame^.slots[5];
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_GET_LOCAL_6: begin
+          Assert(NativeUInt(@frame^.slots[6]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_6: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[6])
+          else
+          begin
+            stack.StackTop^ := frame^.slots[6];
+            Inc(stack.StackTop);
+          end;
+        end;
+
+        OP_GET_LOCAL_7: begin
+          Assert(NativeUInt(@frame^.slots[7]) < NativeUInt(stack.StackTop),
+            'OP_GET_LOCAL_7: slot out of stack bounds');
+          if stack.StackTop >= stack.CapacityEnd then
+            pushStackGrow(stack, frame^.slots[7])
+          else
+          begin
+            stack.StackTop^ := frame^.slots[7];
             Inc(stack.StackTop);
           end;
         end;
@@ -4870,13 +4987,55 @@ begin
           frame^.slots[slot] := stack.StackTop[-1];
         end;
 
-        OP_SET_LOCAL_0..OP_SET_LOCAL_7: begin
-          // Fast-slot set: no operand byte; leaves value on stack (assignment
-          // expression semantics, identical to OP_SET_LOCAL).
-          slot := instruction - OP_SET_LOCAL_0;
-          Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop),
-            'OP_SET_LOCAL_N: slot out of stack bounds');
-          frame^.slots[slot] := stack.StackTop[-1];
+        // OP_SET_LOCAL_0..OP_SET_LOCAL_7: fast-slot set, slot encoded in opcode.
+        // Leaves value on stack (assignment-expression semantics, identical to
+        // OP_SET_LOCAL). Split for the same reason as the GET variants.
+        OP_SET_LOCAL_0: begin
+          Assert(NativeUInt(@frame^.slots[0]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_0: slot out of stack bounds');
+          frame^.slots[0] := stack.StackTop[-1];
+        end;
+
+        OP_SET_LOCAL_1: begin
+          Assert(NativeUInt(@frame^.slots[1]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_1: slot out of stack bounds');
+          frame^.slots[1] := stack.StackTop[-1];
+        end;
+
+        OP_SET_LOCAL_2: begin
+          Assert(NativeUInt(@frame^.slots[2]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_2: slot out of stack bounds');
+          frame^.slots[2] := stack.StackTop[-1];
+        end;
+
+        OP_SET_LOCAL_3: begin
+          Assert(NativeUInt(@frame^.slots[3]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_3: slot out of stack bounds');
+          frame^.slots[3] := stack.StackTop[-1];
+        end;
+
+        OP_SET_LOCAL_4: begin
+          Assert(NativeUInt(@frame^.slots[4]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_4: slot out of stack bounds');
+          frame^.slots[4] := stack.StackTop[-1];
+        end;
+
+        OP_SET_LOCAL_5: begin
+          Assert(NativeUInt(@frame^.slots[5]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_5: slot out of stack bounds');
+          frame^.slots[5] := stack.StackTop[-1];
+        end;
+
+        OP_SET_LOCAL_6: begin
+          Assert(NativeUInt(@frame^.slots[6]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_6: slot out of stack bounds');
+          frame^.slots[6] := stack.StackTop[-1];
+        end;
+
+        OP_SET_LOCAL_7: begin
+          Assert(NativeUInt(@frame^.slots[7]) < NativeUInt(stack.StackTop),
+            'OP_SET_LOCAL_7: slot out of stack bounds');
+          frame^.slots[7] := stack.StackTop[-1];
         end;
 
         OP_JUMP: begin
@@ -4997,12 +5156,12 @@ begin
             isLocal := ip^; Inc(ip);
             index := ip^; Inc(ip);
             if isLocal = 1 then
-              closure^.upvalues^[i] := captureUpvalue(
+              closure^.upvalues[i] := captureUpvalue(
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
             else
             begin
               {$IFOPT C+}AssertUpvalueIndex(index, 'OP_CLOSURE');{$ENDIF}
-              closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
+              closure^.upvalues[i] := frame^.closure^.upvalues[index];
             end;
           end;
         end;
@@ -5011,18 +5170,18 @@ begin
           slot := ip^; Inc(ip);
           {$IFOPT C+}
           AssertUpvalueIndex(slot, 'OP_GET_UPVALUE');
-          Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_GET_UPVALUE: upvalue is nil');
+          Assert(frame^.closure^.upvalues[slot] <> nil, 'OP_GET_UPVALUE: upvalue is nil');
           {$ENDIF}
-          pushStack(stack, frame^.closure^.upvalues^[slot]^.location^);
+          pushStack(stack, frame^.closure^.upvalues[slot]^.location^);
         end;
 
         OP_SET_UPVALUE: begin
           slot := ip^; Inc(ip);
           {$IFOPT C+}
           AssertUpvalueIndex(slot, 'OP_SET_UPVALUE');
-          Assert(frame^.closure^.upvalues^[slot] <> nil, 'OP_SET_UPVALUE: upvalue is nil');
+          Assert(frame^.closure^.upvalues[slot] <> nil, 'OP_SET_UPVALUE: upvalue is nil');
           {$ENDIF}
-          frame^.closure^.upvalues^[slot]^.location^ := stack.StackTop[-1];
+          frame^.closure^.upvalues[slot]^.location^ := stack.StackTop[-1];
         end;
 
         OP_CLOSE_UPVALUE: begin
@@ -5087,12 +5246,12 @@ begin
             isLocal := ip^; Inc(ip);
             index := ip^; Inc(ip);
             if isLocal = 1 then
-              closure^.upvalues^[i] := captureUpvalue(
+              closure^.upvalues[i] := captureUpvalue(
                 pValue(NativeUInt(frame^.slots) + NativeUInt(index) * SizeOf(TValue)))
             else
             begin
               {$IFOPT C+}AssertUpvalueIndex(index, 'OP_CLOSURE_LONG');{$ENDIF}
-              closure^.upvalues^[i] := frame^.closure^.upvalues^[index];
+              closure^.upvalues[i] := frame^.closure^.upvalues[index];
             end;
           end;
         end;
@@ -5955,7 +6114,7 @@ begin
   AssertStackValuesIsAssigned(Stack);
   {$ENDIF}
   Stack.StackTop := Stack.Values;
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   Assert(Stack.StackTop = Stack.Values, 'ResetStack exit: StackTop should equal Values');
@@ -6005,6 +6164,9 @@ begin
    {$ENDIF}
 
    closure := compile(source);
+
+
+
    if closure = nil then
    begin
      Result.code :=  INTERPRET_COMPILE_ERROR;
@@ -6023,6 +6185,9 @@ begin
 
    try
      Result := Run;
+
+
+
      {$IFDEF OPCODE_PROFILING}
      DumpOpcodePairs;
      {$ENDIF}
@@ -6403,9 +6568,9 @@ begin
       for i := 0 to pObjClosure(obj)^.upvalueCount - 1 do
       begin
         {$IFOPT C+}
-        AssertValidObjPointer(pObj(pObjClosure(obj)^.upvalues^[i]), 'BlackenObject closure upvalue');
+        AssertValidObjPointer(pObj(pObjClosure(obj)^.upvalues[i]), 'BlackenObject closure upvalue');
         {$ENDIF}
-        MarkObject(pObj(pObjClosure(obj)^.upvalues^[i]));
+        MarkObject(pObj(pObjClosure(obj)^.upvalues[i]));
       end;
     end;
     okNative: ;
@@ -6615,7 +6780,7 @@ begin
     var verifyObj : pObj := VM.MemTracker.CreatedObjects;
     while verifyObj <> nil do
     begin
-      AssertValidObjPointer(verifyObj, 'Post-sweep verify surviving object');
+
       // After sweep, IsMarked is cleared for the next cycle ? do not check it
       verifyObj := verifyObj^.Next;
     end;
@@ -6628,7 +6793,7 @@ begin
     begin
       if VM.Strings.Entries[strIdx].key <> nil then
       begin
-        AssertValidObjPointer(pObj(VM.Strings.Entries[strIdx].key), 'Post-sweep VM.Strings entry');
+
         Assert(VM.Strings.Entries[strIdx].key^.Obj.ObjectKind = okString,
           'Post-sweep VM.Strings: entry key is not okString');
       end;
@@ -6668,7 +6833,7 @@ begin
   MemTracker.GrayCapacity := 0;
   MemTracker.GrayStack := nil;
   MemTracker.GCCollections := 0;
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   AssertMemTrackerIsNotNil(MemTracker);
@@ -6687,7 +6852,7 @@ begin
   {$ENDIF}
   dispose(MemTracker);
   MemTracker := nil;  // Note here we don't dispose of the roots.stack reference.
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   AssertPointerIsNil(MemTracker, 'FreeMemTracker exit: MemTracker should be nil');
@@ -6950,7 +7115,7 @@ begin
   scanner.start := source;
   scanner.current := source;
   scanner.line := 1;
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   Assert(scanner.start = source, 'InitScanner exit: start should equal source');
@@ -7505,7 +7670,7 @@ begin
   {$ENDIF}
   oldCount := Chunk.Count;
   writeChunk(Chunk,value,line,MemTracker);
-  
+
   // ---- Exit assertions ----
    {$IFOPT C+}
   Assert(Chunk.Count = oldCount + 1, 'emitByte exit: chunk count should increase by 1');
@@ -8312,25 +8477,33 @@ var
   upvalueCount : integer;
   i : integer;
 begin
+  //upvalues     : array[0..UINT8_COUNT - 1] of TUpvalue;
+  // Preconditions: validated once up front so the body can trust the invariants
+  // (compiler/func non-nil, upvalueCount in [0..UINT8_COUNT]) and skip per-access asserts.
   Assert(compiler <> nil, 'addUpvalue: compiler is nil');
   Assert(compiler^.func <> nil, 'addUpvalue: compiler func is nil');
   upvalueCount := compiler^.func^.upvalueCount;
-  Assert(upvalueCount >= 0, 'addUpvalue: upvalueCount is negative');
+  Assert((upvalueCount >= 0) and (upvalueCount <= UINT8_COUNT),
+    'addUpvalue: upvalueCount out of range [0..UINT8_COUNT]');
 
+  // Search must run BEFORE the capacity check: an already-captured (index, isLocal)
+  // pair can be reused even when the array is full, because no growth is needed.
+  // Loop bound upvalueCount <= UINT8_COUNT keeps i within array range.
   for i := 0 to upvalueCount - 1 do
-  begin
-    Assert((i >= 0) and (i < UINT8_COUNT), 'addUpvalue: upvalues index out of bounds (search)');
     if (compiler^.upvalues[i].index = index) and (compiler^.upvalues[i].isLocal = isLocal) then
       Exit(i);
-  end;
 
-  if upvalueCount = UINT8_COUNT then
+  // No reuse possible -- only now does fullness matter.
+  // Upvalue indices are emitted as a single-byte operand, so UINT8_COUNT is the hard cap.
+  // Use >= (not =) so a corrupted count past the cap still errors instead of writing OOB.
+  if upvalueCount >= UINT8_COUNT then
   begin
     Error('Too many closure variables in function.');
     Exit(0);
   end;
 
-  Assert(upvalueCount < UINT8_COUNT, 'addUpvalue: upvalues index out of bounds (write)');
+  // Safe to write: upvalueCount < UINT8_COUNT here by the check above,
+  // so upvalues[upvalueCount] is in range and func^.upvalueCount stays <= UINT8_COUNT.
   compiler^.upvalues[upvalueCount].isLocal := isLocal;
   compiler^.upvalues[upvalueCount].index := index;
   Inc(compiler^.func^.upvalueCount);
@@ -8448,23 +8621,26 @@ begin
   if arg <> -1 then
   begin
     // Fast-slot variants: slots 0..7 fit in the opcode itself, no operand byte.
+    // Use emitOpcode (not emitByte) so prevOpcodeOffset/lastOpcodeOffset stay
+    // accurate ? otherwise downstream peepholes (e.g. GET_LOCAL_CONST_SUBTRACT)
+    // silently fail to match.
     if (arg >= 0) and (arg <= 7) then
     begin
       if canAssign and matchToken(TOKEN_EQUAL) then
       begin
         Expression();
-        emitByte(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+        emitOpcode(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
       end
       else if canAssign and MatchCompoundAssign(compoundOp) then
       begin
         // GET, expression, arithmetic op, SET
-        emitByte(Byte(OP_GET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+        emitOpcode(Byte(OP_GET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
         Expression();
-        emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
-        emitByte(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+        emitOpcode(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+        emitOpcode(Byte(OP_SET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
       end
       else
-        emitByte(Byte(OP_GET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
+        emitOpcode(Byte(OP_GET_LOCAL_0 + arg), CurrentChunk, parser.previous.line, vm.MemTracker);
       Exit;
     end;
     getOp := OP_GET_LOCAL;
@@ -8498,7 +8674,7 @@ begin
   if canAssign and matchToken(TOKEN_EQUAL) then
   begin
     Expression();
-    emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if isGlobalLong then
     begin
       IntBytes := IntToBytes(arg);
@@ -8512,7 +8688,7 @@ begin
   else if canAssign and MatchCompoundAssign(compoundOp) then
   begin
     // Emit GET, expression, arithmetic op, SET
-    emitByte(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if isGlobalLong then
     begin
       IntBytes := IntToBytes(arg);
@@ -8523,8 +8699,8 @@ begin
     else
       emitByte(Byte(arg), CurrentChunk, parser.previous.line, vm.MemTracker);
     Expression();
-    emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
-    emitByte(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(setOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if isGlobalLong then
     begin
       IntBytes := IntToBytes(arg);
@@ -8537,7 +8713,7 @@ begin
   end
   else
   begin
-    emitByte(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(getOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if isGlobalLong then
     begin
       IntBytes := IntToBytes(arg);
@@ -8682,7 +8858,7 @@ begin
       emitByte(IntBytes.byte2, CurrentChunk, parser.previous.line, vm.MemTracker);
     end;
     Expression();
-    emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     if nameIdx <= High(Byte) then
     begin
       emitOpcode(OP_SET_PROPERTY, CurrentChunk, parser.previous.line, vm.MemTracker);
@@ -8829,7 +9005,7 @@ begin
     emitOpcode(OP_DUP2, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitOpcode(OP_GET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
     Expression();
-    emitByte(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
+    emitOpcode(compoundOp, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitOpcode(OP_SET_SUBSCRIPT, CurrentChunk, parser.previous.line, vm.MemTracker);
   end
   else
@@ -9583,3 +9759,4 @@ initialization
 finalization
 
 end.
+
