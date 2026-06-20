@@ -1,0 +1,274 @@
+// ============================================================
+// boids.lox -- Reynolds' flocking algorithm in Lox.
+//
+// Every frame, each boid applies three local steering rules
+// against its neighbors within PERCEPTION_R:
+//   separation : steer away from anyone too close
+//   alignment  : match the average heading of nearby boids
+//   cohesion   : steer toward the average position of nearby boids
+//
+// Holding the left mouse button turns the cursor into a predator
+// the flock will swerve to avoid.
+//
+// Controls:
+//   Esc      quit
+//   r        reseed the flock
+//   a / s    add / remove one boid
+//   LMB held scare boids away from the cursor
+// ============================================================
+
+// ---- Tunables --------------------------------------------------------
+var FLOCK_SIZE       = 300;
+var PERCEPTION_R     = 50;     // neighbor sight radius (px)
+var SEPARATION_R     = 18;     // closer than this -> shove apart (px)
+var MAX_SPEED        = 110;    // px/sec
+var MIN_SPEED        = 50;     // never fully stop
+var SEPARATION_FORCE = 900;    // px/sec^2 at zero distance, linear falloff to 0 at SEPARATION_R
+var W_ALIGNMENT      = 1.0;
+var W_COHESION       = 0.9;
+var PREDATOR_FORCE   = 600;    // px/sec^2 at the mouse cursor, linear falloff
+var PREDATOR_R       = 90;     // panic radius around cursor (px)
+var BOID_LEN         = 9;      // nose-to-tail length (px)
+var BOID_HALFW       = 3.5;    // half-width at the tail (px)
+var TWO_PI           = 6.2831853;
+
+// ---- Helpers ---------------------------------------------------------
+fun randRange(lo, hi) { return lo + random() * (hi - lo); }
+
+fun wrap(v, lim) {
+  if (v < 0) return v + lim;
+  if (v >= lim) return v - lim;
+  return v;
+}
+
+// ---- Boid record -----------------------------------------------------
+record Boid(x, y, vx, vy);
+
+fun spawnBoid(w, h) {
+  var ang = random() * TWO_PI;
+  var sp  = randRange(MIN_SPEED, MAX_SPEED);
+  return Boid(random() * w, random() * h, cos(ang) * sp, sin(ang) * sp);
+}
+
+fun seedFlock(n, w, h) {
+  var flock = [];
+  var i = 0;
+  while (i < n) {
+    arrayPush(flock, spawnBoid(w, h));
+    i = i + 1;
+  }
+  return flock;
+}
+
+// ---- Per-tick update -------------------------------------------------
+// We compute every boid's new velocity from a frozen snapshot of the
+// previous frame, then commit all of them. Updating in place mid-loop
+// causes boids to chase each other unrealistically.
+fun updateFlock(flock, newVX, newVY, w, h, dt, mx, my, mouseActive) {
+  var n      = arrayLen(flock);
+  var permR2 = PERCEPTION_R * PERCEPTION_R;
+  var sepR2  = SEPARATION_R * SEPARATION_R;
+  var predR2 = PREDATOR_R   * PREDATOR_R;
+
+  var i = 0;
+  while (i < n) {
+    var b = flock[i];
+
+    var sepX = 0; var sepY = 0;
+    var aliX = 0; var aliY = 0;
+    var cohX = 0; var cohY = 0;
+    var count = 0;
+
+    // ---- Neighbor scan (O(n) per boid, O(n^2) total) ---------------
+    var j = 0;
+    while (j < n) {
+      if (j != i) {
+        var o  = flock[j];
+        var dx = b.x - o.x;
+        var dy = b.y - o.y;
+        var d2 = dx * dx + dy * dy;
+        if (d2 > 0 and d2 < permR2) {
+          aliX = aliX + o.vx; aliY = aliY + o.vy;
+          cohX = cohX + o.x;  cohY = cohY + o.y;
+          count = count + 1;
+          if (d2 < sepR2) {
+            // Force grows as boids get closer: unit-vector(dx,dy) * F * (1 - d/R).
+            // Folded together: (dx,dy) * F * (1 - d/R) / d.
+            var d        = sqrt(d2);
+            var strength = 1 - d / SEPARATION_R;     // 1.0 on contact, 0 at edge
+            var inv      = SEPARATION_FORCE * strength / d;
+            sepX = sepX + dx * inv;
+            sepY = sepY + dy * inv;
+          }
+        }
+      }
+      j = j + 1;
+    }
+
+    // ---- Combine the three steering forces -------------------------
+    // Separation is already in px/sec^2 (force-with-falloff); the other two
+    // are dimensionless weights against velocity/position deltas.
+    var ax = sepX;
+    var ay = sepY;
+    if (count > 0) {
+      ax = ax + (aliX / count - b.vx) * W_ALIGNMENT;
+      ay = ay + (aliY / count - b.vy) * W_ALIGNMENT;
+      ax = ax + (cohX / count - b.x)  * W_COHESION;
+      ay = ay + (cohY / count - b.y)  * W_COHESION;
+    }
+
+    // ---- Mouse predator (linear falloff with distance) -------------
+    if (mouseActive) {
+      var pdx = b.x - mx;
+      var pdy = b.y - my;
+      var pd2 = pdx * pdx + pdy * pdy;
+      if (pd2 > 0 and pd2 < predR2) {
+        var pd       = sqrt(pd2);
+        var strength = 1 - pd / PREDATOR_R;       // 1.0 on top, 0 at edge
+        var inv      = PREDATOR_FORCE * strength / pd;
+        ax = ax + pdx * inv;
+        ay = ay + pdy * inv;
+      }
+    }
+
+    newVX[i] = b.vx + ax * dt;
+    newVY[i] = b.vy + ay * dt;
+    i = i + 1;
+  }
+
+  // ---- Commit velocities, clamp speed, integrate positions ---------
+  i = 0;
+  while (i < n) {
+    var b  = flock[i];
+    var vx = newVX[i];
+    var vy = newVY[i];
+    var sp2 = vx * vx + vy * vy;
+    if (sp2 == 0) { vx = MIN_SPEED; vy = 0; }
+    else {
+      var sp = sqrt(sp2);
+      if (sp > MAX_SPEED) { vx = vx / sp * MAX_SPEED; vy = vy / sp * MAX_SPEED; }
+      if (sp < MIN_SPEED) { vx = vx / sp * MIN_SPEED; vy = vy / sp * MIN_SPEED; }
+    }
+    b.vx = vx;
+    b.vy = vy;
+    b.x  = wrap(b.x + vx * dt, w);
+    b.y  = wrap(b.y + vy * dt, h);
+    i = i + 1;
+  }
+}
+
+// ---- Render ----------------------------------------------------------
+// Each boid is a small triangle pointing in the direction of travel.
+// Given heading unit vector (hx, hy), the perpendicular is (-hy, hx);
+// nose sits BOID_LEN ahead of center, base BOID_HALFW to each side.
+fun drawFlock(flock) {
+  setColor(220, 230, 255);
+  var n = arrayLen(flock);
+  var i = 0;
+  while (i < n) {
+    var b  = flock[i];
+    var sp = sqrt(b.vx * b.vx + b.vy * b.vy);
+    if (sp == 0) sp = 1;
+    var hx = b.vx / sp;
+    var hy = b.vy / sp;
+
+    var nx = b.x + hx * BOID_LEN;
+    var ny = b.y + hy * BOID_LEN;
+    var lx = b.x - hx * BOID_LEN * 0.4 - hy * BOID_HALFW;
+    var ly = b.y - hy * BOID_LEN * 0.4 + hx * BOID_HALFW;
+    var rx = b.x - hx * BOID_LEN * 0.4 + hy * BOID_HALFW;
+    var ry = b.y - hy * BOID_LEN * 0.4 - hx * BOID_HALFW;
+
+    drawLine(nx, ny, lx, ly);
+    drawLine(nx, ny, rx, ry);
+    drawLine(lx, ly, rx, ry);
+    i = i + 1;
+  }
+}
+
+// ---- Main ------------------------------------------------------------
+var W = canvasWidth();
+var H = canvasHeight();
+var flock = seedFlock(FLOCK_SIZE, W, H);
+
+// Re-used velocity scratch buffers (sized to the current flock).
+var newVX = [];
+var newVY = [];
+fun resizeScratch(n) {
+  while (arrayLen(newVX) < n) { arrayPush(newVX, 0); arrayPush(newVY, 0); }
+  while (arrayLen(newVX) > n) { arrayPop(newVX); arrayPop(newVY); }
+}
+resizeScratch(arrayLen(flock));
+
+// Mouse state, updated from callbacks.
+var mx = W / 2;
+var my = H / 2;
+var mouseActive = false;
+
+var running = true;
+var lastT   = clock();
+
+// ---- Event callbacks -------------------------------------------------
+onMouseDown(fun(btn, x, y) {
+  if (btn == 0) {
+    mouseActive = true;
+    mx = x;
+    my = y;
+  }
+});
+
+onMouseUp(fun(btn, x, y) {
+  if (btn == 0) mouseActive = false;
+});
+
+onMouseMove(fun(x, y) {
+  mx = x;
+  my = y;
+});
+
+onKeyPressed(fun(key) {
+  if (key == "escape") { running = false; return; }
+  if (key == "r") {
+    flock = seedFlock(FLOCK_SIZE, W, H);
+    resizeScratch(arrayLen(flock));
+    return;
+  }
+  if (key == "a") {
+    arrayPush(flock, spawnBoid(W, H));
+    resizeScratch(arrayLen(flock));
+    return;
+  }
+  if (key == "s") {
+    if (arrayLen(flock) > 1) {
+      arrayPop(flock);
+      resizeScratch(arrayLen(flock));
+    }
+  }
+});
+
+// ---- Main loop -------------------------------------------------------
+while (running) {
+  processEvents();
+
+  var now = clock();
+  var dt  = now - lastT;
+  lastT = now;
+  if (dt > 0.05) dt = 0.05;   // clamp big frames so the flock doesn't teleport
+
+  updateFlock(flock, newVX, newVY, W, H, dt, mx, my, mouseActive);
+
+  clearCanvas(15, 20, 35);
+  drawFlock(flock);
+
+  // Visualize the predator radius when active.
+  if (mouseActive) {
+    setColor(255, 100, 80);
+    drawCircle(mx, my, PREDATOR_R);
+  }
+
+  setColor(160, 170, 200);
+  drawText(8,  8, "Boids: " + str(arrayLen(flock)));
+  drawText(8, 22, "Esc=quit  r=reset  a/s=add/remove  hold LMB=scare");
+
+  present();   // flip back buffer to the visible canvas
+}
