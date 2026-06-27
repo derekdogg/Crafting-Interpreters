@@ -4401,6 +4401,58 @@ var
   end;
   {$ENDIF}
 
+  // Build a diagnostic for a host exception caught mid-dispatch.
+  //
+  // Crash-reporter rule: this code must be more robust than the code it
+  // is reporting on. Every dereference of VM state (`frame`, `ip`,
+  // `closure`, chunk pointers, object strings) is wrapped in its own
+  // try/except so any one of them being corrupt cannot replace the
+  // original failure with a secondary AV. Even `runtimeError` is wrapped
+  // because it does a string assignment and could OOM.
+  //
+  // `instruction` is declared Byte in the outer Run scope, so its
+  // lower bound is provable by type; only the upper bound needs guarding
+  // for the OP_STRINGS lookup.
+  procedure HandleVMException(E: Exception);
+  var
+    msg, opcodeName, funcName: string;
+    offset: NativeInt;
+  begin
+    try
+      if instruction <= High(OP_STRINGS) then
+        opcodeName := OP_STRINGS[instruction]
+      else
+        opcodeName := '<unknown>';
+    except
+      opcodeName := '<unreadable>';
+    end;
+
+    try
+      funcName := String(ObjStringToAnsiString(frame^.closure^.func^.name));
+    except
+      funcName := '<unreadable>';
+    end;
+
+    try
+      offset := NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 1;
+    except
+      offset := -1;
+    end;
+
+    msg := 'Host exception in ' + opcodeName +
+           ' (opcode ' + IntToStr(instruction) + ')' +
+           ' in function ''' + funcName + '''' +
+           ' at offset ' + IntToStr(offset) + ': ' +
+           E.ClassName + ': ' + E.Message;
+
+    try
+      runtimeError(msg);
+    except
+      // Last resort: nothing more we can safely do. Caller still flags
+      // INTERPRET_RUNTIME_ERROR so the failure remains visible.
+    end;
+  end;
+
 
 begin
     //Assert(false, 'assertions are still compiled in');
@@ -5938,34 +5990,18 @@ begin
       except
         on E: Exception do
         begin
-          // The original exception may have left `frame` / `ip` pointing at
-          // garbage, so build the diagnostic defensively — never let the
-          // catch handler raise its own AV and escape.
+          HandleVMException(E);
+          result.code := INTERPRET_RUNTIME_ERROR;
+          exit;
+        end;
+        else
+        begin
+          // Non-class raise (e.g. `raise 123;`) or an OS-level escape that
+          // didn't surface as an Exception subclass. Build the most
+          // primitive diagnostic possible — no VM-state dereferences.
           try
-            if instruction <= High(OP_STRINGS) then
-              runtimeError('Host exception in ' + OP_STRINGS[instruction] +
-                ' (opcode ' + IntToStr(instruction) + ') in function ''' +
-                String(ObjStringToAnsiString(frame^.closure^.func^.name)) +
-                ''' at offset ' +
-                IntToStr(NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 1) +
-                ': ' + E.ClassName + ': ' + E.Message)
-            else
-              runtimeError('Host exception in opcode ' + IntToStr(instruction) +
-                ': ' + E.ClassName + ': ' + E.Message);
+            runtimeError('Non-class host exception in opcode ' + IntToStr(instruction));
           except
-            on E2: Exception do
-            begin
-              // Fallback: omit frame metadata when it's unreadable.
-              if instruction <= High(OP_STRINGS) then
-                runtimeError('Host exception in ' + OP_STRINGS[instruction] +
-                  ' (opcode ' + IntToStr(instruction) + '): ' +
-                  E.ClassName + ': ' + E.Message +
-                  ' [diagnostic-builder also raised ' + E2.ClassName + ': ' + E2.Message + ']')
-              else
-                runtimeError('Host exception in opcode ' + IntToStr(instruction) +
-                  ': ' + E.ClassName + ': ' + E.Message +
-                  ' [diagnostic-builder also raised ' + E2.ClassName + ': ' + E2.Message + ']');
-            end;
           end;
           result.code := INTERPRET_RUNTIME_ERROR;
           exit;
