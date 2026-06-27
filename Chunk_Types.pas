@@ -745,6 +745,7 @@ function IntToBytes(const value : integer) : TIntToByteResult; inline;
 function ByteToInt(const value : TIntToByteResult) : integer;inline;
 function ReadByte(var code : pByte): Byte; inline;
 function ReadLongIndex(var code : pByte) : Integer; inline;
+function ReadJumpOffset(var code : pByte) : Word; inline;
 function ReadConstant(var code : pByte; constants : pValueArray) : TValue; inline;
 function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue;inline;
 //Memtracker
@@ -4034,6 +4035,15 @@ begin
   Result := ByteToInt(Bytes);
 end;
 
+function ReadJumpOffset(var code : pByte) : Word;
+begin
+  {$IFOPT C+}
+  AssertCodePointerIsAssigned(code);
+  {$ENDIF}
+  Result := Word(code^) shl 8; Inc(code);
+  Result := Result or Word(code^); Inc(code);
+end;
+
 function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue; inline;
 var
   idx : integer;
@@ -4267,6 +4277,10 @@ begin
   end;
 end;
 
+function CurrentFrame: pCallFrame; inline;
+ begin
+    Result := @VM.Frames[VM.FrameCount - 1];
+ end;
 
 
 function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
@@ -4292,14 +4306,15 @@ var
   offset : Word;
   value,ValueB,ValueC : TValue;
   argCount : byte;
-  func : pObjFunction;
+//  func : pObjFunction;
   closure : pObjClosure;
   native : TNativeFn;
   nativeResult : TValue;
   isLocal : byte;
   index : byte;
   i, j : integer;
-  // record support
+
+     // record support
   recFieldNames : array[0..MAX_BYTE_OPERAND] of pObjString;
   recNameIdx : integer;
   recTypeName : pObjString;
@@ -4322,14 +4337,12 @@ var
   idxParams : TArray<TRttiParameter>;
   idxDelphiArgs : array[0..0] of System.Rtti.TValue;
   idxDelphiVal  : System.Rtti.TValue;
+
+
   {$IFDEF DEBUG_ASSERT_INVARIANTS}
   savedNativeStackDepth : NativeInt;
   {$ENDIF}
 
-  function CurrentFrame: pCallFrame;
-  begin
-    Result := @VM.Frames[VM.FrameCount - 1];
-  end;
 
 
   {$IFOPT C+}
@@ -5049,8 +5062,7 @@ begin
         end;
 
         OP_JUMP: begin
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           Inc(ip, offset);
           {$IFOPT C+}
           AssertFrameCode('OP_JUMP');
@@ -5059,8 +5071,7 @@ begin
         end;
 
         OP_JUMP_IF_FALSE: begin
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           if isFalsey(stack.StackTop[-1]) then
             Inc(ip, offset);
         end;
@@ -5068,8 +5079,7 @@ begin
         OP_JUMP_IF_FALSE_POP: begin
           // Fused: pop top, then jump if popped value was falsy.
           // Replaces OP_JUMP_IF_FALSE + OP_POP pair in if/while/for.
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
            {$IFOPT C+}
            AssertStackIsNotEmpty(vm.Stack);
            {$ENDIF}
@@ -5081,8 +5091,7 @@ begin
         OP_LESS_JUMP_IF_FALSE: begin
           // Fused OP_LESS + OP_JUMP_IF_FALSE_POP: compare two numbers,
           // pop both, jump if NOT (a < b). Saves one dispatch cycle.
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
           begin
             runtimeError('Operands must be numbers.');
@@ -5136,8 +5145,7 @@ begin
 
 
         OP_LOOP: begin
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           Dec(ip, offset);
           {$IFOPT C+}
           AssertFrameCode('OP_LOOP');
@@ -5158,8 +5166,8 @@ begin
           value := constants[ip^];
           Inc(ip);
           Assert(isFunction(value), 'OP_CLOSURE: constant is not a function');
-          func := pObjFunction(GetObject(value));
-          closure := newClosure(func, VM.MemTracker);
+         // func := pObjFunction(GetObject(value));
+          closure := newClosure(pObjFunction(GetObject(value)), VM.MemTracker);
           pushStack(stack, CreateObject(pObj(closure)));
           for i := 0 to closure^.upvalueCount - 1 do
           begin
@@ -5240,8 +5248,8 @@ begin
           i := ReadLongIndex(ip);
           value := constants[i];
           Assert(isFunction(value), 'OP_CLOSURE_LONG: constant is not a function');
-          func := pObjFunction(GetObject(value));
-          closure := newClosure(func, VM.MemTracker);
+          //func := pObjFunction(GetObject(value));
+          closure := newClosure(pObjFunction(GetObject(value)), VM.MemTracker);
           pushStack(stack, CreateObject(pObj(closure)));
           for i := 0 to closure^.upvalueCount - 1 do
           begin
@@ -5298,9 +5306,7 @@ begin
           argCount := ip^; Inc(ip); // fieldCount
           for i := 0 to argCount - 1 do
           begin
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG field name');
             AssertFrameValues('OP_RECORD_LONG field name');
@@ -5310,9 +5316,7 @@ begin
             recFieldNames[i] := ValueToString(value);
           end;
           // Read the record type name (3 bytes, 24-bit LE)
-          recNameIdx := ip^; Inc(ip);
-          recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-          recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+          recNameIdx := ReadLongIndex(ip);
           {$IFOPT C+}
           AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG type name');
           AssertFrameValues('OP_RECORD_LONG type name');
@@ -5508,9 +5512,7 @@ begin
         end;
 
         OP_INVOKE_LONG: begin
-          invokeNameIdx := ip^; Inc(ip);
-          invokeNameIdx := invokeNameIdx or (ip^ shl 8); Inc(ip);
-          invokeNameIdx := invokeNameIdx or (ip^ shl 16); Inc(ip);
+          invokeNameIdx := ReadLongIndex(ip);
           invokeArgCount := ip^; Inc(ip);
           {$IFOPT C+}
           AssertConstantIndex(invokeNameIdx, 'OP_INVOKE_LONG');
@@ -5573,9 +5575,7 @@ begin
           if isRecord(stack.StackTop[-1]) then
           begin
             rec := pObjRecord(GetObject(stack.StackTop[-1]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
             AssertFrameValues('OP_GET_PROPERTY_LONG');
@@ -5596,9 +5596,7 @@ begin
           else if isNativeObject(stack.StackTop[-1]) then
           begin
             nativeObj := pObjNativeObject(GetObject(stack.StackTop[-1]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
             AssertFrameValues('OP_GET_PROPERTY_LONG');
@@ -5618,9 +5616,7 @@ begin
           end
           else
           begin
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
@@ -5631,9 +5627,7 @@ begin
           if isRecord(stack.StackTop[-2]) then
           begin
             rec := pObjRecord(GetObject(stack.StackTop[-2]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
             AssertFrameValues('OP_SET_PROPERTY_LONG');
@@ -5658,9 +5652,7 @@ begin
           else if isNativeObject(stack.StackTop[-2]) then
           begin
             nativeObj := pObjNativeObject(GetObject(stack.StackTop[-2]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
             AssertFrameValues('OP_SET_PROPERTY_LONG');
@@ -5683,9 +5675,7 @@ begin
           end
           else
           begin
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
