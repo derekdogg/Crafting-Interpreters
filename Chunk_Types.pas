@@ -603,6 +603,8 @@ type
     Entries         : pEntry;
   end;
 
+  TRecFieldNames = array[0..MAX_BYTE_OPERAND] of pObjString;
+
 function findNativeClass(const name : AnsiString) : pNativeClassInfo;
 procedure RunTimeError(const msg : string);
 
@@ -744,6 +746,8 @@ procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 function IntToBytes(const value : integer) : TIntToByteResult; inline;
 function ByteToInt(const value : TIntToByteResult) : integer;inline;
 function ReadByte(var code : pByte): Byte; inline;
+function ReadLongIndex(var code : pByte) : Integer; inline;
+function ReadJumpOffset(var code : pByte) : Word; inline;
 function ReadConstant(var code : pByte; constants : pValueArray) : TValue; inline;
 function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue;inline;
 //Memtracker
@@ -781,8 +785,9 @@ procedure FillNilValues(p: pValue; Count: NativeInt);
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker); inline;
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);inline;
 procedure ResetStack(var stack : pStack);inline;
-procedure pushStack(var stack : pStack;const value : TValue); inline;
 procedure pushStackGrow(var stack : pStack;const value : TValue);inline;
+procedure pushStack(var stack : pStack;const value : TValue); inline;
+ 
 //function peekStack(stack : pStack) : TValue; overload; inline;
 function peekStack(stack : pStack; distanceFromTop : integer) : TValue; inline;
 function  popStack(stack : pStack) : TValue; inline;
@@ -4020,19 +4025,37 @@ begin
   result := Constants.Values[idx];
 end;
 
+function ReadLongIndex(var code : pByte) : Integer;
+var
+  Bytes : TIntToByteResult;
+begin
+  {$IFOPT C+}
+  AssertCodePointerIsAssigned(code);
+  {$ENDIF}
+  Bytes.byte0 := code^; Inc(code);
+  Bytes.byte1 := code^; Inc(code);
+  Bytes.byte2 := code^; Inc(code);
+  Result := ByteToInt(Bytes);
+end;
+
+function ReadJumpOffset(var code : pByte) : Word;
+begin
+  {$IFOPT C+}
+  AssertCodePointerIsAssigned(code);
+  {$ENDIF}
+  Result := Word(code^) shl 8; Inc(code);
+  Result := Result or Word(code^); Inc(code);
+end;
+
 function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue; inline;
 var
   idx : integer;
-  Bytes: TIntToByteResult;
 begin
   {$IFOPT C+}
   AssertValueArrayIsAssigned(constants);
   AssertValuesIsAssigned(constants.Values);
   {$ENDIF}
-  Bytes.byte0 := ReadByte(code);
-  Bytes.byte1 := ReadByte(code);
-  Bytes.byte2 := ReadByte(code);
-  idx := ByteToInt(Bytes);
+  idx := ReadLongIndex(code);
   {$IFOPT C+}
   AssertIndexIsNotNegative(idx);
   AssertIndexInRange(idx, constants.Count);
@@ -4257,6 +4280,10 @@ begin
   end;
 end;
 
+function CurrentFrame: pCallFrame; inline;
+ begin
+    Result := @VM.Frames[VM.FrameCount - 1];
+ end;
 
 
 function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
@@ -4282,15 +4309,16 @@ var
   offset : Word;
   value,ValueB,ValueC : TValue;
   argCount : byte;
-  func : pObjFunction;
+//  func : pObjFunction;
   closure : pObjClosure;
   native : TNativeFn;
   nativeResult : TValue;
   isLocal : byte;
   index : byte;
   i, j : integer;
-  // record support
-  recFieldNames : array[0..MAX_BYTE_OPERAND] of pObjString;
+
+     // record support
+  recFieldNames : TRecFieldNames;
   recNameIdx : integer;
   recTypeName : pObjString;
   recType : pObjRecordType;
@@ -4312,14 +4340,12 @@ var
   idxParams : TArray<TRttiParameter>;
   idxDelphiArgs : array[0..0] of System.Rtti.TValue;
   idxDelphiVal  : System.Rtti.TValue;
+
+
   {$IFDEF DEBUG_ASSERT_INVARIANTS}
   savedNativeStackDepth : NativeInt;
   {$ENDIF}
 
-  function CurrentFrame: pCallFrame;
-  begin
-    Result := @VM.Frames[VM.FrameCount - 1];
-  end;
 
 
   {$IFOPT C+}
@@ -4375,6 +4401,58 @@ var
       context + ': upvalue index out of bounds');
   end;
   {$ENDIF}
+
+  // Build a diagnostic for a host exception caught mid-dispatch.
+  //
+  // Crash-reporter rule: this code must be more robust than the code it
+  // is reporting on. Every dereference of VM state (`frame`, `ip`,
+  // `closure`, chunk pointers, object strings) is wrapped in its own
+  // try/except so any one of them being corrupt cannot replace the
+  // original failure with a secondary AV. Even `runtimeError` is wrapped
+  // because it does a string assignment and could OOM.
+  //
+  // `instruction` is declared Byte in the outer Run scope, so its
+  // lower bound is provable by type; only the upper bound needs guarding
+  // for the OP_STRINGS lookup.
+  procedure HandleVMException(E: Exception);
+  var
+    msg, opcodeName, funcName: string;
+    offset: NativeInt;
+  begin
+    try
+      if instruction <= High(OP_STRINGS) then
+        opcodeName := OP_STRINGS[instruction]
+      else
+        opcodeName := '<unknown>';
+    except
+      opcodeName := '<unreadable>';
+    end;
+
+    try
+      funcName := String(ObjStringToAnsiString(frame^.closure^.func^.name));
+    except
+      funcName := '<unreadable>';
+    end;
+
+    try
+      offset := NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 1;
+    except
+      offset := -1;
+    end;
+
+    msg := 'Host exception in ' + opcodeName +
+           ' (opcode ' + IntToStr(instruction) + ')' +
+           ' in function ''' + funcName + '''' +
+           ' at offset ' + IntToStr(offset) + ': ' +
+           E.ClassName + ': ' + E.Message;
+
+    try
+      runtimeError(msg);
+    except
+      // Last resort: nothing more we can safely do. Caller still flags
+      // INTERPRET_RUNTIME_ERROR so the failure remains visible.
+    end;
+  end;
 
 
 begin
@@ -4646,10 +4724,7 @@ begin
         end;
 
         OP_CONSTANT_LONG : begin
-          // 3-byte constant index (little-endian: byte0 | byte1<<8 | byte2<<16)
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
            {$IFOPT C+}
           AssertConstantIndex(i, 'OP_CONSTANT_LONG');
           AssertFrameValues('OP_CONSTANT_LONG');
@@ -4859,6 +4934,8 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
+          // TableSet returns True if the key was newly inserted. For
+          // assignment to an undeclared global, undo the insert and error.
           if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
           begin
             TableDelete(vm.Globals, ValueToString(value));
@@ -4873,12 +4950,13 @@ begin
           {$IFOPT C+}
           Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop), 'OP_GET_LOCAL: slot out of stack bounds');
           {$ENDIF}
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[slot])
-          else begin
+          if stack.StackTop < stack.CapacityEnd then
+          begin
             stack.StackTop^ := frame^.slots[slot];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[slot]);
         end;
 
         // OP_GET_LOCAL_0..OP_GET_LOCAL_7: fast-slot get, slot encoded in opcode.
@@ -4888,97 +4966,97 @@ begin
         OP_GET_LOCAL_0: begin
           Assert(NativeUInt(@frame^.slots[0]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_0: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[0])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[0];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[0]);
         end;
 
         OP_GET_LOCAL_1: begin
           Assert(NativeUInt(@frame^.slots[1]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_1: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[1])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[1];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[1]);
         end;
 
         OP_GET_LOCAL_2: begin
           Assert(NativeUInt(@frame^.slots[2]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_2: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[2])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[2];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[2]);
         end;
 
         OP_GET_LOCAL_3: begin
           Assert(NativeUInt(@frame^.slots[3]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_3: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[3])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[3];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[3]);
         end;
 
         OP_GET_LOCAL_4: begin
           Assert(NativeUInt(@frame^.slots[4]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_4: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[4])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[4];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[4]);
         end;
 
         OP_GET_LOCAL_5: begin
           Assert(NativeUInt(@frame^.slots[5]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_5: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[5])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[5];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[5]);
         end;
 
         OP_GET_LOCAL_6: begin
           Assert(NativeUInt(@frame^.slots[6]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_6: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[6])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[6];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[6]);
         end;
 
         OP_GET_LOCAL_7: begin
           Assert(NativeUInt(@frame^.slots[7]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_7: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[7])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[7];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[7]);
         end;
 
         OP_SET_LOCAL: begin
@@ -5039,8 +5117,7 @@ begin
         end;
 
         OP_JUMP: begin
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           Inc(ip, offset);
           {$IFOPT C+}
           AssertFrameCode('OP_JUMP');
@@ -5049,8 +5126,7 @@ begin
         end;
 
         OP_JUMP_IF_FALSE: begin
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           if isFalsey(stack.StackTop[-1]) then
             Inc(ip, offset);
         end;
@@ -5058,8 +5134,7 @@ begin
         OP_JUMP_IF_FALSE_POP: begin
           // Fused: pop top, then jump if popped value was falsy.
           // Replaces OP_JUMP_IF_FALSE + OP_POP pair in if/while/for.
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
            {$IFOPT C+}
            AssertStackIsNotEmpty(vm.Stack);
            {$ENDIF}
@@ -5071,8 +5146,7 @@ begin
         OP_LESS_JUMP_IF_FALSE: begin
           // Fused OP_LESS + OP_JUMP_IF_FALSE_POP: compare two numbers,
           // pop both, jump if NOT (a < b). Saves one dispatch cycle.
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
           begin
             runtimeError('Operands must be numbers.');
@@ -5089,14 +5163,15 @@ begin
           // Pushes locals[slot] - constants[const_idx]. Saves two dispatch cycles.
           slot := ip^; Inc(ip);
           index := ip^; Inc(ip);
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, CreateNumber(
-              GetNumber(frame^.slots[slot]) - GetNumber(constants[index])))
-          else begin
+          if stack.StackTop < stack.CapacityEnd then
+          begin
             stack.StackTop^ := CreateNumber(
               GetNumber(frame^.slots[slot]) - GetNumber(constants[index]));
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, CreateNumber(
+              GetNumber(frame^.slots[slot]) - GetNumber(constants[index])));
         end;
 
         OP_ADD_SET_LOCAL_POP: begin
@@ -5126,8 +5201,7 @@ begin
 
 
         OP_LOOP: begin
-          offset := ip^ shl 8; Inc(ip);
-          offset := offset or ip^; Inc(ip);
+          offset := ReadJumpOffset(ip);
           Dec(ip, offset);
           {$IFOPT C+}
           AssertFrameCode('OP_LOOP');
@@ -5148,8 +5222,8 @@ begin
           value := constants[ip^];
           Inc(ip);
           Assert(isFunction(value), 'OP_CLOSURE: constant is not a function');
-          func := pObjFunction(GetObject(value));
-          closure := newClosure(func, VM.MemTracker);
+         // func := pObjFunction(GetObject(value));
+          closure := newClosure(pObjFunction(GetObject(value)), VM.MemTracker);
           pushStack(stack, CreateObject(pObj(closure)));
           for i := 0 to closure^.upvalueCount - 1 do
           begin
@@ -5191,9 +5265,7 @@ begin
 
 
         OP_DEFINE_GLOBAL_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           AssertValueIsString(value);
           TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker);
@@ -5201,9 +5273,7 @@ begin
         end;
 
         OP_GET_GLOBAL_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           {$IFOPT C+}
           AssertValueIsString(value);
@@ -5218,11 +5288,11 @@ begin
         end;
 
         OP_SET_GLOBAL_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           AssertValueIsString(value);
+          // TableSet returns True if the key was newly inserted. For
+          // assignment to an undeclared global, undo the insert and error.
           if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
           begin
             TableDelete(vm.Globals, ValueToString(value));
@@ -5233,13 +5303,11 @@ begin
         end;
 
         OP_CLOSURE_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           Assert(isFunction(value), 'OP_CLOSURE_LONG: constant is not a function');
-          func := pObjFunction(GetObject(value));
-          closure := newClosure(func, VM.MemTracker);
+          //func := pObjFunction(GetObject(value));
+          closure := newClosure(pObjFunction(GetObject(value)), VM.MemTracker);
           pushStack(stack, CreateObject(pObj(closure)));
           for i := 0 to closure^.upvalueCount - 1 do
           begin
@@ -5296,9 +5364,7 @@ begin
           argCount := ip^; Inc(ip); // fieldCount
           for i := 0 to argCount - 1 do
           begin
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG field name');
             AssertFrameValues('OP_RECORD_LONG field name');
@@ -5308,9 +5374,7 @@ begin
             recFieldNames[i] := ValueToString(value);
           end;
           // Read the record type name (3 bytes, 24-bit LE)
-          recNameIdx := ip^; Inc(ip);
-          recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-          recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+          recNameIdx := ReadLongIndex(ip);
           {$IFOPT C+}
           AssertConstantIndex(recNameIdx, 'OP_RECORD_LONG type name');
           AssertFrameValues('OP_RECORD_LONG type name');
@@ -5506,9 +5570,7 @@ begin
         end;
 
         OP_INVOKE_LONG: begin
-          invokeNameIdx := ip^; Inc(ip);
-          invokeNameIdx := invokeNameIdx or (ip^ shl 8); Inc(ip);
-          invokeNameIdx := invokeNameIdx or (ip^ shl 16); Inc(ip);
+          invokeNameIdx := ReadLongIndex(ip);
           invokeArgCount := ip^; Inc(ip);
           {$IFOPT C+}
           AssertConstantIndex(invokeNameIdx, 'OP_INVOKE_LONG');
@@ -5571,9 +5633,7 @@ begin
           if isRecord(stack.StackTop[-1]) then
           begin
             rec := pObjRecord(GetObject(stack.StackTop[-1]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
             AssertFrameValues('OP_GET_PROPERTY_LONG');
@@ -5594,9 +5654,7 @@ begin
           else if isNativeObject(stack.StackTop[-1]) then
           begin
             nativeObj := pObjNativeObject(GetObject(stack.StackTop[-1]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
             AssertFrameValues('OP_GET_PROPERTY_LONG');
@@ -5616,9 +5674,7 @@ begin
           end
           else
           begin
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
@@ -5629,9 +5685,7 @@ begin
           if isRecord(stack.StackTop[-2]) then
           begin
             rec := pObjRecord(GetObject(stack.StackTop[-2]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
             AssertFrameValues('OP_SET_PROPERTY_LONG');
@@ -5656,9 +5710,7 @@ begin
           else if isNativeObject(stack.StackTop[-2]) then
           begin
             nativeObj := pObjNativeObject(GetObject(stack.StackTop[-2]));
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             {$IFOPT C+}
             AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
             AssertFrameValues('OP_SET_PROPERTY_LONG');
@@ -5681,9 +5733,7 @@ begin
           end
           else
           begin
-            recNameIdx := ip^; Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 8); Inc(ip);
-            recNameIdx := recNameIdx or (ip^ shl 16); Inc(ip);
+            recNameIdx := ReadLongIndex(ip);
             runtimeError('Only records and native objects have properties.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
@@ -5941,34 +5991,18 @@ begin
       except
         on E: Exception do
         begin
-          // The original exception may have left `frame` / `ip` pointing at
-          // garbage, so build the diagnostic defensively — never let the
-          // catch handler raise its own AV and escape.
+          HandleVMException(E);
+          result.code := INTERPRET_RUNTIME_ERROR;
+          exit;
+        end;
+        else
+        begin
+          // Non-class raise (e.g. `raise 123;`) or an OS-level escape that
+          // didn't surface as an Exception subclass. Build the most
+          // primitive diagnostic possible — no VM-state dereferences.
           try
-            if instruction <= High(OP_STRINGS) then
-              runtimeError('Host exception in ' + OP_STRINGS[instruction] +
-                ' (opcode ' + IntToStr(instruction) + ') in function ''' +
-                String(ObjStringToAnsiString(frame^.closure^.func^.name)) +
-                ''' at offset ' +
-                IntToStr(NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 1) +
-                ': ' + E.ClassName + ': ' + E.Message)
-            else
-              runtimeError('Host exception in opcode ' + IntToStr(instruction) +
-                ': ' + E.ClassName + ': ' + E.Message);
+            runtimeError('Non-class host exception in opcode ' + IntToStr(instruction));
           except
-            on E2: Exception do
-            begin
-              // Fallback: omit frame metadata when it's unreadable.
-              if instruction <= High(OP_STRINGS) then
-                runtimeError('Host exception in ' + OP_STRINGS[instruction] +
-                  ' (opcode ' + IntToStr(instruction) + '): ' +
-                  E.ClassName + ': ' + E.Message +
-                  ' [diagnostic-builder also raised ' + E2.ClassName + ': ' + E2.Message + ']')
-              else
-                runtimeError('Host exception in opcode ' + IntToStr(instruction) +
-                  ': ' + E.ClassName + ': ' + E.Message +
-                  ' [diagnostic-builder also raised ' + E2.ClassName + ': ' + E2.Message + ']');
-            end;
           end;
           result.code := INTERPRET_RUNTIME_ERROR;
           exit;
