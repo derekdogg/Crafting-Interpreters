@@ -744,6 +744,7 @@ procedure printValueArray(ValueArray: pValueArray; strings: TStrings);
 function IntToBytes(const value : integer) : TIntToByteResult; inline;
 function ByteToInt(const value : TIntToByteResult) : integer;inline;
 function ReadByte(var code : pByte): Byte; inline;
+function ReadLongIndex(var code : pByte) : Integer; inline;
 function ReadConstant(var code : pByte; constants : pValueArray) : TValue; inline;
 function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue;inline;
 //Memtracker
@@ -4020,19 +4021,28 @@ begin
   result := Constants.Values[idx];
 end;
 
+function ReadLongIndex(var code : pByte) : Integer;
+var
+  Bytes : TIntToByteResult;
+begin
+  {$IFOPT C+}
+  AssertCodePointerIsAssigned(code);
+  {$ENDIF}
+  Bytes.byte0 := code^; Inc(code);
+  Bytes.byte1 := code^; Inc(code);
+  Bytes.byte2 := code^; Inc(code);
+  Result := ByteToInt(Bytes);
+end;
+
 function ReadConstantLong(var code : pByte; constants : pValueArray) : TValue; inline;
 var
   idx : integer;
-  Bytes: TIntToByteResult;
 begin
   {$IFOPT C+}
   AssertValueArrayIsAssigned(constants);
   AssertValuesIsAssigned(constants.Values);
   {$ENDIF}
-  Bytes.byte0 := ReadByte(code);
-  Bytes.byte1 := ReadByte(code);
-  Bytes.byte2 := ReadByte(code);
-  idx := ByteToInt(Bytes);
+  idx := ReadLongIndex(code);
   {$IFOPT C+}
   AssertIndexIsNotNegative(idx);
   AssertIndexInRange(idx, constants.Count);
@@ -5191,9 +5201,7 @@ begin
 
 
         OP_DEFINE_GLOBAL_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           AssertValueIsString(value);
           TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker);
@@ -5201,9 +5209,7 @@ begin
         end;
 
         OP_GET_GLOBAL_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           {$IFOPT C+}
           AssertValueIsString(value);
@@ -5218,9 +5224,7 @@ begin
         end;
 
         OP_SET_GLOBAL_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           AssertValueIsString(value);
           if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
@@ -5233,9 +5237,7 @@ begin
         end;
 
         OP_CLOSURE_LONG: begin
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
           value := constants[i];
           Assert(isFunction(value), 'OP_CLOSURE_LONG: constant is not a function');
           func := pObjFunction(GetObject(value));
