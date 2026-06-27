@@ -603,6 +603,8 @@ type
     Entries         : pEntry;
   end;
 
+  TRecFieldNames = array[0..MAX_BYTE_OPERAND] of pObjString;
+
 function findNativeClass(const name : AnsiString) : pNativeClassInfo;
 procedure RunTimeError(const msg : string);
 
@@ -4315,7 +4317,7 @@ var
   i, j : integer;
 
      // record support
-  recFieldNames : array[0..MAX_BYTE_OPERAND] of pObjString;
+  recFieldNames : TRecFieldNames;
   recNameIdx : integer;
   recTypeName : pObjString;
   recType : pObjRecordType;
@@ -4669,10 +4671,7 @@ begin
         end;
 
         OP_CONSTANT_LONG : begin
-          // 3-byte constant index (little-endian: byte0 | byte1<<8 | byte2<<16)
-          i := ip^; Inc(ip);
-          i := i or (ip^ shl 8); Inc(ip);
-          i := i or (ip^ shl 16); Inc(ip);
+          i := ReadLongIndex(ip);
            {$IFOPT C+}
           AssertConstantIndex(i, 'OP_CONSTANT_LONG');
           AssertFrameValues('OP_CONSTANT_LONG');
@@ -4882,6 +4881,8 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
+          // TableSet returns True if the key was newly inserted. For
+          // assignment to an undeclared global, undo the insert and error.
           if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
           begin
             TableDelete(vm.Globals, ValueToString(value));
@@ -4896,12 +4897,13 @@ begin
           {$IFOPT C+}
           Assert(NativeUInt(@frame^.slots[slot]) < NativeUInt(stack.StackTop), 'OP_GET_LOCAL: slot out of stack bounds');
           {$ENDIF}
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[slot])
-          else begin
+          if stack.StackTop < stack.CapacityEnd then
+          begin
             stack.StackTop^ := frame^.slots[slot];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[slot]);
         end;
 
         // OP_GET_LOCAL_0..OP_GET_LOCAL_7: fast-slot get, slot encoded in opcode.
@@ -4911,97 +4913,97 @@ begin
         OP_GET_LOCAL_0: begin
           Assert(NativeUInt(@frame^.slots[0]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_0: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[0])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[0];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[0]);
         end;
 
         OP_GET_LOCAL_1: begin
           Assert(NativeUInt(@frame^.slots[1]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_1: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[1])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[1];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[1]);
         end;
 
         OP_GET_LOCAL_2: begin
           Assert(NativeUInt(@frame^.slots[2]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_2: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[2])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[2];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[2]);
         end;
 
         OP_GET_LOCAL_3: begin
           Assert(NativeUInt(@frame^.slots[3]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_3: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[3])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[3];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[3]);
         end;
 
         OP_GET_LOCAL_4: begin
           Assert(NativeUInt(@frame^.slots[4]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_4: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[4])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[4];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[4]);
         end;
 
         OP_GET_LOCAL_5: begin
           Assert(NativeUInt(@frame^.slots[5]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_5: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[5])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[5];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[5]);
         end;
 
         OP_GET_LOCAL_6: begin
           Assert(NativeUInt(@frame^.slots[6]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_6: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[6])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[6];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[6]);
         end;
 
         OP_GET_LOCAL_7: begin
           Assert(NativeUInt(@frame^.slots[7]) < NativeUInt(stack.StackTop),
             'OP_GET_LOCAL_7: slot out of stack bounds');
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, frame^.slots[7])
-          else
+          if stack.StackTop < stack.CapacityEnd then
           begin
             stack.StackTop^ := frame^.slots[7];
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, frame^.slots[7]);
         end;
 
         OP_SET_LOCAL: begin
@@ -5108,14 +5110,15 @@ begin
           // Pushes locals[slot] - constants[const_idx]. Saves two dispatch cycles.
           slot := ip^; Inc(ip);
           index := ip^; Inc(ip);
-          if stack.StackTop >= stack.CapacityEnd then
-            pushStackGrow(stack, CreateNumber(
-              GetNumber(frame^.slots[slot]) - GetNumber(constants[index])))
-          else begin
+          if stack.StackTop < stack.CapacityEnd then
+          begin
             stack.StackTop^ := CreateNumber(
               GetNumber(frame^.slots[slot]) - GetNumber(constants[index]));
             Inc(stack.StackTop);
-          end;
+          end
+          else
+            pushStackGrow(stack, CreateNumber(
+              GetNumber(frame^.slots[slot]) - GetNumber(constants[index])));
         end;
 
         OP_ADD_SET_LOCAL_POP: begin
@@ -5235,6 +5238,8 @@ begin
           i := ReadLongIndex(ip);
           value := constants[i];
           AssertValueIsString(value);
+          // TableSet returns True if the key was newly inserted. For
+          // assignment to an undeclared global, undo the insert and error.
           if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
           begin
             TableDelete(vm.Globals, ValueToString(value));
