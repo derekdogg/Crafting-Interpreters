@@ -785,8 +785,9 @@ procedure FillNilValues(p: pValue; Count: NativeInt);
 procedure InitStack(var Stack : pStack;MemTracker : pMemTracker); inline;
 procedure FreeStack(var Stack : pStack;MemTracker : pMemTracker);inline;
 procedure ResetStack(var stack : pStack);inline;
-procedure pushStack(var stack : pStack;const value : TValue); inline;
 procedure pushStackGrow(var stack : pStack;const value : TValue);inline;
+procedure pushStack(var stack : pStack;const value : TValue); inline;
+ 
 //function peekStack(stack : pStack) : TValue; overload; inline;
 function peekStack(stack : pStack; distanceFromTop : integer) : TValue; inline;
 function  popStack(stack : pStack) : TValue; inline;
