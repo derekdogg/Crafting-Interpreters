@@ -1,0 +1,262 @@
+// Tests for OP_GET_LOCAL_CONST_SUBTRACT superinstruction.
+// The compiler fuses GET_LOCAL + CONSTANT + SUBTRACT into a single opcode
+// when a local variable has a constant subtracted from it.
+// Pattern: local - constant  (where local is in a slot)
+
+// ---------------------------------------------------------------------------
+// Test 1: Basic local - constant (slot 0-7, fast path)
+// Canonical trigger: fib(n - 1) where n is a local parameter
+// ---------------------------------------------------------------------------
+{
+  fun sub1(n) {
+    return n - 1;
+  }
+  assert(sub1(10) == 9, "T1: n - 1");
+  assert(sub1(0) == -1, "T1: 0 - 1 = -1");
+  assert(sub1(1) == 0, "T1: 1 - 1 = 0");
+  assert(sub1(-5) == -6, "T1: -5 - 1 = -6");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Local - constant with various constant values
+// ---------------------------------------------------------------------------
+{
+  fun subConst(n) {
+    var a = n - 2;
+    var b = n - 10;
+    var c = n - 100;
+    var d = n - 0;
+    return [a, b, c, d];
+  }
+  var r = subConst(50);
+  assert(r[0] == 48, "T2: n - 2");
+  assert(r[1] == 40, "T2: n - 10");
+  assert(r[2] == -50, "T2: n - 100");
+  assert(r[3] == 50, "T2: n - 0");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Floating point constants
+// ---------------------------------------------------------------------------
+{
+  fun subFloat(x) {
+    return x - 0.5;
+  }
+  assert(subFloat(1) == 0.5, "T3: 1 - 0.5");
+  assert(subFloat(0) == -0.5, "T3: 0 - 0.5");
+  assert(subFloat(2.5) == 2, "T3: 2.5 - 0.5");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Used in recursive function (fibonacci pattern)
+// This is the primary motivation for this optimization.
+// ---------------------------------------------------------------------------
+{
+  fun fib(n) {
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
+  }
+  assert(fib(0) == 0, "T4: fib(0)");
+  assert(fib(1) == 1, "T4: fib(1)");
+  assert(fib(2) == 1, "T4: fib(2)");
+  assert(fib(10) == 55, "T4: fib(10)");
+  assert(fib(20) == 6765, "T4: fib(20)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Multiple subtractions in one expression
+// Only the first eligible GET_LOCAL + CONST + SUB should fuse (or each
+// independently if the compiler re-matches after emitting).
+// ---------------------------------------------------------------------------
+{
+  fun multiSub(n) {
+    return (n - 1) + (n - 2) + (n - 3);
+  }
+  // 10-1 + 10-2 + 10-3 = 9 + 8 + 7 = 24
+  assert(multiSub(10) == 24, "T5: multiple (n-k) terms");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Slot >= 8 (generic GET_LOCAL variant, not fast-slot)
+// ---------------------------------------------------------------------------
+{
+  fun manyLocals(a, b, c, d, e, f, g, h) {
+    // h is intended to land outside the specialized fast-local range.
+    return h - 1;
+  }
+  assert(manyLocals(1, 2, 3, 4, 5, 6, 7, 100) == 99, "T6: slot 8 generic path");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Subtraction in loop condition / body
+// ---------------------------------------------------------------------------
+{
+  fun countdown(start) {
+    var n = start;
+    var steps = 0;
+    while (n > 0) {
+      n = n - 1;
+      steps = steps + 1;
+    }
+    return steps;
+  }
+  assert(countdown(10) == 10, "T7: countdown loop");
+  assert(countdown(0) == 0, "T7: countdown zero");
+  assert(countdown(1) == 1, "T7: countdown one");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: Subtraction NOT eligible (expression on left, not a bare local)
+// These should NOT trigger the peephole — verifies no false matches.
+// ---------------------------------------------------------------------------
+{
+  fun exprMinus(n) {
+    return (n + 1) - 2;  // (n+1) is a computed value, not a GET_LOCAL
+  }
+  assert(exprMinus(10) == 9, "T8: expression - constant fallback");
+  assert(exprMinus(1) == 0, "T8: expression - constant fallback 2");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: Result becomes negative
+// ---------------------------------------------------------------------------
+{
+  fun negResult(n) {
+    return n - 1000;
+  }
+  assert(negResult(0) == -1000, "T9: negative result");
+  assert(negResult(500) == -500, "T9: negative result 2");
+  assert(negResult(1000) == 0, "T9: zero result");
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: Nested function calls with subtract
+// ---------------------------------------------------------------------------
+{
+  fun outer(n) {
+    fun inner(x) {
+      return x - 3;
+    }
+    return inner(n - 2);
+  }
+  // outer(10): inner(10-2) = inner(8) = 8-3 = 5
+  assert(outer(10) == 5, "T10: nested subtract");
+  assert(outer(5) == 0, "T10: nested subtract zero");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Local variable (non-parameter)
+// Verifies the peephole works for ordinary locals, not just parameters.
+// ---------------------------------------------------------------------------
+{
+  fun localVar() {
+    var x = 10;
+    return x - 3;
+  }
+  assert(localVar() == 7, "T11: local variable subtract");
+
+  fun localVarInLoop() {
+    var sum = 0;
+    for (var i = 0; i < 5; i = i + 1) {
+      var x = i * 10;
+      sum = sum + (x - 1);
+    }
+    return sum;
+  }
+  // (0-1) + (10-1) + (20-1) + (30-1) + (40-1) = -1+9+19+29+39 = 95
+  assert(localVarInLoop() == 95, "T11: local in loop subtract");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: Closure/upvalue — should NOT match peephole
+// GET_UPVALUE + CONSTANT + SUBTRACT is NOT GET_LOCAL + CONSTANT + SUBTRACT.
+// The peephole must not fire for captured variables.
+// ---------------------------------------------------------------------------
+{
+  fun outer(n) {
+    fun inner() {
+      return n - 1;  // n is an upvalue, not a local
+    }
+    return inner();
+  }
+  assert(outer(10) == 9, "T12: upvalue subtract (not fused)");
+  assert(outer(1) == 0, "T12: upvalue subtract zero");
+  assert(outer(0) == -1, "T12: upvalue subtract negative");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Large numeric constant value
+// Useful for verifying operand handling and constant loading.
+// ---------------------------------------------------------------------------
+{
+  fun largeConst(n) {
+    return n - 123456;
+  }
+  assert(largeConst(123456) == 0, "T13: large constant zero");
+  assert(largeConst(200000) == 76544, "T13: large constant positive");
+  assert(largeConst(0) == -123456, "T13: large constant negative");
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Chained subtraction (n - 1 - 2)
+// Left-associative: (n - 1) - 2. The first subtract may fuse but the
+// second has a computed value on the left, not a bare local.
+// Tests peephole rematching behavior.
+// ---------------------------------------------------------------------------
+{
+  fun chain(n) {
+    return n - 1 - 2;
+  }
+  assert(chain(10) == 7, "T14: chained subtract");
+  assert(chain(3) == 0, "T14: chained subtract zero");
+  assert(chain(0) == -3, "T14: chained subtract negative");
+
+  fun chainLong(n) {
+    return n - 1 - 2 - 3 - 4;
+  }
+  assert(chainLong(10) == 0, "T14: long chain");
+  assert(chainLong(20) == 10, "T14: long chain positive");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Non-local operand — function call result
+// return foo() - 1  should NOT trigger peephole (no GET_LOCAL before CONST).
+// ---------------------------------------------------------------------------
+{
+  fun getValue() {
+    return 42;
+  }
+  fun callMinus() {
+    return getValue() - 1;
+  }
+  assert(callMinus() == 41, "T15: call result - constant (not fused)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: Non-local operand — expression result
+// return (n * 2) - 1  should NOT fuse (left side is MUL result, not local).
+// ---------------------------------------------------------------------------
+{
+  fun exprMinus2(n) {
+    return (n * 2) - 1;
+  }
+  assert(exprMinus2(5) == 9, "T16: expr result - constant (not fused)");
+  assert(exprMinus2(1) == 1, "T16: expr result - constant 2");
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Negative literal constant
+// Verifies behavior when the constant is negative. Some compilers tokenize
+// -1 as a negative constant; others emit CONSTANT 1 + NEGATE. Either way
+// the subtraction must produce the correct result.
+// ---------------------------------------------------------------------------
+{
+  fun subNeg(n) {
+    return n - -1;
+  }
+  assert(subNeg(5) == 6, "T17: subtract negative constant");
+  assert(subNeg(0) == 1, "T17: subtract -1 from zero");
+  assert(subNeg(-3) == -2, "T17: subtract -1 from negative");
+}
+
+print "pass: peephole_get_local_const_subtract"; // expect: pass: peephole_get_local_const_subtract

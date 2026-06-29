@@ -10,7 +10,8 @@ uses
   Data.DB, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Intf,
   FireDAC.Stan.Async, FireDAC.Phys.MSSQL, FireDAC.DApt, FireDAC.VCLUI.Wait,
   System.ImageList,NativeObjects,
-  System.Generics.Collections;
+  System.Generics.Collections,
+  Vcl.Themes, Vcl.Styles;
 
 type
 
@@ -35,6 +36,9 @@ type
     Button3: TButton;
     SplitterOutput: TSplitter;
     Memo2: TMemo;
+    Button4: TButton;
+    BtnSave: TButton;
+    SaveDialog1: TSaveDialog;
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -50,6 +54,8 @@ type
     procedure Button2Click(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure Button3Click(Sender: TObject);
+    procedure Button4Click(Sender: TObject);
+    procedure BtnSaveClick(Sender: TObject);
   private
     procedure PopulateTestTree;
     procedure AddTestFiles(ParentNode: TTreeNode; const Dir, Pattern: string;
@@ -65,6 +71,10 @@ type
   private
     FLoxSyn: TSynLoxSyn;
     FScriptRunning: Boolean;
+    FCurrentFilePath: string;
+    FStyleCombo: TComboBox;
+    procedure LoadStyles;
+    procedure StyleComboChange(Sender: TObject);
   public
     FClosing: Boolean;
     procedure HandleLivePrint(const Text: string);
@@ -75,7 +85,8 @@ var
 
 implementation
 uses
-  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, fmGame;
+  NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, fmGame, fmEventTest,
+  LoxEventEngine;
 
 {$R *.dfm}
 
@@ -251,6 +262,67 @@ begin
   // OnCreate handler sets up everything else.
   if frmGame = nil then
     frmGame := TfrmGame.Create(Application);
+
+  LoadStyles;
+end;
+
+procedure TForm4.LoadStyles;
+var
+  StyleDir: string;
+  Files: TStringDynArray;
+  F, StyleName: string;
+begin
+  // Create style combo on the toolbar
+  FStyleCombo := TComboBox.Create(Self);
+  FStyleCombo.Parent := PanelToolbar;
+  FStyleCombo.Style := csDropDownList;
+  FStyleCombo.Left := PanelToolbar.Width - 180;
+  FStyleCombo.Top := 4;
+  FStyleCombo.Width := 170;
+  FStyleCombo.Anchors := [akTop, akRight];
+  FStyleCombo.OnChange := StyleComboChange;
+
+  // Add default (no style) entry
+  FStyleCombo.Items.Add('Windows (Default)');
+
+  // Load .vsf files from styles/ folder relative to EXE
+  StyleDir := TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\styles');
+  if not TDirectory.Exists(StyleDir) then
+    StyleDir := TPath.Combine(ExtractFilePath(ParamStr(0)), 'styles');
+
+  if TDirectory.Exists(StyleDir) then
+  begin
+    Files := TDirectory.GetFiles(StyleDir, '*.vsf');
+    for F in Files do
+    begin
+      try
+        if TStyleManager.IsValidStyle(F) then
+          TStyleManager.LoadFromFile(F);
+      except
+        // Skip invalid style files silently
+      end;
+    end;
+  end;
+
+  // Populate combo from registered style names
+  for StyleName in TStyleManager.StyleNames do
+    if not SameText(StyleName, 'Windows') then
+      FStyleCombo.Items.Add(StyleName);
+
+  FStyleCombo.ItemIndex := 0;
+end;
+
+procedure TForm4.StyleComboChange(Sender: TObject);
+var
+  SelectedStyle: string;
+begin
+  if FStyleCombo.ItemIndex <= 0 then
+    TStyleManager.SetStyle(TStyleManager.SystemStyle)
+  else
+  begin
+    SelectedStyle := FStyleCombo.Items[FStyleCombo.ItemIndex];
+    TStyleManager.SetStyle(SelectedStyle);
+  end;
 end;
 
 procedure TForm4.FormDestroy(Sender: TObject);
@@ -376,8 +448,18 @@ begin
 end;
 
 procedure TForm4.HandleLivePrint(const Text: string);
+var
+  Normalized: string;
+  Lines: TArray<string>;
+  i: Integer;
 begin
-  Memo2.Lines.Add(Text);
+  // Normalize all line-ending variants to LF, then split for display
+  Normalized := StringReplace(Text, #13#10, #10, [rfReplaceAll]);
+  Normalized := StringReplace(Normalized, #13, #10, [rfReplaceAll]);
+  Lines := Normalized.Split([#10]);
+  for i := 0 to High(Lines) do
+    Memo2.Lines.Add(Lines[i]);
+  Memo2.Update;
   Application.ProcessMessages;
 end;
 
@@ -391,6 +473,66 @@ end;
 procedure TForm4.Button3Click(Sender: TObject);
 begin
   frmGame.FEventQueue.Enqueue('keydown:escape');
+end;
+
+procedure TForm4.Button4Click(Sender: TObject);
+var
+  IR: TInterpretResult;
+  ScriptText: AnsiString;
+begin
+  Memo2.Lines.Clear;
+
+  ScriptText := AnsiString(Memo1.Lines.Text);
+
+  if Length(Trim(string(ScriptText))) = 0 then
+  begin
+    Memo2.Lines.Add('No script to run. Enter code in the editor first.');
+    Exit;
+  end;
+
+  if frmEventTest = nil then
+    frmEventTest := TfrmEventTest.Create(Self);
+  FScriptRunning := True;
+  Button4.Enabled := False;
+  try
+    IR := frmEventTest.RunScript(ScriptText);
+  finally
+    FScriptRunning := False;
+    Button4.Enabled := True;
+  end;
+  case IR.code of
+    INTERPRET_OK:
+      Memo2.Lines.Add('== Script finished OK ==');
+    INTERPRET_RUNTIME_ERROR:
+      Memo2.Lines.Add('Runtime error: ' + IR.ErrorStr);
+    INTERPRET_COMPILE_ERROR:
+      Memo2.Lines.Add('Compile error: ' + IR.ErrorStr);
+  end;
+end;
+
+procedure TForm4.BtnSaveClick(Sender: TObject);
+var
+  TargetPath: string;
+begin
+  if FCurrentFilePath <> '' then
+  begin
+    if MessageDlg('Save changes to ' + FCurrentFilePath + '?',
+      mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+      Memo1.Lines.SaveToFile(FCurrentFilePath);
+  end
+  else
+  begin
+    if SaveDialog1.Execute then
+    begin
+      TargetPath := SaveDialog1.FileName;
+      if MessageDlg('Save to ' + TargetPath + '?',
+        mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+      begin
+        Memo1.Lines.SaveToFile(TargetPath);
+        FCurrentFilePath := TargetPath;
+      end;
+    end;
+  end;
 end;
 
 procedure TForm4.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
@@ -427,6 +569,35 @@ var
     StateImages.Add(bmp, nil);
   end;
 
+  procedure DrawTick;
+  begin
+    bmp.Canvas.Brush.Color := clWhite;
+    bmp.Canvas.FillRect(Rect(0, 0, 16, 16));
+    bmp.Canvas.Pen.Color := clGreen;
+    bmp.Canvas.Pen.Width := 2;
+    // Draw a checkmark: short stroke down-right, then long stroke up-right
+    bmp.Canvas.MoveTo(2, 8);
+    bmp.Canvas.LineTo(6, 12);
+    bmp.Canvas.LineTo(14, 3);
+    bmp.Canvas.Pen.Width := 1;
+    StateImages.Add(bmp, nil);
+  end;
+
+  procedure DrawCross;
+  begin
+    bmp.Canvas.Brush.Color := clWhite;
+    bmp.Canvas.FillRect(Rect(0, 0, 16, 16));
+    bmp.Canvas.Pen.Color := clRed;
+    bmp.Canvas.Pen.Width := 2;
+    // Draw an X
+    bmp.Canvas.MoveTo(3, 3);
+    bmp.Canvas.LineTo(13, 13);
+    bmp.Canvas.MoveTo(13, 3);
+    bmp.Canvas.LineTo(3, 13);
+    bmp.Canvas.Pen.Width := 1;
+    StateImages.Add(bmp, nil);
+  end;
+
   procedure DrawCircle(AColor: TColor);
   begin
     bmp.Canvas.Brush.Color := clWhite;
@@ -447,11 +618,16 @@ begin
     bmp.Height := 16;
     bmp.PixelFormat := pf24bit;
 
-    DrawBox(clGray, False, ' ');      // 0: unchecked
-    DrawBox(clBlue, True, #$2713);    // 1: checked (checkmark)
-    DrawCircle(clGreen);              // 2: pass
-    DrawCircle(clRed);                // 3: fail
-    DrawCircle(clSilver);             // 4: skipped
+    // Index 0: blank (StateIndex 0 = no visible state)
+    bmp.Canvas.Brush.Color := clWhite;
+    bmp.Canvas.FillRect(Rect(0, 0, 16, 16));
+    StateImages.Add(bmp, nil);
+
+    DrawBox(clGray, False, ' ');      // 1: unchecked  (STATE_UNCHECKED)
+    DrawBox(clBlue, True, #$2713);    // 2: checked    (STATE_CHECKED)
+    DrawTick;                          // 3: pass       (STATE_PASS)
+    DrawCross;                         // 4: fail       (STATE_FAIL)
+    DrawCircle(clSilver);             // 5: skipped
   finally
     bmp.Free;
   end;
@@ -593,11 +769,49 @@ var
   HT: THitTests;
   Node: TTreeNode;
   FilePath: string;
+  i: Integer;
+  FileContent: TStringList;
 begin
   P := TestTree.ScreenToClient(Mouse.CursorPos);
   HT := TestTree.GetHitTestInfoAt(P.X, P.Y);
   if htOnStateIcon in HT then
-    ToggleCheck(TestTree.Selected)
+  begin
+    Node := TestTree.GetNodeAt(P.X, P.Y);
+    ToggleCheck(Node);
+  end
+  else if TestTree.SelectionCount > 1 then
+  begin
+    // Multi-select: concatenate all selected files into editor
+    FileContent := TStringList.Create;
+    try
+      for i := 0 to TestTree.SelectionCount - 1 do
+      begin
+        Node := TestTree.Selections[i];
+        if (Node <> nil) and (Node.Data <> nil) then
+        begin
+          FilePath := String(PChar(Node.Data));
+          if FileExists(FilePath) then
+          begin
+            if FileContent.Count > 0 then
+            begin
+              FileContent.Add('');
+              FileContent.Add('// ' + StringOfChar('=', 70));
+              FileContent.Add('// FILE: ' + ExtractFileName(FilePath));
+              FileContent.Add('// ' + StringOfChar('=', 70));
+              FileContent.Add('');
+            end
+            else
+              FileContent.Add('// FILE: ' + ExtractFileName(FilePath));
+            FileContent.AddStrings(TFile.ReadAllLines(FilePath));
+          end;
+        end;
+      end;
+      Memo1.Lines.Assign(FileContent);
+      FCurrentFilePath := '';
+    finally
+      FileContent.Free;
+    end;
+  end
   else
   begin
     Node := TestTree.Selected;
@@ -605,7 +819,10 @@ begin
     begin
       FilePath := String(PChar(Node.Data));
       if FileExists(FilePath) then
+      begin
         Memo1.Lines.LoadFromFile(FilePath);
+        FCurrentFilePath := FilePath;
+      end;
     end;
   end;
 end;
@@ -992,7 +1209,30 @@ begin
       f1 := 0;
 
       try
-        if IsInject then
+        if Pos('\events\', LowerCase(F)) > 0 then
+        begin
+          // Event engine test — run with engine active
+          Content := TFile.ReadAllText(F);
+          InitVM;
+          try
+            var Engine := TLoxEventEngine.Create;
+            try
+              Engine.RegisterNatives;
+              Engine.RegisterGCRoots;
+              IR := CompileAndRun(PAnsiChar(AnsiString(Content)));
+              Engine.UnregisterGCRoots;
+            finally
+              Engine.Free;
+            end;
+          finally
+            FreeVM;
+          end;
+          if CheckExpectedOutput(Content, IR, Memo2) then
+            p1 := 1
+          else
+            f1 := 1;
+        end
+        else if IsInject then
         begin
           // inject_stringlist test
           if Pos('inject_stringlist', LowerCase(FileName)) > 0 then

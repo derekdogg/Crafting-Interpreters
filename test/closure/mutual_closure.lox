@@ -1,0 +1,30 @@
+// Two closures that mutually reference each other through shared captured variables.
+// Local functions can't forward-reference each other, so we use variables.
+
+fun test() {
+  var pingCount = 0;
+  var pongCount = 0;
+  var pingFn;
+  var pongFn;
+
+  fun ping(n) {
+    if (n <= 0) return pingCount;
+    pingCount = pingCount + 1;
+    return pongFn(n - 1);
+  }
+
+  fun pong(n) {
+    if (n <= 0) return pongCount;
+    pongCount = pongCount + 1;
+    return pingFn(n - 1);
+  }
+
+  pingFn = ping;
+  pongFn = pong;
+
+  print ping(10); // expect: 5
+  print pingCount; // expect: 5
+  print pongCount; // expect: 5
+}
+
+test();

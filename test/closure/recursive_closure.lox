@@ -1,0 +1,19 @@
+// A closure that calls itself recursively via a captured variable.
+
+fun makeRecursive() {
+  var self;
+
+  fun fib(n) {
+    if (n < 2) return n;
+    return self(n - 1) + self(n - 2);
+  }
+
+  self = fib;
+  return fib;
+}
+
+var fib = makeRecursive();
+print fib(0);  // expect: 0
+print fib(1);  // expect: 1
+print fib(5);  // expect: 5
+print fib(10); // expect: 55

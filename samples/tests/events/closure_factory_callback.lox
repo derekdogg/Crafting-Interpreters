@@ -1,0 +1,30 @@
+// Test: Callbacks registered inside a closure that captures mutable state
+fun makeCounter() {
+  var count = 0;
+  var log = "";
+
+  fun register() {
+    onKeyPressed(fun(key) {
+      count = count + 1;
+      log = log + key + str(count) + " ";
+    });
+  }
+
+  fun getLog() { return log; }
+  fun getCount() { return count; }
+
+  return [register, getLog, getCount];
+}
+
+var counter = makeCounter();
+counter[0]();  // register()
+
+simulateKeyDown("a");
+processEvents();
+simulateKeyUp("a");
+processEvents();
+simulateKeyDown("b");
+processEvents();
+
+print counter[1](); // expect: a1 b2 
+print str(counter[2]()); // expect: 2

@@ -1,27 +1,27 @@
-// Demonstrating doubled-quote syntax for embedded quotes in Lox
+// Demonstrating quote escaping in Lox
 //
-// The Lox scanner has NO escape processing. A backslash is just a literal
-// character. To embed a double-quote inside a string, use "" (doubled quote).
-//
-// "" inside a string produces a single " character.
+// Lox supports backslash escape sequences: \n \t \r \\ \" \0
+// The legacy "" (doubled-quote) syntax also still works.
 
-// This works fine - backslash is literal:
-var path = "C:\Users\Derek\Documents";
-print "Path: " + path;
+// Backslashes must now be escaped in paths:
+var path = "C:\\Users\\Derek\\Documents";
+print "Path: " + path; // expect: Path: C:\Users\Derek\Documents
 
-// Embedding quotes using doubled-quote syntax:
-var cmd = "msbuild ""C:\My Project\app.sln"" /p:Configuration=Release";
-print "Command: " + cmd;
+// Embedding quotes using backslash-quote:
+var cmd = "msbuild \"C:\\My Project\\app.sln\" /p:Configuration=Release";
+print "Command: " + cmd; // expect: Command: msbuild "C:\My Project\app.sln" /p:Configuration=Release
 
-// A person speaking:
-var msg = "the person says ""hello""";
-print msg;
+// A person speaking (both styles work):
+var msg = "the person says \"hello\"";
+print msg; // expect: the person says "hello"
+var msg2 = "the person says ""hello""";
+print msg2; // expect: the person says "hello"
 
 // You can still use chr(34) if you prefer:
 var Q = chr(34);
-var cmd2 = "msbuild " + Q + "C:\My Project\app.sln" + Q + " /p:Configuration=Release";
-print "Command: " + cmd2;
+var cmd2 = "msbuild " + Q + "C:\\My Project\\app.sln" + Q + " /p:Configuration=Release";
+print "Command: " + cmd2; // expect: Command: msbuild "C:\My Project\app.sln" /p:Configuration=Release
 
 // A string that is just a quote character:
-var quote = """";
-print "A quote: " + quote;
+var quote = "\"";
+print "A quote: " + quote; // expect: A quote: "

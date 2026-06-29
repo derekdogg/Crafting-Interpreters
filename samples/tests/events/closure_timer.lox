@@ -1,0 +1,29 @@
+// Test: Recursive closure that counts down via held key
+var ticks = 0;
+var done = false;
+
+fun makeTimer(limit) {
+  return fun(key) {
+    ticks = ticks + 1;
+    if (ticks >= limit) {
+      done = true;
+    }
+  };
+}
+
+onKeyHeld(makeTimer(10));
+
+simulateKeyDown("x");
+
+var frames = 0;
+while (!done) {
+  processEvents();
+  frames = frames + 1;
+  if (frames > 100) {
+    print "timeout";
+    done = true;
+  }
+}
+
+print str(ticks);  // expect: 10
+print str(frames); // expect: 10

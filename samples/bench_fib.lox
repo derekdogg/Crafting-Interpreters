@@ -7,5 +7,17 @@ var start = clock();
 var result = fib(40);
 var elapsed = clock() - start;
 
+print elapsed;
+
 print "fib(40) = " + str(result);
 print "elapsed: " + str(elapsed) + "s";
+
+/*currently clocking in at elapsed: 12.556369s on my machine
+
+Surface Laptop 6 for business.
+Processor  Intel(R) Core(TM) Ultra 7 165H (3.80 GHz)
+Installed RAM  32.0 GB (31.6 GB usable)
+System type  64-bit operating system, x64-based processor
+
+
+*/

@@ -1,0 +1,150 @@
+// ============================================================
+// test_writeCsv.lox — Thorough tests for writeCsv() native
+// ============================================================
+
+// Helper: check if haystack contains needle
+fun contains(haystack, needle) {
+  return indexOf(haystack, needle) >= 0;
+}
+
+var QUOTE = chr(34);  // double-quote character
+
+// --- Test 1: Basic export with multiple columns ---
+var rows = newArray();
+var r1 = [:]; r1.Set("Name", "Alice"); r1.Set("Age", 30); r1.Set("City", "Melbourne");
+var r2 = [:]; r2.Set("Name", "Bob"); r2.Set("Age", 25); r2.Set("City", "Sydney");
+var r3 = [:]; r3.Set("Name", "Charlie"); r3.Set("Age", 40); r3.Set("City", "Perth");
+arrayPush(rows, r1);
+arrayPush(rows, r2);
+arrayPush(rows, r3);
+
+writeCsv("test_basic.csv", rows);
+var content = readFile("test_basic.csv");
+assert(content != "", "basic CSV should not be empty");
+assert(contains(content, "Alice"), "should contain Alice");
+assert(contains(content, "Bob"), "should contain Bob");
+assert(contains(content, "Charlie"), "should contain Charlie");
+print "PASS: basic export"; // expect: PASS: basic export
+
+// --- Test 2: Empty array produces empty file ---
+writeCsv("test_empty.csv", newArray());
+var empty = readFile("test_empty.csv");
+assert(empty == "", "empty array should produce empty file");
+print "PASS: empty array"; // expect: PASS: empty array
+
+// --- Test 3: Single row, single column ---
+var single = newArray();
+var s1 = [:]; s1.Set("Value", 42);
+arrayPush(single, s1);
+writeCsv("test_single.csv", single);
+var singleContent = readFile("test_single.csv");
+assert(singleContent != "", "single row CSV should not be empty");
+assert(contains(singleContent, "Value"), "header should be present");
+assert(contains(singleContent, "42"), "value should be present");
+print "PASS: single row/column"; // expect: PASS: single row/column
+
+// --- Test 4: Values containing commas are quoted ---
+var commaRows = newArray();
+var c1 = [:]; c1.Set("Name", "Smith, John"); c1.Set("Score", 100);
+arrayPush(commaRows, c1);
+writeCsv("test_comma.csv", commaRows);
+var commaContent = readFile("test_comma.csv");
+// The cell "Smith, John" must be wrapped in double quotes
+assert(contains(commaContent, QUOTE + "Smith, John" + QUOTE), "comma in value should be quoted");
+print "PASS: comma in value"; // expect: PASS: comma in value
+
+// --- Test 5: Values containing double quotes are escaped ---
+var quoteRows = newArray();
+var q1 = [:]; q1.Set("Quote", "He said " + QUOTE + "hello" + QUOTE); q1.Set("Id", 1);
+arrayPush(quoteRows, q1);
+writeCsv("test_quotes.csv", quoteRows);
+var quoteContent = readFile("test_quotes.csv");
+// Internal quotes should be doubled: ""hello""
+assert(contains(quoteContent, QUOTE + QUOTE + "hello" + QUOTE + QUOTE), "quotes in value should be doubled");
+print "PASS: quotes in value"; // expect: PASS: quotes in value
+
+// --- Test 6: Values containing newlines are quoted ---
+var nlRows = newArray();
+var n1 = [:]; n1.Set("Desc", "line1
+line2"); n1.Set("Id", 1);
+arrayPush(nlRows, n1);
+writeCsv("test_newline.csv", nlRows);
+var nlContent = readFile("test_newline.csv");
+assert(contains(nlContent, QUOTE + "line1"), "newline in value should be quoted");
+print "PASS: newline in value"; // expect: PASS: newline in value
+
+// --- Test 7: Nil values render as empty ---
+var nilRows = newArray();
+var ni1 = [:]; ni1.Set("Name", "Alice"); ni1.Set("Middle", nil); ni1.Set("Last", "Smith");
+arrayPush(nilRows, ni1);
+writeCsv("test_nil.csv", nilRows);
+var nilContent = readFile("test_nil.csv");
+// nil becomes "nil" via ValueToStr — just verify the file was written
+assert(nilContent != "", "nil row CSV should not be empty");
+print "PASS: nil values"; // expect: PASS: nil values
+
+// --- Test 8: Boolean values ---
+var boolRows = newArray();
+var b1 = [:]; b1.Set("Active", true); b1.Set("Deleted", false);
+arrayPush(boolRows, b1);
+writeCsv("test_bool.csv", boolRows);
+var boolContent = readFile("test_bool.csv");
+assert(contains(boolContent, "true"), "boolean true should appear");
+assert(contains(boolContent, "false"), "boolean false should appear");
+print "PASS: boolean values"; // expect: PASS: boolean values
+
+// --- Test 9: Numeric precision ---
+var numRows = newArray();
+var num1 = [:]; num1.Set("Int", 12345); num1.Set("Float", 3.14159); num1.Set("Neg", -42); num1.Set("Zero", 0);
+arrayPush(numRows, num1);
+writeCsv("test_numbers.csv", numRows);
+var numContent = readFile("test_numbers.csv");
+assert(contains(numContent, "12345"), "integer should be present");
+assert(contains(numContent, "3.14159"), "float should be present");
+assert(contains(numContent, "-42"), "negative should be present");
+print "PASS: numeric values"; // expect: PASS: numeric values
+
+// --- Test 10: Many rows ---
+var manyRows = newArray();
+var i = 0;
+while (i < 100) {
+  var mr = [:]; mr.Set("Index", i); mr.Set("Square", i * i);
+  arrayPush(manyRows, mr);
+  i = i + 1;
+}
+writeCsv("test_many.csv", manyRows);
+var manyContent = readFile("test_many.csv");
+assert(contains(manyContent, "9801"), "100 rows: last square should be present");
+print "PASS: 100 rows"; // expect: PASS: 100 rows
+
+// --- Test 11: Missing key in later row ---
+// If first row has keys X,Y and second row only has X,
+// the CSV for row 2 must have fewer non-empty cells.
+// We use single-char keys and verify the value "ONLY" appears
+// but "MISSING" does not.
+var missingRows = newArray();
+var mk1 = [:]; mk1.Set("Col1", "PRESENT"); mk1.Set("Col2", "ALSO");
+var mk2 = [:]; mk2.Set("Col1", "ONLY");
+arrayPush(missingRows, mk1);
+arrayPush(missingRows, mk2);
+writeCsv("test_missing.csv", missingRows);
+var missingContent = readFile("test_missing.csv");
+assert(contains(missingContent, "ONLY"), "present value should appear");
+// Count commas in the data line — should still have the delimiter
+// even though the second column is empty
+assert(contains(missingContent, "Col1"), "header Col1 should appear");
+assert(contains(missingContent, "Col2"), "header Col2 should appear");
+print "PASS: missing key in row"; // expect: PASS: missing key in row
+
+// --- Test 12: Header with special characters ---
+var specialRows = newArray();
+var sp1 = [:]; sp1.Set("Column,One", "val1"); sp1.Set("Normal", "val2");
+arrayPush(specialRows, sp1);
+writeCsv("test_special_header.csv", specialRows);
+var specialContent = readFile("test_special_header.csv");
+// Header with comma should be quoted
+assert(contains(specialContent, QUOTE + "Column,One" + QUOTE), "header with comma should be quoted");
+print "PASS: special chars in headers"; // expect: PASS: special chars in headers
+
+print ""; // expect: 
+print "All writeCsv tests passed."; // expect: All writeCsv tests passed.

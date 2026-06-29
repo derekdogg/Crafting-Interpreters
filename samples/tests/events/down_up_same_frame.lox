@@ -1,0 +1,29 @@
+// Test: key down then up in same frame.
+// onKeyPressed fires (down edge), onKeyReleased fires (up edge),
+// but onKeyHeld does NOT fire because the key is no longer in the
+// held set when held-dispatch runs.
+
+var pressed = "";
+var released = "";
+var heldCount = 0;
+
+onKeyPressed(fun(key) {
+  pressed = pressed + key;
+});
+
+onKeyReleased(fun(key) {
+  released = released + key;
+});
+
+onKeyHeld(fun(key) {
+  heldCount = heldCount + 1;
+});
+
+// Down then up before processEvents
+simulateKeyDown("a");
+simulateKeyUp("a");
+processEvents();
+
+print pressed;        // expect: a
+print released;       // expect: a
+print str(heldCount); // expect: 0

@@ -1,0 +1,19 @@
+// Classic "closure in a loop" test.
+// The for-loop variable 'i' gets a fresh copy per iteration,
+// so each closure captures its own value of 'i'.
+
+var closures = [];
+
+for (var i = 0; i < 5; i = i + 1) {
+  fun capture() {
+    return i;
+  }
+  arrayPush(closures, capture);
+}
+
+// Each closure captures its own iteration's value of 'i'.
+print closures[0](); // expect: 0
+print closures[1](); // expect: 1
+print closures[2](); // expect: 2
+print closures[3](); // expect: 3
+print closures[4](); // expect: 4

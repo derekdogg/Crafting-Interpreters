@@ -1,0 +1,10 @@
+// Test: calling processEvents() inside a callback is a runtime error.
+// Re-entrant dispatch caused queue corruption and silent event loss,
+// so it is now explicitly forbidden.
+
+onKeyPressed(fun(key) {
+  processEvents(); // expect runtime error: processEvents() cannot be called from inside an event callback.
+});
+
+simulateKeyDown("x");
+processEvents();

@@ -1,0 +1,25 @@
+// Test: Flood many events in a single frame
+var downs = 0;
+var ups = 0;
+
+onKeyPressed(fun(key) {
+  downs = downs + 1;
+});
+
+onKeyReleased(fun(key) {
+  ups = ups + 1;
+});
+
+// Queue 26 key presses and releases
+var i = 0;
+while (i < 26) {
+  var key = chr(97 + i);  // 'a' through 'z'
+  simulateKeyDown(key);
+  simulateKeyUp(key);
+  i = i + 1;
+}
+
+processEvents();
+
+print str(downs); // expect: 26
+print str(ups);   // expect: 26

@@ -1,0 +1,19 @@
+// Workaround for closing over per-iteration state: introduce a body-local
+// variable that captures the loop variable's value at each iteration.
+
+var closures = [];
+
+for (var i = 0; i < 5; i = i + 1) {
+  var snapshot = i;
+  fun capture() {
+    return snapshot;
+  }
+  arrayPush(closures, capture);
+}
+
+// Each closure captured its own 'snapshot' (a fresh local per iteration).
+print closures[0](); // expect: 0
+print closures[1](); // expect: 1
+print closures[2](); // expect: 2
+print closures[3](); // expect: 3
+print closures[4](); // expect: 4

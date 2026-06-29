@@ -1549,6 +1549,153 @@ begin
   Result := CreateNilValue;
 end;
 
+// Alpha-blend FCurrentPixel onto (x,y) at coverage `intensity` (0..1).
+// Used by drawLineAA. Does its own clip check.
+procedure PutPixelBlend(x, y: Integer; intensity: Single); inline;
+var
+  dst: PCardinal;
+  d: Cardinal;
+  a, ia: Cardinal;
+  sb, sg, sr: Cardinal;
+  db, dg, dr: Cardinal;
+  ob, og, orr: Cardinal;
+begin
+  if (x < FClipX1) or (x >= FClipX2) or (y < FClipY1) or (y >= FClipY2) then Exit;
+  if intensity <= 0 then Exit;
+  if intensity >= 1.0 then
+  begin
+    PCardinal(FRenderTarget.ScanLine[y])[x] := FCurrentPixel;
+    Exit;
+  end;
+  a := Trunc(intensity * 256);
+  if a = 0 then Exit;
+  ia := 256 - a;
+  dst := @PCardinal(FRenderTarget.ScanLine[y])[x];
+  d := dst^;
+  sb := FCurrentPixel and $FF;
+  sg := (FCurrentPixel shr 8) and $FF;
+  sr := (FCurrentPixel shr 16) and $FF;
+  db := d and $FF;
+  dg := (d shr 8) and $FF;
+  dr := (d shr 16) and $FF;
+  ob := (sb * a + db * ia) shr 8;
+  og := (sg * a + dg * ia) shr 8;
+  orr := (sr * a + dr * ia) shr 8;
+  dst^ := Cardinal(ob or (og shl 8) or (orr shl 16) or $FF000000);
+end;
+
+// Xiaolin Wu's antialiased line. Smooth diagonals at the cost of two
+// blended pixel writes per step instead of one.
+function drawLineAANative(argCount: integer; args: pValue): TValue;
+var
+  fx1, fy1, fx2, fy2: Single;
+  steep: Boolean;
+  dx, dy, gradient, intery, xend, yend, xgap: Single;
+  xpx1, ypx1, xpx2, ypx2, x: Integer;
+  tmp: Single;
+
+  function FPart(v: Single): Single; inline;
+  begin
+    Result := v - Floor(v);
+  end;
+
+  function RFPart(v: Single): Single; inline;
+  begin
+    Result := 1.0 - (v - Floor(v));
+  end;
+
+begin
+  if argCount <> 4 then
+  begin
+    RuntimeError('drawLineAA() takes 4 arguments (x1, y1, x2, y2).');
+    Exit(CreateNilValue);
+  end;
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
+  begin
+    RuntimeError('drawLineAA() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  fx1 := GetNumber(args[0]) - FCameraX;
+  fy1 := GetNumber(args[1]) - FCameraY;
+  fx2 := GetNumber(args[2]) - FCameraX;
+  fy2 := GetNumber(args[3]) - FCameraY;
+
+  steep := Abs(fy2 - fy1) > Abs(fx2 - fx1);
+  if steep then
+  begin
+    tmp := fx1; fx1 := fy1; fy1 := tmp;
+    tmp := fx2; fx2 := fy2; fy2 := tmp;
+  end;
+  if fx1 > fx2 then
+  begin
+    tmp := fx1; fx1 := fx2; fx2 := tmp;
+    tmp := fy1; fy1 := fy2; fy2 := tmp;
+  end;
+
+  dx := fx2 - fx1;
+  dy := fy2 - fy1;
+  if dx = 0 then gradient := 1.0 else gradient := dy / dx;
+
+  // First endpoint
+  xend  := Round(fx1);
+  yend  := fy1 + gradient * (xend - fx1);
+  xgap  := RFPart(fx1 + 0.5);
+  xpx1  := Trunc(xend);
+  ypx1  := Floor(yend);
+  if steep then
+  begin
+    PutPixelBlend(ypx1,     xpx1, RFPart(yend) * xgap);
+    PutPixelBlend(ypx1 + 1, xpx1, FPart(yend)  * xgap);
+  end
+  else
+  begin
+    PutPixelBlend(xpx1, ypx1,     RFPart(yend) * xgap);
+    PutPixelBlend(xpx1, ypx1 + 1, FPart(yend)  * xgap);
+  end;
+  intery := yend + gradient;
+
+  // Second endpoint
+  xend  := Round(fx2);
+  yend  := fy2 + gradient * (xend - fx2);
+  xgap  := FPart(fx2 + 0.5);
+  xpx2  := Trunc(xend);
+  ypx2  := Floor(yend);
+  if steep then
+  begin
+    PutPixelBlend(ypx2,     xpx2, RFPart(yend) * xgap);
+    PutPixelBlend(ypx2 + 1, xpx2, FPart(yend)  * xgap);
+  end
+  else
+  begin
+    PutPixelBlend(xpx2, ypx2,     RFPart(yend) * xgap);
+    PutPixelBlend(xpx2, ypx2 + 1, FPart(yend)  * xgap);
+  end;
+
+  // Body
+  if steep then
+  begin
+    for x := xpx1 + 1 to xpx2 - 1 do
+    begin
+      PutPixelBlend(Floor(intery),     x, RFPart(intery));
+      PutPixelBlend(Floor(intery) + 1, x, FPart(intery));
+      intery := intery + gradient;
+    end;
+  end
+  else
+  begin
+    for x := xpx1 + 1 to xpx2 - 1 do
+    begin
+      PutPixelBlend(x, Floor(intery),     RFPart(intery));
+      PutPixelBlend(x, Floor(intery) + 1, FPart(intery));
+      intery := intery + gradient;
+    end;
+  end;
+
+  Result := CreateNilValue;
+end;
+
 function drawRectNative(argCount: integer; args: pValue): TValue;
 var
   x, y, w, h: Integer;
@@ -3255,6 +3402,7 @@ begin
   defineNative('drawText', drawTextNative, -1);
   defineNative('present', presentNative, 0);
   defineNative('drawLine', drawLineNative, 4);
+  defineNative('drawLineAA', drawLineAANative, 4);
   defineNative('drawRect', drawRectNative, 4);
   defineNative('drawCircle', drawCircleNative, 3);
   defineNative('fillCircle', fillCircleNative, 3);

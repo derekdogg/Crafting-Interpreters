@@ -1,0 +1,2 @@
+// Adding two anonymous functions should produce a clean runtime error.
+var x = fun(){} + fun(){}; // expect runtime error: Operands must be two numbers or two strings.

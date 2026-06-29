@@ -1,0 +1,28 @@
+// Three levels of nesting where the middle scope mutates a captured variable
+// from the outermost scope, and the innermost closure observes the mutations.
+
+fun level1() {
+  var shared = 0;
+
+  fun level2() {
+    shared = shared + 10;
+
+    fun level3() {
+      return shared;
+    }
+
+    return level3;
+  }
+
+  var reader = level2();
+  print reader(); // expect: 10
+
+  // Call level2 again — mutates shared further.
+  var reader2 = level2();
+  print reader2(); // expect: 20
+
+  // Original reader also sees the mutation (same upvalue).
+  print reader(); // expect: 20
+}
+
+level1();

@@ -22,7 +22,8 @@ uses
   Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
   System.Generics.Collections,
   Chunk_Types,
-  NativeObjects;
+  NativeObjects,
+  LoxEventEngine;
 
 type
   TfrmGame = class(TForm)
@@ -32,11 +33,13 @@ type
     procedure FormDestroy(Sender: TObject);
   private
     FScriptRunning: Boolean;
+    FEngine: TLoxEventEngine;
     procedure GameCanvasKeyDown(Sender: TObject; const KeyName: string);
     procedure GameCanvasKeyUp(Sender: TObject; const KeyName: string);
     procedure GameCanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
     procedure GameCanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
     procedure GameCanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
+    procedure EngineLog(const Msg: string);
   public
     // Input-event queue handed to the VM as the 'events' native object.
     FEventQueue: TLoxQueue;
@@ -97,6 +100,23 @@ end;
 function TfrmGame.RunScript(const Source: AnsiString): TInterpretResult;
 begin
   NotifyScriptStarted;
+  FEngine.Reset;
+  FEngine.OnCheckAbort := function: Boolean
+    begin
+      Result := Form4.FClosing or FAbortScript;
+    end;
+
+  // Ensure canvas is parented here (fmEventTest may have freed it)
+  if GameCanvas = nil then
+  begin
+    InitCanvas(Self);
+    GameCanvas.OnGameKeyDown := GameCanvasKeyDown;
+    GameCanvas.OnGameKeyUp := GameCanvasKeyUp;
+    GameCanvas.OnGameMouseDown := GameCanvasMouseDown;
+    GameCanvas.OnGameMouseUp := GameCanvasMouseUp;
+    GameCanvas.OnGameMouseMove := GameCanvasMouseMove;
+  end;
+
   InitVM;
   try
     VM.OnPrint := Form4.HandleLivePrint;
@@ -104,10 +124,15 @@ begin
     RegisterCanvasNatives;
     RegisterSoundNatives;
 
+    // Event engine natives (onKeyPressed, onKeyHeld, processEvents, etc.)
+    FEngine.RegisterNatives;
+    FEngine.RegisterGCRoots;
+
     registerNativeClassRTTI('LoxQueue', TLoxQueue);
     InjectNativeObject('events', Pointer(FEventQueue), 'LoxQueue');
     Result := CompileAndRun(PAnsiChar(Source));
   finally
+    FEngine.UnregisterGCRoots;
     FreeVM;
     StopAllSound;
     NotifyScriptStopped;
@@ -119,14 +144,13 @@ begin
   FEventQueue := TLoxQueue.Create;
   FKeyDownCache := TDictionary<string, string>.Create;
   FKeyUpCache := TDictionary<string, string>.Create;
+  FEngine := TLoxEventEngine.Create;
+  FEngine.OnLog := EngineLog;
 
-  // Build the game canvas parented to this form. Its client dimensions
-  // drive LOGICAL_W / LOGICAL_H.
+  // Build the game canvas parented to this form.
   InitCanvas(Self);
 
-  // The game canvas is the only place gameplay input is handled. Hook
-  // its events here so we can enqueue them onto FEventQueue without the
-  // editor or other VCL controls intercepting them.
+  // Hook canvas events for both the legacy queue AND the event engine
   GameCanvas.OnGameKeyDown := GameCanvasKeyDown;
   GameCanvas.OnGameKeyUp := GameCanvasKeyUp;
   GameCanvas.OnGameMouseDown := GameCanvasMouseDown;
@@ -140,6 +164,7 @@ begin
   FEventQueue.Free;
   FKeyDownCache.Free;
   FKeyUpCache.Free;
+  FEngine.Free;
 end;
 
 procedure TfrmGame.FormShow(Sender: TObject);
@@ -198,6 +223,7 @@ begin
     FKeyDownCache.Add(KeyName, Msg);
   end;
   FEventQueue.Enqueue(Msg);
+  FEngine.QueueKeyDown(KeyName);
 end;
 
 procedure TfrmGame.GameCanvasKeyUp(Sender: TObject; const KeyName: string);
@@ -210,19 +236,21 @@ begin
     FKeyUpCache.Add(KeyName, Msg);
   end;
   FEventQueue.Enqueue(Msg);
+  FEngine.QueueKeyUp(KeyName);
 end;
 
 procedure TfrmGame.GameCanvasMouseDown(Sender: TObject; Button, LX, LY: Integer);
 begin
-  // Manual concat (~10x faster than Format with VarRec marshalling).
   FEventQueue.Enqueue('mousedown:' + IntToStr(Button) + ':' +
     IntToStr(LX) + ':' + IntToStr(LY));
+  FEngine.QueueMouseDown(Button, LX, LY);
 end;
 
 procedure TfrmGame.GameCanvasMouseUp(Sender: TObject; Button, LX, LY: Integer);
 begin
   FEventQueue.Enqueue('mouseup:' + IntToStr(Button) + ':' +
     IntToStr(LX) + ':' + IntToStr(LY));
+  FEngine.QueueMouseUp(Button, LX, LY);
 end;
 
 procedure TfrmGame.GameCanvasMouseMove(Sender: TObject; Button, LX, LY: Integer);
@@ -238,6 +266,12 @@ begin
   // processMessages() calls.
   if not FEventQueue.ReplaceTailIfPrefix('mousemove:', Msg) then
     FEventQueue.Enqueue(Msg);
+  FEngine.QueueMouseMove(LX, LY);
+end;
+
+procedure TfrmGame.EngineLog(const Msg: string);
+begin
+  Form4.Memo2.Lines.Add(Msg);
 end;
 
 end.

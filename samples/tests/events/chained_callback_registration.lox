@@ -1,0 +1,25 @@
+// Test: Callback that registers ANOTHER callback (chained registration)
+var log = "";
+
+onKeyPressed(fun(key) {
+  log = log + "press:" + key + " ";
+  // When 'a' is pressed, also register a mouse handler
+  if (key == "a") {
+    onMouseDown(fun(btn, x, y) {
+      log = log + "click:" + str(btn) + " ";
+    });
+  }
+});
+
+simulateKeyDown("a");
+processEvents();
+
+// Now mouse handler should be active
+simulateMouseDown(0, 50, 50);
+processEvents();
+
+simulateKeyUp("a");
+simulateKeyDown("b");
+processEvents();
+
+print log; // expect: press:a click:0 press:b 

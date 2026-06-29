@@ -1,0 +1,52 @@
+// Anonymous functions in unusual expression positions.
+// All should either compile+run or produce a clean error — never crash.
+
+// Note: fun(){} + fun(){} is tested separately in anonymous_add_error.lox
+
+// Assigned to variable and immediately called
+var a = fun(x) { return x * 2; };
+print str(a(5)); // expect: 10
+
+// Nested anonymous — returned from anonymous
+var b = fun() { return fun() { return 42; }; };
+print str(b()()); // expect: 42
+
+// Anonymous in array literal
+var fns = [fun() { return 1; }, fun() { return 2; }, fun() { return 3; }];
+print str(fns[0]()); // expect: 1
+print str(fns[2]()); // expect: 3
+
+// Anonymous in dict value
+var d = ["go": fun() { return "going"; }];
+print d["go"](); // expect: going
+
+// Anonymous as argument to anonymous
+var result = (fun(f) { return f(10); })(fun(n) { return n + 1; });
+print str(result); // expect: 11
+
+// Double-invocation
+print str((fun(x) { return x; })(99)); // expect: 99
+
+// Anonymous capturing loop variable
+var closures = [];
+var i = 0;
+while (i < 3) {
+  var captured = i;
+  arrayPush(closures, fun() { return captured; });
+  i = i + 1;
+}
+print str(closures[0]()); // expect: 0
+print str(closures[1]()); // expect: 1
+print str(closures[2]()); // expect: 2
+
+// Deeply nested anonymous
+var deep = fun() {
+  return fun() {
+    return fun() {
+      return fun() {
+        return "deep";
+      };
+    };
+  };
+};
+print deep()()()(); // expect: deep

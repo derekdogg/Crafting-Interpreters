@@ -52,7 +52,10 @@ object Form4: TForm4
       Height = 915
       Anchors = [akLeft, akTop, akRight, akBottom]
       Indent = 19
+      MultiSelect = True
+      MultiSelectStyle = [msControlSelect, msShiftSelect]
       ReadOnly = True
+      RowSelect = True
       StateImages = StateImages
       TabOrder = 0
       OnClick = TestTreeClick
@@ -177,6 +180,24 @@ object Form4: TForm4
         Caption = 'Esc'
         TabOrder = 3
         OnClick = Button3Click
+      end
+      object Button4: TButton
+        Left = 760
+        Top = 5
+        Width = 121
+        Height = 25
+        Caption = 'Event Call Back Test'
+        TabOrder = 4
+        OnClick = Button4Click
+      end
+      object BtnSave: TButton
+        Left = 370
+        Top = 5
+        Width = 75
+        Height = 25
+        Caption = 'Save'
+        TabOrder = 5
+        OnClick = BtnSaveClick
       end
     end
     object Memo1: TSynEdit
@@ -1421,6 +1442,13 @@ object Form4: TForm4
   end
   object StateImages: TImageList
     Left = 200
+    Top = 40
+  end
+  object SaveDialog1: TSaveDialog
+    DefaultExt = 'lox'
+    Filter = 'Lox Scripts (*.lox)|*.lox|All Files (*.*)|*.*'
+    Options = [ofOverwritePrompt, ofHideReadOnly, ofEnableSizing]
+    Left = 260
     Top = 40
   end
 end

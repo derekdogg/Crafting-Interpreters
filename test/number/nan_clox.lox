@@ -1,0 +1,33 @@
+// NaN edge cases - clox compatible (no assert, no 'and')
+print "--- Numbers ---"; // expect: --- Numbers ---
+
+var big = 1;
+for (var i = 0; i < 1023; i = i + 1) big = big * 2;
+
+// Infinity
+var inf = big * big;
+print inf == inf;       // expect: true
+print inf > big;        // expect: true
+var ninf = -inf;
+print ninf < 0;         // expect: true
+print inf != ninf;      // expect: true
+
+// NaN from 0/0
+var nan = 0 / 0;
+print nan != nan;       // expect: true
+print nan == nan;       // expect: false
+print nan < 0;          // expect: false
+print nan > 0;          // expect: false
+print nan == 0;         // expect: false
+
+// NaN from inf - inf
+var nan2 = inf - inf;
+print nan2 != nan2;     // expect: true
+print nan2 == nan2;     // expect: false
+
+// NaN from 0 * inf
+var nan3 = 0 * inf;
+print nan3 != nan3;     // expect: true
+print nan3 == nan3;     // expect: false
+
+print "Done"; // expect: Done

@@ -1,0 +1,30 @@
+// Test: Callback modifies array captured from outer scope
+var history = [];
+
+fun logger() {
+  var localCount = 0;
+  onKeyPressed(fun(key) {
+    localCount = localCount + 1;
+    history = arrayPush(history, str(localCount) + ":" + key);
+  });
+  onMouseDown(fun(btn, x, y) {
+    localCount = localCount + 1;
+    history = arrayPush(history, str(localCount) + ":click");
+  });
+}
+
+logger();
+
+simulateKeyDown("a");
+processEvents();
+simulateKeyUp("a");
+processEvents();
+simulateMouseDown(0, 10, 20);
+processEvents();
+simulateKeyDown("b");
+processEvents();
+
+print str(arrayLen(history)); // expect: 3
+print history[0];             // expect: 1:a
+print history[1];             // expect: 2:click
+print history[2];             // expect: 3:b

@@ -1,0 +1,8 @@
+// Test: No callbacks registered — processEvents should be a no-op
+simulateKeyDown("left");
+simulateKeyUp("left");
+simulateMouseDown(0, 10, 20);
+simulateMouseUp(0, 10, 20);
+processEvents();
+
+print "ok"; // expect: ok

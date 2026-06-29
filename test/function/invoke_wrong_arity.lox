@@ -1,0 +1,2 @@
+// invoke() with wrong number of arguments for the closure.
+invoke(fun(a, b) { return a + b; }, 1); // expect runtime error: InvokeCallback: expected 2 arguments but got 1.

@@ -1,0 +1,2 @@
+// callWith() called with non-closure first argument.
+callWith(42, 1); // expect runtime error: callWith() first argument must be a function.

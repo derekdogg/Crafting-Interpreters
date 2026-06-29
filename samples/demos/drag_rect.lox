@@ -1,0 +1,50 @@
+// Drag a rectangle around with the mouse.
+// Demonstrates onMouseDown, onMouseUp, onMouseMove with the canvas.
+
+var rectX = 100;
+var rectY = 80;
+var rectW = 60;
+var rectH = 40;
+var dragging = false;
+var offsetX = 0;
+var offsetY = 0;
+
+onMouseDown(fun(btn, x, y) {
+  // Check if click is inside the rectangle
+  if (x >= rectX and x <= rectX + rectW and
+      y >= rectY and y <= rectY + rectH) {
+    dragging = true;
+    offsetX = x - rectX;
+    offsetY = y - rectY;
+  }
+});
+
+onMouseUp(fun(btn, x, y) {
+  dragging = false;
+});
+
+onMouseMove(fun(x, y) {
+  if (dragging) {
+    rectX = x - offsetX;
+    rectY = y - offsetY;
+  }
+});
+
+// Game loop
+while (true) {
+  processEvents();
+  clearCanvas();
+
+  // Draw the rectangle
+  setColor(0, 180, 255);
+  fillRect(rectX, rectY, rectW, rectH);
+  setColor(255, 255, 255);
+  drawRect(rectX, rectY, rectW, rectH);
+  drawText(rectX + 5, rectY + 15, "Drag me!");
+
+  // Instructions
+  setColor(200, 200, 200);
+  drawText(10, 10, "Click and drag the rectangle. Press Escape to quit.");
+
+  present();
+}

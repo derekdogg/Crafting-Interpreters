@@ -1,0 +1,4 @@
+// compound_assign_type_error.lox — Verify runtime errors for invalid compound assignment
+
+var s = "hello";
+s *= 3; // expect runtime error: Operands must be numbers.

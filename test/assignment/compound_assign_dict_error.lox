@@ -1,0 +1,4 @@
+// compound_assign_dict_error.lox — *= on a dictionary should fail
+
+var d = [:];
+d *= 2; // expect runtime error: Operands must be numbers.

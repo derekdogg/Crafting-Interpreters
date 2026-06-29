@@ -18,7 +18,7 @@ for (var i = 0; i < 10; i = i + 1) {
   arrayPush(fns, f);
 }
 var lastFn = arrayGet(fns, 9);
-assert(lastFn() == 10);
+assert(lastFn() == 9);
 
 // --- Array survives explicit GC ---
 var kept = newArray();

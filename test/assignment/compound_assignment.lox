@@ -1,0 +1,76 @@
+// ============================================================
+// compound_assignment.lox — Tests for += -= *= /= operators
+// ============================================================
+
+// --- Test 1: += with numbers ---
+var a = 10;
+a += 5;
+print a; // expect: 15
+
+// --- Test 2: -= with numbers ---
+var b = 20;
+b -= 8;
+print b; // expect: 12
+
+// --- Test 3: *= with numbers ---
+var c = 6;
+c *= 7;
+print c; // expect: 42
+
+// --- Test 4: /= with numbers ---
+var d = 100;
+d /= 4;
+print d; // expect: 25
+
+// --- Test 5: += with strings (concatenation) ---
+var s = "hello";
+s += " world";
+print s; // expect: hello world
+
+// --- Test 6: Chained compound assignments ---
+var e = 1;
+e += 2;
+e *= 3;
+e -= 1;
+print e; // expect: 8
+
+// --- Test 7: Compound assignment in a loop ---
+var sum = 0;
+var i = 1;
+while (i <= 10) {
+  sum += i;
+  i += 1;
+}
+print sum; // expect: 55
+
+// --- Test 8: Compound assignment with expressions ---
+var f = 10;
+f += 2 * 3;
+print f; // expect: 16
+
+// --- Test 9: Compound assignment with global variable ---
+var g = 100;
+fun modifyGlobal() {
+  g -= 25;
+}
+modifyGlobal();
+print g; // expect: 75
+
+// --- Test 10: Compound assignment with float ---
+var h = 1.5;
+h *= 4;
+print h; // expect: 6
+
+// --- Test 11: /= resulting in float ---
+var j = 7;
+j /= 2;
+print j; // expect: 3.5
+
+// --- Test 12: Compound assignment doesn't affect other vars ---
+var x = 10;
+var y = 20;
+x += 5;
+print x; // expect: 15
+print y; // expect: 20
+
+print "All compound assignment tests passed."; // expect: All compound assignment tests passed.

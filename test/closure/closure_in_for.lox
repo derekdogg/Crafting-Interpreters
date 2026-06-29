@@ -1,0 +1,55 @@
+// ============================================================
+// closure_in_for.lox — Each for-loop iteration captures its own variable
+// ============================================================
+
+// --- Test 1: closures in for-loop get independent copies ---
+var a = newArray();
+for (var i = 0; i < 3; i += 1) {
+  fun f() { return i; }
+  arrayPush(a, f);
+}
+print a[0](); // expect: 0
+print a[1](); // expect: 1
+print a[2](); // expect: 2
+
+// --- Test 2: mutating captured loop var doesn't affect others ---
+var b = newArray();
+for (var i = 0; i < 3; i += 1) {
+  fun inc() { i += 10; return i; }
+  arrayPush(b, inc);
+}
+print b[0](); // expect: 10
+print b[1](); // expect: 11
+print b[2](); // expect: 12
+
+// --- Test 3: closure in for-loop with compound assignment ---
+var c = newArray();
+for (var i = 1; i <= 3; i += 1) {
+  fun double() { return i * 2; }
+  arrayPush(c, double);
+}
+print c[0](); // expect: 2
+print c[1](); // expect: 4
+print c[2](); // expect: 6
+
+// --- Test 4: basic for loop still works (no closures) ---
+var sum = 0;
+for (var i = 1; i <= 10; i += 1) {
+  sum += i;
+}
+print sum; // expect: 55
+
+// --- Test 5: nested for loops with closures ---
+var fns = newArray();
+for (var i = 0; i < 2; i += 1) {
+  for (var j = 0; j < 2; j += 1) {
+    fun f() { return i * 10 + j; }
+    arrayPush(fns, f);
+  }
+}
+print fns[0](); // expect: 0
+print fns[1](); // expect: 1
+print fns[2](); // expect: 10
+print fns[3](); // expect: 11
+
+print "All closure-in-for tests passed."; // expect: All closure-in-for tests passed.
