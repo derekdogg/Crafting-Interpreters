@@ -1,0 +1,61 @@
+// NaN-key semantics for dictionaries
+//
+// IEEE-754 specifies NaN != NaN. Lox's `==` and the dictionary's ValuesEqual
+// both honor that rule, so a NaN key — even one stored successfully — is
+// "write-only": no subsequent Has/Get/Delete with another NaN can locate it.
+//
+// This pins the current contract. The number-suite test
+// nan_boxing_edge_cases.lox covers the same ground; this dedicated dict-folder
+// file is here so the semantics travel with the dictionary tests.
+
+// ---------------------------------------------------------------------------
+// Test 1: NaN key cannot be retrieved by another NaN
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  var n = 0 / 0;       // NaN
+  d.Set(n, "stored");
+
+  // Has() and Get() with the *same source expression* reuse the same NaN bits,
+  // but ValuesEqual still returns false (NaN != NaN), so lookup fails.
+  assert(d.Has(n) == false, "NaN key is not retrievable via Has()");
+
+  // A freshly produced NaN definitely cannot be found.
+  var n2 = 0 / 0;
+  assert(d.Has(n2) == false, "fresh NaN cannot find earlier NaN entry");
+}
+print "pass: NaN key is write-only"; // expect: pass: NaN key is write-only
+
+// ---------------------------------------------------------------------------
+// Test 2: Storing a NaN key still increments Size — the entry exists
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  var n = 0 / 0;
+  d.Set(n, "ghost");
+  assert(d.Size() == 1, "NaN entry counts toward Size()");
+  // Set again with another NaN — since lookup fails, this inserts a *second*
+  // NaN entry rather than overwriting the first.
+  d.Set(0 / 0, "ghost2");
+  assert(d.Size() == 2, "second NaN insert creates a second entry");
+}
+print "pass: NaN entries accumulate"; // expect: pass: NaN entries accumulate
+
+// ---------------------------------------------------------------------------
+// Test 3: NaN keys do not interfere with other numeric keys
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(0 / 0, "nan");
+  d.Set(1, "one");
+  d.Set(2, "two");
+  d.Set(0.0, "zero");
+  assert(d.Get(1) == "one");
+  assert(d.Get(2) == "two");
+  assert(d.Get(0.0) == "zero");
+  // NaN entry is still unreachable.
+  assert(d.Has(0 / 0) == false, "NaN remains unreachable among other keys");
+}
+print "pass: NaN coexists with reachable keys"; // expect: pass: NaN coexists with reachable keys
+
+print "all NaN-key tests passed"; // expect: all NaN-key tests passed

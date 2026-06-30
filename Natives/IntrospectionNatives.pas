@@ -490,6 +490,19 @@ begin
   end;
 end;
 
+function vmHashNative(argCount: integer; args: pValue): TValue;
+// Exposes the dictionary's HashValue() function to Lox so distribution
+// regression tests can pin hash quality directly (independent of dict probe
+// behaviour). Returns the 32-bit hash as a Lox number.
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('vmHash(value) takes 1 argument.');
+    Exit(CreateNilValue);
+  end;
+  Result := CreateNumber(HashValue(args[0]));
+end;
+
 procedure RegisterIntrospectionNatives;
 var
   slMethods : array[0..3] of TNativeMethod;
@@ -511,6 +524,9 @@ begin
   // Object introspection
   defineNative('loxObjects', loxObjectsNative, 0);
   defineNative('loxObjectInfo', loxObjectInfoNative, 1);
+
+  // VM hash exposure (regression-test hook for hash distribution)
+  defineNative('vmHash', vmHashNative, 1);
 end;
 
 initialization

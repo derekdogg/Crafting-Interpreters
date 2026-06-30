@@ -1,0 +1,164 @@
+// Dictionary backend microbenchmark.
+//
+// Designed to compare the legacy (linear-probe + tombstone) backend against
+// the Robin Hood backend. Run twice — once with {$DEFINE DICT_ROBINHOOD} on
+// in Chunk_Types.pas, once with it commented out — and compare the per-phase
+// times.
+//
+// Each phase is self-validating with asserts so a perf regression that also
+// breaks correctness fails loudly instead of timing nonsense.
+//
+// Sizing is chosen so the whole run takes a few seconds and each phase is
+// long enough (>~100ms) that clock noise doesn't dominate.
+
+fun ms(seconds) { return seconds * 1000; }
+
+fun phase(name, fn) {
+  var t0 = clock();
+  fn();
+  var t1 = clock();
+  print name + ": " + str(ms(t1 - t0)) + " ms";
+}
+
+// ---------------------------------------------------------------------------
+// 1. Insert N string keys (cold table, many resizes)
+// ---------------------------------------------------------------------------
+var N1 = 50000;
+phase("insert " + str(N1) + " string keys", fun () {
+  var d = [:];
+  for (var i = 0; i < N1; i = i + 1) {
+    d.Set("key" + str(i), i);
+  }
+  assert(d.Size() == N1);
+});
+
+// ---------------------------------------------------------------------------
+// 2. Insert N integer keys
+// (Pre-fmix32 this was the pathological case: every key into bucket 0.)
+// ---------------------------------------------------------------------------
+var N2 = 50000;
+phase("insert " + str(N2) + " integer keys", fun () {
+  var d = [:];
+  for (var i = 0; i < N2; i = i + 1) {
+    d.Set(i, i * 3);
+  }
+  assert(d.Size() == N2);
+});
+
+// ---------------------------------------------------------------------------
+// 3. Lookup hits — every key in the table
+// ---------------------------------------------------------------------------
+var N3 = 30000;
+phase("build + " + str(N3 * 5) + " lookup hits (strings)", fun () {
+  var d = [:];
+  for (var i = 0; i < N3; i = i + 1) {
+    d.Set("k" + str(i), i);
+  }
+  var acc = 0;
+  for (var pass = 0; pass < 5; pass = pass + 1) {
+    for (var i = 0; i < N3; i = i + 1) {
+      acc = acc + d.Get("k" + str(i));
+    }
+  }
+  // sum(0..N-1) == N*(N-1)/2, times 5 passes
+  var expected = 5 * (N3 * (N3 - 1) / 2);
+  assert(acc == expected);
+});
+
+// ---------------------------------------------------------------------------
+// 4. Lookup misses — Robin Hood bails early on probeDist mismatch, legacy
+// must scan to an empty/tombstone slot.
+// ---------------------------------------------------------------------------
+var N4 = 20000;
+phase(str(N4 * 4) + " lookup misses (strings)", fun () {
+  var d = [:];
+  for (var i = 0; i < N4; i = i + 1) {
+    d.Set("present_" + str(i), i);
+  }
+  var found = 0;
+  for (var pass = 0; pass < 4; pass = pass + 1) {
+    for (var i = 0; i < N4; i = i + 1) {
+      if (d.Has("absent_" + str(i))) { found = found + 1; }
+    }
+  }
+  assert(found == 0);
+});
+
+// ---------------------------------------------------------------------------
+// 5. Delete in forward order, then refill.
+// Legacy: cheap (mark tombstone). Robin Hood: backward-shift O(probe).
+// ---------------------------------------------------------------------------
+var N5 = 20000;
+phase("delete " + str(N5) + " keys (forward) + refill", fun () {
+  var d = [:];
+  for (var i = 0; i < N5; i = i + 1) {
+    d.Set("d" + str(i), i);
+  }
+  for (var i = 0; i < N5; i = i + 1) {
+    d.Delete("d" + str(i));
+  }
+  assert(d.Size() == 0);
+  for (var i = 0; i < N5; i = i + 1) {
+    d.Set("r" + str(i), i);
+  }
+  assert(d.Size() == N5);
+});
+
+// ---------------------------------------------------------------------------
+// 6. Delete in reverse order (different probe-chain locality).
+// ---------------------------------------------------------------------------
+var N6 = 20000;
+phase("delete " + str(N6) + " keys (reverse)", fun () {
+  var d = [:];
+  for (var i = 0; i < N6; i = i + 1) {
+    d.Set(i, i);
+  }
+  for (var i = N6 - 1; i >= 0; i = i - 1) {
+    d.Delete(i);
+  }
+  assert(d.Size() == 0);
+});
+
+// ---------------------------------------------------------------------------
+// 7. Mixed thrash at high load factor — alternating set/delete/get.
+// Legacy accumulates tombstones across the run; Robin Hood doesn't.
+// ---------------------------------------------------------------------------
+var N7 = 30000;
+phase("thrash " + str(N7) + " set/delete/get cycles", fun () {
+  var d = [:];
+  // Seed with a base set.
+  for (var i = 0; i < 500; i = i + 1) {
+    d.Set("base_" + str(i), i);
+  }
+  var hits = 0;
+  for (var i = 0; i < N7; i = i + 1) {
+    d.Set("ephem_" + str(i), i);
+    if (d.Has("ephem_" + str(i))) { hits = hits + 1; }
+    d.Delete("ephem_" + str(i));
+  }
+  assert(hits == N7);
+  assert(d.Size() == 500);
+});
+
+// ---------------------------------------------------------------------------
+// 8. Iteration over Keys() and Values() — common reporting/serialisation
+// pattern. Same primitives for both backends (goes through the seam).
+// ---------------------------------------------------------------------------
+var N8 = 20000;
+phase("iterate " + str(N8) + " keys via Keys() + Values()", fun () {
+  var d = [:];
+  for (var i = 0; i < N8; i = i + 1) {
+    d.Set("i" + str(i), i);
+  }
+  var keys = d.Keys();
+  var vals = d.Values();
+  assert(arrayLen(keys) == N8);
+  assert(arrayLen(vals) == N8);
+  var sum = 0;
+  for (var i = 0; i < arrayLen(vals); i = i + 1) {
+    sum = sum + vals[i];
+  }
+  assert(sum == N8 * (N8 - 1) / 2);
+});
+
+print "done.";

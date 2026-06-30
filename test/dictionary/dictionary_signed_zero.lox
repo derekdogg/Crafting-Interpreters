@@ -1,0 +1,76 @@
+// Signed-zero key parity
+//
+// IEEE-754 specifies +0.0 == -0.0. Lox's `==` operator and the dictionary's
+// ValuesEqual both follow that rule, so +0.0 and -0.0 must address the same
+// dictionary slot regardless of which form was used to insert.
+//
+// This test pins that contract so any future change to HashValue (e.g. a
+// stronger integer mix) cannot silently make the two zeros land in
+// different buckets.
+
+// ---------------------------------------------------------------------------
+// Test 1: Insert with -0.0, look up with +0.0
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(-0.0, "neg");
+  assert(d.Has(0.0) == true, "Has(+0.0) finds entry set as -0.0");
+  assert(d.Get(0.0) == "neg", "Get(+0.0) returns value set under -0.0");
+  assert(d.Size() == 1, "single entry after Set(-0.0)");
+}
+print "pass: -0.0 keyed, +0.0 retrieves"; // expect: pass: -0.0 keyed, +0.0 retrieves
+
+// ---------------------------------------------------------------------------
+// Test 2: Insert with +0.0, look up with -0.0
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(0.0, "pos");
+  assert(d.Has(-0.0) == true, "Has(-0.0) finds entry set as +0.0");
+  assert(d.Get(-0.0) == "pos", "Get(-0.0) returns value set under +0.0");
+  assert(d.Size() == 1, "single entry after Set(+0.0)");
+}
+print "pass: +0.0 keyed, -0.0 retrieves"; // expect: pass: +0.0 keyed, -0.0 retrieves
+
+// ---------------------------------------------------------------------------
+// Test 3: Set(-0.0) then Set(+0.0) overwrites — does not create a second entry
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(-0.0, "first");
+  d.Set(0.0,  "second");
+  assert(d.Size() == 1, "Set(+0.0) overwrites -0.0 slot, not a second entry");
+  assert(d.Get(-0.0) == "second", "Get(-0.0) sees the overwrite");
+  assert(d.Get(0.0)  == "second", "Get(+0.0) sees the overwrite");
+}
+print "pass: zero overwrite collapses to one slot"; // expect: pass: zero overwrite collapses to one slot
+
+// ---------------------------------------------------------------------------
+// Test 4: Delete via the opposite zero form removes the entry
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(-0.0, "x");
+  assert(d.Delete(0.0) == true, "Delete(+0.0) removes entry inserted as -0.0");
+  assert(d.Has(-0.0) == false, "entry gone after cross-zero delete");
+  assert(d.Has(0.0)  == false, "entry gone after cross-zero delete");
+  assert(d.Size() == 0, "empty after cross-zero delete");
+}
+print "pass: cross-zero delete"; // expect: pass: cross-zero delete
+
+// ---------------------------------------------------------------------------
+// Test 5: Both zeros coexisting with other numeric keys behave correctly
+// ---------------------------------------------------------------------------
+{
+  var d = [:];
+  d.Set(-0.0, "zero");
+  d.Set(1, "one");
+  d.Set(2, "two");
+  assert(d.Size() == 3, "three distinct entries");
+  assert(d.Get(0.0) == "zero", "+0.0 reaches -0.0 entry alongside other keys");
+  assert(d.Get(1) == "one");
+  assert(d.Get(2) == "two");
+}
+print "pass: zero alongside other keys"; // expect: pass: zero alongside other keys
+
+print "all signed-zero tests passed"; // expect: all signed-zero tests passed

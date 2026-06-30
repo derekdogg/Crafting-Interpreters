@@ -1,0 +1,180 @@
+// Tests for 24-bit-operand "long" opcodes that round-trip through
+// emitInt24 / readInt24. These fire when a chunk's constants pool
+// exceeds 256 entries.
+//
+// Why this test reliably forces the long path:
+//   - This port's constants pool is *unified* (identifierConstant,
+//     numeric literals, string literals, and function objects all go
+//     into the same CurrentChunk.Constants via AddValueConstant).
+//   - AddValueConstant does NOT deduplicate -- every reference to a
+//     literal appends a fresh entry.
+//   So after the 300 `var gNNN = NNN;` declarations below, the script
+//   chunk's pool already contains ~600 entries (300 identifier strings
+//   + 300 distinct doubles). Any constant added after that point in
+//   the script chunk is guaranteed to land at index >= 256 and emit
+//   the OP_*_LONG variant via emitInt24.
+//
+// Opcodes covered:
+//   OP_CONSTANT_LONG          (fresh literals after pool >256)
+//   OP_DEFINE_GLOBAL_LONG     (gNNN identifier indices >= 256)
+//   OP_GET_GLOBAL_LONG        (gNNN read-back)
+//   OP_SET_GLOBAL_LONG        (gNNN reassignment)
+//   OP_GET_PROPERTY_LONG      (record field read at high name idx)
+//   OP_SET_PROPERTY_LONG      (record field write at high name idx)
+//   OP_RECORD_LONG            (record decl with high typename idx)
+//   OP_CLOSURE_LONG           (function constant at high idx)
+//
+// Note: OP_INVOKE_LONG is emitted by `obj.method(args)`. This dialect
+// uses `record` (no methods), so OP_INVOKE_LONG is unreachable from
+// source. It still goes through the same emitInt24 helper, so the
+// other long opcodes cover the encode/decode round-trip.
+//
+// Each section prints "ok: <name>" on success. Final line "ALL OK"
+// only prints if every assertion held.
+
+// ---------------------------------------------------------------------------
+// 1) OP_DEFINE_GLOBAL_LONG / OP_GET_GLOBAL_LONG / OP_SET_GLOBAL_LONG
+//    Declare 300 globals with distinct names AND distinct numeric values.
+//    300 names > 256, so identifier constants overflow the byte range and
+//    every define/get/set is forced through the long path.
+// ---------------------------------------------------------------------------
+var g000 = 0;   var g001 = 1;   var g002 = 2;   var g003 = 3;   var g004 = 4;
+var g005 = 5;   var g006 = 6;   var g007 = 7;   var g008 = 8;   var g009 = 9;
+var g010 = 10;  var g011 = 11;  var g012 = 12;  var g013 = 13;  var g014 = 14;
+var g015 = 15;  var g016 = 16;  var g017 = 17;  var g018 = 18;  var g019 = 19;
+var g020 = 20;  var g021 = 21;  var g022 = 22;  var g023 = 23;  var g024 = 24;
+var g025 = 25;  var g026 = 26;  var g027 = 27;  var g028 = 28;  var g029 = 29;
+var g030 = 30;  var g031 = 31;  var g032 = 32;  var g033 = 33;  var g034 = 34;
+var g035 = 35;  var g036 = 36;  var g037 = 37;  var g038 = 38;  var g039 = 39;
+var g040 = 40;  var g041 = 41;  var g042 = 42;  var g043 = 43;  var g044 = 44;
+var g045 = 45;  var g046 = 46;  var g047 = 47;  var g048 = 48;  var g049 = 49;
+var g050 = 50;  var g051 = 51;  var g052 = 52;  var g053 = 53;  var g054 = 54;
+var g055 = 55;  var g056 = 56;  var g057 = 57;  var g058 = 58;  var g059 = 59;
+var g060 = 60;  var g061 = 61;  var g062 = 62;  var g063 = 63;  var g064 = 64;
+var g065 = 65;  var g066 = 66;  var g067 = 67;  var g068 = 68;  var g069 = 69;
+var g070 = 70;  var g071 = 71;  var g072 = 72;  var g073 = 73;  var g074 = 74;
+var g075 = 75;  var g076 = 76;  var g077 = 77;  var g078 = 78;  var g079 = 79;
+var g080 = 80;  var g081 = 81;  var g082 = 82;  var g083 = 83;  var g084 = 84;
+var g085 = 85;  var g086 = 86;  var g087 = 87;  var g088 = 88;  var g089 = 89;
+var g090 = 90;  var g091 = 91;  var g092 = 92;  var g093 = 93;  var g094 = 94;
+var g095 = 95;  var g096 = 96;  var g097 = 97;  var g098 = 98;  var g099 = 99;
+var g100 = 100; var g101 = 101; var g102 = 102; var g103 = 103; var g104 = 104;
+var g105 = 105; var g106 = 106; var g107 = 107; var g108 = 108; var g109 = 109;
+var g110 = 110; var g111 = 111; var g112 = 112; var g113 = 113; var g114 = 114;
+var g115 = 115; var g116 = 116; var g117 = 117; var g118 = 118; var g119 = 119;
+var g120 = 120; var g121 = 121; var g122 = 122; var g123 = 123; var g124 = 124;
+var g125 = 125; var g126 = 126; var g127 = 127; var g128 = 128; var g129 = 129;
+var g130 = 130; var g131 = 131; var g132 = 132; var g133 = 133; var g134 = 134;
+var g135 = 135; var g136 = 136; var g137 = 137; var g138 = 138; var g139 = 139;
+var g140 = 140; var g141 = 141; var g142 = 142; var g143 = 143; var g144 = 144;
+var g145 = 145; var g146 = 146; var g147 = 147; var g148 = 148; var g149 = 149;
+var g150 = 150; var g151 = 151; var g152 = 152; var g153 = 153; var g154 = 154;
+var g155 = 155; var g156 = 156; var g157 = 157; var g158 = 158; var g159 = 159;
+var g160 = 160; var g161 = 161; var g162 = 162; var g163 = 163; var g164 = 164;
+var g165 = 165; var g166 = 166; var g167 = 167; var g168 = 168; var g169 = 169;
+var g170 = 170; var g171 = 171; var g172 = 172; var g173 = 173; var g174 = 174;
+var g175 = 175; var g176 = 176; var g177 = 177; var g178 = 178; var g179 = 179;
+var g180 = 180; var g181 = 181; var g182 = 182; var g183 = 183; var g184 = 184;
+var g185 = 185; var g186 = 186; var g187 = 187; var g188 = 188; var g189 = 189;
+var g190 = 190; var g191 = 191; var g192 = 192; var g193 = 193; var g194 = 194;
+var g195 = 195; var g196 = 196; var g197 = 197; var g198 = 198; var g199 = 199;
+var g200 = 200; var g201 = 201; var g202 = 202; var g203 = 203; var g204 = 204;
+var g205 = 205; var g206 = 206; var g207 = 207; var g208 = 208; var g209 = 209;
+var g210 = 210; var g211 = 211; var g212 = 212; var g213 = 213; var g214 = 214;
+var g215 = 215; var g216 = 216; var g217 = 217; var g218 = 218; var g219 = 219;
+var g220 = 220; var g221 = 221; var g222 = 222; var g223 = 223; var g224 = 224;
+var g225 = 225; var g226 = 226; var g227 = 227; var g228 = 228; var g229 = 229;
+var g230 = 230; var g231 = 231; var g232 = 232; var g233 = 233; var g234 = 234;
+var g235 = 235; var g236 = 236; var g237 = 237; var g238 = 238; var g239 = 239;
+var g240 = 240; var g241 = 241; var g242 = 242; var g243 = 243; var g244 = 244;
+var g245 = 245; var g246 = 246; var g247 = 247; var g248 = 248; var g249 = 249;
+var g250 = 250; var g251 = 251; var g252 = 252; var g253 = 253; var g254 = 254;
+var g255 = 255; var g256 = 256; var g257 = 257; var g258 = 258; var g259 = 259;
+var g260 = 260; var g261 = 261; var g262 = 262; var g263 = 263; var g264 = 264;
+var g265 = 265; var g266 = 266; var g267 = 267; var g268 = 268; var g269 = 269;
+var g270 = 270; var g271 = 271; var g272 = 272; var g273 = 273; var g274 = 274;
+var g275 = 275; var g276 = 276; var g277 = 277; var g278 = 278; var g279 = 279;
+var g280 = 280; var g281 = 281; var g282 = 282; var g283 = 283; var g284 = 284;
+var g285 = 285; var g286 = 286; var g287 = 287; var g288 = 288; var g289 = 289;
+var g290 = 290; var g291 = 291; var g292 = 292; var g293 = 293; var g294 = 294;
+var g295 = 295; var g296 = 296; var g297 = 297; var g298 = 298; var g299 = 299;
+
+// Spot-check round-trips at boundaries: 0, 254 (one before byte limit),
+// 255 (last byte), 256 (first long), 297, 298, 299 (later in long region).
+// If readInt24 mis-decodes the operand, lookups would return the wrong
+// global or fail outright.
+assert(g000 == 0,   "long-global g000 (idx near 0)");
+assert(g254 == 254, "long-global g254 (idx near byte boundary)");
+assert(g255 == 255, "long-global g255 (idx at byte boundary)");
+assert(g256 == 256, "long-global g256 (first long-encoded idx)");
+assert(g297 == 297, "long-global g297 (long-encoded idx)");
+assert(g298 == 298, "long-global g298 (long-encoded idx)");
+assert(g299 == 299, "long-global g299 (long-encoded idx)");
+
+// SET_GLOBAL_LONG: assign through long path and read back.
+g256 = 1256;
+g299 = 1299;
+assert(g256 == 1256, "OP_SET_GLOBAL_LONG round-trip (g256)");
+assert(g299 == 1299, "OP_SET_GLOBAL_LONG round-trip (g299)");
+
+// Compound assignment exercises GET_LONG + SET_LONG with the same index.
+g256 = 256;
+g256 += 7;
+assert(g256 == 263, "OP_GET/SET_GLOBAL_LONG via +=");
+
+print "ok: globals long-encoded";
+
+// ---------------------------------------------------------------------------
+// 2) OP_CONSTANT_LONG via fresh literals at high indices.
+//    The g000..g299 literals occupy values 0..299. We use values clearly
+//    outside that range (and a fresh marker string) so each is a NEW
+//    entry in the constants pool. Pool is already past 256, so each
+//    landing here is guaranteed to emit OP_CONSTANT_LONG.
+//
+//    Round-tripping through assert(...) instead of just print(...)
+//    ensures a wrong decode would fail the test rather than silently
+//    print the wrong number.
+// ---------------------------------------------------------------------------
+assert(12345 == 12345,                 "OP_CONSTANT_LONG numeric literal");
+assert(99999.5 == 99999.5,             "OP_CONSTANT_LONG fractional literal");
+assert(-7777 == -7777,                 "OP_CONSTANT_LONG negative literal");
+assert("constant_long_marker_alpha" == "constant_long_marker_alpha",
+       "OP_CONSTANT_LONG string literal");
+print "ok: constant_long literals";
+
+// ---------------------------------------------------------------------------
+// 3) OP_GET_PROPERTY_LONG / OP_SET_PROPERTY_LONG / OP_RECORD_LONG
+//    The identifier constants table is already past 256 (300 globals
+//    above), so any property access here encodes the field-name index
+//    via emitInt24 / readInt24. The record declaration itself also
+//    routes its typename + each field name through emitInt24, so
+//    `record Box(value)` exercises OP_RECORD_LONG.
+// ---------------------------------------------------------------------------
+record Box(value);
+
+var b = Box(100);
+assert(b.value == 100,         "OP_GET_PROPERTY_LONG (init read)");
+b.value = 200;
+assert(b.value == 200,         "OP_SET_PROPERTY_LONG round-trip");
+b.value = b.value + 5;
+assert(b.value == 205,         "GET+SET_PROPERTY_LONG composed");
+
+print "ok: properties long-encoded";
+
+// ---------------------------------------------------------------------------
+// 4) OP_CLOSURE_LONG
+//    A closure constant is added per `fun` declaration. With many globals
+//    already in the constants table, function values land at high indices
+//    and emit OP_CLOSURE_LONG.
+// ---------------------------------------------------------------------------
+fun makeAdder(n) {
+  fun add(x) { return x + n; }
+  return add;
+}
+var add5 = makeAdder(5);
+assert(add5(10) == 15, "OP_CLOSURE_LONG closure round-trip");
+assert(add5(0)  == 5,  "OP_CLOSURE_LONG closure with zero");
+
+print "ok: closures long-encoded";
+
+print "ALL OK";

@@ -134,7 +134,8 @@ var
   dict: pObjDictionary;
   colCount, i, j: Integer;
   sb: TStringBuilder;
-  entry: pDictEntry;
+  it: TDictIter;
+  itKey, itVal: TValue;
   colKeys: array of TValue;
   colNames: array of string;
   val: TValue;
@@ -173,20 +174,15 @@ begin
 
   // Extract column keys from the first dictionary
   colCount := 0;
-  SetLength(colKeys, dict^.Capacity);
-  SetLength(colNames, dict^.Capacity);
-  for i := 0 to dict^.Capacity - 1 do
+  SetLength(colKeys, DictSize(dict));
+  SetLength(colNames, DictSize(dict));
+  DictIterInit(it, dict);
+  while DictIterNext(it, itKey, itVal) do
   begin
-    entry := @dict^.Entries[i];
-    if entry^.occupied and (not entry^.tombstone) then
-    begin
-      colKeys[colCount] := entry^.key;
-      colNames[colCount] := ValueToStr(entry^.key);
-      Inc(colCount);
-    end;
+    colKeys[colCount] := itKey;
+    colNames[colCount] := ValueToStr(itKey);
+    Inc(colCount);
   end;
-  SetLength(colKeys, colCount);
-  SetLength(colNames, colCount);
 
   sb := TStringBuilder.Create;
   try

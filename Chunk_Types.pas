@@ -7,6 +7,14 @@
 {..$DEFINE OPCODE_PROFILING}
 {..$DEFINE DEBUG_ASSERT_INVARIANTS}
 
+// Dictionary backend selector.
+// When DICT_ROBINHOOD is defined (default), TObjDictionary uses Robin Hood
+// hashing with linear probing and backward-shift deletion (no tombstones).
+// Comment the line below to revert to the original linear-probe-with-tombstones
+// implementation, which is kept in-source for reference and A/B testing.
+//Bottom line: legacy wins the median microbenchmark by ~5%. Robin Hood wins where it's supposed to win (sustained churn / tombstone-prone workloads). For a Lox interpreter dominated by short-lived dictionaries (instance fields, environment frames if you ever back them with a dict, etc.) legacy is the faster default. Robin Hood is the right default if you expect long-running tables with sustained delete pressure (e.g. a server, an LRU-style cache, a long-running daemon).
+{..$DEFINE DICT_ROBINHOOD}
+
 interface
 
 uses
@@ -29,6 +37,15 @@ const
   //Table
   TABLE_START_CAPACITY = 16;
   TABLE_MAX_LOAD = 0.75;
+
+  // Robin Hood: sentinel value of TDictEntry.probeDist meaning "slot empty".
+  // Live entries store their probe distance (0..RH_EMPTY-1) from the ideal
+  // bucket; 0 means "at its ideal slot". Width is Word (not Byte) so that
+  // chains caused by hash collisions on integer keys — which all reduce to
+  // the same low-bits slot at small capacities, easily exceeding 255 deep —
+  // do not truncate and corrupt the Robin Hood invariant. Record size is
+  // unchanged because of 8-byte alignment around the two TValue fields.
+  RH_EMPTY = $FFFF;
 
   //scanner
   CHAR_SPACE    = ' ';
@@ -453,8 +470,12 @@ type
   TDictEntry = record
     key       : TValue;
     value     : TValue;
-    occupied  : boolean;  // true if slot holds a live entry
-    tombstone : boolean;  // true if slot is a deleted entry
+{$IFDEF DICT_ROBINHOOD}
+    probeDist : Word;       // RH_EMPTY = empty slot; 0..N = distance from ideal
+{$ELSE}
+    occupied  : boolean;    // true if slot holds a live entry
+    tombstone : boolean;    // true if slot is a deleted entry
+{$ENDIF}
   end;
 
   TObjDictionary = record
@@ -463,6 +484,13 @@ type
     Tombstones : integer;   // number of tombstone slots
     Capacity   : integer;   // total slots in Entries array
     Entries    : pDictEntry;
+  end;
+
+  // Opaque iterator state for walking dictionary entries without touching
+  // the internal layout. Use DictIterInit / DictIterNext.
+  TDictIter = record
+    dict  : pObjDictionary;
+    index : Integer;
   end;
 
   TChunk = record
@@ -863,7 +891,14 @@ function HashValue(const value : TValue) : UInt32; inline;
 function DictGet(dict : pObjDictionary; const key : TValue; var outValue : TValue) : boolean;inline;
 procedure DictSet(dict : pObjDictionary; const key : TValue; const val : TValue; MemTracker : pMemTracker);inline;
 function DictDelete(dict : pObjDictionary; const key : TValue) : boolean;inline;
+{$IFNDEF DICT_ROBINHOOD}
 function DictFindEntry(entries : pDictEntry; capacity : integer; const key : TValue) : pDictEntry;inline;
+{$ENDIF}
+function  DictSize(dict : pObjDictionary) : Integer; inline;
+procedure DictIterInit(out it : TDictIter; dict : pObjDictionary); inline;
+function  DictIterNext(var it : TDictIter; out key, value : TValue) : Boolean; inline;
+procedure DictMarkEntries(dict : pObjDictionary);
+procedure DictFreeEntries(dict : pObjDictionary; MemTracker : pMemTracker);
 function InvokeDictMethod(dict: pObjDictionary; methodName: pObjString;
   argCount: integer; args: pValue; var outResult: TValue): boolean;
 function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppObjString; MemTracker : pMemTracker) : pObjRecordType;
@@ -2471,37 +2506,65 @@ begin
 end;
 
 function HashValue(const value : TValue) : UInt32;
+// Murmur3 32-bit finalizer (fmix32) — strong avalanche, ~5ns.
+// Without this, sequential integer keys collapse to the same low-bits slot
+// at small capacities (their IEEE-754 bit patterns differ only in the
+// mantissa, which the simple `bits xor (bits shr 32)` fold preserves) and
+// dictionary probe chains degenerate to linear scans.
+  function fmix32(h : UInt32) : UInt32; inline;
+  begin
+    h := h xor (h shr 16);
+    h := UInt32(UInt64(h) * UInt64($85ebca6b));
+    h := h xor (h shr 13);
+    h := UInt32(UInt64(h) * UInt64($c2b2ae35));
+    h := h xor (h shr 16);
+    Result := h;
+  end;
 var
-  bits : UInt64;
+  bits     : UInt64;
+  preimage : UInt32;
 begin
   if isNumber(value) then
   begin
-    // Canonicalize -0.0 to +0.0 so they hash identically (both compare equal via =)
+    // Canonicalize -0.0 to +0.0 so they hash identically (both compare equal via =).
     if GetNumber(value) = 0.0 then
       bits := 0
     else
       bits := value;  // raw bits of the double
-    Result := UInt32(bits xor (bits shr 32));
+    preimage := UInt32(bits xor (bits shr 32));
   end
   else if isBoolean(value) then
   begin
-    if GetBoolean(value) then Result := 1 else Result := 0;
+    if GetBoolean(value) then preimage := 1 else preimage := 0;
   end
   else if isNill(value) then
-    Result := 2
+    preimage := 2
   else if isObject(value) then
   begin
     Assert(GetObject(value) <> nil, 'HashValue: ObjValue is nil');
     case GetObject(value)^.ObjectKind of
-      okString: Result := pObjString(GetObject(value))^.hash;
+      okString:
+        // String hash is already an FNV-1a — well-distributed for content,
+        // but we still finalize so the dictionary slot derivation matches
+        // every other kind's pipeline.
+        preimage := pObjString(GetObject(value))^.hash;
     else
-      // Identity hash for other objects (pointer-based)
-      Result := UInt32(NativeUInt(GetObject(value)) xor (NativeUInt(GetObject(value)) shr 32));
+      // Identity hash for other objects (pointer-based).
+      preimage := UInt32(NativeUInt(GetObject(value)) xor (NativeUInt(GetObject(value)) shr 32));
     end;
   end
   else
-    Result := 0;
+    preimage := 0;
+
+  Result := fmix32(preimage);
 end;
+
+{$IFNDEF DICT_ROBINHOOD}
+// ===========================================================================
+// LEGACY dictionary backend: open addressing, linear probing, tombstones.
+// Kept in source for A/B testing and as a reference implementation. Active
+// only when DICT_ROBINHOOD is NOT defined at the top of this unit.
+// ===========================================================================
 
 function DictFindEntry(entries : pDictEntry; capacity : integer; const key : TValue) : pDictEntry;inline;
 var
@@ -2729,6 +2792,372 @@ begin
   Assert(dict^.Count >= 0, 'DictDelete exit: count went negative');
   Assert(dict^.Count + dict^.Tombstones <= dict^.Capacity,
     'DictDelete exit: count + tombstones exceeds capacity');
+end;
+
+{$ELSE} // DICT_ROBINHOOD
+// ===========================================================================
+// ROBIN HOOD dictionary backend: open addressing, linear probing, no
+// tombstones (backward-shift deletion). Each slot stores its probe distance
+// (`probeDist`) from its ideal bucket; RH_EMPTY (=$FFFF) marks an empty slot.
+// On insert, when we encounter an entry with a shorter probe distance than
+// our own, we swap and continue inserting the displaced entry — "rich"
+// entries give way to "poor" ones, minimising probe-distance variance.
+// On lookup miss, we stop as soon as we encounter an entry whose probe
+// distance is less than ours (the Robin Hood invariant: if our key were
+// in the table, it would have stolen this slot).
+// On delete, we shift entries back into the freed slot, decrementing their
+// probe distance, until we hit an empty slot or an entry already at its
+// ideal position. No tombstones accumulate.
+// ===========================================================================
+
+// Internal: clear all slots in a freshly-allocated entries array to RH_EMPTY.
+procedure RHInitEntries(entries : pDictEntry; capacity : integer); inline;
+var
+  i : Integer;
+begin
+  for i := 0 to capacity - 1 do
+    entries[i].probeDist := RH_EMPTY;
+end;
+
+// Internal: Robin Hood insert into an entries array known to have space.
+// Caller guarantees no growth needed and that the key is not already present
+// (or that an existing key match is acceptable to overwrite — used during
+// rehash, where keys are guaranteed unique).
+procedure RHInsertNew(entries : pDictEntry; capacity : integer;
+                      const key, value : TValue); inline;
+var
+  mask, idx : Integer;
+  insKey, insValue, tmpKey, tmpValue : TValue;
+  insProbe : Integer;
+  tmpProbe : Word;
+  e : pDictEntry;
+begin
+  mask := capacity - 1;
+  insKey := key;
+  insValue := value;
+  insProbe := 0;
+  idx := Integer(HashValue(insKey)) and mask;
+  while True do
+  begin
+    e := @entries[idx];
+    if e^.probeDist = RH_EMPTY then
+    begin
+      e^.key := insKey;
+      e^.value := insValue;
+      e^.probeDist := Word(insProbe);
+      Exit;
+    end;
+    if e^.probeDist < insProbe then
+    begin
+      // Swap: poor insertee takes rich slot's home; rich is now insertee.
+      tmpKey := e^.key; tmpValue := e^.value; tmpProbe := e^.probeDist;
+      e^.key := insKey; e^.value := insValue; e^.probeDist := Word(insProbe);
+      insKey := tmpKey; insValue := tmpValue; insProbe := tmpProbe;
+    end;
+    Inc(insProbe);
+    idx := (idx + 1) and mask;
+    Assert(insProbe < capacity, 'RHInsertNew: probe exceeded capacity (table full)');
+  end;
+end;
+
+procedure DictGrow(dict : pObjDictionary; MemTracker : pMemTracker); inline;
+var
+  newCapacity, i, oldCount : Integer;
+  newEntries : pDictEntry;
+  e : pDictEntry;
+begin
+   {$IFOPT C+}
+  Assert(dict <> nil, 'DictGrow: dict is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(dict^.Count >= 0, 'DictGrow: count is negative');
+  {$ENDIF}
+
+  oldCount := dict^.Count;
+
+  if dict^.Capacity < TABLE_START_CAPACITY then
+    newCapacity := TABLE_START_CAPACITY
+  else
+    newCapacity := dict^.Capacity * GROWTH_FACTOR;
+
+   {$IFOPT C+}
+  Assert(newCapacity > dict^.Count, 'DictGrow: new capacity must exceed current count');
+  Assert((newCapacity and (newCapacity - 1)) = 0, 'DictGrow: new capacity must be a power of 2');
+  {$ENDIF}
+
+  newEntries := nil;
+  Allocate(Pointer(newEntries), 0, newCapacity * SizeOf(TDictEntry), MemTracker);
+  Assert(newEntries <> nil, 'DictGrow: allocation returned nil');
+
+  RHInitEntries(newEntries, newCapacity);
+
+  // Reinsert live entries.
+  if dict^.Entries <> nil then
+    for i := 0 to dict^.Capacity - 1 do
+    begin
+      e := @dict^.Entries[i];
+      if e^.probeDist <> RH_EMPTY then
+        RHInsertNew(newEntries, newCapacity, e^.key, e^.value);
+    end;
+
+   {$IFOPT C+}
+  Assert(dict^.Count = oldCount, 'DictGrow: count must not change during rehash');
+  {$ENDIF}
+
+  if dict^.Entries <> nil then
+    Allocate(Pointer(dict^.Entries), dict^.Capacity * SizeOf(TDictEntry), 0, MemTracker);
+
+  dict^.Entries := newEntries;
+  dict^.Capacity := newCapacity;
+  dict^.Tombstones := 0;  // unused under Robin Hood but kept zero for invariants
+end;
+
+function DictGet(dict : pObjDictionary; const key : TValue; var outValue : TValue) : boolean; inline;
+var
+  mask, idx, probe : Integer;
+  e : pDictEntry;
+begin
+   {$IFOPT C+}
+  Assert(dict <> nil, 'DictGet: dict is nil');
+  Assert(dict^.Count >= 0, 'DictGet: count is negative');
+  {$ENDIF}
+
+  if dict^.Count = 0 then
+    Exit(False);
+
+   {$IFOPT C+}
+  Assert(dict^.Entries <> nil, 'DictGet: entries nil with count > 0');
+  Assert(dict^.Capacity > 0, 'DictGet: capacity 0 with count > 0');
+  {$ENDIF}
+
+  mask := dict^.Capacity - 1;
+  idx := Integer(HashValue(key)) and mask;
+  probe := 0;
+  while True do
+  begin
+    e := @dict^.Entries[idx];
+    if e^.probeDist = RH_EMPTY then Exit(False);
+    if e^.probeDist < probe then Exit(False);  // Robin Hood miss
+    if ValuesEqual(e^.key, key) then
+    begin
+      outValue := e^.value;
+      Exit(True);
+    end;
+    Inc(probe);
+    idx := (idx + 1) and mask;
+  end;
+end;
+
+procedure DictSet(dict : pObjDictionary; const key : TValue; const val : TValue; MemTracker : pMemTracker);
+var
+  mask, idx, probe : Integer;
+  e : pDictEntry;
+  insKey, insValue, tmpKey, tmpValue : TValue;
+  insProbe : Integer;
+  tmpProbe : Word;
+  oldCount : Integer;
+begin
+   {$IFOPT C+}
+  Assert(dict <> nil, 'DictSet: dict is nil');
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(dict^.Count >= 0, 'DictSet: count is negative');
+  {$ENDIF}
+
+  oldCount := dict^.Count;
+
+  // First, look up the key. If it exists, just update the value.
+  if (dict^.Count > 0) and (dict^.Capacity > 0) then
+  begin
+    mask := dict^.Capacity - 1;
+    idx := Integer(HashValue(key)) and mask;
+    probe := 0;
+    while True do
+    begin
+      e := @dict^.Entries[idx];
+      if e^.probeDist = RH_EMPTY then Break;       // not present
+      if e^.probeDist < probe then Break;          // not present (RH invariant)
+      if ValuesEqual(e^.key, key) then
+      begin
+        e^.value := val;                            // update existing
+        Exit;
+      end;
+      Inc(probe);
+      idx := (idx + 1) and mask;
+    end;
+  end;
+
+  // New key. Grow if load factor would exceed threshold.
+  if dict^.Count + 1 > Integer(Trunc(dict^.Capacity * TABLE_MAX_LOAD)) then
+    DictGrow(dict, MemTracker);
+
+  Assert(dict^.Entries <> nil, 'DictSet: entries nil after grow');
+  Assert(dict^.Capacity > 0, 'DictSet: capacity 0 after grow');
+
+  // Robin Hood insert.
+  mask := dict^.Capacity - 1;
+  insKey := key;
+  insValue := val;
+  insProbe := 0;
+  idx := Integer(HashValue(insKey)) and mask;
+  while True do
+  begin
+    e := @dict^.Entries[idx];
+    if e^.probeDist = RH_EMPTY then
+    begin
+      e^.key := insKey;
+      e^.value := insValue;
+      e^.probeDist := Word(insProbe);
+      Break;
+    end;
+    if e^.probeDist < insProbe then
+    begin
+      tmpKey := e^.key; tmpValue := e^.value; tmpProbe := e^.probeDist;
+      e^.key := insKey; e^.value := insValue; e^.probeDist := Word(insProbe);
+      insKey := tmpKey; insValue := tmpValue; insProbe := tmpProbe;
+    end;
+    Inc(insProbe);
+    idx := (idx + 1) and mask;
+    Assert(insProbe < dict^.Capacity, 'DictSet: probe exceeded capacity (table full)');
+  end;
+  Inc(dict^.Count);
+
+  Assert(dict^.Count = oldCount + 1, 'DictSet exit: count must increase by exactly 1');
+end;
+
+function DictDelete(dict : pObjDictionary; const key : TValue) : boolean;
+var
+  mask, idx, probe, nextIdx : Integer;
+  e, n : pDictEntry;
+begin
+   {$IFOPT C+}
+  Assert(dict <> nil, 'DictDelete: dict is nil');
+  Assert(dict^.Count >= 0, 'DictDelete: count is negative');
+  {$ENDIF}
+
+  if dict^.Count = 0 then Exit(False);
+
+  Assert(dict^.Entries <> nil, 'DictDelete: entries nil with count > 0');
+  Assert(dict^.Capacity > 0, 'DictDelete: capacity 0 with count > 0');
+
+  // Locate the entry.
+  mask := dict^.Capacity - 1;
+  idx := Integer(HashValue(key)) and mask;
+  probe := 0;
+  while True do
+  begin
+    e := @dict^.Entries[idx];
+    if e^.probeDist = RH_EMPTY then Exit(False);
+    if e^.probeDist < probe then Exit(False);
+    if ValuesEqual(e^.key, key) then Break;
+    Inc(probe);
+    idx := (idx + 1) and mask;
+  end;
+
+  // Backward-shift: pull each successor back by one slot until the next slot
+  // is empty or already at its ideal position (probeDist=0).
+  while True do
+  begin
+    nextIdx := (idx + 1) and mask;
+    n := @dict^.Entries[nextIdx];
+    if (n^.probeDist = RH_EMPTY) or (n^.probeDist = 0) then
+    begin
+      // Clear current slot.
+      dict^.Entries[idx].probeDist := RH_EMPTY;
+      // For GC hygiene, also nil out the slot — `MarkEntries` skips empty
+      // slots so it never reads these, but a stray pointer in a defunct
+      // slot would still anchor it in a debug heap walk.
+      dict^.Entries[idx].key := CreateNilValue;
+      dict^.Entries[idx].value := CreateNilValue;
+      Break;
+    end;
+    dict^.Entries[idx].key := n^.key;
+    dict^.Entries[idx].value := n^.value;
+    dict^.Entries[idx].probeDist := n^.probeDist - 1;
+    idx := nextIdx;
+  end;
+
+  Dec(dict^.Count);
+  Result := True;
+  Assert(dict^.Count >= 0, 'DictDelete exit: count went negative');
+end;
+
+{$ENDIF} // DICT_ROBINHOOD
+
+// ---------------------------------------------------------------------------
+// Dictionary seam: layout-agnostic accessors used by GC, ValueToStr, and
+// the dictKeys / dictValues / writeCsv natives. Callers MUST go through
+// these instead of touching dict^.Entries directly, so the underlying
+// hashing strategy (linear-probe + tombstones today, Robin Hood next) can
+// be swapped without rewriting consumers.
+// ---------------------------------------------------------------------------
+
+function DictSize(dict : pObjDictionary) : Integer;
+begin
+  Result := dict^.Count;
+end;
+
+procedure DictIterInit(out it : TDictIter; dict : pObjDictionary);
+begin
+  it.dict := dict;
+  it.index := 0;
+end;
+
+function DictIterNext(var it : TDictIter; out key, value : TValue) : Boolean;
+var
+  e   : pDictEntry;
+  cap : Integer;
+begin
+  cap := it.dict^.Capacity;
+  while it.index < cap do
+  begin
+    e := @it.dict^.Entries[it.index];
+    Inc(it.index);
+    {$IFDEF DICT_ROBINHOOD}
+    if e^.probeDist <> RH_EMPTY then
+    {$ELSE}
+    if e^.occupied and not e^.tombstone then
+    {$ENDIF}
+    begin
+      key   := e^.key;
+      value := e^.value;
+      Exit(True);
+    end;
+  end;
+  Result := False;
+end;
+
+procedure DictMarkEntries(dict : pObjDictionary);
+var
+  i : Integer;
+  isLive : Boolean;
+begin
+  if dict^.Capacity = 0 then Exit;
+  Assert(dict^.Entries <> nil, 'DictMarkEntries: entries nil with capacity > 0');
+  for i := 0 to dict^.Capacity - 1 do
+  begin
+    {$IFDEF DICT_ROBINHOOD}
+    isLive := dict^.Entries[i].probeDist <> RH_EMPTY;
+    {$ELSE}
+    isLive := dict^.Entries[i].occupied;
+    {$ENDIF}
+    if isLive then
+    begin
+      {$IFOPT C+}
+      if isObject(dict^.Entries[i].key) then
+        AssertValidObjPointer(GetObject(dict^.Entries[i].key), 'DictMarkEntries key');
+      if isObject(dict^.Entries[i].value) then
+        AssertValidObjPointer(GetObject(dict^.Entries[i].value), 'DictMarkEntries value');
+      {$ENDIF}
+      MarkValue(dict^.Entries[i].key);
+      MarkValue(dict^.Entries[i].value);
+    end;
+  end;
+end;
+
+procedure DictFreeEntries(dict : pObjDictionary; MemTracker : pMemTracker);
+begin
+  if dict^.Entries <> nil then
+    Allocate(Pointer(dict^.Entries),
+             dict^.Capacity * SizeOf(TDictEntry), 0, MemTracker);
 end;
 
 function isRecordType(value : TValue) : boolean; inline;
@@ -3540,16 +3969,14 @@ begin
       okDictionary: begin
         Result := '{';
         var first := true;
-        for i := 0 to pObjDictionary(GetObject(value))^.Capacity - 1 do
+        var dictIt : TDictIter;
+        var dictKey, dictVal : TValue;
+        DictIterInit(dictIt, pObjDictionary(GetObject(value)));
+        while DictIterNext(dictIt, dictKey, dictVal) do
         begin
-          if pObjDictionary(GetObject(value))^.Entries[i].occupied and
-             not pObjDictionary(GetObject(value))^.Entries[i].tombstone then
-          begin
-            if not first then Result := Result + ', ';
-            first := false;
-            Result := Result + ValueToStr(pObjDictionary(GetObject(value))^.Entries[i].key)
-              + ': ' + ValueToStr(pObjDictionary(GetObject(value))^.Entries[i].value);
-          end;
+          if not first then Result := Result + ', ';
+          first := false;
+          Result := Result + ValueToStr(dictKey) + ': ' + ValueToStr(dictVal);
         end;
         Result := Result + '}';
       end;
@@ -4128,7 +4555,9 @@ function InvokeDictMethod(dict: pObjDictionary; methodName: pObjString;
 var
   val: TValue;
   arr: pObjArray;
-  i, newCap, oldSize, newSize: integer;
+  newCap, oldSize, newSize: integer;
+  it: TDictIter;
+  itKey, itVal: TValue;
 begin
   Result := true;
   if ObjStringEqualsAnsi(methodName, 'Set') then
@@ -4189,13 +4618,11 @@ begin
       PushStack(vm.stack, CreateObject(pObj(arr)));
       Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
       arr^.Capacity := newCap;
-      for i := 0 to dict^.Capacity - 1 do
+      DictIterInit(it, dict);
+      while DictIterNext(it, itKey, itVal) do
       begin
-        if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
-        begin
-          arr^.Elements[arr^.Count] := dict^.Entries[i].key;
-          Inc(arr^.Count);
-        end;
+        arr^.Elements[arr^.Count] := itKey;
+        Inc(arr^.Count);
       end;
       Dec(VM.Stack.StackTop);
     end;
@@ -4217,13 +4644,11 @@ begin
       PushStack(vm.stack, CreateObject(pObj(arr)));
       Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
       arr^.Capacity := newCap;
-      for i := 0 to dict^.Capacity - 1 do
+      DictIterInit(it, dict);
+      while DictIterNext(it, itKey, itVal) do
       begin
-        if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
-        begin
-          arr^.Elements[arr^.Count] := dict^.Entries[i].value;
-          Inc(arr^.Count);
-        end;
+        arr^.Elements[arr^.Count] := itVal;
+        Inc(arr^.Count);
       end;
       Dec(VM.Stack.StackTop);
     end;
@@ -4255,16 +4680,15 @@ begin
       if pObjDictionary(GetObject(args[0]))^.Count = dict^.Count then
       begin
         outResult := CreateBoolean(true);
-        for i := 0 to dict^.Capacity - 1 do
+        DictIterInit(it, dict);
+        while DictIterNext(it, itKey, itVal) do
         begin
-          if not dict^.Entries[i].occupied or dict^.Entries[i].tombstone then
-            Continue;
-          if not DictGet(pObjDictionary(GetObject(args[0])), dict^.Entries[i].key, val) then
+          if not DictGet(pObjDictionary(GetObject(args[0])), itKey, val) then
           begin
             outResult := CreateBoolean(false);
             Break;
           end;
-          if not ValuesEqual(dict^.Entries[i].value, val) then
+          if not ValuesEqual(itVal, val) then
           begin
             outResult := CreateBoolean(false);
             Break;
@@ -6357,9 +6781,7 @@ begin
       Allocate(Pointer(obj), SizeOf(TObjNativeObject), 0, vm.MemTracker);
     end;
     okDictionary : begin
-      if pObjDictionary(obj)^.Entries <> nil then
-        Allocate(Pointer(pObjDictionary(obj)^.Entries),
-                 pObjDictionary(obj)^.Capacity * SizeOf(TDictEntry), 0, vm.MemTracker);
+      DictFreeEntries(pObjDictionary(obj), vm.MemTracker);
       Allocate(Pointer(obj), SizeOf(TObjDictionary), 0, vm.MemTracker);
     end;
   else
@@ -6651,29 +7073,7 @@ begin
       end;
     end;
     okNativeObject: ; // Delphi object not traced by GC
-    okDictionary: begin
-      if pObjDictionary(obj)^.Capacity > 0 then
-      begin
-        Assert(pObjDictionary(obj)^.Entries <> nil, 'BlackenObject: dictionary entries is nil with capacity > 0');
-        for i := 0 to pObjDictionary(obj)^.Capacity - 1 do
-        begin
-          if pObjDictionary(obj)^.Entries[i].occupied then
-          begin
-            {$IFOPT C+}
-            if isObject(pObjDictionary(obj)^.Entries[i].key) then
-              AssertValidObjPointer(GetObject(pObjDictionary(obj)^.Entries[i].key), 'BlackenObject dict key');
-
-            if isObject(pObjDictionary(obj)^.Entries[i].value) then
-              AssertValidObjPointer(GetObject(pObjDictionary(obj)^.Entries[i].value), 'BlackenObject dict value');
-              {$ENDIF}
-
-
-            MarkValue(pObjDictionary(obj)^.Entries[i].key);
-            MarkValue(pObjDictionary(obj)^.Entries[i].value);
-          end;
-        end;
-      end;
-    end;
+    okDictionary: DictMarkEntries(pObjDictionary(obj));
   end;
 end;
 

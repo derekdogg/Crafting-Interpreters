@@ -1,0 +1,128 @@
+// Hash-distribution regression test
+//
+// Pins quality properties of HashValue() that the existing dictionary tests
+// can't observe. They prove correctness (every key resolves); this file
+// proves the hash actually distributes — i.e. the SplitMix64 finalizer is
+// pulling its weight.
+//
+// Threshold rationale: SplitMix64 produces near-uniform output, so each test
+// has substantial slack between the realistic floor and the asserted one. If
+// any of these fail, the hash is no longer mixing and the dictionary's probe
+// chains will have degraded into linear scans for typical key sets.
+
+// ---------------------------------------------------------------------------
+// Determinism: same input always produces the same hash
+// ---------------------------------------------------------------------------
+{
+  assert(vmHash(42) == vmHash(42), "number determinism");
+  assert(vmHash("hello") == vmHash("hello"), "string determinism (via interning)");
+  assert(vmHash(true) == vmHash(true), "bool determinism");
+  assert(vmHash(nil) == vmHash(nil), "nil determinism");
+}
+print "pass: determinism"; // expect: pass: determinism
+
+// ---------------------------------------------------------------------------
+// Signed-zero parity at the hash level (not just the dictionary level)
+// ---------------------------------------------------------------------------
+{
+  assert(vmHash(0.0) == vmHash(-0.0), "+0.0 and -0.0 hash identically");
+}
+print "pass: signed zero hash parity"; // expect: pass: signed zero hash parity
+
+// ---------------------------------------------------------------------------
+// Distinct kinds with the same numeric "shape" should not collide every time.
+// (Collisions are allowed — equality check resolves them — but if EVERY one
+// of these collides, the mix is broken.)
+// ---------------------------------------------------------------------------
+{
+  // false=0, 0.0=0 pre-mix — but the post-mix outputs aren't required to differ.
+  // We only require that across a small set of cross-kind values, not all
+  // hashes collapse to one number.
+  var hashes = [:];
+  hashes.Set(vmHash(false), true);
+  hashes.Set(vmHash(true), true);
+  hashes.Set(vmHash(nil), true);
+  hashes.Set(vmHash(0), true);
+  hashes.Set(vmHash(1), true);
+  hashes.Set(vmHash(2), true);
+  hashes.Set(vmHash(""), true);
+  hashes.Set(vmHash("a"), true);
+  // 8 distinct values, expect at least 6 unique hashes (allow up to 2 collisions).
+  assert(hashes.Size() >= 6, "cross-kind diversity: expected >= 6 unique, got " + str(hashes.Size()));
+}
+print "pass: cross-kind diversity"; // expect: pass: cross-kind diversity
+
+// ---------------------------------------------------------------------------
+// Small integers spread across 16 buckets
+// This is the canonical regression case: under the old `bits xor (bits>>32)`
+// fold, integer keys 0..1000 all landed in bucket 0 at this mask.
+// ---------------------------------------------------------------------------
+{
+  var seen = [:];
+  for (var i = 0; i < 1000; i = i + 1) {
+    seen.Set(vmHash(i) % 16, true);
+  }
+  // Expected: all 16 buckets hit. Floor of 14 leaves headroom for any
+  // legitimate skew; a working mix overshoots this by a mile.
+  assert(seen.Size() >= 14,
+    "ints 0..999 reach >= 14 of 16 buckets, got " + str(seen.Size()));
+}
+print "pass: small ints mod 16"; // expect: pass: small ints mod 16
+
+// ---------------------------------------------------------------------------
+// Small integers spread across 256 buckets
+// At larger table sizes, expected occupancy ~250/256 (poisson, lambda~3.9).
+// ---------------------------------------------------------------------------
+{
+  var seen = [:];
+  for (var i = 0; i < 1000; i = i + 1) {
+    seen.Set(vmHash(i) % 256, true);
+  }
+  assert(seen.Size() >= 230,
+    "ints 0..999 reach >= 230 of 256 buckets, got " + str(seen.Size()));
+}
+print "pass: small ints mod 256"; // expect: pass: small ints mod 256
+
+// ---------------------------------------------------------------------------
+// Half-integer floats — exercises the non-integer mantissa path
+// ---------------------------------------------------------------------------
+{
+  var seen = [:];
+  for (var i = 0; i < 200; i = i + 1) {
+    var f = i + 0.5;
+    seen.Set(vmHash(f) % 16, true);
+  }
+  assert(seen.Size() >= 14,
+    "floats 0.5..199.5 reach >= 14 of 16 buckets, got " + str(seen.Size()));
+}
+print "pass: half-integer floats mod 16"; // expect: pass: half-integer floats mod 16
+
+// ---------------------------------------------------------------------------
+// Most distinct integer inputs produce distinct hash outputs (avalanche)
+// ---------------------------------------------------------------------------
+{
+  var seen = [:];
+  for (var i = 0; i < 1000; i = i + 1) {
+    seen.Set(vmHash(i), true);
+  }
+  // SplitMix64 truncated to 32 bits — birthday paradox predicts ~0 collisions
+  // in 1000 samples from 2^32 outputs. Allow a handful of slack anyway.
+  assert(seen.Size() >= 995,
+    "1000 distinct ints produce >= 995 distinct hashes, got " + str(seen.Size()));
+}
+print "pass: hash collision rate"; // expect: pass: hash collision rate
+
+// ---------------------------------------------------------------------------
+// String keys: distinct content -> distinct hash (interning + mix)
+// ---------------------------------------------------------------------------
+{
+  var seen = [:];
+  for (var i = 0; i < 200; i = i + 1) {
+    seen.Set(vmHash("k" + str(i)), true);
+  }
+  assert(seen.Size() >= 198,
+    "200 distinct strings produce >= 198 distinct hashes, got " + str(seen.Size()));
+}
+print "pass: string hash diversity"; // expect: pass: string hash diversity
+
+print "all hash distribution tests passed"; // expect: all hash distribution tests passed

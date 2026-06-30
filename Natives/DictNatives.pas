@@ -118,7 +118,9 @@ function dictKeysNative(argCount: integer; args: pValue): TValue;
 var
   dict : pObjDictionary;
   arr : pObjArray;
-  i, newCap, oldSize, newSize : integer;
+  newCap, oldSize, newSize : integer;
+  it : TDictIter;
+  itKey, itVal : TValue;
 begin
   if argCount <> 1 then
   begin
@@ -144,13 +146,11 @@ begin
     PushStack(vm.stack, CreateObject(pObj(arr)));
     Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
     arr^.Capacity := newCap;
-    for i := 0 to dict^.Capacity - 1 do
+    DictIterInit(it, dict);
+    while DictIterNext(it, itKey, itVal) do
     begin
-      if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
-      begin
-        arr^.Elements[arr^.Count] := dict^.Entries[i].key;
-        Inc(arr^.Count);
-      end;
+      arr^.Elements[arr^.Count] := itKey;
+      Inc(arr^.Count);
     end;
     Dec(VM.Stack.StackTop);
   end;
@@ -181,7 +181,9 @@ function dictValuesNative(argCount: integer; args: pValue): TValue;
 var
   dict : pObjDictionary;
   arr : pObjArray;
-  i, newCap, oldSize, newSize : integer;
+  newCap, oldSize, newSize : integer;
+  it : TDictIter;
+  itKey, itVal : TValue;
 begin
   if argCount <> 1 then
   begin
@@ -205,13 +207,11 @@ begin
     PushStack(vm.stack, CreateObject(pObj(arr)));
     Allocate(Pointer(arr^.Elements), oldSize, newSize, VM.MemTracker);
     arr^.Capacity := newCap;
-    for i := 0 to dict^.Capacity - 1 do
+    DictIterInit(it, dict);
+    while DictIterNext(it, itKey, itVal) do
     begin
-      if dict^.Entries[i].occupied and not dict^.Entries[i].tombstone then
-      begin
-        arr^.Elements[arr^.Count] := dict^.Entries[i].value;
-        Inc(arr^.Count);
-      end;
+      arr^.Elements[arr^.Count] := itVal;
+      Inc(arr^.Count);
     end;
     Dec(VM.Stack.StackTop);
   end;
