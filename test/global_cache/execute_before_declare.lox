@@ -1,0 +1,14 @@
+// Slot indexing pre-allocates a slot for every global name referenced by
+// the compiler, filled with the UNDEFINED_VAL sentinel. If the referring
+// code runs before `x` is defined by OP_DEFINE_GLOBAL, the runtime must
+// still report "Undefined variable" — the sentinel must not leak.
+//
+// Regression for the design in global-slot-indexing-plan.md.
+
+fun outer() {
+  print x;
+}
+
+outer(); // expect runtime error: Undefined variable 'x'.
+
+var x = 123; // never executed — the error above terminates the script

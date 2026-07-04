@@ -288,20 +288,17 @@ end;
 function loxObjectsNative(argCount: integer; args: pValue): TValue;
 var
   i: Integer;
-  entry: pEntry;
   arr: pObjArray;
   nameStr: pObjString;
   names: TStringList;
 begin
   names := TStringList.Create;
   try
-    // Walk VM.Globals, find entries whose value is a native object
-    for i := 0 to VM.Globals.CurrentCapacity - 1 do
+    // Walk the global slot arrays, find entries whose value is a native object.
+    for i := 0 to VM.GlobalCount - 1 do
     begin
-      entry := @VM.Globals.Entries[i];
-      if (entry^.key = nil) then Continue;
-      if not isNativeObject(entry^.value) then Continue;
-      names.Add(String(ObjStringToAnsiString(entry^.key)));
+      if not isNativeObject(VM.GlobalValues[i]) then Continue;
+      names.Add(String(ObjStringToAnsiString(VM.GlobalMeta[i].Name)));
     end;
     names.Sort;
 
@@ -327,7 +324,6 @@ function loxObjectInfoNative(argCount: integer; args: pValue): TValue;
 var
   objName: AnsiString;
   i: Integer;
-  entry: pEntry;
   nativeObj: pObjNativeObject;
   rt: TRttiType;
   prop: TRttiProperty;
@@ -352,14 +348,12 @@ begin
 
   // Find the named native object in globals
   nativeObj := nil;
-  for i := 0 to VM.Globals.CurrentCapacity - 1 do
+  for i := 0 to VM.GlobalCount - 1 do
   begin
-    entry := @VM.Globals.Entries[i];
-    if (entry^.key = nil) then Continue;
-    if not isNativeObject(entry^.value) then Continue;
-    if ObjStringToAnsiString(entry^.key) = objName then
+    if not isNativeObject(VM.GlobalValues[i]) then Continue;
+    if ObjStringToAnsiString(VM.GlobalMeta[i].Name) = objName then
     begin
-      nativeObj := pObjNativeObject(GetObject(entry^.value));
+      nativeObj := pObjNativeObject(GetObject(VM.GlobalValues[i]));
       Break;
     end;
   end;

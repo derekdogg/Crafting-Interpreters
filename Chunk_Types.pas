@@ -2,7 +2,7 @@
 {$POINTERMATH ON}
 {$ASSERTIONS OFF}
 {..$DEFINE DEBUG_LOG_GC}
-{..$DEFINE DEBUG_STRESS_GC}
+{$DEFINE DEBUG_STRESS_GC}
 {..$DEFINE DEBUG_STRESS_TABLE}
 {..$DEFINE OPCODE_PROFILING}
 {..$DEFINE DEBUG_ASSERT_INVARIANTS}
@@ -209,10 +209,15 @@ const
   TAG_NIL   = 1;
   TAG_FALSE = 2;
   TAG_TRUE  = 3;
+  // TAG_UNDEFINED marks a global slot that has been reserved (a name has been
+  // referenced) but never DEFINE'd. Not producible from Lox source — the only
+  // writer is resolveGlobalSlot. See global-slot-indexing-plan.md.
+  TAG_UNDEFINED = 4;
 
-  NIL_VAL   = QNAN or TAG_NIL;    // $7FFC000000000001
-  FALSE_VAL = QNAN or TAG_FALSE;  // $7FFC000000000002
-  TRUE_VAL  = QNAN or TAG_TRUE;   // $7FFC000000000003
+  NIL_VAL       = QNAN or TAG_NIL;        // $7FFC000000000001
+  FALSE_VAL     = QNAN or TAG_FALSE;      // $7FFC000000000002
+  TRUE_VAL      = QNAN or TAG_TRUE;       // $7FFC000000000003
+  UNDEFINED_VAL = QNAN or TAG_UNDEFINED;  // $7FFC000000000004
 
 
 type
@@ -516,6 +521,12 @@ type
   // If assigned, called with the printed text (one line per call).
   TLoxPrintEvent = procedure(const Text: string) of object;
 
+  // Per-slot diagnostic metadata for the global slot table. Cold path only:
+  // touched by runtime error reporting and by the GC name-marking walk.
+  TGlobalMeta = record
+    Name : pObjString;  // interned name; used for 'Undefined variable X.' errors
+  end;
+
   //Virtual Machine
   TVirtualMachine = record
     Frames          : array[0..FRAMES_MAX - 1] of TCallFrame;
@@ -523,7 +534,16 @@ type
     Stack           : pStack;
     MemTracker      : PMemTracker;
     Strings         : pTable;
-    Globals         : pTable;
+    // Global slot table — Phase 1 dormant, wired in Phase 2. Slot index replaces
+    // hash-table lookup at OP_GET_GLOBAL / OP_SET_GLOBAL / OP_DEFINE_GLOBAL time.
+    // GlobalValues is the hot fast-path array; GlobalMeta is cold diagnostic
+    // storage. GlobalNameToSlot is the compile-time name->slot map (never touched
+    // during dispatch). See global-slot-indexing-plan.md.
+    GlobalValues     : array of TValue;
+    GlobalMeta       : array of TGlobalMeta;
+    GlobalCount      : Integer;
+    GlobalCapacity   : Integer;
+    GlobalNameToSlot : pTable;
     OpenUpvalues    : pObjUpvalue;
     RuntimeErrorStr : String;
     // External GC roots: Delphi-side TValue slots that hold Lox objects
@@ -758,6 +778,7 @@ function CreateNumber(Value: Double): TValue; inline;
 function GetNumber(Value : TValue) : double; inline;
 function CreateNilValue : TValue; inline;
 function isNill(const Value: TValue): Boolean; inline;
+function IsUndefined(const Value: TValue): Boolean; inline;
 function IsFalsey(const Value: TValue): Boolean; inline;
 function ValuesEqual(a, b : TValue) : boolean;
 //Native helper functions -- convenience wrappers for native function authors
@@ -859,6 +880,7 @@ function InterpretResult(source : pAnsiChar) : TInterpretResult;
 
 {$REGION 'Native Registration'}
 procedure defineNative(const name : AnsiString; func : TNativeFn; arity: Integer = -1);
+procedure defineGlobalNative(name : pObjString; value : TValue);
 procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
 procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
 function findNativeClass(const name : AnsiString) : pNativeClassInfo;
@@ -869,6 +891,8 @@ procedure InjectObject(const name : AnsiString; instance : TObject);
 {$REGION 'VM Lifecycle'}
 procedure InitVM();
 procedure FreeVM();
+procedure GrowGlobals; inline;
+function  resolveGlobalSlot(name : pObjString) : Integer;
 {$ENDREGION}
 
 {$REGION 'Garbage Collection'}
@@ -945,6 +969,7 @@ procedure beginScope(); inline;
 procedure endScope();
 procedure recordDeclaration();
 function identifierConstant(const name : TToken) : integer; inline;
+function identifierGlobalSlot(const name : TToken) : integer; inline;
 function parseVariable(const errorMsg : PAnsiChar) : integer; inline;
 procedure defineVariable(global : integer); inline;
 {$ENDREGION}
@@ -2531,6 +2556,11 @@ end;
 function isNill(const Value: TValue): Boolean; inline;
 begin
   Result := Value = NIL_VAL;
+end;
+
+function IsUndefined(const Value: TValue): Boolean; inline;
+begin
+  Result := Value = UNDEFINED_VAL;
 end;
 
 function GetNil(const value : TValue) : byte;
@@ -5501,51 +5531,38 @@ begin
         end;
 
         OP_GET_GLOBAL: begin
+          // Operand is a global slot index (Phase 2 cutover: was a
+          // constant-pool index in the pre-slot design). See
+          // global-slot-indexing-plan.md.
           i := ip^;
           Inc(ip);
-          value := constants[i];
-          if not isString(value) then
+          {$IFOPT C+}
+          Assert(i < vm.GlobalCount, 'OP_GET_GLOBAL: slot out of range');
+          {$ENDIF}
+          value := vm.GlobalValues[i];
+          if value = UNDEFINED_VAL then
           begin
-            runtimeError('OP_GET_GLOBAL: constant[' + IntToStr(i) +
-              '] is not a string (raw=' + IntToHex(value, 16) +
-              '). function=''' + String(ObjStringToAnsiString(frame^.closure^.func^.name)) +
-              ''' offset=' + IntToStr(NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 2) +
-              ' constantsCount=' + IntToStr(frame^.closure^.func^.chunk^.Constants^.Count) + '.');
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          if not TableGet(vm.Globals, ValueToString(value), ValueB) then
-          begin
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
-          pushStack(stack, ValueB);
+          pushStack(stack, value);
         end;
 
         OP_SET_GLOBAL: begin
           i := ip^;
           Inc(ip);
-          value := constants[i];
-          if not isString(value) then
+          {$IFOPT C+}
+          Assert(i < vm.GlobalCount, 'OP_SET_GLOBAL: slot out of range');
+          {$ENDIF}
+          if vm.GlobalValues[i] = UNDEFINED_VAL then
           begin
-            runtimeError('OP_SET_GLOBAL: constant[' + IntToStr(i) +
-              '] is not a string (raw=' + IntToHex(value, 16) +
-              '). function=''' + String(ObjStringToAnsiString(frame^.closure^.func^.name)) +
-              ''' offset=' + IntToStr(NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 2) +
-              ' constantsCount=' + IntToStr(frame^.closure^.func^.chunk^.Constants^.Count) + '.');
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          // TableSet returns True if the key was newly inserted. For
-          // assignment to an undeclared global, undo the insert and error.
-          if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
-          begin
-            TableDelete(vm.Globals, ValueToString(value));
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
-            exit;
-          end;
+          vm.GlobalValues[i] := stack.StackTop[-1];
+          // Assignment is an expression — leave the value on stack.
         end;
 
         OP_GET_LOCAL: begin
@@ -5848,10 +5865,12 @@ begin
         end;
 
         OP_DEFINE_GLOBAL: begin
-          value := constants[ip^];
+          i := ip^;
           Inc(ip);
-          {$IFOPT C+}AssertValueIsString(value);{$ENDIF}
-          TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker);
+          {$IFOPT C+}
+          Assert(i < vm.GlobalCount, 'OP_DEFINE_GLOBAL: slot out of range');
+          {$ENDIF}
+          vm.GlobalValues[i] := stack.StackTop[-1];
           Dec(stack.StackTop);
         end;
 
@@ -5903,40 +5922,41 @@ begin
 
         OP_DEFINE_GLOBAL_LONG: begin
           i := ReadLongIndex(ip);
-          value := constants[i];
-          AssertValueIsString(value);
-          TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker);
+          {$IFOPT C+}
+          Assert(i < vm.GlobalCount, 'OP_DEFINE_GLOBAL_LONG: slot out of range');
+          {$ENDIF}
+          vm.GlobalValues[i] := stack.StackTop[-1];
           Dec(stack.StackTop);
         end;
 
         OP_GET_GLOBAL_LONG: begin
           i := ReadLongIndex(ip);
-          value := constants[i];
           {$IFOPT C+}
-          AssertValueIsString(value);
+          Assert(i < vm.GlobalCount, 'OP_GET_GLOBAL_LONG: slot out of range');
           {$ENDIF}
-          if not TableGet(vm.Globals, ValueToString(value), ValueB) then
+          value := vm.GlobalValues[i];
+          if value = UNDEFINED_VAL then
           begin
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          pushStack(stack, ValueB);
+          pushStack(stack, value);
         end;
 
         OP_SET_GLOBAL_LONG: begin
           i := ReadLongIndex(ip);
-          value := constants[i];
-          AssertValueIsString(value);
-          // TableSet returns True if the key was newly inserted. For
-          // assignment to an undeclared global, undo the insert and error.
-          if TableSet(vm.Globals, ValueToString(value), stack.StackTop[-1], vm.MemTracker) then
+          {$IFOPT C+}
+          Assert(i < vm.GlobalCount, 'OP_SET_GLOBAL_LONG: slot out of range');
+          {$ENDIF}
+          if vm.GlobalValues[i] = UNDEFINED_VAL then
           begin
-            TableDelete(vm.Globals, ValueToString(value));
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(ValueToString(value))) + '''.');
+            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
+          vm.GlobalValues[i] := stack.StackTop[-1];
+          // Assignment is an expression — leave the value on stack.
         end;
 
         OP_CLOSURE_LONG: begin
@@ -6894,6 +6914,52 @@ end;
 {$ENDREGION}
 
 {$REGION 'Native Registration'}
+// --- Global slot allocation (Phase 1 dormant; wired in Phase 2) --------------
+// Slot table growth policy: capacity doubles from an initial 8. Matches the
+// amortised-O(1) growth pattern used by the value stack and constant array.
+procedure GrowGlobals; inline;
+begin
+  if VM.GlobalCapacity = 0 then
+    VM.GlobalCapacity := 8
+  else
+    VM.GlobalCapacity := VM.GlobalCapacity * 2;
+  SetLength(VM.GlobalValues, VM.GlobalCapacity);
+  SetLength(VM.GlobalMeta,   VM.GlobalCapacity);
+end;
+
+// Returns the stable slot index for a global identifier. Idempotent: repeat
+// calls for the same interned pObjString return the same slot.
+// Callers must ensure `name` is GC-reachable (already on the value stack)
+// because TableSet below may trigger a collection.
+function resolveGlobalSlot(name : pObjString) : Integer;
+var
+  v : TValue;
+begin
+  if TableGet(VM.GlobalNameToSlot, name, v) then
+    Exit(Trunc(GetNumber(v)));
+
+  if VM.GlobalCount = VM.GlobalCapacity then
+    GrowGlobals;
+
+  Result := VM.GlobalCount;
+  Inc(VM.GlobalCount);
+  VM.GlobalMeta[Result].Name := name;
+  VM.GlobalValues[Result]    := UNDEFINED_VAL;
+  // Slot index stored as a NaN-boxed double. A million slots is exactly
+  // representable, so the float round-trip is lossless.
+  TableSet(VM.GlobalNameToSlot, name, CreateNumber(Result), VM.MemTracker);
+end;
+
+// Native/builtin registration helper. Publishes `value` under `name` in the
+// global slot table. Used by defineNative / InjectNativeObject.
+procedure defineGlobalNative(name : pObjString; value : TValue);
+var
+  slot : Integer;
+begin
+  slot := resolveGlobalSlot(name);
+  VM.GlobalValues[slot] := value;
+end;
+
 procedure defineNative(const name : AnsiString; func : TNativeFn; arity: Integer = -1);
 var
   native : pObjNative;
@@ -6912,7 +6978,7 @@ begin
   pushStack(VM.Stack, StringToValue(nameStr));
   native := newNative(func, arity, PAnsiChar(name), VM.MemTracker);
   pushStack(VM.Stack, CreateObject(pObj(native)));
-  TableSet(VM.Globals, nameStr, CreateObject(pObj(native)), VM.MemTracker);
+  defineGlobalNative(nameStr, CreateObject(pObj(native)));
   Dec(VM.Stack.StackTop);
   Dec(VM.Stack.StackTop);
 end;
@@ -6992,7 +7058,7 @@ begin
   obj := newNativeObject(instance, classInfo, VM.MemTracker);
   obj^.ownsInstance := false;  // Delphi owns this object
   pushStack(VM.Stack, CreateObject(pObj(obj)));
-  TableSet(VM.Globals, nameStr, CreateObject(pObj(obj)), VM.MemTracker);
+  defineGlobalNative(nameStr, CreateObject(pObj(obj)));
   Dec(VM.Stack.StackTop);
   Dec(VM.Stack.StackTop);
 end;
@@ -7042,7 +7108,9 @@ begin
   VM.Stack := nil;
   VM.MemTracker := nil;
   VM.Strings := nil;
-  VM.Globals := nil;
+  VM.GlobalNameToSlot := nil;
+  VM.GlobalCount := 0;
+  VM.GlobalCapacity := 0;
   VM.OpenUpvalues := nil;
   VM.OnPrint := nil;
   VM.RuntimeErrorStr := '';
@@ -7051,7 +7119,7 @@ begin
   RttiCtx := TRttiContext.Create;
   InitMemTracker(VM.MemTracker);
   InitTable(VM.Strings, VM.MemTracker);
-  InitTable(VM.Globals, VM.MemTracker);
+  InitTable(VM.GlobalNameToSlot, VM.MemTracker);
   InitStack(VM.Stack,Vm.MemTracker);
   ResetStack(vm.Stack);
   //GC set up
@@ -7069,7 +7137,7 @@ begin
   Assert(VM.Stack <> nil, 'InitVM exit: Stack should not be nil');
   AssertMemTrackerIsNotNil(VM.MemTracker);
   Assert(VM.Strings <> nil, 'InitVM exit: Strings table should not be nil');
-  Assert(VM.Globals <> nil, 'InitVM exit: Globals table should not be nil');
+  Assert(VM.GlobalNameToSlot <> nil, 'InitVM exit: GlobalNameToSlot table should not be nil');
   Assert(VM.MemTracker.Roots.Stack = VM.Stack, 'InitVM exit: GC roots should point to stack');
   {$ENDIF}
 end;
@@ -7088,7 +7156,7 @@ begin
   VM.PrintBuilder.Free;
   VM.PrintBuilder := nil;
   FreeStack(VM.Stack,Vm.MemTracker);
-  FreeTable(VM.Globals, VM.MemTracker);
+  FreeTable(VM.GlobalNameToSlot, VM.MemTracker);
   FreeTable(VM.Strings, VM.MemTracker);
   if (Vm.MemTracker.CreatedObjects <> nil) then
   begin
@@ -7404,8 +7472,13 @@ begin
     upvalue := upvalue^.next;
   end;
 
-  // Mark globals table
-  MarkTable(VM.Globals);
+  // Mark globals table: GlobalNameToSlot marks the name pObjString keys
+  // (values are just slot numbers). GlobalValues holds live user values that
+  // may reference heap objects; UNDEFINED_VAL is a tagged non-object so
+  // MarkValue is a no-op for undefined slots.
+  MarkTable(VM.GlobalNameToSlot);
+  for i := 0 to VM.GlobalCount - 1 do
+    MarkValue(VM.GlobalValues[i]);
 
   // Mark extra roots (externally-held closures for callbacks)
   for i := 0 to VM.ExtraRootCount - 1 do
@@ -9167,6 +9240,20 @@ begin
   Result := idx;
 end;
 
+// Global-scope equivalent of identifierConstant: interns the identifier and
+// returns its stable VM slot index. Used by parseVariable and namedVariable
+// when the name resolves to a global rather than a local/upvalue.
+function identifierGlobalSlot(const name : TToken) : integer;
+var
+  strObj : pObjString;
+begin
+  strObj := CreateString(TokenToString(name), VM.MemTracker);
+  // GC-protect during resolveGlobalSlot (its TableSet may allocate).
+  pushStack(VM.Stack, StringToValue(strObj));
+  Result := resolveGlobalSlot(strObj);
+  Dec(VM.Stack.StackTop);
+end;
+
 function parseVariable(const errorMsg : PAnsiChar) : integer;
 begin
   consume(TOKEN_IDENTIFIER, errorMsg);
@@ -9175,7 +9262,7 @@ begin
   if Current^.scopeDepth > 0 then
     Exit(0); // locals don't get stored in constant table
 
-  Result := identifierConstant(parser.previous);
+  Result := identifierGlobalSlot(parser.previous);
 end;
 
 procedure defineVariable(global : integer);
@@ -9276,7 +9363,7 @@ begin
     end
     else
     begin
-      arg := identifierConstant(name);
+      arg := identifierGlobalSlot(name);
       if arg <= High(Byte) then
       begin
         getOp := OP_GET_GLOBAL;
