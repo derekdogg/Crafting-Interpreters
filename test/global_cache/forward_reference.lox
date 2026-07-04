@@ -1,0 +1,16 @@
+// Forward reference: `outer` is defined and compiled before `inner`, but
+// only called after both exist. The compiler allocates a slot for `inner`
+// (initially UNDEFINED_VAL) when compiling outer's body; `fun inner` then
+// fills the slot; the call site reads the filled slot.
+//
+// Regression for the design in global-slot-indexing-plan.md.
+
+fun outer() {
+  inner();
+}
+
+fun inner() {
+  print "ok";
+}
+
+outer(); // expect: ok

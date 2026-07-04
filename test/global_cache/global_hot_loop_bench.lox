@@ -1,0 +1,28 @@
+// Global-heavy microbenchmark for the slot-indexing cutover.
+//
+// The loop body is dominated by:
+//   OP_GET_GLOBAL g, OP_GET_GLOBAL i, OP_SET_GLOBAL g, OP_SET_GLOBAL i
+// with a tiny amount of arithmetic per iteration. Pre-cutover these were
+// four hash lookups per iteration; post-cutover they are four array loads.
+// This is where the largest measurable delta should appear.
+//
+// See global-slot-indexing-plan.md, "Microbenchmark".
+
+var g = 0;
+var i = 0;
+
+var start = clock();
+while (i < 100000000) {
+  g = g + 1;
+  i = i + 1;
+}
+var elapsed = clock() - start;
+
+print "=== global hot-loop benchmark ===";
+print "iterations   ";
+print i;
+print "final g      ";
+print g;
+print "elapsed (s)  ";
+print elapsed;
+print "=== done ===";
