@@ -1,8 +1,18 @@
-# Crafting Interpreters — Bytecode VM in Delphi Pascal
+# Suto — A Lox Dialect in Delphi Pascal
 
-A bytecode interpreter for the Lox language, following Bob Nystrom's [Crafting Interpreters](https://craftinginterpreters.com/) (Chapters 14–26), implemented in Delphi Pascal — extended with a 2D game engine, event-driven callbacks, file I/O, SQL database access, NaN boxing, and peephole optimizations.
+**Suto** is a bytecode-interpreted, garbage-collected, NaN-boxed dialect of Bob Nystrom's [Lox](https://craftinginterpreters.com/) language, implemented in Delphi Pascal — extended with a 2D game engine, event-driven callbacks, file I/O, SQL database access, records, and peephole optimizations. The syntax is Lox; the runtime, extensions, and native surface are ours.
 
-![Lox Interpreter — Space Invaders](images/MainScreen.png)
+The VM follows Bob's [Crafting Interpreters](https://craftinginterpreters.com/) (Chapters 14–26) and then keeps going.
+
+## Why "Suto"?
+
+*Suto* (Tongan) — to hitch a ride; a freeloader; someone who tags along without contributing. Used affectionately among friends: *"Oi, suto!"*
+
+This project is a **suto** on Bob's work. Every core concept in the VM — the scanner, the Pratt parser, the bytecode chunk, the stack machine, the closure representation, the mark-sweep GC, the hash table — came from *Crafting Interpreters*. We took the ride. The extensions on top (records, arrays, dictionaries, NaN boxing, game engine, RTTI injection, event dispatcher, SQL) are ours, but the frame they hang on is Bob's.
+
+The name is chosen with the same tone the word carries in Tongan: half acknowledgement, half self-mockery, and above all a nod of respect to whoever's doing the driving. Nystrom's book is one of the most generous gifts to hobby language design in the last decade. Naming the language *Suto* is us tipping our cap.
+
+![Suto Interpreter — Space Invaders](images/MainScreen.png)
 
 ## Features
 
