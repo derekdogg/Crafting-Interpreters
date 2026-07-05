@@ -5069,6 +5069,7 @@ begin
     // Between ReadByteFr and CallValue, frame still points to the CALLER.
     // After CallValue, frame is stale until explicitly rebased.
     // No nested function may mutate frame.
+    try
     while True do
     begin
        {$IFOPT C+}
@@ -5080,9 +5081,12 @@ begin
       Inc(OpPairCounts[OpPrevOp, instruction]);
       OpPrevOp := instruction;
       {$ENDIF}
-      try
 
-      if instruction = OP_CONSTANT then
+
+
+      case instruction of
+
+        OP_CONSTANT:
       begin
           value := constants[ip^];
           top := stack.StackTop;
@@ -5095,8 +5099,8 @@ begin
           else
             pushStackGrow(stack, value);
           Inc(ip);
-      end
-      else if instruction = OP_CALL then
+      end;
+        OP_CALL :
       begin
           argCount := ip^; Inc(ip);
           // Store ip back to frame before entering new frame (preserves return address)
@@ -5235,10 +5239,8 @@ begin
           // and don't alter the caller's ip (frame^.ip was written back at
           // the top of this arm), so the caller's cached values are still
           // valid on entry to the next dispatch.
-      end
-      else
+      end;
 
-      case instruction of
         OP_ADD_RETURN: begin
           // Fused ADD + RETURN. No operands.
           // Adds top two stack values, then returns the result to the caller.
@@ -5546,7 +5548,18 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          pushStack(stack, value);
+         // pushStack(stack, value); xxx
+
+          top := stack.StackTop;
+          if top < stack.CapacityEnd then
+          begin
+            top^ := value;
+            Inc(top);
+            stack.StackTop := top;
+          end
+          else
+            pushStackGrow(stack, value);
+
         end;
 
         OP_SET_GLOBAL: begin
@@ -6644,7 +6657,9 @@ begin
           exit;
         end;
       end;
-      except
+
+    end;
+    except
         on E: Exception do
         begin
           HandleVMException(E);
@@ -6664,7 +6679,6 @@ begin
           exit;
         end;
       end;
-    end;
 
 end;
 
