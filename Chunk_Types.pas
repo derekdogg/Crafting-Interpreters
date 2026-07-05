@@ -759,9 +759,9 @@ procedure FillNilValues(p: pValue; Count: NativeInt);
 {$REGION 'Stack'}
 procedure InitStack(var Stack : pStack; MemTracker : pMemTracker); inline;
 procedure FreeStack(var Stack : pStack; MemTracker : pMemTracker); inline;
-procedure ResetStack(var stack : pStack); inline;
-procedure pushStackGrow(var stack : pStack; const value : TValue); inline;
-procedure pushStack(var stack : pStack; const value : TValue); inline;
+procedure ResetStack(stack : pStack); inline; //Stack is not passed as a var in the following rtns (as we had previously) because we're never actually changing what stack points to, just changing it's internal fields. I don't know why we had it like that to start with.
+procedure pushStackGrow(stack : pStack; const value : TValue); inline;
+procedure pushStack(stack : pStack; const value : TValue); inline;
 function peekStack(stack : pStack; distanceFromTop : integer) : TValue; inline;
 function popStack(stack : pStack) : TValue; inline;
 {$ENDREGION}
@@ -2310,7 +2310,7 @@ end;
 // realloc the stack buffer ? callers routinely pass references into
 // Stack.Values itself (e.g. OP_GET_LOCAL), so we must snapshot before the
 // ReallocMem moves the buffer.
-procedure pushStackGrow(var stack : pStack;const value : TValue);
+procedure pushStackGrow(stack : pStack;const value : TValue);
 var
   NewCapacity : integer;
   OldCapacity : integer;
@@ -2401,7 +2401,7 @@ end;
 // 1 predicted-not-taken branch. No realloc, so `value` cannot alias a
 // memory region that's about to move - direct write is safe without a
 // defensive copy. Cold path delegates to pushStackGrow.
-procedure pushStack(var stack : pStack;const value : TValue); inline;
+procedure pushStack(stack : pStack;const value : TValue); inline;
 begin
   if Stack.StackTop < Stack.CapacityEnd then
   begin
@@ -2413,7 +2413,7 @@ begin
 end;
 
 
-procedure ResetStack(var stack : pStack);
+procedure ResetStack(stack : pStack);
 begin
    {$IFOPT C+}
   AssertStackIsAssigned(Stack);
@@ -5069,6 +5069,7 @@ begin
     // Between ReadByteFr and CallValue, frame still points to the CALLER.
     // After CallValue, frame is stale until explicitly rebased.
     // No nested function may mutate frame.
+    try
     while True do
     begin
        {$IFOPT C+}
@@ -5080,9 +5081,12 @@ begin
       Inc(OpPairCounts[OpPrevOp, instruction]);
       OpPrevOp := instruction;
       {$ENDIF}
-      try
 
-      if instruction = OP_CONSTANT then
+
+
+      case instruction of
+
+        OP_CONSTANT:
       begin
           value := constants[ip^];
           top := stack.StackTop;
@@ -5095,8 +5099,8 @@ begin
           else
             pushStackGrow(stack, value);
           Inc(ip);
-      end
-      else if instruction = OP_CALL then
+      end;
+        OP_CALL :
       begin
           argCount := ip^; Inc(ip);
           // Store ip back to frame before entering new frame (preserves return address)
@@ -5235,10 +5239,8 @@ begin
           // and don't alter the caller's ip (frame^.ip was written back at
           // the top of this arm), so the caller's cached values are still
           // valid on entry to the next dispatch.
-      end
-      else
+      end;
 
-      case instruction of
         OP_ADD_RETURN: begin
           // Fused ADD + RETURN. No operands.
           // Adds top two stack values, then returns the result to the caller.
@@ -5546,7 +5548,18 @@ begin
             result.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
-          pushStack(stack, value);
+         // pushStack(stack, value); xxx
+
+          top := stack.StackTop;
+          if top < stack.CapacityEnd then
+          begin
+            top^ := value;
+            Inc(top);
+            stack.StackTop := top;
+          end
+          else
+            pushStackGrow(stack, value);
+
         end;
 
         OP_SET_GLOBAL: begin
@@ -6644,7 +6657,9 @@ begin
           exit;
         end;
       end;
-      except
+
+    end;
+    except
         on E: Exception do
         begin
           HandleVMException(E);
@@ -6664,7 +6679,6 @@ begin
           exit;
         end;
       end;
-    end;
 
 end;
 
@@ -7121,7 +7135,7 @@ begin
   InitTable(VM.Strings, VM.MemTracker);
   InitTable(VM.GlobalNameToSlot, VM.MemTracker);
   InitStack(VM.Stack,Vm.MemTracker);
-  ResetStack(vm.Stack);
+  //ResetStack(vm.Stack);
   //GC set up
   VM.MemTracker.Roots.Stack := Vm.Stack;
 

@@ -1,0 +1,242 @@
+// ============================================================
+// sieve.lox — Dave Plummer's "Software Drag Racing" prime sieve
+// (see: github.com/PlummersSoftwareLLC/Primes and Dave's Garage
+//  on YouTube).
+//
+// Faithful port of Dave's reference C++ `prime_sieve` class,
+// adapted to this Lox VM. Since Lox here has no classes, the
+// "sieve object" is a record; the C++ methods become plain
+// functions that take the record as their first argument.
+//
+// Rules of the drag race (why the code is shaped the way it is):
+//   * Sieve up to a fixed upper bound (default 1_000_000).
+//   * Run as many *full* sieves as possible in a fixed wall-clock
+//     window (default 5 s) and report passes/second.
+//   * Allocate a fresh sieve every pass — no buffer reuse.
+//   * Use the base algorithm — no wheel factorisation, no
+//     linked-list sieves, no precomputed prime tables.
+//   * Validate the prime count against a known-good table before
+//     reporting so we can't accidentally win by being wrong.
+//
+// Storage matches Dave's C++ shape: `bits` has one slot per
+// number in [0..size-1], all initially true. Only odd indices
+// are ever read or written; the even ones are along for the
+// ride (same as Dave's `vector<bool>(n, true)`).
+// ============================================================
+
+
+// ------------------------------------------------------------
+// Configuration
+// ------------------------------------------------------------
+var SIEVE_SIZE = 1000000;   // upper bound (exclusive of == size) of numbers to sieve
+var DURATION   = 5;         // race window in seconds
+
+
+// ------------------------------------------------------------
+// Validation table — pi(n), the prime-counting function, at
+// standard checkpoints. Same table Dave uses (values verbatim
+// from his `resultsDictionary`). If SIEVE_SIZE isn't in this
+// map we refuse to report a number.
+// ------------------------------------------------------------
+var EXPECTED = dictNew();
+dictSet(EXPECTED, 10,          4);
+dictSet(EXPECTED, 100,         25);
+dictSet(EXPECTED, 1000,        168);
+dictSet(EXPECTED, 10000,       1229);
+dictSet(EXPECTED, 100000,      9592);
+dictSet(EXPECTED, 1000000,     78498);
+dictSet(EXPECTED, 10000000,    664579);
+dictSet(EXPECTED, 100000000,   5761455);
+dictSet(EXPECTED, 1000000000,  50847534);
+
+
+// ------------------------------------------------------------
+// The "sieve object". `size` is the target upper bound; `bits`
+// is a dense array of booleans indexed by number: bits[k] is
+// "is k still assumed prime?".
+// ------------------------------------------------------------
+record Sieve(size, bits);
+
+
+// ------------------------------------------------------------
+// newSieve(n) — allocate a fresh sieve for the range [0..n-1].
+//
+// Mirrors  `prime_sieve(long n) : Bits(n, true), sieveSize(n)`
+// from Dave's C++. All n slots start `true`; the algorithm
+// only ever reads/writes odd indices, matching Dave's shape.
+//
+// Note: Lox has no bulk-fill native, so the initial `true`
+// pass is an honest arrayPush loop. That cost is part of a
+// pass and is *not* amortised across passes — Dave's rules.
+// ------------------------------------------------------------
+fun newSieve(n) {
+  var bits = newArray();
+  for (var i = 0; i < n; i = i + 1) {
+    arrayPush(bits, true);
+  }
+  return Sieve(n, bits);
+}
+
+
+// ------------------------------------------------------------
+// runSieve(s) — the algorithm itself. Direct port of Dave's:
+//
+//   int factor = 3;
+//   int q = (int) sqrt(sieveSize);
+//   while (factor <= q) {
+//     for (int num = factor; num < sieveSize; num += 2)
+//       if (Bits[num]) { factor = num; break; }
+//     for (int num = factor*factor; num < sieveSize; num += factor*2)
+//       Bits[num] = false;
+//     factor += 2;
+//   }
+//
+// Lox here has no `break`, so the inner "find next factor"
+// loop is spelled as a predicate-driven `while`. If the search
+// runs off the end without finding a still-true bit, `factor`
+// stays at its previous value — same as Dave's for/break form.
+// ------------------------------------------------------------
+fun runSieve(s) {
+  // Hoist record fields into locals — every access goes through
+  // the field-resolution mechanism, and the inner loops touch
+  // these many thousands of times per prime.
+  var bits = s.bits;
+  var size = s.size;
+  var q    = floor(sqrt(size));
+
+  var factor = 3;
+  while (factor <= q) {
+
+    // "Find next unmarked odd starting from factor."
+    var num = factor;
+    while (num < size and !bits[num]) {
+      num = num + 2;
+    }
+    if (num < size) factor = num;
+    // else: unreachable for any valid sieve — Bertrand's postulate guarantees
+    // a prime in (factor, 2*factor], and factor <= sqrt(size), so num can't
+    // outrun size. The guard is defensive, matching Dave's for/break shape.
+
+    // Strike odd multiples of factor: start at factor*factor,
+    // step by 2*factor. In Dave's: `num += factor + factor`.
+    var step = factor + factor;
+    var m = factor * factor;
+    while (m < size) {
+      bits[m] = false;
+      m = m + step;
+    }
+
+    factor = factor + 2;
+  }
+}
+
+
+// ------------------------------------------------------------
+// countPrimes(s) — the number of primes in [2..size).
+//
+// Direct port of Dave's:
+//
+//   int count = (sieveSize >= 2);
+//   for (int i = 3; i < sieveSize; i += 2)
+//     if (Bits[i]) count++;
+//   return count;
+//
+// Bound is `i < size` (strictly less) to match Dave exactly.
+// Every standard checkpoint is an even power of ten, so this
+// is numerically identical to `i <= size` at every value we
+// actually validate.
+// ------------------------------------------------------------
+fun countPrimes(s) {
+  var bits = s.bits;
+  var size = s.size;
+  var count = 0;
+  if (size >= 2) count = 1;   // account for '2'
+  var i = 3;
+  while (i < size) {
+    if (bits[i]) count = count + 1;
+    i = i + 2;
+  }
+  return count;
+}
+
+
+// ------------------------------------------------------------
+// validateResults(s) — check the prime count against the
+// known table. Returns true only if size is in the table AND
+// the count matches. Mirrors Dave's `validateResults()`.
+// ------------------------------------------------------------
+fun validateResults(s) {
+  if (!dictHas(EXPECTED, s.size)) return false;
+  return countPrimes(s) == dictGet(EXPECTED, s.size);
+}
+
+
+// ------------------------------------------------------------
+// The race — repeatedly allocate a fresh sieve, run it, count
+// the pass. Keep going until we've burned DURATION seconds.
+//
+// Dave's timing check uses integer-second granularity
+// (`duration_cast<seconds>(...).count() >= 5`), so we mirror
+// that with `floor(elapsed) >= DURATION`. The reported duration
+// itself is precise (microsecond-ish, whatever `clock()` gives
+// us).
+//
+// The sieve that closes out the race is the same one we
+// validate and report on — matching Dave's `main()` where
+// `sieve.printResults(...)` is called on the just-finished
+// instance, not a fresh one.
+// ------------------------------------------------------------
+var passes  = 0;
+var start   = clock();
+var elapsed = 0;
+var last    = nil;   // the sieve that just ran — kept alive for validation
+
+while (floor(elapsed) < DURATION) {
+  last = newSieve(SIEVE_SIZE);
+  runSieve(last);
+  passes = passes + 1;
+  elapsed = clock() - start;
+}
+
+// Recompute Dave's "Count1" — his printResults uses `num <= sieveSize`
+// while his countPrimes() uses `num < sieveSize`. Dave gets away with `<=`
+// in C++ because vector<bool>::operator[] is unchecked; our subscript is
+// range-checked, so `num <= size` would OOB at bits[size] on odd sizes.
+// We use `num < size` here, matching Dave numerically at every even
+// checkpoint (all his validation entries) and staying safe for odd ones.
+// Count1 and Count2 will always be equal in our port, kept separate only
+// to match Dave's output format.
+fun countPrimesInclusive(s) {
+  var bits = s.bits;
+  var size = s.size;
+  var count = 0;
+  if (size >= 2) count = 1;
+  var num = 3;
+  while (num < size) {
+    if (bits[num]) count = count + 1;
+    num = num + 2;
+  }
+  return count;
+}
+
+var count1 = countPrimesInclusive(last);
+var count2 = countPrimes(last);
+var valid  = validateResults(last);
+assert(valid);   // hard-fail if the sieve is broken
+
+// Dave's classic console line, verbatim in spirit:
+//   Passes: X, Time: Y, Avg: Z, Limit: L, Count1: C1, Count2: C2, Valid: V
+print "Passes: "  + str(passes)
+    + ", Time: "  + str(elapsed)
+    + ", Avg: "   + str(elapsed / passes)
+    + ", Limit: " + str(SIEVE_SIZE)
+    + ", Count1: " + str(count1)
+    + ", Count2: " + str(count2)
+    + ", Valid: " + str(valid);
+
+// Drag-race one-liner (rbergen's contribution to Dave's repo).
+// `bits=64` is honest -- every flag is a NaN-boxed TValue
+// (8 bytes = 64 bits). Not bit-packed; claiming bits=1 would
+// be gaming the stats.
+print "";
+print "dseymour_lox;" + str(passes) + ";" + str(elapsed) + ";1;algorithm=base,faithful=yes,bits=64";
