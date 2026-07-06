@@ -31,7 +31,7 @@ jobs:
 
       - name: Check required source files exist
         run: |
-          for f in suto.pas Main.pas Main.dfm InterpreterGui.dpr InterpreterGui.dproj; do
+          for f in Suto.pas Main.pas Main.dfm InterpreterGui.dpr InterpreterGui.dproj; do
             if [ ! -f "$f" ]; then
               echo "ERROR: Required file $f is missing"
               exit 1
