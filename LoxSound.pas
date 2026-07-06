@@ -3,7 +3,7 @@ unit LoxSound;
 interface
 
 uses
-  Chunk_Types;
+  Suto;
 
 procedure RegisterSoundNatives;
 procedure FreeSound;

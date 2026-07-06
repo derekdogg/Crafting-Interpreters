@@ -81,7 +81,7 @@ procedure RegisterSystemNatives;
 implementation
 
 uses
-  System.SysUtils, Classes, Windows, Chunk_Types, NativeRegistry;
+  System.SysUtils, Classes, Windows, Suto, NativeRegistry;
 
 var
   // QueryPerformanceCounter state — initialized once at startup.

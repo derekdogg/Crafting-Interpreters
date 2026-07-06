@@ -247,7 +247,7 @@ onKeyReleased(fun(key) {
 
 ## Callback Invocation: InvokeCallback
 
-The critical function that bridges the event engine back into the VM is `InvokeCallback` (in `Chunk_Types.pas`). It executes a Lox closure from Delphi code:
+The critical function that bridges the event engine back into the VM is `InvokeCallback` (in `Suto.pas`). It executes a Lox closure from Delphi code:
 
 ### Execution Steps
 

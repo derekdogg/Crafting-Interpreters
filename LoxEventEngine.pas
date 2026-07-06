@@ -25,7 +25,7 @@ interface
 
 uses
   Winapi.Windows, System.SysUtils, System.Classes,
-  System.Generics.Collections, Chunk_Types;
+  System.Generics.Collections, Suto;
 
 type
   TLogEvent = procedure(const Msg: string) of object;
@@ -443,7 +443,7 @@ begin
     slot := TCallbackSlot.Create;
     slot.Callback := Value;
     FCallbackSlots.Add(key, slot);
-    Chunk_Types.RegisterGCRoot(slot.Callback);
+    Suto.RegisterGCRoot(slot.Callback);
   end;
 end;
 
@@ -464,8 +464,8 @@ begin
   // new slots, so calling this after callbacks exist must not create duplicates
   // (UnregisterGCRoot only removes the first match, leaving orphans behind).
   for slot in FCallbackSlots.Values do
-    if not Chunk_Types.IsGCRootRegistered(slot.Callback) then
-      Chunk_Types.RegisterGCRoot(slot.Callback);
+    if not Suto.IsGCRootRegistered(slot.Callback) then
+      Suto.RegisterGCRoot(slot.Callback);
 end;
 
 procedure TLoxEventEngine.UnregisterGCRoots;
@@ -473,7 +473,7 @@ var
   slot: TCallbackSlot;
 begin
   for slot in FCallbackSlots.Values do
-    Chunk_Types.UnregisterGCRoot(slot.Callback);
+    Suto.UnregisterGCRoot(slot.Callback);
 end;
 
 class function TLoxEventEngine.MapVKToName(Key: Word): string;

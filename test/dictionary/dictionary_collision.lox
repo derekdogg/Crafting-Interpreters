@@ -740,7 +740,7 @@ print "pass: zero-capacity termination"; // expect: pass: zero-capacity terminat
 // The following tests use keys that are PROVEN to collide based on the hash
 // function implementation, not just "likely" to collide.
 //
-// Hash function facts (from Chunk_Types.pas):
+// Hash function facts (from Suto.pas):
 //   Numbers:  hash = uint32(ieee754bits XOR (ieee754bits >> 32))
 //   Booleans: false=0, true=1
 //   Nil:      hash=2

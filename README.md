@@ -146,7 +146,7 @@ The name is chosen with the same tone the word carries in Tongan: half acknowled
 ## Project Structure
 
 ```
-Chunk_Types.pas          — Core unit: scanner, parser, compiler, VM, GC, hash table
+Suto.pas                 — Core unit: scanner, parser, compiler, VM, GC, hash table
 LoxCanvas.pas            — 2D game engine: canvas, sprites, tilemaps, surfaces, input
 LoxSound.pas             — 4-channel waveform sound synthesizer
 LoxEventEngine.pas       — Reusable event-dispatching engine (key/mouse callbacks)

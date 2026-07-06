@@ -11,7 +11,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes,
   Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Vcl.StdCtrls,
-  Vcl.ExtCtrls, Chunk_Types, LoxEventEngine;
+  Vcl.ExtCtrls, Suto, LoxEventEngine;
 
 type
   TfrmEventTest = class(TForm)

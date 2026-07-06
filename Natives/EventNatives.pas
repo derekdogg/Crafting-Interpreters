@@ -22,7 +22,7 @@ unit EventNatives;
 interface
 
 uses
-  Chunk_Types;
+  Suto;
 
 procedure RegisterEventNatives;
 

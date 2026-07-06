@@ -29,7 +29,7 @@ interface
 implementation
 uses
   System.SysUtils, System.Classes, System.IOUtils, System.AnsiStrings, StrUtils,
-  Chunk_Types, NativeRegistry;
+  Suto, NativeRegistry;
 
 function FileExistsNative(argCount: integer; args: pValue): TValue;
 var

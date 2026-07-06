@@ -7,7 +7,7 @@ procedure RegisterDictNatives;
 implementation
 
 uses
-  System.SysUtils, Chunk_Types, NativeRegistry;
+  System.SysUtils, Suto, NativeRegistry;
 
 // ---- Dictionary native functions ----
 

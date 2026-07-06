@@ -20,7 +20,7 @@ Documentation for the Delphi Pascal implementation of the Lox bytecode virtual m
 
 | Source File | Role |
 |-------------|------|
-| `Chunk_Types.pas` | Everything: scanner, compiler, VM, GC, hash table (~6200 lines) |
+| `Suto.pas` | Everything: scanner, compiler, VM, GC, hash table (~6200 lines) |
 | `Main.pas` | VCL GUI shell, test runner |
 | `Test.pas` | Unit tests (manual) |
 | `NativeObjectTestUnit.pas` | Native object FFI tests |
