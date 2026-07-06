@@ -7,7 +7,7 @@ procedure RegisterArrayNatives;
 implementation
 
 uses
-  System.SysUtils, Chunk_Types, NativeRegistry;
+  System.SysUtils, Suto, NativeRegistry;
 
 // ---- Array native functions ----
 

@@ -4,9 +4,11 @@
 //  on YouTube).
 //
 // Faithful port of Dave's reference C++ `prime_sieve` class,
-// adapted to this Lox VM. Since Lox here has no classes, the
-// "sieve object" is a record; the C++ methods become plain
-// functions that take the record as their first argument.
+// adapted to this VM. The language is Suto (a Lox dialect —
+// same syntax, our runtime and extensions). Since Suto has no
+// classes, the "sieve object" is a record; the C++ methods
+// become plain functions that take the record as their first
+// argument.
 //
 // Rules of the drag race (why the code is shaped the way it is):
 //   * Sieve up to a fixed upper bound (default 1_000_000).
@@ -239,4 +241,4 @@ print "Passes: "  + str(passes)
 // (8 bytes = 64 bits). Not bit-packed; claiming bits=1 would
 // be gaming the stats.
 print "";
-print "dseymour_lox;" + str(passes) + ";" + str(elapsed) + ";1;algorithm=base,faithful=yes,bits=64";
+print "dseymour_suto;" + str(passes) + ";" + str(elapsed) + ";1;algorithm=base,faithful=yes,bits=64";

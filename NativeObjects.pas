@@ -3,7 +3,7 @@ unit NativeObjects;
 interface
 
 uses
-  Chunk_Types, Generics.Collections;
+  Suto, Generics.Collections;
 
 type
   // ---- Queue for event passing between Delphi and Lox ----

@@ -7,7 +7,7 @@ procedure RegisterStringNatives;
 implementation
 
 uses
-  System.SysUtils, System.AnsiStrings, StrUtils, Chunk_Types, NativeRegistry;
+  System.SysUtils, System.AnsiStrings, StrUtils, Suto, NativeRegistry;
 
 // ---- String manipulation native functions ----
 

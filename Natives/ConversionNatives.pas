@@ -7,7 +7,7 @@ procedure RegisterConversionNatives;
 implementation
 
 uses
-  System.SysUtils, Chunk_Types, NativeRegistry;
+  System.SysUtils, Suto, NativeRegistry;
 
 // ---- Conversion native functions ----
 

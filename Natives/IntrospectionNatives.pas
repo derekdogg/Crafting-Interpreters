@@ -7,7 +7,7 @@ procedure RegisterIntrospectionNatives;
 implementation
 
 uses
-  System.SysUtils, System.Rtti, System.TypInfo, Classes, Chunk_Types, NativeRegistry;
+  System.SysUtils, System.Rtti, System.TypInfo, Classes, Suto, NativeRegistry;
 
 // ---- StringList wrapper ----
 

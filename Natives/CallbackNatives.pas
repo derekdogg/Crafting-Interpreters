@@ -7,7 +7,7 @@ procedure RegisterCallbackNatives;
 implementation
 
 uses
-  Chunk_Types, NativeRegistry;
+  Suto, NativeRegistry;
 
 // ---- Callback test natives ----
 

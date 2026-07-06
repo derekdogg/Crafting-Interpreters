@@ -3,7 +3,7 @@ unit LoxCanvas;
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, Vcl.Controls, Vcl.Forms, Vcl.Graphics, Classes, Chunk_Types;
+  Winapi.Windows, Winapi.Messages, Vcl.Controls, Vcl.Forms, Vcl.Graphics, Classes, Suto;
 
 type
   // Fired by the game canvas when a recognised key is pressed/released

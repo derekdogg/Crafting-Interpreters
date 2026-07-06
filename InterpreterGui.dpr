@@ -8,7 +8,7 @@ uses
   NativeObjects in 'NativeObjects.pas',
   fmGame in 'fmGame.pas' {frmGame},
   LoxCanvas in 'LoxCanvas.pas',
-  Chunk_Types in 'Chunk_Types.pas',
+  Suto in 'Suto.pas',
   NativeRegistry in 'Natives\NativeRegistry.pas',
   ArrayNatives in 'Natives\ArrayNatives.pas',
   ConversionNatives in 'Natives\ConversionNatives.pas',

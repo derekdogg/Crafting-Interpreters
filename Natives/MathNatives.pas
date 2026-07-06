@@ -7,7 +7,7 @@ procedure RegisterMathNatives;
 implementation
 
 uses
-  Math, Chunk_Types, NativeRegistry;
+  Math, Suto, NativeRegistry;
 
 // ---- Math native functions ----
 

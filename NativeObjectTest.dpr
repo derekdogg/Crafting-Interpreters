@@ -6,7 +6,7 @@ uses
   SysUtils, Classes, Generics.Collections;
 
 // ============================================================================
-// Core types — what would live in Chunk_Types.pas
+// Core types — what would live in Suto.pas
 // ============================================================================
 
 type

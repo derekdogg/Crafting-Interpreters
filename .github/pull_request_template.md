@@ -12,4 +12,4 @@ Brief description of the changes.
 - [ ] I have tested my changes against the official test suite (148 tests)
 - [ ] All existing tests still pass
 - [ ] I have not introduced any class-related features (out of scope)
-- [ ] My changes follow the existing code style in Chunk_Types.pas
+- [ ] My changes follow the existing code style in Suto.pas
