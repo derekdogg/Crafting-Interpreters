@@ -8012,10 +8012,10 @@ begin
   // so they must go before dispose(VM). Any Delphi event still wired to one
   // of these is now dangling — hosts unhook script handlers before FreeVM.
   FreeLoxCallbackAdapters;
-  // All wrappers were swept above; drop any stragglers defensively so a
-  // subsequent InitVM starts with an empty instance map.
-  if NativeWrapperMap <> nil then
-    NativeWrapperMap.Clear;
+  // All wrappers were swept above. Free the instance map entirely (it is
+  // created lazily by newNativeObject, so a later InitVM cycle just makes a
+  // fresh one); merely clearing it leaks the dictionary at shutdown.
+  FreeAndNil(NativeWrapperMap);
   // Free gray stack (raw memory, not via Allocate)
   if VM.MemTracker.GrayStack <> nil then
     FreeMem(VM.MemTracker.GrayStack);
