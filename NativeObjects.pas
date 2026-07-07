@@ -3,7 +3,7 @@ unit NativeObjects;
 interface
 
 uses
-  Suto, Generics.Collections;
+  Classes, Suto, Generics.Collections;
 
 type
   // ---- Queue for event passing between Delphi and Lox ----
@@ -11,6 +11,7 @@ type
   // we can peek/replace the tail element. The tail-replace path is used
   // by mouse-move coalescing: consecutive mousemove events overwrite
   // each other in place rather than piling up in the queue.
+  [LoxClass('LoxQueue')]
   TLoxQueue = class
   private
     FItems: TList<string>;
@@ -70,6 +71,7 @@ type
     FTier: TCustomerTier;
     FFlags: TCustomerFlags;
     FTags: TArray<string>;
+    FOnChanged: TNotifyEvent;
   public
     constructor Create(const AName: string; AAge: Integer; ABalance: Double; AActive: Boolean);
     destructor Destroy; override;
@@ -89,6 +91,12 @@ type
     property Flags: TCustomerFlags read FFlags write FFlags;
     [LoxProperty]
     property Tags: TArray<string> read FTags write FTags;
+    // Event property: scripts can assign a Lox function here (marshaled to a
+    // TNotifyEvent via TLoxCallbackAdapter) and Touch fires it.
+    [LoxProperty]
+    property OnChanged: TNotifyEvent read FOnChanged write FOnChanged;
+    [LoxMethod]
+    procedure Touch;
     [LoxMethod]
     function Greet: string;
     [LoxMethod]
@@ -222,8 +230,17 @@ end;
 
 destructor TCustomer.Destroy;
 begin
+  // Disarm any live script wrapper before freeing, so a Lox reference to the
+  // old address errors cleanly instead of touching freed memory.
+  ReleaseNativeInstance(FAddress);
   FAddress.Free;
   inherited;
+end;
+
+procedure TCustomer.Touch;
+begin
+  if Assigned(FOnChanged) then
+    FOnChanged(Self);
 end;
 
 function TCustomer.Greet: string;
@@ -250,7 +267,11 @@ end;
 procedure TCustomer.SetAddress(NewAddr: TAddress);
 begin
   if FAddress <> NewAddr then
+  begin
+    // See Destroy: disarm the script wrapper before the instance dies.
+    ReleaseNativeInstance(FAddress);
     FAddress.Free;
+  end;
   FAddress := NewAddr;
 end;
 

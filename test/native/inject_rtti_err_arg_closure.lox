@@ -5,7 +5,7 @@
 //
 // What this tests:
 //   - Passing a Lox function/closure where a Delphi string is expected
-//   - LoxValueToDelphi should detect the unmarshalable type and raise
-//     a runtime error before the RTTI invoke proceeds
+//   - Closures only match tkMethod (event/callback) parameters, so
+//     overload selection rejects the call with a runtime error
 fun dummy() { return "hi"; }
-cust.SetInfo(dummy, 10); // expect runtime error: Cannot marshal Lox okClosure to Delphi.
+cust.SetInfo(dummy, 10); // expect runtime error: No overload of 'SetInfo' matches the given 2 argument(s).

@@ -1,0 +1,31 @@
+// ============================================================
+// inject_rtti_event.lox — Lox closure as Delphi event handler
+// ============================================================
+// Setup: Delphi injects a TCustomer as global 'cust'.
+//   TCustomer.OnChanged is a TNotifyEvent property; Touch() fires it.
+//
+// What this tests:
+//   - Assigning a Lox function to a Delphi event property (tkMethod)
+//   - The event thunk marshals Sender back into Lox as a native object
+//   - Upvalue mutation from inside the event handler
+//   - Re-firing after state changes on the Delphi side
+//   - Assigning nil unhooks the handler
+
+var count = 0;
+fun onChanged(sender) {
+  count = count + 1;
+  print "changed: " + sender.Name;
+}
+
+cust.OnChanged = onChanged;
+cust.Touch(); // expect: changed: Alice
+
+cust.SetInfo("Bob", 31);
+cust.Touch(); // expect: changed: Bob
+
+print count; // expect: 2
+
+// Unhook: Touch no longer fires the handler
+cust.OnChanged = nil;
+cust.Touch();
+print count; // expect: 2

@@ -5,7 +5,7 @@
 //
 // What this tests:
 //   - Assigning a Lox function/closure to a Delphi string property
-//   - LoxValueToDelphi should detect the unmarshalable type and raise
-//     a runtime error before the RTTI SetValue proceeds
+//   - Closures only bind to tkMethod (event/callback) targets, so the
+//     assignment raises a runtime error before SetValue proceeds
 fun dummy() { return "hi"; }
-cust.Name = dummy; // expect runtime error: Cannot marshal Lox okClosure to Delphi.
+cust.Name = dummy; // expect runtime error: A function can only be passed where a Delphi event/callback is expected.

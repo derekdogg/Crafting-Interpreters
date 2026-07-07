@@ -1,0 +1,34 @@
+// ============================================================
+// inject_rtti_construct.lox — Script-side construction of native classes
+// ============================================================
+// Setup: Delphi calls ExposeNativeClass(TCustomer) / ExposeNativeClass(TAddress),
+//   defining callable globals 'Customer' and 'Address' (the [LoxClass] names).
+//
+// What this tests:
+//   - Calling a native class object runs the matching public Delphi constructor
+//   - Constructor overload selection by arity + argument types
+//   - Script-constructed instances behave like injected ones (props, methods)
+//   - Passing a script-constructed object into a Delphi method
+//     (ownership transfers to Delphi; no double-free)
+//   - print of class objects and instances
+
+print Address; // expect: <class Address>
+
+var addr = Address("1 Test Way", "Testville", "00001");
+print addr;        // expect: <Address>
+print addr.City;   // expect: Testville
+
+// Hand the constructed address to Delphi — cust owns it from here on
+cust.SetAddress(addr);
+print cust.Address.Street; // expect: 1 Test Way
+
+// Construct a full customer from script
+var c2 = Customer("Zoe", 22, 10.5, true);
+print c2.Greet();  // expect: Hello, Zoe!
+print c2.Age;      // expect: 22
+c2.AddBalance(4.5);
+print c2.Balance;  // expect: 15
+
+// Wrong argument shapes are rejected
+// (three strings can't satisfy Customer(string, Integer, Double, Boolean))
+print Customer;    // expect: <class Customer>

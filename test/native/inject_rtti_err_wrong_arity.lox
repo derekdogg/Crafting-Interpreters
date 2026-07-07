@@ -5,7 +5,7 @@
 //
 // What this tests:
 //   - Calling SetInfo with 1 arg when it expects 2 (string, integer)
-//   - RTTI overload resolution matches by name + param count, so no
-//     overload matches — falls through to "Undefined method" error
+//   - RTTI overload resolution matches by name, then arity + argument
+//     types — no overload fits, so a descriptive error is raised
 print cust.Name; // expect: Alice
-cust.SetInfo("Bob"); // expect runtime error: Undefined method 'SetInfo'.
+cust.SetInfo("Bob"); // expect runtime error: No overload of 'SetInfo' matches the given 1 argument(s).

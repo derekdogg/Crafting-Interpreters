@@ -5,8 +5,8 @@
 //
 // What this tests:
 //   - Passing a Lox array where a Delphi string parameter is expected
-//   - LoxValueToDelphi should detect the unmarshalable type and raise
-//     a runtime error before the RTTI invoke proceeds
+//   - Overload selection scores the array as incompatible with the string
+//     parameter, so no overload matches and a runtime error is raised
 print cust.Name; // expect: Alice
 var arr = [1, 2, 3];
-cust.SetInfo(arr, 10); // expect runtime error: Cannot marshal Lox okArray to Delphi.
+cust.SetInfo(arr, 10); // expect runtime error: No overload of 'SetInfo' matches the given 2 argument(s).

@@ -10,7 +10,8 @@
 interface
 
 uses
-  Classes, dialogs, System.Rtti, Math, System.TypInfo, System.SysUtils, System.AnsiStrings;
+  Classes, dialogs, System.Rtti, Math, System.TypInfo, System.SysUtils, System.AnsiStrings,
+  Generics.Collections;
 
 const
 
@@ -229,7 +230,7 @@ type
   ELoxRuntimeError = class(Exception);
   //Enums
   TValueKind = (vkNumber, vkBoolean, vkNull, vkObject);
-  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord, okNativeObject, okDictionary);
+  TObjectKind = (okString, okFunction, okNative, okClosure, okUpvalue, okArray, okRecordType, okRecord, okNativeObject, okDictionary, okNativeClass);
   TFunctionType = (TYPE_FUNCTION, TYPE_SCRIPT);
   TTokenType = (
     // Single-character tokens
@@ -292,6 +293,7 @@ type
   pObjRecordType  = ^TObjRecordType;
   pObjRecord      = ^TObjRecord;
   pObjNativeObject = ^TObjNativeObject;
+  pObjNativeClass  = ^TObjNativeClass;
   pNativeClassInfo = ^TNativeClassInfo;
   pObjDictionary  = ^TObjDictionary;
   pDictEntry      = ^TDictEntry;
@@ -440,12 +442,49 @@ type
 
   TNativeDestructor = procedure(instance: Pointer);
 
+  { One script-visible property or field, resolved once at registration.
+    Exactly one of prop/field is non-nil. `writable` already folds in
+    [LoxProperty('readonly')], so dispatch never re-scans attributes. }
+  TNativePropCache = record
+    name     : AnsiString;
+    prop     : TRttiProperty;
+    field    : TRttiField;
+    typeInfo : PTypeInfo;
+    readable : Boolean;
+    writable : Boolean;
+  end;
+
+  { One invokable overload with its parameter list pre-fetched
+    (TRttiMethod.GetParameters allocates on every call). }
+  TNativeOverload = record
+    method : TRttiMethod;
+    params : TArray<TRttiParameter>;
+  end;
+
+  { All script-visible overloads sharing one method name. }
+  TNativeMethodCache = record
+    name      : AnsiString;
+    overloads : array of TNativeOverload;
+  end;
+
   TNativeClassInfo = record
     name       : AnsiString;
     methods    : array of TNativeMethod;
     destructor_: TNativeDestructor;
     rttiEnabled: Boolean;
     rttiClass  : TClass;
+    // RTTI member cache, built once by registerNativeClassRTTI. The cached
+    // TRtti* handles stay valid because the global RttiCtx outlives the
+    // registry (both are torn down in FreeVM, registry first).
+    rttiProps    : array of TNativePropCache;
+    rttiMethods  : array of TNativeMethodCache;
+    rttiCtors    : array of TNativeOverload;  // public ctors of the most-derived declarer
+    // Default indexed property (subscript access), resolved once.
+    idxGet          : TRttiIndexedProperty;
+    idxSet          : TRttiIndexedProperty;
+    idxGetParamType : PTypeInfo;
+    idxSetParamType : PTypeInfo;
+    idxSetValueType : PTypeInfo;
   end;
 
   TObjNativeObject = record
@@ -453,6 +492,13 @@ type
     instance     : Pointer;
     classInfo    : pNativeClassInfo;
     ownsInstance : Boolean;  // if true, destructor_ is called on sweep
+  end;
+
+  { A registered native class exposed as a callable Lox value: calling it
+    runs a matching public Delphi constructor and returns an owned wrapper. }
+  TObjNativeClass = record
+    Obj       : TObj;
+    classInfo : pNativeClassInfo;
   end;
 
   TDictEntry = record
@@ -819,7 +865,9 @@ function isRecord(value : TValue) : boolean; inline;
 function newRecordType(name : pObjString; fieldCount : integer; fieldNames : ppObjString; MemTracker : pMemTracker) : pObjRecordType;
 function newRecord(recType : pObjRecordType; MemTracker : pMemTracker) : pObjRecord;
 function isNativeObject(value : TValue) : boolean; inline;
-function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeObject;
+function isNativeClass(value : TValue) : boolean; inline;
+function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker; AOwnsInstance : Boolean = True) : pObjNativeObject;
+function newNativeClass(classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeClass;
 function findNativeMethod(classInfo : pNativeClassInfo; methodName : pObjString; out found : TNativeMethodFn) : boolean;
 {$ENDREGION}
 
@@ -884,8 +932,24 @@ procedure defineGlobalNative(name : pObjString; value : TValue);
 procedure registerNativeClass(const AName : AnsiString; const AMethods : array of TNativeMethod; ADestructor : TNativeDestructor);
 procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
 function findNativeClass(const name : AnsiString) : pNativeClassInfo;
+function findNativeClassByClass(AClass : TClass) : pNativeClassInfo;
+// Rebuilds the reflected member cache. Only needed when rttiEnabled/rttiClass
+// are toggled by hand after registration (see IntrospectionNatives' hybrid
+// StringList); both register* functions call it themselves.
+procedure BuildRttiMemberCache(info : pNativeClassInfo);
+// Registers AClass under its [LoxClass('...')] name (falling back to the
+// Delphi ClassName) if not yet registered, and returns its class info.
+function ensureNativeClassRTTI(AClass : TClass) : pNativeClassInfo;
 procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
 procedure InjectObject(const name : AnsiString; instance : TObject);
+// Defines a callable global (default: the class's Lox name) that constructs
+// new instances via the class's public Delphi constructors. Instances built
+// this way are owned by the VM and freed when the wrapper is collected.
+procedure ExposeNativeClass(AClass : TClass; const AGlobalName : AnsiString = '');
+// Host-side lifetime hook: call this just before Freeing a Delphi object that
+// scripts may still reference. The live wrapper (if any) is disarmed so script
+// access reports 'destroyed native object' instead of touching freed memory.
+procedure ReleaseNativeInstance(instance : Pointer);
 {$ENDREGION}
 
 {$REGION 'VM Lifecycle'}
@@ -2337,8 +2401,8 @@ begin
   // "Stack overflow" instead of an eventual OOM crash. Caught at the
   // CompileAndRun boundary and converted to INTERPRET_RUNTIME_ERROR.
   OldCapacity := Stack.CapacityEnd - Stack.Values;  // element count
-  //if OldCapacity >= STACK_MAX then
-    //raise ELoxRuntimeError.CreateFmt('Stack overflow (max %d slots).', [STACK_MAX]);
+  if OldCapacity >= STACK_MAX then
+    raise ELoxRuntimeError.CreateFmt('Stack overflow (max %d slots).', [STACK_MAX]);
   {$IFOPT C+}
   AssertStackCapacityCanGrow(Stack);
   {$ENDIF}
@@ -2645,7 +2709,8 @@ begin
       okArray,
       okRecordType,
       okRecord,
-      okDictionary : begin
+      okDictionary,
+      okNativeClass : begin
         result := objA = objB;
       end;
     else
@@ -3291,9 +3356,15 @@ begin
       if tombstone = nil then
         tombstone := entry;
     end
-    else if ValuesEqual(entry^.key, key) then
+    else if (entry^.key = key) or ValuesEqual(entry^.key, key) then
     begin
-      // Found the key
+      // Found the key. The bit-identity test does double duty:
+      // 1. SameValueZero semantics — ValuesEqual says NaN <> NaN (correct for
+      //    ==), which would make a NaN key unfindable and turn every
+      //    d[nan] := x into a fresh unreachable entry. All runtime NaNs are
+      //    canonicalized to CANON_NAN, so bit identity matches them here.
+      //    (+0.0/-0.0 still unify via ValuesEqual's number path.)
+      // 2. Fast path — identical bits skip the out-of-line ValuesEqual call.
       Result := entry;
       Exit;
     end;
@@ -3577,13 +3648,41 @@ begin
   result := obj.ObjectKind = okNativeObject;
 end;
 
-function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeObject;
+function isNativeClass(value : TValue) : boolean; inline;
+var obj: pObj;
+begin
+  if not isObject(Value) then Exit(False);
+  obj := GetObject(Value);
+  result := obj.ObjectKind = okNativeClass;
+end;
+
+var
+  // One live wrapper per Delphi instance. Maintained by newNativeObject /
+  // freeObject; consulted by ReleaseNativeInstance so a host Free can disarm
+  // the wrapper scripts still hold. Created lazily; empty between VM runs
+  // because FreeObjects sweeps every wrapper through freeObject.
+  NativeWrapperMap : TDictionary<Pointer, pObjNativeObject> = nil;
+
+function newNativeObject(instance : Pointer; classInfo : pNativeClassInfo; MemTracker : pMemTracker; AOwnsInstance : Boolean = True) : pObjNativeObject;
 begin
    {$IFOPT C+}
   AssertMemTrackerIsNotNil(MemTracker);
   Assert(instance <> nil, 'newNativeObject: instance is nil');
   Assert(classInfo <> nil, 'newNativeObject: classInfo is nil');
   {$ENDIF}
+  if NativeWrapperMap = nil then
+    NativeWrapperMap := TDictionary<Pointer, pObjNativeObject>.Create;
+
+  // Dedup: the same Delphi instance always maps to the same wrapper, so
+  // repeated property reads don't churn wrappers and ReleaseNativeInstance
+  // can disarm every script reference in one place. Ownership never
+  // upgrades on a dedup hit — if either side says Delphi owns it, it does.
+  if NativeWrapperMap.TryGetValue(instance, Result) then
+  begin
+    Result^.ownsInstance := Result^.ownsInstance and AOwnsInstance;
+    Exit;
+  end;
+
   Result := nil;
   Allocate(Pointer(Result), 0, SizeOf(TObjNativeObject), MemTracker);
   Result^.Obj.ObjectKind := okNativeObject;
@@ -3591,12 +3690,43 @@ begin
   Result^.Obj.Next := nil;
   Result^.instance := instance;
   Result^.classInfo := classInfo;
-  Result^.ownsInstance := true;  // VM-created objects are owned by default
+  Result^.ownsInstance := AOwnsInstance;
   AddToCreatedObjects(pObj(Result), MemTracker);
+  NativeWrapperMap.Add(instance, Result);
 
    {$IFOPT C+}
   Assert(Result <> nil, 'newNativeObject exit: Result is nil');
   {$ENDIF}
+end;
+
+function newNativeClass(classInfo : pNativeClassInfo; MemTracker : pMemTracker) : pObjNativeClass;
+begin
+   {$IFOPT C+}
+  AssertMemTrackerIsNotNil(MemTracker);
+  Assert(classInfo <> nil, 'newNativeClass: classInfo is nil');
+  {$ENDIF}
+  Result := nil;
+  Allocate(Pointer(Result), 0, SizeOf(TObjNativeClass), MemTracker);
+  Result^.Obj.ObjectKind := okNativeClass;
+  Result^.Obj.IsMarked := false;
+  Result^.Obj.Next := nil;
+  Result^.classInfo := classInfo;
+  AddToCreatedObjects(pObj(Result), MemTracker);
+end;
+
+procedure ReleaseNativeInstance(instance : Pointer);
+var
+  wrapper : pObjNativeObject;
+begin
+  if (instance = nil) or (NativeWrapperMap = nil) then Exit;
+  if NativeWrapperMap.TryGetValue(instance, wrapper) then
+  begin
+    // Disarm, don't free: the wrapper stays a valid (dead) Lox object until
+    // the GC sweeps it; script access reports a clean runtime error.
+    wrapper^.instance := nil;
+    wrapper^.ownsInstance := false;
+    NativeWrapperMap.Remove(instance);
+  end;
 end;
 
 function findNativeMethod(classInfo : pNativeClassInfo; methodName : pObjString; out found : TNativeMethodFn) : boolean;
@@ -3618,7 +3748,33 @@ end;
 var
   RttiCtx : TRttiContext;
 
+type
+  { Bridges a Lox closure to a Delphi method pointer (event handler or
+    callback). TMethodImplementation generates a native thunk matching the
+    exact tkMethod signature; the thunk forwards to InvokeHandler, which
+    marshals the Delphi arguments into Lox values and re-enters the VM via
+    InvokeCallback.
 
+    Lifetime: adapters live until FreeVM (FreeLoxCallbackAdapters) and pin
+    their closure via RegisterGCRoot. If the host leaves an event wired to an
+    adapter after FreeVM, invoking it is use-after-free — unhook Delphi events
+    that were assigned from script before tearing the VM down. }
+  TLoxCallbackAdapter = class
+  private
+    FClosure    : TValue;           // Lox closure, pinned as a GC root
+    FTypeHandle : PTypeInfo;        // tkMethod type this adapter satisfies
+    FMethodType : TRttiMethodType;
+    FImpl       : TMethodImplementation;
+    procedure InvokeHandler(UserData: Pointer;
+      const Args: TArray<System.Rtti.TValue>; out AResult: System.Rtti.TValue);
+  public
+    constructor Create(const AClosure: TValue; AMethodType: TRttiMethodType);
+    destructor Destroy; override;
+    function AsTMethod: TMethod;
+  end;
+
+var
+  LoxCallbackAdapters : TObjectList<TLoxCallbackAdapter> = nil;
 
 {$ENDREGION}
 
@@ -3627,7 +3783,6 @@ function DelphiValueToLox(const V: System.Rtti.TValue; MemTracker: pMemTracker):
 var
   s: AnsiString;
   childObj: TObject;
-  childClassName: AnsiString;
   childClassInfo: pNativeClassInfo;
   childNative: pObjNativeObject;
   // Set marshaling
@@ -3735,16 +3890,11 @@ begin
       childObj := V.AsObject;
       if childObj = nil then
         Exit(CreateNilValue);
-      // Auto-register the class if not already known
-      childClassName := AnsiString(childObj.ClassName);
-      childClassInfo := findNativeClass(childClassName);
-      if childClassInfo = nil then
-      begin
-        registerNativeClassRTTI(childClassName, childObj.ClassType);
-        childClassInfo := findNativeClass(childClassName);
-      end;
-      childNative := newNativeObject(Pointer(childObj), childClassInfo, MemTracker);
-      childNative^.ownsInstance := false;  // parent object owns the child
+      // Auto-register the class if not already known ([LoxClass] name honored)
+      childClassInfo := ensureNativeClassRTTI(childObj.ClassType);
+      // Non-owning: the Delphi side owns objects it hands out. newNativeObject
+      // dedups, so repeated reads return the same wrapper.
+      childNative := newNativeObject(Pointer(childObj), childClassInfo, MemTracker, False);
       Result := CreateObject(pObj(childNative));
     end;
   else
@@ -3756,9 +3906,50 @@ begin
   end;
 end;
 
+// Binds a Lox closure to a Delphi tkMethod target (event handler / callback),
+// reusing an existing adapter for the same closure/type pair.
+function LoxClosureToDelphiMethod(const V: TValue; TargetType: PTypeInfo): System.Rtti.TValue;
+var
+  rt      : TRttiType;
+  adapter : TLoxCallbackAdapter;
+  i       : Integer;
+  m       : TMethod;
+begin
+  Result := System.Rtti.TValue.Empty;
+  rt := RttiCtx.GetType(TargetType);
+  if not (rt is TRttiMethodType) then
+  begin
+    RunTimeError(Format('Cannot bind a function to Delphi type ''%s''.',
+      [String(TargetType^.Name)]));
+    Exit;
+  end;
+  if LoxCallbackAdapters = nil then
+    LoxCallbackAdapters := TObjectList<TLoxCallbackAdapter>.Create(True);
+  adapter := nil;
+  for i := 0 to LoxCallbackAdapters.Count - 1 do
+    if (LoxCallbackAdapters[i].FClosure = V) and
+       (LoxCallbackAdapters[i].FTypeHandle = TargetType) then
+    begin
+      adapter := LoxCallbackAdapters[i];
+      Break;
+    end;
+  if adapter = nil then
+  begin
+    adapter := TLoxCallbackAdapter.Create(V, TRttiMethodType(rt));
+    LoxCallbackAdapters.Add(adapter);
+  end;
+  m := adapter.AsTMethod;
+  System.Rtti.TValue.Make(@m, TargetType, Result);
+end;
+
 function LoxValueToDelphi(const V: TValue; TargetType: PTypeInfo): System.Rtti.TValue;
 var
   s: string;
+  d: Double;
+  typeData: PTypeData;
+  hostObj: TObject;
+  targetClass: TClass;
+  nobj: pObjNativeObject;
   // Enum marshaling
   enumOrd: Integer;
   // Set marshaling (single string)
@@ -3779,33 +3970,95 @@ var
   dynElemType: PTypeInfo;
   dynJ: Integer;
 begin
+  Result := System.Rtti.TValue.Empty;
   if isNumber(V) then
   begin
+    d := GetNumber(V);
     if TargetType = nil then
-      Exit(System.Rtti.TValue.From<Double>(GetNumber(V)));
+      Exit(System.Rtti.TValue.From<Double>(d));
     case TargetType^.Kind of
       tkInteger:
-        Result := System.Rtti.TValue.From<Integer>(Trunc(GetNumber(V)));
+      begin
+        // Strict: a fractional or out-of-range number is an error, not a
+        // silent Trunc. Scripts that mean to truncate should do it explicitly.
+        if Frac(d) <> 0 then
+        begin
+          RunTimeError(Format('Expected an integer for ''%s'' but got %g.',
+            [String(TargetType^.Name), d]));
+          Exit;
+        end;
+        typeData := GetTypeData(TargetType);
+        if typeData^.OrdType = otULong then
+        begin
+          // Unsigned 32-bit: MaxValue is stored as -1, check explicitly
+          if (d < 0) or (d > 4294967295.0) then
+          begin
+            RunTimeError(Format('Value %g is out of range for ''%s''.',
+              [d, String(TargetType^.Name)]));
+            Exit;
+          end;
+        end
+        else if (d < typeData^.MinValue) or (d > typeData^.MaxValue) then
+        begin
+          RunTimeError(Format('Value %g is out of range for ''%s''.',
+            [d, String(TargetType^.Name)]));
+          Exit;
+        end;
+        // Make (not From<Integer>) so Byte/Word/subrange targets keep their type
+        System.Rtti.TValue.Make(NativeInt(Trunc(d)), TargetType, Result);
+      end;
       tkInt64:
-        Result := System.Rtti.TValue.From<Int64>(Trunc(GetNumber(V)));
+      begin
+        if Frac(d) <> 0 then
+        begin
+          RunTimeError(Format('Expected an integer for ''%s'' but got %g.',
+            [String(TargetType^.Name), d]));
+          Exit;
+        end;
+        if (d < -9.2233720368547758E18) or (d >= 9.2233720368547758E18) then
+        begin
+          RunTimeError(Format('Value %g is out of range for ''%s''.',
+            [d, String(TargetType^.Name)]));
+          Exit;
+        end;
+        Result := System.Rtti.TValue.From<Int64>(Trunc(d));
+      end;
       tkFloat:
-        Result := System.Rtti.TValue.From<Double>(GetNumber(V));
+        Result := System.Rtti.TValue.From<Double>(d);
       tkEnumeration:
-        System.Rtti.TValue.Make(Trunc(GetNumber(V)), TargetType, Result);
+      begin
+        if Frac(d) <> 0 then
+        begin
+          RunTimeError(Format('Expected an integer ordinal for enum ''%s''.',
+            [String(TargetType^.Name)]));
+          Exit;
+        end;
+        typeData := GetTypeData(TargetType);
+        enumOrd := Trunc(d);
+        if (enumOrd < typeData^.MinValue) or (enumOrd > typeData^.MaxValue) then
+        begin
+          RunTimeError(Format('Ordinal %d is out of range for enum ''%s''.',
+            [enumOrd, String(TargetType^.Name)]));
+          Exit;
+        end;
+        System.Rtti.TValue.Make(enumOrd, TargetType, Result);
+      end;
     else
-      Result := System.Rtti.TValue.From<Double>(GetNumber(V));
+      Result := System.Rtti.TValue.From<Double>(d);
     end;
   end
   else if isBoolean(V) then
-  begin
-    if (TargetType <> nil) and (TargetType^.Kind = tkEnumeration) and
-       (TargetType = TypeInfo(Boolean)) then
-      Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V))
-    else
-      Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V));
-  end
+    Result := System.Rtti.TValue.From<Boolean>(GetBoolean(V))
   else if isNill(V) then
-    Result := System.Rtti.TValue.Empty
+  begin
+    // Typed nil/default for reference-like targets so TRttiMethod.Invoke
+    // accepts the argument; everything else keeps the legacy Empty.
+    if (TargetType <> nil) and
+       (TargetType^.Kind in [tkClass, tkClassRef, tkInterface, tkMethod, tkDynArray, tkPointer]) then
+      System.Rtti.TValue.Make(nil, TargetType, Result)
+    else
+      Result := System.Rtti.TValue.Empty;
+  end
   else if isObject(V) then
   begin
       if isString(V) then
@@ -3841,6 +4094,18 @@ begin
             setBuf[singleOrd div 8] := setBuf[singleOrd div 8] or (1 shl (singleOrd mod 8));
             System.Rtti.TValue.Make(@setBuf, TargetType, Result);
           end;
+        end
+        else if (TargetType <> nil) and (TargetType^.Kind in [tkChar, tkWChar]) then
+        begin
+          // Single-character string -> Char parameter
+          if Length(s) <> 1 then
+            RunTimeError(Format('Expected a single character for ''%s'' but got a %d-char string.',
+              [String(TargetType^.Name), Length(s)]))
+          else if (TargetType^.Kind = tkChar) and (Ord(s[1]) > 255) then
+            RunTimeError(Format('Character out of AnsiChar range for ''%s''.',
+              [String(TargetType^.Name)]))
+          else
+            System.Rtti.TValue.Make(NativeInt(Ord(s[1])), TargetType, Result);
         end
         else
           Result := System.Rtti.TValue.From<string>(s);
@@ -3889,8 +4154,43 @@ begin
 
         Result := dynResult;
       end
+      else if isClosure(V) then
+      begin
+        if (TargetType <> nil) and (TargetType^.Kind = tkMethod) then
+          Result := LoxClosureToDelphiMethod(V, TargetType)
+        else
+          RunTimeError('A function can only be passed where a Delphi event/callback is expected.');
+      end
       else if isNativeObject(V) then
-        Result := System.Rtti.TValue.From<TObject>(TObject(pObjNativeObject(GetObject(V))^.instance))
+      begin
+        nobj := pObjNativeObject(GetObject(V));
+        if nobj^.instance = nil then
+        begin
+          RunTimeError('Cannot pass a destroyed native object to Delphi.');
+          Exit;
+        end;
+        hostObj := TObject(nobj^.instance);
+        if TargetType = nil then
+          Exit(System.Rtti.TValue.From<TObject>(hostObj));
+        if TargetType^.Kind <> tkClass then
+        begin
+          RunTimeError(Format('Cannot pass a native object where ''%s'' is expected.',
+            [String(TargetType^.Name)]));
+          Exit;
+        end;
+        targetClass := GetTypeData(TargetType)^.ClassType;
+        if not hostObj.InheritsFrom(targetClass) then
+        begin
+          RunTimeError(Format('Cannot pass a %s where a %s is expected.',
+            [hostObj.ClassName, targetClass.ClassName]));
+          Exit;
+        end;
+        // Ownership convention: once an instance is handed to Delphi, Delphi
+        // manages its lifetime — the wrapper must never double-free it.
+        nobj^.ownsInstance := False;
+        // Typed as the parameter's class so Invoke's compatibility check passes
+        System.Rtti.TValue.Make(@hostObj, TargetType, Result);
+      end
       else
       begin
         runtimeError(Format('Cannot marshal Lox %s to Delphi.',
@@ -3900,6 +4200,67 @@ begin
   end
   else
     Result := System.Rtti.TValue.Empty;
+end;
+
+{ TLoxCallbackAdapter }
+
+constructor TLoxCallbackAdapter.Create(const AClosure: TValue; AMethodType: TRttiMethodType);
+begin
+  inherited Create;
+  FClosure := AClosure;
+  FMethodType := AMethodType;
+  FTypeHandle := AMethodType.Handle;
+  // Pin the closure: the adapter may outlive every script reference to it.
+  RegisterGCRoot(FClosure);
+  FImpl := AMethodType.CreateImplementation(nil, InvokeHandler);
+end;
+
+destructor TLoxCallbackAdapter.Destroy;
+begin
+  if VM <> nil then
+    UnregisterGCRoot(FClosure);
+  FImpl.Free;
+  inherited;
+end;
+
+function TLoxCallbackAdapter.AsTMethod: TMethod;
+begin
+  Result.Code := FImpl.CodeAddress;
+  Result.Data := Self;
+end;
+
+procedure TLoxCallbackAdapter.InvokeHandler(UserData: Pointer;
+  const Args: TArray<System.Rtti.TValue>; out AResult: System.Rtti.TValue);
+var
+  loxArgs : array of TValue;
+  i, n    : Integer;
+  ret     : TValue;
+begin
+  AResult := System.Rtti.TValue.Empty;
+  if VM = nil then Exit;  // event fired after FreeVM — fail soft
+  // Args[0] is the method's Self (TMethod.Data = this adapter) — skip it.
+  n := Length(Args) - 1;
+  SetLength(loxArgs, n);
+  for i := 0 to n - 1 do
+  begin
+    loxArgs[i] := DelphiValueToLox(Args[i + 1], VM.MemTracker);
+    // Root each converted arg on the VM stack: converting the next one may
+    // allocate and trigger a GC that would otherwise collect this one.
+    pushStack(VM.Stack, loxArgs[i]);
+  end;
+  InvokeCallback(FClosure, loxArgs, ret);
+  Dec(VM.Stack.StackTop, n);  // pop the protection copies
+  // On script error, RuntimeErrorStr is set and surfaces after the Delphi
+  // call that fired this event returns (see RttiInvokeMethod).
+  if (FMethodType.ReturnType <> nil) and (VM.RuntimeErrorStr = '') then
+    AResult := LoxValueToDelphi(ret, FMethodType.ReturnType.Handle);
+end;
+
+// Called by FreeVM: destroys all closure->event adapters (unregistering
+// their GC roots) before the VM record itself is disposed.
+procedure FreeLoxCallbackAdapters;
+begin
+  FreeAndNil(LoxCallbackAdapters);
 end;
 
 function ClassHasLoxClassAttr(rt: TRttiType): Boolean;
@@ -3920,51 +4281,382 @@ begin
   Result := False;
 end;
 
+function PropAttrReadOnly(const attrs: TArray<TCustomAttribute>): Boolean;
+var
+  a: TCustomAttribute;
+begin
+  for a in attrs do
+    if (a is LoxPropertyAttribute) and LoxPropertyAttribute(a).IsReadOnly then Exit(True);
+  Result := False;
+end;
+
+// Lifecycle / dangerous TObject methods never callable from script in
+// ungated (no-attribute) mode. Gated classes are allowlist-only anyway.
+function IsDeniedMethodName(const AName: string): Boolean;
+begin
+  Result := SameText(AName, 'Free') or SameText(AName, 'Destroy') or
+            SameText(AName, 'DisposeOf') or SameText(AName, 'FreeInstance') or
+            SameText(AName, 'CleanupInstance') or SameText(AName, 'AfterConstruction') or
+            SameText(AName, 'BeforeDestruction');
+end;
+
+// Case-insensitive compare (Delphi identifiers are case-insensitive, and the
+// old rt.GetProperty lookup was too).
+function ObjStringSameTextAnsi(s: pObjString; const a: AnsiString): Boolean;
+begin
+  Result := (s <> nil) and (s^.length = Length(a)) and
+            ((s^.length = 0) or
+             (System.AnsiStrings.AnsiStrLIComp(PAnsiChar(@s^.chars[0]), PAnsiChar(a), s^.length) = 0));
+end;
+
+function FindPropCache(classInfo: pNativeClassInfo; propName: pObjString): Integer;
+var
+  i: Integer;
+begin
+  for i := 0 to High(classInfo^.rttiProps) do
+    if ObjStringSameTextAnsi(propName, classInfo^.rttiProps[i].name) then Exit(i);
+  Result := -1;
+end;
+
+function FindMethodCache(classInfo: pNativeClassInfo; methodName: pObjString): Integer;
+var
+  i: Integer;
+begin
+  for i := 0 to High(classInfo^.rttiMethods) do
+    if ObjStringSameTextAnsi(methodName, classInfo^.rttiMethods[i].name) then Exit(i);
+  Result := -1;
+end;
+
+// Compatibility score of one Lox value against one Delphi parameter type.
+// -1 = incompatible (overload rejected); higher = better match.
+function ScoreLoxToDelphi(const V: TValue; T: PTypeInfo): Integer;
+begin
+  if T = nil then Exit(-1);
+  if isNumber(V) then
+  begin
+    case T^.Kind of
+      tkFloat: Exit(3);
+      tkInteger, tkInt64:
+        if Frac(GetNumber(V)) = 0 then Exit(3) else Exit(-1);
+      tkEnumeration:
+        if T = TypeInfo(Boolean) then Exit(-1)
+        else if Frac(GetNumber(V)) = 0 then Exit(1) else Exit(-1);
+    else
+      Exit(-1);
+    end;
+  end;
+  if isBoolean(V) then
+  begin
+    if (T^.Kind = tkEnumeration) and (T = TypeInfo(Boolean)) then Exit(3);
+    Exit(-1);
+  end;
+  if isNill(V) then
+  begin
+    if T^.Kind in [tkClass, tkClassRef, tkInterface, tkMethod, tkDynArray, tkPointer] then Exit(1);
+    Exit(0);  // marshals as Empty — weakly compatible (legacy behavior)
+  end;
+  if isString(V) then
+  begin
+    case T^.Kind of
+      tkString, tkLString, tkWString, tkUString: Exit(3);
+      tkChar, tkWChar:
+        if pObjString(GetObject(V))^.length = 1 then Exit(2) else Exit(-1);
+      tkEnumeration:
+        if T = TypeInfo(Boolean) then Exit(-1) else Exit(2);
+      tkSet: Exit(1);
+    else
+      Exit(-1);
+    end;
+  end;
+  if isClosure(V) then
+  begin
+    if T^.Kind = tkMethod then Exit(3);
+    Exit(-1);
+  end;
+  if isNativeObject(V) then
+  begin
+    if T^.Kind <> tkClass then Exit(-1);
+    if pObjNativeObject(GetObject(V))^.instance = nil then Exit(-1);
+    if TObject(pObjNativeObject(GetObject(V))^.instance).InheritsFrom(GetTypeData(T)^.ClassType) then Exit(3);
+    Exit(-1);
+  end;
+  if isArray(V) then
+  begin
+    case T^.Kind of
+      tkDynArray: Exit(3);
+      tkSet: Exit(2);
+    else
+      Exit(-1);
+    end;
+  end;
+  Result := -1;
+end;
+
+// Picks the best-scoring overload whose arity matches and every argument is
+// compatible. Ties go to the first (most-derived) declaration.
+function SelectOverload(const overloads: array of TNativeOverload;
+  argCount: Integer; args: pValue): Integer;
+var
+  i, j, total, score, bestScore: Integer;
+  ok: Boolean;
+begin
+  Result := -1;
+  bestScore := -1;
+  for i := 0 to High(overloads) do
+  begin
+    if Length(overloads[i].params) <> argCount then Continue;
+    total := 0;
+    ok := True;
+    for j := 0 to argCount - 1 do
+    begin
+      if overloads[i].params[j].ParamType = nil then begin ok := False; Break; end;
+      score := ScoreLoxToDelphi(args[j], overloads[i].params[j].ParamType.Handle);
+      if score < 0 then begin ok := False; Break; end;
+      Inc(total, score);
+    end;
+    if ok and (total > bestScore) then
+    begin
+      bestScore := total;
+      Result := i;
+    end;
+  end;
+end;
+
+// Reflects a class ONCE at registration into classInfo's member tables.
+// Dispatch (property get/set, invoke, subscript) then never touches
+// GetProperties/GetMethods/GetAttributes again.
+procedure BuildRttiMemberCache(info: pNativeClassInfo);
+var
+  rt         : TRttiType;
+  gated      : Boolean;
+  prop       : TRttiProperty;
+  field      : TRttiField;
+  m          : TRttiMethod;
+  ip         : TRttiIndexedProperty;
+  attrs      : TArray<TCustomAttribute>;
+  entry      : TNativePropCache;
+  ipParams   : TArray<TRttiParameter>;
+  nProps, n  : Integer;
+  ctorParent : TRttiType;
+
+  function AlreadyCachedProp(const AName: string): Boolean;
+  var k: Integer;
+  begin
+    for k := 0 to nProps - 1 do
+      if SameText(String(info^.rttiProps[k].name), AName) then Exit(True);
+    Result := False;
+  end;
+
+  procedure AddOverload(const AName: string; AMethod: TRttiMethod);
+  var k, c: Integer;
+  begin
+    for k := 0 to High(info^.rttiMethods) do
+      if SameText(String(info^.rttiMethods[k].name), AName) then
+      begin
+        c := Length(info^.rttiMethods[k].overloads);
+        SetLength(info^.rttiMethods[k].overloads, c + 1);
+        info^.rttiMethods[k].overloads[c].method := AMethod;
+        info^.rttiMethods[k].overloads[c].params := AMethod.GetParameters;
+        Exit;
+      end;
+    k := Length(info^.rttiMethods);
+    SetLength(info^.rttiMethods, k + 1);
+    info^.rttiMethods[k].name := AnsiString(AName);
+    SetLength(info^.rttiMethods[k].overloads, 1);
+    info^.rttiMethods[k].overloads[0].method := AMethod;
+    info^.rttiMethods[k].overloads[0].params := AMethod.GetParameters;
+  end;
+
+begin
+  info^.rttiProps := nil;
+  info^.rttiMethods := nil;
+  info^.rttiCtors := nil;
+  info^.idxGet := nil;
+  info^.idxSet := nil;
+  info^.idxGetParamType := nil;
+  info^.idxSetParamType := nil;
+  info^.idxSetValueType := nil;
+  if not info^.rttiEnabled then Exit;
+  rt := RttiCtx.GetType(info^.rttiClass);
+  if rt = nil then
+  begin
+    info^.rttiEnabled := False;
+    Exit;
+  end;
+
+  // Gating: [LoxClass] on the class, or any [LoxProperty]/[LoxMethod] member,
+  // switches the class to allowlist mode — only attributed members are
+  // script-visible. Otherwise (legacy/auto-registered classes) every public
+  // or published member is exposed, minus the lifecycle denylist. Private and
+  // protected members are never exposed in ungated mode (extended RTTI covers
+  // private fields; without this check they leaked to scripts).
+  gated := ClassHasLoxClassAttr(rt);
+  if not gated then
+    for prop in rt.GetProperties do
+      if HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then
+      begin
+        gated := True;
+        Break;
+      end;
+  if not gated then
+    for field in rt.GetFields do
+      if HasAttribute(field.GetAttributes, LoxPropertyAttribute) then
+      begin
+        gated := True;
+        Break;
+      end;
+  if not gated then
+    for m in rt.GetMethods do
+      if HasAttribute(m.GetAttributes, LoxMethodAttribute) then
+      begin
+        gated := True;
+        Break;
+      end;
+
+  // Properties (GetProperties is most-derived-first; first name wins)
+  nProps := 0;
+  for prop in rt.GetProperties do
+  begin
+    if prop.PropertyType = nil then Continue;
+    attrs := prop.GetAttributes;
+    if gated then
+    begin
+      if not HasAttribute(attrs, LoxPropertyAttribute) then Continue;
+    end
+    else if not (prop.Visibility in [mvPublic, mvPublished]) then
+      Continue;
+    if AlreadyCachedProp(prop.Name) then Continue;
+    entry.name := AnsiString(prop.Name);
+    entry.prop := prop;
+    entry.field := nil;
+    entry.typeInfo := prop.PropertyType.Handle;
+    entry.readable := prop.IsReadable;
+    entry.writable := prop.IsWritable and not (gated and PropAttrReadOnly(attrs));
+    SetLength(info^.rttiProps, nProps + 1);
+    info^.rttiProps[nProps] := entry;
+    Inc(nProps);
+  end;
+
+  // Fields
+  for field in rt.GetFields do
+  begin
+    if field.FieldType = nil then Continue;
+    attrs := field.GetAttributes;
+    if gated then
+    begin
+      if not HasAttribute(attrs, LoxPropertyAttribute) then Continue;
+    end
+    else if not (field.Visibility in [mvPublic, mvPublished]) then
+      Continue;
+    if AlreadyCachedProp(field.Name) then Continue;
+    entry.name := AnsiString(field.Name);
+    entry.prop := nil;
+    entry.field := field;
+    entry.typeInfo := field.FieldType.Handle;
+    entry.readable := True;
+    entry.writable := not (gated and PropAttrReadOnly(attrs));
+    SetLength(info^.rttiProps, nProps + 1);
+    info^.rttiProps[nProps] := entry;
+    Inc(nProps);
+  end;
+
+  // Methods and constructors
+  ctorParent := nil;
+  for m in rt.GetMethods do
+  begin
+    if not m.HasExtendedInfo then Continue;
+    if m.IsConstructor then
+    begin
+      // Mirror Delphi name hiding: keep only constructors declared by the
+      // most-derived class that declares any (GetMethods is derived-first),
+      // so TObject.Create doesn't offer a zero-arg bypass of the real ctor.
+      if not (m.Visibility in [mvPublic, mvPublished]) then Continue;
+      if ctorParent = nil then ctorParent := m.Parent;
+      if m.Parent <> ctorParent then Continue;
+      n := Length(info^.rttiCtors);
+      SetLength(info^.rttiCtors, n + 1);
+      info^.rttiCtors[n].method := m;
+      info^.rttiCtors[n].params := m.GetParameters;
+      Continue;
+    end;
+    if m.IsDestructor then Continue;
+    if not (m.MethodKind in [mkProcedure, mkFunction]) then Continue;
+    if gated then
+    begin
+      if not HasAttribute(m.GetAttributes, LoxMethodAttribute) then Continue;
+    end
+    else
+    begin
+      if not (m.Visibility in [mvPublic, mvPublished]) then Continue;
+      if IsDeniedMethodName(m.Name) then Continue;
+    end;
+    AddOverload(m.Name, m);
+  end;
+
+  // Default indexed property (subscript access), first match wins
+  for ip in rt.GetIndexedProperties do
+  begin
+    if not ip.IsDefault then Continue;
+    if (info^.idxGet = nil) and ip.IsReadable and (ip.ReadMethod <> nil) then
+    begin
+      ipParams := ip.ReadMethod.GetParameters;
+      if (Length(ipParams) = 1) and (ipParams[0].ParamType <> nil) then
+      begin
+        info^.idxGet := ip;
+        info^.idxGetParamType := ipParams[0].ParamType.Handle;
+      end;
+    end;
+    if (info^.idxSet = nil) and ip.IsWritable and (ip.WriteMethod <> nil) then
+    begin
+      ipParams := ip.WriteMethod.GetParameters;
+      if (Length(ipParams) >= 1) and (ipParams[0].ParamType <> nil) then
+      begin
+        info^.idxSet := ip;
+        info^.idxSetParamType := ipParams[0].ParamType.Handle;
+        info^.idxSetValueType := ip.PropertyType.Handle;
+      end;
+    end;
+  end;
+end;
+
 function RttiGetProperty(instance: Pointer; classInfo: pNativeClassInfo;
   propName: pObjString; MemTracker: pMemTracker; out loxVal: TValue): Boolean;
 var
-  rt: TRttiType;
-  prop: TRttiProperty;
-  field: TRttiField;
-  dv: System.Rtti.TValue;
-  useLoxAttrs: Boolean;
-  propNameStr: string;
+  idx : Integer;
+  dv  : System.Rtti.TValue;
 begin
   Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+  idx := FindPropCache(classInfo, propName);
+  if idx < 0 then Exit;  // caller reports 'Undefined property'
   if instance = nil then
   begin
     runtimeError('Cannot access property of a destroyed native object.');
     Exit;
   end;
-  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
-
-  rt := RttiCtx.GetType(classInfo^.rttiClass);
-  if rt = nil then Exit;
-
-  useLoxAttrs := ClassHasLoxClassAttr(rt);
-  propNameStr := ObjStringToWideStr(propName);
-
+  if not classInfo^.rttiProps[idx].readable then
+  begin
+    runtimeError(Format('Property ''%s'' is write-only.',
+      [String(classInfo^.rttiProps[idx].name)]));
+    Exit;
+  end;
   try
-    prop := rt.GetProperty(propNameStr);
-    if (prop <> nil) and (prop.IsReadable) then
-    begin
-      if useLoxAttrs and not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Exit;
-      dv := prop.GetValue(TObject(instance));
-      loxVal := DelphiValueToLox(dv, MemTracker);
-      Exit(True);
-    end;
-
-    field := rt.GetField(propNameStr);
-    if field <> nil then
-    begin
-      dv := field.GetValue(TObject(instance));
-      loxVal := DelphiValueToLox(dv, MemTracker);
-      Exit(True);
-    end;
+    if classInfo^.rttiProps[idx].prop <> nil then
+      dv := classInfo^.rttiProps[idx].prop.GetValue(TObject(instance))
+    else
+      dv := classInfo^.rttiProps[idx].field.GetValue(TObject(instance));
+    loxVal := DelphiValueToLox(dv, MemTracker);
+    Result := VM.RuntimeErrorStr = '';
   except
+    // Control-flow exceptions unwind to CompileAndRun intact (see OP_CALL).
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
     on E: Exception do
     begin
-      runtimeError(Format('RTTI get ''%s'' failed: %s', [propNameStr, E.Message]));
+      runtimeError(Format('RTTI get ''%s'' failed: %s',
+        [String(classInfo^.rttiProps[idx].name), E.Message]));
       Result := False;
     end;
   end;
@@ -3973,61 +4665,42 @@ end;
 function RttiSetProperty(instance: Pointer; classInfo: pNativeClassInfo;
   propName: pObjString; const loxVal: TValue): Boolean;
 var
-  rt: TRttiType;
-  prop: TRttiProperty;
-  field: TRttiField;
-  dv: System.Rtti.TValue;
-  useLoxAttrs: Boolean;
-  lpAttr: TCustomAttribute;
-  propNameStr: string;
+  idx : Integer;
+  dv  : System.Rtti.TValue;
 begin
   Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+  idx := FindPropCache(classInfo, propName);
+  if idx < 0 then Exit;  // caller reports 'Undefined property'
   if instance = nil then
   begin
     runtimeError('Cannot set property on a destroyed native object.');
     Exit;
   end;
-  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
-
-  rt := RttiCtx.GetType(classInfo^.rttiClass);
-  if rt = nil then Exit;
-
-  useLoxAttrs := ClassHasLoxClassAttr(rt);
-  propNameStr := ObjStringToWideStr(propName);
-
+  if not classInfo^.rttiProps[idx].writable then
+  begin
+    runtimeError(Format('Property ''%s'' is read-only.',
+      [String(classInfo^.rttiProps[idx].name)]));
+    Exit;
+  end;
+  dv := LoxValueToDelphi(loxVal, classInfo^.rttiProps[idx].typeInfo);
+  if VM.RuntimeErrorStr <> '' then Exit;
   try
-    prop := rt.GetProperty(propNameStr);
-    if (prop <> nil) and (prop.IsWritable) then
-    begin
-      if useLoxAttrs then
-      begin
-        if not HasAttribute(prop.GetAttributes, LoxPropertyAttribute) then Exit;
-        // Check for readonly
-        for lpAttr in prop.GetAttributes do
-          if (lpAttr is LoxPropertyAttribute) and LoxPropertyAttribute(lpAttr).IsReadOnly then
-          begin
-            runtimeError(Format('Property ''%s'' is read-only.', [propNameStr]));
-            Exit;
-          end;
-      end;
-      dv := LoxValueToDelphi(loxVal, prop.PropertyType.Handle);
-      if VM.RuntimeErrorStr <> '' then Exit;
-      prop.SetValue(TObject(instance), dv);
-      Exit(True);
-    end;
-
-    field := rt.GetField(propNameStr);
-    if field <> nil then
-    begin
-      dv := LoxValueToDelphi(loxVal, field.FieldType.Handle);
-      if VM.RuntimeErrorStr <> '' then Exit;
-      field.SetValue(TObject(instance), dv);
-      Exit(True);
-    end;
+    if classInfo^.rttiProps[idx].prop <> nil then
+      classInfo^.rttiProps[idx].prop.SetValue(TObject(instance), dv)
+    else
+      classInfo^.rttiProps[idx].field.SetValue(TObject(instance), dv);
+    Result := True;
   except
+    // Control-flow exceptions unwind to CompileAndRun intact (see OP_CALL).
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
     on E: Exception do
     begin
-      runtimeError(Format('RTTI set ''%s'' failed: %s', [propNameStr, E.Message]));
+      runtimeError(Format('RTTI set ''%s'' failed: %s',
+        [String(classInfo^.rttiProps[idx].name), E.Message]));
       Result := False;
     end;
   end;
@@ -4037,86 +4710,132 @@ function RttiInvokeMethod(instance: Pointer; classInfo: pNativeClassInfo;
   methodName: pObjString; argCount: integer; args: pValue;
   MemTracker: pMemTracker; out loxResult: TValue): Boolean;
 var
-  rt: TRttiType;
-  method: TRttiMethod;
-  methods: TArray<TRttiMethod>;
-  params: TArray<TRttiParameter>;
-  delphiArgs: array of System.Rtti.TValue;
-  dv: System.Rtti.TValue;
-  i: integer;
-  mName: string;
-  useLoxAttrs: Boolean;
-  rejectedByAttr: Boolean;
+  idx, sel, i : Integer;
+  delphiArgs  : array of System.Rtti.TValue;
+  dv          : System.Rtti.TValue;
 begin
   Result := False;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
+  idx := FindMethodCache(classInfo, methodName);
+  if idx < 0 then
+  begin
+    // Lifecycle methods are excluded from the cache; keep the explicit
+    // 'not callable' error rather than a misleading 'Undefined method'.
+    if IsDeniedMethodName(ObjStringToWideStr(methodName)) then
+      runtimeError(Format('Method ''%s'' is not callable from script.',
+        [ObjStringToWideStr(methodName)]));
+    Exit;
+  end;
   if instance = nil then
   begin
     runtimeError('Cannot invoke method on a destroyed native object.');
     Exit;
   end;
-  if (classInfo = nil) or (not classInfo^.rttiEnabled) then Exit;
-
-  rt := RttiCtx.GetType(classInfo^.rttiClass);
-  if rt = nil then Exit;
-
-  mName := ObjStringToWideStr(methodName);
-  useLoxAttrs := ClassHasLoxClassAttr(rt);
-
-  if not useLoxAttrs then
+  sel := SelectOverload(classInfo^.rttiMethods[idx].overloads, argCount, args);
+  if sel < 0 then
   begin
-    // Legacy denylist: prevent scripts from invoking lifecycle/dangerous TObject methods
-    if SameText(mName, 'Free') or SameText(mName, 'Destroy') or
-       SameText(mName, 'DisposeOf') or SameText(mName, 'FreeInstance') or
-       SameText(mName, 'CleanupInstance') or SameText(mName, 'AfterConstruction') or
-       SameText(mName, 'BeforeDestruction') then
-    begin
-      runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
-      Exit;
-    end;
+    runtimeError(Format('No overload of ''%s'' matches the given %d argument(s).',
+      [String(classInfo^.rttiMethods[idx].name), argCount]));
+    Exit;
   end;
-
-  methods := rt.GetMethods(mName);
-  rejectedByAttr := False;
-
+  SetLength(delphiArgs, argCount);
+  for i := 0 to argCount - 1 do
+  begin
+    delphiArgs[i] := LoxValueToDelphi(args[i],
+      classInfo^.rttiMethods[idx].overloads[sel].params[i].ParamType.Handle);
+    if VM.RuntimeErrorStr <> '' then Exit;
+  end;
   try
-    for method in methods do
-    begin
-      params := method.GetParameters;
-      if Length(params) = argCount then
-      begin
-        // Attribute mode: gate the matched overload, not methods[0]
-        if useLoxAttrs and not HasAttribute(method.GetAttributes, LoxMethodAttribute) then
-        begin
-          rejectedByAttr := True;
-          Continue;
-        end;
-        SetLength(delphiArgs, argCount);
-        for i := 0 to argCount - 1 do
-          delphiArgs[i] := LoxValueToDelphi(args[i], params[i].ParamType.Handle);
-
-        // Bail out if marshaling set a runtime error
-        if VM.RuntimeErrorStr <> '' then
-          Exit;
-
-        dv := method.Invoke(TObject(instance), delphiArgs);
-
-        if method.ReturnType <> nil then
-          loxResult := DelphiValueToLox(dv, MemTracker)
-        else
-          loxResult := CreateNilValue;
-        Exit(True);
-      end;
-    end;
+    dv := classInfo^.rttiMethods[idx].overloads[sel].method.Invoke(TObject(instance), delphiArgs);
+    // The method may have fired a Lox event handler that failed — surface it
+    // instead of returning a value computed after the script error.
+    if VM.RuntimeErrorStr <> '' then Exit;
+    if classInfo^.rttiMethods[idx].overloads[sel].method.ReturnType <> nil then
+      loxResult := DelphiValueToLox(dv, MemTracker)
+    else
+      loxResult := CreateNilValue;
+    Result := VM.RuntimeErrorStr = '';
   except
+    // Control-flow exceptions unwind to CompileAndRun intact (see OP_CALL).
+    // Critical here: an invoked Delphi method may run a Lox callback via
+    // InvokeCallback, and that script may halt().
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
     on E: Exception do
     begin
-      runtimeError(Format('RTTI invoke ''%s'' failed: %s', [mName, E.Message]));
+      runtimeError(Format('RTTI invoke ''%s'' failed: %s',
+        [String(classInfo^.rttiMethods[idx].name), E.Message]));
       Result := False;
     end;
   end;
+end;
 
-  if (not Result) and rejectedByAttr then
-    runtimeError(Format('Method ''%s'' is not callable from script.', [mName]));
+// Called from OP_CALL when the callee is a native class object: runs the
+// best-matching public Delphi constructor and returns a VM-owned wrapper.
+function ConstructNativeClass(classInfo: pNativeClassInfo; argCount: Integer;
+  args: pValue; out outVal: TValue): Boolean;
+var
+  sel, i     : Integer;
+  delphiArgs : array of System.Rtti.TValue;
+  dv         : System.Rtti.TValue;
+  instObj    : TObject;
+  wrapper    : pObjNativeObject;
+begin
+  Result := False;
+  outVal := CreateNilValue;
+  if (classInfo = nil) or (not classInfo^.rttiEnabled) then
+  begin
+    runtimeError('Class is not constructible from script.');
+    Exit;
+  end;
+  if Length(classInfo^.rttiCtors) = 0 then
+  begin
+    runtimeError(Format('Class ''%s'' has no accessible constructor.',
+      [String(classInfo^.name)]));
+    Exit;
+  end;
+  sel := SelectOverload(classInfo^.rttiCtors, argCount, args);
+  if sel < 0 then
+  begin
+    runtimeError(Format('No constructor of ''%s'' matches the given %d argument(s).',
+      [String(classInfo^.name), argCount]));
+    Exit;
+  end;
+  SetLength(delphiArgs, argCount);
+  for i := 0 to argCount - 1 do
+  begin
+    delphiArgs[i] := LoxValueToDelphi(args[i],
+      classInfo^.rttiCtors[sel].params[i].ParamType.Handle);
+    if VM.RuntimeErrorStr <> '' then Exit;
+  end;
+  try
+    dv := classInfo^.rttiCtors[sel].method.Invoke(classInfo^.rttiClass, delphiArgs);
+    instObj := dv.AsObject;
+  except
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
+    on E: Exception do
+    begin
+      runtimeError(Format('Constructor of ''%s'' raised %s: %s',
+        [String(classInfo^.name), E.ClassName, E.Message]));
+      Exit;
+    end;
+  end;
+  if instObj = nil then
+  begin
+    runtimeError(Format('Constructor of ''%s'' returned nil.', [String(classInfo^.name)]));
+    Exit;
+  end;
+  // Script-constructed instances are VM-owned: sweeping the wrapper runs the
+  // class destructor (default: TObject.Free). Ownership transfers to Delphi
+  // if the value is later passed into a Delphi parameter (LoxValueToDelphi).
+  wrapper := newNativeObject(Pointer(instObj), classInfo, VM.MemTracker, True);
+  outVal := CreateObject(pObj(wrapper));
+  Result := True;
 end;
 
 {$ENDREGION}
@@ -4275,6 +4994,9 @@ begin
       end;
       okNativeObject: begin
         Result := '<' + String(pObjNativeObject(GetObject(value))^.classInfo^.name) + '>';
+      end;
+      okNativeClass: begin
+        Result := '<class ' + String(pObjNativeClass(GetObject(value))^.classInfo^.name) + '>';
       end;
       okDictionary: begin
         Result := '{';
@@ -4894,6 +5616,7 @@ var
   slot : Byte;
   offset : Word;
   value,ValueB,ValueC : TValue;
+  printText : string;
   argCount : byte;
   func : pObjFunction;
   closure : pObjClosure;
@@ -4923,7 +5646,6 @@ var
   rttiResult : TValue;
   // RTTI indexed property support
   idxProp : TRttiIndexedProperty;
-  idxParams : TArray<TRttiParameter>;
   idxDelphiArgs : array[0..0] of System.Rtti.TValue;
   idxDelphiVal  : System.Rtti.TValue;
 
@@ -5180,6 +5902,15 @@ begin
             try
               nativeResult := native(argCount, stack.StackTop - argCount);
             except
+              // Control-flow exceptions must unwind to CompileAndRun intact:
+              // ELoxHalt carries halt()'s exit code (INTERPRET_HALTED) and
+              // ELoxRuntimeError is a VM-internal abort (e.g. stack overflow).
+              // Converting either to a generic native error here would break
+              // their semantics.
+              on E: ELoxHalt do
+                raise;
+              on E: ELoxRuntimeError do
+                raise;
               on E: Exception do
               begin
                 runtimeError(String(AnsiString(pObjNative(GetObject(value))^.name)) +
@@ -5201,9 +5932,11 @@ begin
             Assert((NativeInt(stack.StackTop) - NativeInt(stack.Values)) = savedNativeStackDepth,
               'OP_CALL native: native function modified stack depth');
             {$ENDIF}
-            // pop args + callee, push result
-            stack.StackTop := stack.StackTop - (argCount + 1);
-            pushStack(stack, nativeResult);
+            // Collapse args + callee to the result in one step: overwrite the
+            // callee slot, shrink by argCount. No pushStack capacity branch —
+            // the slots being written already exist.
+            stack.StackTop[-1 - argCount] := nativeResult;
+            Dec(stack.StackTop, argCount);
           end
           else if isRecordType(value) then
           begin
@@ -5222,11 +5955,24 @@ begin
             for j := 0 to argCount - 1 do
               pObjRecord(GetObject(value))^.fields[j] :=
                 (stack.StackTop - 1 - argCount + j)^;
-            // Pop the record instance we just pushed for protection
-            Dec(stack.StackTop);
-            // Pop args + callee, push result
-            stack.StackTop := stack.StackTop - (argCount + 1);
-            pushStack(stack, value);
+            // Collapse protect-copy + args + callee to the result in one step:
+            // overwrite the callee slot with the record, shrink past the
+            // protect-copy and args. [callee, args..., rec] -> [rec].
+            stack.StackTop[-2 - argCount] := value;
+            Dec(stack.StackTop, argCount + 1);
+          end
+          else if isNativeClass(value) then
+          begin
+            // Construct a native Delphi object via its public constructor
+            if not ConstructNativeClass(pObjNativeClass(GetObject(value))^.classInfo,
+              argCount, stack.StackTop - argCount, nativeResult) then
+            begin
+              result.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            // Collapse args + callee to the result in one step (see natives).
+            stack.StackTop[-1 - argCount] := nativeResult;
+            Dec(stack.StackTop, argCount);
           end
           else
           begin
@@ -5248,7 +5994,7 @@ begin
             value := CreateNumber(GetNumber(stack.StackTop[-2]) + GetNumber(stack.StackTop[-1]))
           else if isString(stack.StackTop[-1]) and isString(stack.StackTop[-2]) then
           begin
-            Concatenate(vm.stack, vm.MemTracker);
+            Concatenate(stack, vm.MemTracker);
             value := stack.StackTop[-1];
           end
           else
@@ -5369,7 +6115,16 @@ begin
         OP_FALSE    : pushStack(stack, CreateBoolean(false));
 
         OP_EQUAL: begin
-          stack.StackTop[-2] := CreateBoolean(valuesEqual(stack.StackTop[-2], stack.StackTop[-1]));
+          // Inline ValuesEqual's bit-identity fast path: identical bits mean
+          // equal for every value type except the canonical NaN (NaN <> NaN).
+          // Interned strings and canonicalized NaNs make this sound — see
+          // ValuesEqual. Skips an out-of-line call in the common case.
+          value  := stack.StackTop[-2];
+          ValueB := stack.StackTop[-1];
+          if value = ValueB then
+            stack.StackTop[-2] := CreateBoolean(value <> CANON_NAN)
+          else
+            stack.StackTop[-2] := CreateBoolean(valuesEqual(value, ValueB));
           Dec(stack.StackTop);
         end;
 
@@ -5417,7 +6172,7 @@ begin
                         else if isString(top[-1]) and isString(top[-2]) then
                         begin
                           // Concatenate mutates stack.StackTop; `top` is now stale.
-                          Concatenate(vm.stack, vm.MemTracker);
+                          Concatenate(stack, vm.MemTracker);
                         end
                         else
                         begin
@@ -5498,9 +6253,12 @@ begin
           value := stack.StackTop^;
           if VM.PrintBuilder.Length > 0 then
             VM.PrintBuilder.Append(sLineBreak);
-          VM.PrintBuilder.Append(ValueToStr(value));
+          // Convert once; the second ValueToStr call was pure waste when an
+          // OnPrint handler was attached.
+          printText := ValueToStr(value);
+          VM.PrintBuilder.Append(printText);
           if Assigned(VM.OnPrint) then
-            VM.OnPrint(ValueToStr(value));
+            VM.OnPrint(printText);
         end;
 
         OP_POP: begin
@@ -5804,7 +6562,7 @@ begin
           // Replaces OP_JUMP_IF_FALSE + OP_POP pair in if/while/for.
           offset := ReadJumpOffset(ip);
            {$IFOPT C+}
-           AssertStackIsNotEmpty(vm.Stack);
+           AssertStackIsNotEmpty(Stack);
            {$ENDIF}
           Dec(stack.StackTop);
           if isFalsey(stack.StackTop^) then
@@ -5855,7 +6613,7 @@ begin
           end
           else if isString(stack.StackTop[-1]) and isString(stack.StackTop[-2]) then
           begin
-            Concatenate(vm.stack, vm.MemTracker);
+            Concatenate(stack, vm.MemTracker);
             frame^.slots[slot] := stack.StackTop[-1];
             Dec(stack.StackTop);
           end
@@ -6082,8 +6840,8 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            Dec(stack.StackTop);
-            pushStack(stack, rec^.fields[fieldIdx]);
+            // Replace receiver with the field value in place (no pop/push).
+            stack.StackTop[-1] := rec^.fields[fieldIdx];
           end
           else if isNativeObject(stack.StackTop[-1]) then
           begin
@@ -6103,8 +6861,8 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            Dec(stack.StackTop);
-            pushStack(stack, rttiResult);
+            // Replace receiver with the property value in place (no pop/push).
+            stack.StackTop[-1] := rttiResult;
           end
           else
           begin
@@ -6135,11 +6893,10 @@ begin
               exit;
             end;
             rec^.fields[fieldIdx] := stack.StackTop[-1];
+            // Write the assigned value over the receiver, shrink by one:
+            // [recv, value] -> [value] (assignment-expression result).
+            stack.StackTop[-2] := stack.StackTop[-1];
             Dec(stack.StackTop);
-
-            value := stack.StackTop^;
-            Dec(stack.StackTop);
-            pushStack(stack, value);
           end
           else if isNativeObject(stack.StackTop[-2]) then
           begin
@@ -6159,11 +6916,10 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
+            // Write the assigned value over the receiver, shrink by one:
+            // [recv, value] -> [value] (assignment-expression result).
+            stack.StackTop[-2] := stack.StackTop[-1];
             Dec(stack.StackTop);
-
-            value := stack.StackTop^;
-            Dec(stack.StackTop);
-            pushStack(stack, value);
           end
           else
           begin
@@ -6195,8 +6951,9 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            stack.StackTop := stack.StackTop - (invokeArgCount + 1);
-            pushStack(stack, nativeResult);
+            // Collapse args + receiver to the result in one step (see OP_CALL).
+            stack.StackTop[-1 - invokeArgCount] := nativeResult;
+            Dec(stack.StackTop, invokeArgCount);
           end
           else if isNativeObject(value) then
           begin
@@ -6227,8 +6984,9 @@ begin
               exit;
             end;
             // Pop args + receiver, push result
-            stack.StackTop := stack.StackTop - (invokeArgCount + 1);
-            pushStack(stack, nativeResult);
+            // Collapse args + receiver to the result in one step (see OP_CALL).
+            stack.StackTop[-1 - invokeArgCount] := nativeResult;
+            Dec(stack.StackTop, invokeArgCount);
           end
           else
           begin
@@ -6257,8 +7015,9 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            stack.StackTop := stack.StackTop - (invokeArgCount + 1);
-            pushStack(stack, nativeResult);
+            // Collapse args + receiver to the result in one step (see OP_CALL).
+            stack.StackTop[-1 - invokeArgCount] := nativeResult;
+            Dec(stack.StackTop, invokeArgCount);
           end
           else if isNativeObject(value) then
           begin
@@ -6287,8 +7046,9 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            stack.StackTop := stack.StackTop - (invokeArgCount + 1);
-            pushStack(stack, nativeResult);
+            // Collapse args + receiver to the result in one step (see OP_CALL).
+            stack.StackTop[-1 - invokeArgCount] := nativeResult;
+            Dec(stack.StackTop, invokeArgCount);
           end
           else
           begin
@@ -6317,8 +7077,8 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            Dec(stack.StackTop);
-            pushStack(stack, rec^.fields[fieldIdx]);
+            // Replace receiver with the field value in place (no pop/push).
+            stack.StackTop[-1] := rec^.fields[fieldIdx];
           end
           else if isNativeObject(stack.StackTop[-1]) then
           begin
@@ -6338,8 +7098,8 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            Dec(stack.StackTop);
-            pushStack(stack, rttiResult);
+            // Replace receiver with the property value in place (no pop/push).
+            stack.StackTop[-1] := rttiResult;
           end
           else
           begin
@@ -6370,11 +7130,10 @@ begin
               exit;
             end;
             rec^.fields[fieldIdx] := stack.StackTop[-1];
+            // Write the assigned value over the receiver, shrink by one:
+            // [recv, value] -> [value] (assignment-expression result).
+            stack.StackTop[-2] := stack.StackTop[-1];
             Dec(stack.StackTop);
-
-            value := stack.StackTop^;
-            Dec(stack.StackTop);
-            pushStack(stack, value);
           end
           else if isNativeObject(stack.StackTop[-2]) then
           begin
@@ -6394,11 +7153,10 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
+            // Write the assigned value over the receiver, shrink by one:
+            // [recv, value] -> [value] (assignment-expression result).
+            stack.StackTop[-2] := stack.StackTop[-1];
             Dec(stack.StackTop);
-
-            value := stack.StackTop^;
-            Dec(stack.StackTop);
-            pushStack(stack, value);
           end
           else
           begin
@@ -6432,7 +7190,10 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pushStack(stack, pObjArray(GetObject(ValueB))^.Elements[i]);
+            // Two slots were just popped, so this write is in-capacity —
+            // no pushStack branch needed.
+            stack.StackTop^ := pObjArray(GetObject(ValueB))^.Elements[i];
+            Inc(stack.StackTop);
           end
           else if isDictionary(ValueB) then
           begin
@@ -6442,50 +7203,45 @@ begin
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            pushStack(stack, ValueC);
+            // Two slots were just popped — in-capacity direct write.
+            stack.StackTop^ := ValueC;
+            Inc(stack.StackTop);
           end
           else if isNativeObject(ValueB) then
           begin
             nativeObj := pObjNativeObject(GetObject(ValueB));
-            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled then
+            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled and
+               (nativeObj^.classInfo^.idxGet <> nil) then
             begin
-              idxProp := nil;
-              for idxProp in RttiCtx.GetType(nativeObj^.classInfo^.rttiClass).GetIndexedProperties do
-                if idxProp.IsDefault and idxProp.IsReadable then
-                  Break;
-              if (idxProp <> nil) and idxProp.IsDefault and idxProp.IsReadable then
+              if nativeObj^.instance = nil then
               begin
-                idxParams := idxProp.ReadMethod.GetParameters;
-                if Length(idxParams) <> 1 then
+                runtimeError('Cannot index a destroyed native object.');
+                result.code := INTERPRET_RUNTIME_ERROR;
+                exit;
+              end;
+              // Default indexed property resolved once at registration
+              idxProp := nativeObj^.classInfo^.idxGet;
+              try
+                idxDelphiArgs[0] := LoxValueToDelphi(value, nativeObj^.classInfo^.idxGetParamType);
+                if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
+                idxDelphiVal := idxProp.GetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]]);
+                pushStack(stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker));
+              except
+                on E: ELoxHalt do
+                  raise;
+                on E: ELoxRuntimeError do
+                  raise;
+                on E: Exception do
                 begin
-                  runtimeError('Default indexed property requires exactly 1 index parameter.');
+                  runtimeError('Indexed property get failed: ' + E.Message);
                   result.code := INTERPRET_RUNTIME_ERROR;
                   exit;
                 end;
-                try
-                  idxDelphiArgs[0] := LoxValueToDelphi(value, idxParams[0].ParamType.Handle);
-                  if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
-                  idxDelphiVal := idxProp.GetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]]);
-                  pushStack(stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker));
-                except
-                  on E: Exception do
-                  begin
-                    runtimeError('Indexed property get failed: ' + E.Message);
-                    result.code := INTERPRET_RUNTIME_ERROR;
-                    exit;
-                  end;
-                end;
-              end
-              else
-              begin
-                runtimeError('Native object has no default indexed property.');
-                result.code := INTERPRET_RUNTIME_ERROR;
-                exit;
               end;
             end
             else
             begin
-              runtimeError('Native object does not support subscript access.');
+              runtimeError('Native object has no default indexed property.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -6523,8 +7279,8 @@ begin
               exit;
             end;
             pObjArray(GetObject(stack.StackTop[-1]))^.Elements[i] := value;
-            Dec(stack.StackTop); // pop the array
-            pushStack(stack, value); // leave the assigned value
+            // Overwrite the array slot with the assigned value in place.
+            stack.StackTop[-1] := value;
           end
           else if isDictionary(stack.StackTop[-3]) then
           begin
@@ -6533,11 +7289,9 @@ begin
             value := stack.StackTop[-1];   // value
             ValueB := stack.StackTop[-2];  // key
             DictSet(pObjDictionary(GetObject(stack.StackTop[-3])), ValueB, value, vm.MemTracker);
-            // Pop value, key, dict; push value as result
-            Dec(stack.StackTop);
-            Dec(stack.StackTop);
-            Dec(stack.StackTop);
-            pushStack(stack, value);
+            // Collapse [dict, key, value] -> [value] in one step.
+            stack.StackTop[-3] := value;
+            Dec(stack.StackTop, 2);
           end
           else if isNativeObject(stack.StackTop[-3]) then
           begin
@@ -6549,49 +7303,41 @@ begin
 
             ValueB := stack.StackTop^;
             nativeObj := pObjNativeObject(GetObject(stack.StackTop[-1]));
-            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled then
+            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled and
+               (nativeObj^.classInfo^.idxSet <> nil) then
             begin
-              idxProp := nil;
-              for idxProp in RttiCtx.GetType(nativeObj^.classInfo^.rttiClass).GetIndexedProperties do
-                if idxProp.IsDefault and idxProp.IsWritable then
-                  Break;
-              if (idxProp <> nil) and idxProp.IsDefault and idxProp.IsWritable then
+              if nativeObj^.instance = nil then
               begin
-                idxParams := idxProp.WriteMethod.GetParameters;
-                // WriteMethod params: index + value ? we only marshal the index here
-                if Length(idxParams) < 1 then
+                runtimeError('Cannot index a destroyed native object.');
+                result.code := INTERPRET_RUNTIME_ERROR;
+                exit;
+              end;
+              // Default indexed property resolved once at registration
+              idxProp := nativeObj^.classInfo^.idxSet;
+              try
+                idxDelphiArgs[0] := LoxValueToDelphi(ValueB, nativeObj^.classInfo^.idxSetParamType);
+                if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
+                idxDelphiVal := LoxValueToDelphi(value, nativeObj^.classInfo^.idxSetValueType);
+                if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
+                idxProp.SetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]], idxDelphiVal);
+                Dec(stack.StackTop); // pop the native object
+                pushStack(stack, value); // leave the assigned value
+              except
+                on E: ELoxHalt do
+                  raise;
+                on E: ELoxRuntimeError do
+                  raise;
+                on E: Exception do
                 begin
-                  runtimeError('Default indexed property has no index parameter.');
+                  runtimeError('Indexed property set failed: ' + E.Message);
                   result.code := INTERPRET_RUNTIME_ERROR;
                   exit;
                 end;
-                try
-                  idxDelphiArgs[0] := LoxValueToDelphi(ValueB, idxParams[0].ParamType.Handle);
-                  if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
-                  idxDelphiVal := LoxValueToDelphi(value, idxProp.PropertyType.Handle);
-                  if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
-                  idxProp.SetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]], idxDelphiVal);
-                  Dec(stack.StackTop); // pop the native object
-                  pushStack(stack, value); // leave the assigned value
-                except
-                  on E: Exception do
-                  begin
-                    runtimeError('Indexed property set failed: ' + E.Message);
-                    result.code := INTERPRET_RUNTIME_ERROR;
-                    exit;
-                  end;
-                end;
-              end
-              else
-              begin
-                runtimeError('Native object has no writable default indexed property.');
-                result.code := INTERPRET_RUNTIME_ERROR;
-                exit;
               end;
             end
             else
             begin
-              runtimeError('Native object does not support subscript assignment.');
+              runtimeError('Native object has no writable default indexed property.');
               result.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
@@ -6660,6 +7406,12 @@ begin
 
     end;
     except
+        // Let control-flow exceptions unwind to CompileAndRun, which owns the
+        // INTERPRET_HALTED translation and the transient-VM-state reset.
+        on E: ELoxHalt do
+          raise;
+        on E: ELoxRuntimeError do
+          raise;
         on E: Exception do
         begin
           HandleVMException(E);
@@ -7017,9 +7769,18 @@ begin
   info^.destructor_ := ADestructor;
   info^.rttiEnabled := False;
   info^.rttiClass := nil;
+  // New() only zero-inits managed fields; the cached TRtti* references must
+  // be nil'd explicitly or dispatch would follow garbage pointers.
+  BuildRttiMemberCache(info);  // rttiEnabled=False -> clears all cache fields
   Inc(NativeClassCount);
   SetLength(NativeClassRegistry, NativeClassCount);
   NativeClassRegistry[NativeClassCount - 1] := info;
+end;
+
+// Default destructor for script-owned RTTI instances (see ConstructNativeClass).
+procedure DefaultNativeDestructor(instance: Pointer);
+begin
+  TObject(instance).Free;
 end;
 
 procedure registerNativeClassRTTI(const AName : AnsiString; AClass : TClass; ADestructor : TNativeDestructor = nil);
@@ -7030,9 +7791,16 @@ begin
   New(info);
   info^.name := AName;
   SetLength(info^.methods, 0);
-  info^.destructor_ := ADestructor;
+  if Assigned(ADestructor) then
+    info^.destructor_ := ADestructor
+  else
+    // Only runs for wrappers with ownsInstance=true (script-constructed);
+    // injected and marshaled instances are non-owning and never freed by GC.
+    info^.destructor_ := DefaultNativeDestructor;
   info^.rttiEnabled := True;
   info^.rttiClass := AClass;
+  // Reflect members ONCE here; dispatch reads the cache only.
+  BuildRttiMemberCache(info);
   Inc(NativeClassCount);
   SetLength(NativeClassRegistry, NativeClassCount);
   NativeClassRegistry[NativeClassCount - 1] := info;
@@ -7046,6 +7814,47 @@ begin
     if NativeClassRegistry[i]^.name = name then
       Exit(NativeClassRegistry[i]);
   Result := nil;
+end;
+
+function findNativeClassByClass(AClass : TClass) : pNativeClassInfo;
+var
+  i : integer;
+begin
+  for i := 0 to NativeClassCount - 1 do
+    if NativeClassRegistry[i]^.rttiClass = AClass then
+      Exit(NativeClassRegistry[i]);
+  Result := nil;
+end;
+
+// The [LoxClass('Name')] attribute name, or '' when absent/unnamed.
+function LoxClassAttrName(AClass : TClass) : AnsiString;
+var
+  rt : TRttiType;
+  a  : TCustomAttribute;
+begin
+  Result := '';
+  rt := RttiCtx.GetType(AClass);
+  if rt = nil then Exit;
+  for a in rt.GetAttributes do
+    if a is LoxClassAttribute then
+      Exit(AnsiString(LoxClassAttribute(a).Name));
+end;
+
+function ensureNativeClassRTTI(AClass : TClass) : pNativeClassInfo;
+var
+  loxName : AnsiString;
+begin
+  Result := findNativeClassByClass(AClass);
+  if Result <> nil then Exit;
+  // Prefer the [LoxClass] name; fall back to the Delphi ClassName when the
+  // attribute is absent or its name is already taken by a different class.
+  loxName := LoxClassAttrName(AClass);
+  if (loxName = '') or (findNativeClass(loxName) <> nil) then
+    loxName := AnsiString(AClass.ClassName);
+  Assert(findNativeClass(loxName) = nil,
+    'ensureNativeClassRTTI: name collision for ' + String(loxName));
+  registerNativeClassRTTI(loxName, AClass);
+  Result := findNativeClass(loxName);
 end;
 
 procedure InjectNativeObject(const name : AnsiString; instance : Pointer; const className : AnsiString);
@@ -7069,8 +7878,7 @@ begin
   // GC-safe order: create string first, push it, then create object and push it.
   nameStr := CreateString(name, VM.MemTracker);
   pushStack(VM.Stack, StringToValue(nameStr));
-  obj := newNativeObject(instance, classInfo, VM.MemTracker);
-  obj^.ownsInstance := false;  // Delphi owns this object
+  obj := newNativeObject(instance, classInfo, VM.MemTracker, False); // Delphi owns this object
   pushStack(VM.Stack, CreateObject(pObj(obj)));
   defineGlobalNative(nameStr, CreateObject(pObj(obj)));
   Dec(VM.Stack.StackTop);
@@ -7079,15 +7887,39 @@ end;
 
 procedure InjectObject(const name : AnsiString; instance : TObject);
 var
-  className : AnsiString;
   classInfo : pNativeClassInfo;
 begin
   Assert(instance <> nil, 'InjectObject: instance is nil');
-  className := AnsiString(instance.ClassName);
-  classInfo := findNativeClass(className);
-  if classInfo = nil then
-    registerNativeClassRTTI(className, instance.ClassType);
-  InjectNativeObject(name, Pointer(instance), className);
+  classInfo := ensureNativeClassRTTI(instance.ClassType);
+  InjectNativeObject(name, Pointer(instance), classInfo^.name);
+end;
+
+procedure ExposeNativeClass(AClass : TClass; const AGlobalName : AnsiString = '');
+var
+  info      : pNativeClassInfo;
+  globalName: AnsiString;
+  nameStr   : pObjString;
+  classObj  : pObjNativeClass;
+begin
+   {$IFOPT C+}
+  AssertVMIsAssigned;
+  AssertMemTrackerIsNotNil(VM.MemTracker);
+  Assert(AClass <> nil, 'ExposeNativeClass: AClass is nil');
+  {$ENDIF}
+  info := ensureNativeClassRTTI(AClass);
+  if AGlobalName <> '' then
+    globalName := AGlobalName
+  else
+    globalName := info^.name;
+
+  // GC-safe order, same as InjectNativeObject.
+  nameStr := CreateString(globalName, VM.MemTracker);
+  pushStack(VM.Stack, StringToValue(nameStr));
+  classObj := newNativeClass(info, VM.MemTracker);
+  pushStack(VM.Stack, CreateObject(pObj(classObj)));
+  defineGlobalNative(nameStr, CreateObject(pObj(classObj)));
+  Dec(VM.Stack.StackTop);
+  Dec(VM.Stack.StackTop);
 end;
 
 
@@ -7176,6 +8008,14 @@ begin
   begin
     FreeObjects(Vm.MemTracker.CreatedObjects);
   end;
+  // Closure->event adapters unregister their GC roots in their destructor,
+  // so they must go before dispose(VM). Any Delphi event still wired to one
+  // of these is now dangling — hosts unhook script handlers before FreeVM.
+  FreeLoxCallbackAdapters;
+  // All wrappers were swept above; drop any stragglers defensively so a
+  // subsequent InitVM starts with an empty instance map.
+  if NativeWrapperMap <> nil then
+    NativeWrapperMap.Clear;
   // Free gray stack (raw memory, not via Allocate)
   if VM.MemTracker.GrayStack <> nil then
     FreeMem(VM.MemTracker.GrayStack);
@@ -7278,6 +8118,10 @@ begin
       Allocate(Pointer(obj), SizeOf(TObjRecord), 0, vm.MemTracker);
     end;
     okNativeObject : begin
+      // Keep the instance->wrapper map consistent: this wrapper is dying, so
+      // its instance (if still tracked) must not resolve to freed memory.
+      if (pObjNativeObject(obj)^.instance <> nil) and (NativeWrapperMap <> nil) then
+        NativeWrapperMap.Remove(pObjNativeObject(obj)^.instance);
       if pObjNativeObject(obj)^.ownsInstance and
          Assigned(pObjNativeObject(obj)^.classInfo^.destructor_) then
       begin
@@ -7289,6 +8133,9 @@ begin
         pObjNativeObject(obj)^.instance := nil;
       end;
       Allocate(Pointer(obj), SizeOf(TObjNativeObject), 0, vm.MemTracker);
+    end;
+    okNativeClass : begin
+      Allocate(Pointer(obj), SizeOf(TObjNativeClass), 0, vm.MemTracker);
     end;
     okDictionary : begin
       if pObjDictionary(obj)^.Entries <> nil then
@@ -7590,6 +8437,7 @@ begin
       end;
     end;
     okNativeObject: ; // Delphi object not traced by GC
+    okNativeClass: ;  // classInfo is registry memory, not a GC object
     okDictionary: begin
       if pObjDictionary(obj)^.Capacity > 0 then
       begin
