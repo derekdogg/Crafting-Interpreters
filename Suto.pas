@@ -4232,24 +4232,34 @@ end;
 procedure TLoxCallbackAdapter.InvokeHandler(UserData: Pointer;
   const Args: TArray<System.Rtti.TValue>; out AResult: System.Rtti.TValue);
 var
-  loxArgs : array of TValue;
-  i, n    : Integer;
-  ret     : TValue;
+  loxArgs    : array of TValue;
+  i, n       : Integer;
+  ret        : TValue;
+  savedDepth : NativeInt;
 begin
   AResult := System.Rtti.TValue.Empty;
   if VM = nil then Exit;  // event fired after FreeVM — fail soft
   // Args[0] is the method's Self (TMethod.Data = this adapter) — skip it.
   n := Length(Args) - 1;
   SetLength(loxArgs, n);
-  for i := 0 to n - 1 do
-  begin
-    loxArgs[i] := DelphiValueToLox(Args[i + 1], VM.MemTracker);
-    // Root each converted arg on the VM stack: converting the next one may
-    // allocate and trigger a GC that would otherwise collect this one.
-    pushStack(VM.Stack, loxArgs[i]);
+  // Restore the exact pre-call depth on every exit path: ELoxHalt /
+  // ELoxRuntimeError from the callback propagate past us by design, and an
+  // errored Run may return with the stack unbalanced — a blind Dec would
+  // corrupt the VM stack either way. Byte offset, not a raw pointer:
+  // pushStack may realloc and rebase Values.
+  savedDepth := NativeInt(VM.Stack.StackTop) - NativeInt(VM.Stack.Values);
+  try
+    for i := 0 to n - 1 do
+    begin
+      loxArgs[i] := DelphiValueToLox(Args[i + 1], VM.MemTracker);
+      // Root each converted arg on the VM stack: converting the next one may
+      // allocate and trigger a GC that would otherwise collect this one.
+      pushStack(VM.Stack, loxArgs[i]);
+    end;
+    InvokeCallback(FClosure, loxArgs, ret);
+  finally
+    VM.Stack.StackTop := pValue(PByte(VM.Stack.Values) + savedDepth);
   end;
-  InvokeCallback(FClosure, loxArgs, ret);
-  Dec(VM.Stack.StackTop, n);  // pop the protection copies
   // On script error, RuntimeErrorStr is set and surfaces after the Delphi
   // call that fired this event returns (see RttiInvokeMethod).
   if (FMethodType.ReturnType <> nil) and (VM.RuntimeErrorStr = '') then
