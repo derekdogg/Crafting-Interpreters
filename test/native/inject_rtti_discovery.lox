@@ -14,20 +14,23 @@ print objects;
 // expect: [addr2, cust]
 
 // -- Introspect an injected object --
+// The class registers under its [LoxClass('Customer')] name, not the
+// Delphi ClassName.
 var info = loxObjectInfo("cust");
 print info["class"];
-// expect: TCustomer
+// expect: Customer
 
 print info["properties"];
-// expect: [Name, Age, Balance, Active, Address, Tier, Flags, Tags]
+// expect: [Name, Age, Balance, Active, Address, Tier, Flags, Tags, OnChanged]
 
 print info["methods"];
-// expect: [Greet, AddBalance, SetInfo, Describe, SetAddress, GetTags, SetTags]
+// expect: [Touch, Greet, AddBalance, SetInfo, Describe, SetAddress, GetTags, SetTags]
 
 // -- Class-level introspection still works --
+// (TLoxQueue carries [LoxClass('LoxQueue')] now, so it appears too)
 var classes = loxClasses();
 print classes;
-// expect: [Address, Customer]
+// expect: [Address, Customer, LoxQueue]
 
 // -- Use the discovered object --
 print cust.Name;

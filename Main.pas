@@ -1100,6 +1100,9 @@ begin
     try
       InjectObject('cust', cust);
       InjectObject('addr2', addr2);
+      // Callable class globals: scripts can construct Customer(...) / Address(...)
+      ExposeNativeClass(TCustomer);
+      ExposeNativeClass(TAddress);
       IR := CompileAndRun(PAnsiChar(AnsiString(Content)));
     finally
       FreeVM;

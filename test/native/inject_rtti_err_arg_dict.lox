@@ -5,8 +5,8 @@
 //
 // What this tests:
 //   - Passing a Lox dictionary where a Delphi string is expected
-//   - LoxValueToDelphi should detect the unmarshalable type and raise
-//     a runtime error before the RTTI invoke proceeds
+//   - Dictionaries never marshal to Delphi parameters, so overload
+//     selection rejects the call with a runtime error
 var d = [:];
 d.Set("key", "value");
-cust.SetInfo(d, 10); // expect runtime error: Cannot marshal Lox okDictionary to Delphi.
+cust.SetInfo(d, 10); // expect runtime error: No overload of 'SetInfo' matches the given 2 argument(s).
