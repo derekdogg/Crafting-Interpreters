@@ -496,6 +496,9 @@ begin
   registerNativeClass('StringList', slMethods, SL_Destroy);
   findNativeClass('StringList')^.rttiEnabled := True;
   findNativeClass('StringList')^.rttiClass := TStringList;
+  // Hybrid class (manual methods + RTTI): the member cache must be rebuilt
+  // after enabling RTTI by hand, or property/subscript dispatch finds nothing.
+  BuildRttiMemberCache(findNativeClass('StringList'));
   defineNative('StringList', stringListNative, 0);
 
   // Class discovery

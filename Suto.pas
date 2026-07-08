@@ -5602,8 +5602,285 @@ function CurrentFrame: pCallFrame; inline;
     Result := @VM.Frames[VM.FrameCount - 1];
  end;
 
+{ ---- Cold-path helpers for RunLoop -------------------------------------
+  Everything below exists so the dispatch loop itself contains no exception
+  scopes, no nested-procedure captures, and no managed temporaries (string
+  builds). Any one of those gives RunLoop an unwind map / frame captures and
+  forces the Win64 compiler to give the hot locals (ip, frame, constants,
+  stack) permanent stack homes. Do not fold these back into RunLoop, and do
+  not build error strings inline there — concatenation at a call site
+  creates a managed temp in the CALLER. }
 
+procedure RunErrArity(expected, got: Integer);
+begin
+  runtimeError('Expected ' + IntToStr(expected) + ' arguments but got ' +
+    IntToStr(got) + '.');
+end;
+
+procedure RunErrStackOverflow(funcName: pObjString);
+begin
+  runtimeError('Stack overflow (max ' + IntToStr(FRAMES_MAX) +
+    ' frames). Last call: ' + String(ObjStringToAnsiString(funcName)));
+end;
+
+// Shared shape for "<prefix> 'name'." runtime errors (undefined variable /
+// property / method, read-only property).
+procedure RunErrNamed(const prefix: string; name: pObjString);
+begin
+  runtimeError(prefix + ' ''' + ObjStringToWideStr(name) + '''.');
+end;
+
+procedure RunErrIndexBounds(idx, count: Integer);
+begin
+  runtimeError('Array index ' + IntToStr(idx) + ' out of bounds [0, ' +
+    IntToStr(count - 1) + '].');
+end;
+
+procedure RunErrUnknownOpcode(op: Byte);
+begin
+  runtimeError('Unknown opcode: ' + IntToStr(op));
+end;
+
+// OP_PRINT body: holds the managed string local so RunLoop doesn't.
+procedure EmitPrint(const value: TValue);
+var
+  printText: string;
+begin
+  if VM.PrintBuilder.Length > 0 then
+    VM.PrintBuilder.Append(sLineBreak);
+  // Convert once; the second ValueToStr call was pure waste when an
+  // OnPrint handler was attached.
+  printText := ValueToStr(value);
+  VM.PrintBuilder.Append(printText);
+  if Assigned(VM.OnPrint) then
+    VM.OnPrint(printText);
+end;
+
+// OP_CALL native arm: arity check, invoke, exception mapping. Returns False
+// when a runtime error has been flagged (message already set).
+function CallNativeChecked(const callee: TValue; argCount: Integer; args: pValue;
+  out ret: TValue): Boolean;
+var
+  nativePtr: pObjNative;
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  savedNativeStackDepth: NativeInt;
+  {$ENDIF}
+begin
+  Result := False;
+  nativePtr := pObjNative(GetObject(callee));
+  // Arity check (-1 means variadic, skip check)
+  if (nativePtr^.arity >= 0) and (argCount <> nativePtr^.arity) then
+  begin
+    if nativePtr^.arity = 1 then
+      runtimeError(String(AnsiString(nativePtr^.name)) + '() takes exactly 1 argument.')
+    else
+      runtimeError(String(AnsiString(nativePtr^.name)) + '() takes exactly ' +
+        IntToStr(nativePtr^.arity) + ' arguments.');
+    Exit;
+  end;
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  // Save depth (not raw pointer) — realloc-safe. A native may allocate
+  // strings which pushStack for GC protection, causing a stack realloc
+  // that rebases StackTop.
+  savedNativeStackDepth := NativeInt(VM.Stack.StackTop) - NativeInt(VM.Stack.Values);
+  {$ENDIF}
+  try
+    ret := nativePtr^.func(argCount, args);
+  except
+    // Control-flow exceptions must unwind to CompileAndRun intact:
+    // ELoxHalt carries halt()'s exit code (INTERPRET_HALTED) and
+    // ELoxRuntimeError is a VM-internal abort (e.g. stack overflow).
+    // Converting either to a generic native error here would break
+    // their semantics.
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
+    on E: Exception do
+    begin
+      runtimeError(String(AnsiString(nativePtr^.name)) + '() raised ' +
+        E.ClassName + ': ' + E.Message);
+      Exit;
+    end;
+  end;
+  {$IFDEF DEBUG_ASSERT_INVARIANTS}
+  // Natives must not change logical stack depth — they receive a pointer to
+  // args and return a single TValue. VM does all stack manipulation.
+  Assert((NativeInt(VM.Stack.StackTop) - NativeInt(VM.Stack.Values)) = savedNativeStackDepth,
+    'OP_CALL native: native function modified stack depth');
+  {$ENDIF}
+  // A native may signal failure via RuntimeErrorStr without raising.
+  Result := VM.RuntimeErrorStr = '';
+end;
+
+// OP_INDEX_GET on a native object via its cached default indexed property.
+function NativeIndexGetChecked(nativeObj: pObjNativeObject; const indexVal: TValue;
+  out ret: TValue): Boolean;
+var
+  idxArg, dv: System.Rtti.TValue;
+begin
+  Result := False;
+  if (nativeObj^.classInfo = nil) or (not nativeObj^.classInfo^.rttiEnabled) or
+     (nativeObj^.classInfo^.idxGet = nil) then
+  begin
+    runtimeError('Native object has no default indexed property.');
+    Exit;
+  end;
+  if nativeObj^.instance = nil then
+  begin
+    runtimeError('Cannot index a destroyed native object.');
+    Exit;
+  end;
+  try
+    idxArg := LoxValueToDelphi(indexVal, nativeObj^.classInfo^.idxGetParamType);
+    if VM.RuntimeErrorStr <> '' then Exit;
+    dv := nativeObj^.classInfo^.idxGet.GetValue(TObject(nativeObj^.instance), [idxArg]);
+    ret := DelphiValueToLox(dv, VM.MemTracker);
+    Result := VM.RuntimeErrorStr = '';
+  except
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
+    on E: Exception do
+    begin
+      runtimeError('Indexed property get failed: ' + E.Message);
+      Result := False;
+    end;
+  end;
+end;
+
+// OP_INDEX_SET on a native object via its cached default indexed property.
+function NativeIndexSetChecked(nativeObj: pObjNativeObject;
+  const indexVal, newVal: TValue): Boolean;
+var
+  idxArg, dv: System.Rtti.TValue;
+begin
+  Result := False;
+  if (nativeObj^.classInfo = nil) or (not nativeObj^.classInfo^.rttiEnabled) or
+     (nativeObj^.classInfo^.idxSet = nil) then
+  begin
+    runtimeError('Native object has no writable default indexed property.');
+    Exit;
+  end;
+  if nativeObj^.instance = nil then
+  begin
+    runtimeError('Cannot index a destroyed native object.');
+    Exit;
+  end;
+  try
+    idxArg := LoxValueToDelphi(indexVal, nativeObj^.classInfo^.idxSetParamType);
+    if VM.RuntimeErrorStr <> '' then Exit;
+    dv := LoxValueToDelphi(newVal, nativeObj^.classInfo^.idxSetValueType);
+    if VM.RuntimeErrorStr <> '' then Exit;
+    nativeObj^.classInfo^.idxSet.SetValue(TObject(nativeObj^.instance), [idxArg], dv);
+    Result := True;
+  except
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
+    on E: Exception do
+    begin
+      runtimeError('Indexed property set failed: ' + E.Message);
+      Result := False;
+    end;
+  end;
+end;
+
+// Build a diagnostic for a host exception that escaped the dispatch loop.
+//
+// Crash-reporter rule: this code must be more robust than the code it is
+// reporting on. Every dereference of VM state is wrapped in its own
+// try/except so any one of them being corrupt cannot replace the original
+// failure with a secondary AV. Even `runtimeError` is wrapped because it
+// does a string assignment and could OOM.
+//
+// This runs in Run's handler, OUTSIDE RunLoop, so the loop's cached ip and
+// current opcode are gone (deliberately: a nested procedure capturing them
+// would pin them to memory). State is reconstructed from the VM; frame^.ip
+// is only synced at call boundaries, so the reported offset is the last
+// call site, not the faulting instruction.
+procedure HandleVMException(E: Exception);
+var
+  msg, funcName: string;
+  offset: NativeInt;
+  errFrame: pCallFrame;
+begin
+  errFrame := nil;
+  try
+    if (VM <> nil) and (VM.FrameCount > 0) then
+      errFrame := @VM.Frames[VM.FrameCount - 1];
+  except
+    errFrame := nil;
+  end;
+
+  try
+    if errFrame <> nil then
+      funcName := String(ObjStringToAnsiString(errFrame^.closure^.func^.name))
+    else
+      funcName := '<no frame>';
+  except
+    funcName := '<unreadable>';
+  end;
+
+  try
+    if errFrame <> nil then
+      offset := NativeInt(errFrame^.ip) - NativeInt(errFrame^.closure^.func^.chunk^.Code)
+    else
+      offset := -1;
+  except
+    offset := -1;
+  end;
+
+  msg := 'Host exception in function ''' + funcName + '''' +
+         ' near offset ' + IntToStr(offset) + ': ' +
+         E.ClassName + ': ' + E.Message;
+
+  try
+    runtimeError(msg);
+  except
+    // Last resort: nothing more we can safely do. Caller still flags
+    // INTERPRET_RUNTIME_ERROR so the failure remains visible.
+  end;
+end;
+
+procedure RunLoop(baselineFrameCount: Integer; var outcome: TInterpretResult); forward;
+
+// Thin wrapper owning the exception scope. The hot loop lives in RunLoop,
+// which must stay free of try/except so its locals can be enregistered.
 function Run(baselineFrameCount: Integer = 0) : TInterpretResult;
+begin
+  Result := Default(TInterpretResult);
+  try
+    RunLoop(baselineFrameCount, Result);
+  except
+    // Let control-flow exceptions unwind to CompileAndRun, which owns the
+    // INTERPRET_HALTED translation and the transient-VM-state reset.
+    on E: ELoxHalt do
+      raise;
+    on E: ELoxRuntimeError do
+      raise;
+    on E: Exception do
+    begin
+      HandleVMException(E);
+      Result.code := INTERPRET_RUNTIME_ERROR;
+    end;
+    else
+    begin
+      // Non-class raise (e.g. `raise 123;`) or an OS-level escape that
+      // didn't surface as an Exception subclass. Build the most
+      // primitive diagnostic possible — no VM-state dereferences.
+      try
+        runtimeError('Non-class host exception in VM dispatch.');
+      except
+      end;
+      Result.code := INTERPRET_RUNTIME_ERROR;
+    end;
+  end;
+end;
+
+procedure RunLoop(baselineFrameCount: Integer; var outcome: TInterpretResult);
 var
   frame : pCallFrame;  // Cached pointer to current executing frame.
                         // Derived from VM.Frames[VM.FrameCount - 1].
@@ -5626,11 +5903,9 @@ var
   slot : Byte;
   offset : Word;
   value,ValueB,ValueC : TValue;
-  printText : string;
   argCount : byte;
   func : pObjFunction;
   closure : pObjClosure;
-  native : TNativeFn;
   nativeResult : TValue;
   isLocal : byte;
   index : byte;
@@ -5654,15 +5929,6 @@ var
   // RTTI property support
   rttiPropName : pObjString;
   rttiResult : TValue;
-  // RTTI indexed property support
-  idxProp : TRttiIndexedProperty;
-  idxDelphiArgs : array[0..0] of System.Rtti.TValue;
-  idxDelphiVal  : System.Rtti.TValue;
-
-
-  {$IFDEF DEBUG_ASSERT_INVARIANTS}
-  savedNativeStackDepth : NativeInt;
-  {$ENDIF}
 
 
 
@@ -5720,62 +5986,8 @@ var
   end;
   {$ENDIF}
 
-  // Build a diagnostic for a host exception caught mid-dispatch.
-  //
-  // Crash-reporter rule: this code must be more robust than the code it
-  // is reporting on. Every dereference of VM state (`frame`, `ip`,
-  // `closure`, chunk pointers, object strings) is wrapped in its own
-  // try/except so any one of them being corrupt cannot replace the
-  // original failure with a secondary AV. Even `runtimeError` is wrapped
-  // because it does a string assignment and could OOM.
-  //
-  // `instruction` is declared Byte in the outer Run scope, so its
-  // lower bound is provable by type; only the upper bound needs guarding
-  // for the OP_STRINGS lookup.
-  procedure HandleVMException(E: Exception);
-  var
-    msg, opcodeName, funcName: string;
-    offset: NativeInt;
-  begin
-    try
-      if instruction <= High(OP_STRINGS) then
-        opcodeName := OP_STRINGS[instruction]
-      else
-        opcodeName := '<unknown>';
-    except
-      opcodeName := '<unreadable>';
-    end;
-
-    try
-      funcName := String(ObjStringToAnsiString(frame^.closure^.func^.name));
-    except
-      funcName := '<unreadable>';
-    end;
-
-    try
-      offset := NativeInt(ip) - NativeInt(frame^.closure^.func^.chunk^.Code) - 1;
-    except
-      offset := -1;
-    end;
-
-    msg := 'Host exception in ' + opcodeName +
-           ' (opcode ' + IntToStr(instruction) + ')' +
-           ' in function ''' + funcName + '''' +
-           ' at offset ' + IntToStr(offset) + ': ' +
-           E.ClassName + ': ' + E.Message;
-
-    try
-      runtimeError(msg);
-    except
-      // Last resort: nothing more we can safely do. Caller still flags
-      // INTERPRET_RUNTIME_ERROR so the failure remains visible.
-    end;
-  end;
-
-
 begin
     //Assert(false, 'assertions are still compiled in');
-    Result := Default(TInterpretResult);
      {$IFOPT C+}
      AssertVMIsAssigned;
     AssertStackIsAssigned(vm.Stack);
@@ -5801,7 +6013,6 @@ begin
     // Between ReadByteFr and CallValue, frame still points to the CALLER.
     // After CallValue, frame is stale until explicitly rebased.
     // No nested function may mutate frame.
-    try
     while True do
     begin
        {$IFOPT C+}
@@ -5845,15 +6056,14 @@ begin
             func := closure^.func;
             if argCount <> func^.arity then
             begin
-              runtimeError('Expected ' + IntToStr(func^.arity) + ' arguments but got ' + IntToStr(argCount) + '.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrArity(func^.arity, argCount);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             if VM.FrameCount = FRAMES_MAX then
             begin
-              runtimeError('Stack overflow (max ' + IntToStr(FRAMES_MAX) +
-                ' frames). Last call: ' + String(ObjStringToAnsiString(func^.name)));
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrStackOverflow(func^.name);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Advance the frame pointer up front so the field writes below
@@ -5888,60 +6098,13 @@ begin
           end
           else if isNative(value) then
           begin
-            // Arity check (-1 means variadic, skip check)
-            if (pObjNative(GetObject(value))^.arity >= 0) and
-               (argCount <> pObjNative(GetObject(value))^.arity) then
+            // Arity check, invoke, and exception mapping live in the helper —
+            // its try/except must not be in this routine (see cold-path notes).
+            if not CallNativeChecked(value, argCount, stack.StackTop - argCount, nativeResult) then
             begin
-              if pObjNative(GetObject(value))^.arity = 1 then
-                runtimeError(String(AnsiString(pObjNative(GetObject(value))^.name)) +
-                  '() takes exactly 1 argument.')
-              else
-                runtimeError(String(AnsiString(pObjNative(GetObject(value))^.name)) +
-                  '() takes exactly ' +
-                  IntToStr(pObjNative(GetObject(value))^.arity) + ' arguments.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
-            native := pObjNative(GetObject(value))^.func;
-            {$IFDEF DEBUG_ASSERT_INVARIANTS}
-            // Save depth (not raw pointer) — realloc-safe. A native may
-            // allocate strings which pushStack for GC protection, causing
-            // a stack realloc that rebases StackTop.
-            savedNativeStackDepth := NativeInt(stack.StackTop) - NativeInt(stack.Values);
-            {$ENDIF}
-            try
-              nativeResult := native(argCount, stack.StackTop - argCount);
-            except
-              // Control-flow exceptions must unwind to CompileAndRun intact:
-              // ELoxHalt carries halt()'s exit code (INTERPRET_HALTED) and
-              // ELoxRuntimeError is a VM-internal abort (e.g. stack overflow).
-              // Converting either to a generic native error here would break
-              // their semantics.
-              on E: ELoxHalt do
-                raise;
-              on E: ELoxRuntimeError do
-                raise;
-              on E: Exception do
-              begin
-                runtimeError(String(AnsiString(pObjNative(GetObject(value))^.name)) +
-                  '() raised ' + E.ClassName + ': ' + E.Message);
-                result.code := INTERPRET_RUNTIME_ERROR;
-                exit;
-              end;
-            end;
-            // Check if native signalled a runtime error
-            if VM.RuntimeErrorStr <> '' then
-            begin
-              result.code := INTERPRET_RUNTIME_ERROR;
-              exit;
-            end;
-            {$IFDEF DEBUG_ASSERT_INVARIANTS}
-            // Natives must not change logical stack depth — they receive a
-            // pointer to args and return a single TValue. VM does all stack
-            // manipulation. Uses offset from Values (realloc-safe).
-            Assert((NativeInt(stack.StackTop) - NativeInt(stack.Values)) = savedNativeStackDepth,
-              'OP_CALL native: native function modified stack depth');
-            {$ENDIF}
             // Collapse args + callee to the result in one step: overwrite the
             // callee slot, shrink by argCount. No pushStack capacity branch —
             // the slots being written already exist.
@@ -5953,9 +6116,8 @@ begin
             // Construct a new record instance
             if argCount <> pObjRecordType(GetObject(value))^.fieldCount then
             begin
-              runtimeError('Expected ' + IntToStr(pObjRecordType(GetObject(value))^.fieldCount) +
-                ' arguments but got ' + IntToStr(argCount) + '.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrArity(pObjRecordType(GetObject(value))^.fieldCount, argCount);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Create the record instance - push onto stack to protect from GC
@@ -5977,7 +6139,7 @@ begin
             if not ConstructNativeClass(pObjNativeClass(GetObject(value))^.classInfo,
               argCount, stack.StackTop - argCount, nativeResult) then
             begin
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Collapse args + callee to the result in one step (see natives).
@@ -5987,7 +6149,7 @@ begin
           else
           begin
             runtimeError('Can only call functions and classes.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
           // No trailing rebase: the closure branch above already stepped
@@ -6010,7 +6172,7 @@ begin
           else
           begin
             runtimeError('Operands must be two numbers or two strings.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
 
@@ -6030,9 +6192,9 @@ begin
               stack.StackTop^ := value;
               Inc(stack.StackTop);
             end;
-            Result.Code := INTERPRET_OK;
-            Result.value := value;
-            Exit(Result);
+            outcome.Code := INTERPRET_OK;
+            outcome.value := value;
+            Exit;
           end;
 
           stack.StackTop := frame^.slots;
@@ -6069,9 +6231,9 @@ begin
               stack.StackTop^ := value;
               Inc(stack.StackTop);
             end;
-            Result.Code := INTERPRET_OK;
-            Result.value := value;
-            Exit(Result);
+            outcome.Code := INTERPRET_OK;
+            outcome.value := value;
+            Exit;
           end;
 
           // Discard the returning function's stack window
@@ -6113,7 +6275,7 @@ begin
           // In-place negation: rewrite the top slot, no pop/push.
           if not isNumber(stack.StackTop[-1]) then
           begin
-             result.code := INTERPRET_RUNTIME_ERROR;
+             outcome.code := INTERPRET_RUNTIME_ERROR;
              runtimeError('Operand must be a number.');
              exit;
           end;
@@ -6146,7 +6308,7 @@ begin
                         if not (isNumber(top[-1]) and isNumber(top[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
-                          result.code := INTERPRET_RUNTIME_ERROR;
+                          outcome.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                         top[-2] := CreateBoolean(
@@ -6160,7 +6322,7 @@ begin
                         if not (isNumber(top[-1]) and isNumber(top[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
-                          result.code := INTERPRET_RUNTIME_ERROR;
+                          outcome.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                         top[-2] := CreateBoolean(
@@ -6187,7 +6349,7 @@ begin
                         else
                         begin
                           runtimeError('Operands must be two numbers or two strings.');
-                          result.code := INTERPRET_RUNTIME_ERROR;
+                          outcome.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                       end;
@@ -6198,7 +6360,7 @@ begin
                         if not (isNumber(top[-1]) and isNumber(top[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
-                          result.code := INTERPRET_RUNTIME_ERROR;
+                          outcome.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                         top[-2] := CreateNumber(
@@ -6212,7 +6374,7 @@ begin
                         if not (isNumber(top[-1]) and isNumber(top[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
-                          result.code := INTERPRET_RUNTIME_ERROR;
+                          outcome.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                         top[-2] := CreateNumber(
@@ -6226,7 +6388,7 @@ begin
                         if not (isNumber(top[-1]) and isNumber(top[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
-                          result.code := INTERPRET_RUNTIME_ERROR;
+                          outcome.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                         top[-2] := CreateNumber(
@@ -6240,7 +6402,7 @@ begin
                         if not (isNumber(top[-1]) and isNumber(top[-2])) then
                         begin
                           runtimeError('Operands must be numbers.');
-                          result.code := INTERPRET_RUNTIME_ERROR;
+                          outcome.code := INTERPRET_RUNTIME_ERROR;
                           exit;
                         end;
                         // Match prior semantics: A - Trunc(A/B)*B
@@ -6259,16 +6421,9 @@ begin
 
         OP_PRINT: begin
           Dec(stack.StackTop);
-
-          value := stack.StackTop^;
-          if VM.PrintBuilder.Length > 0 then
-            VM.PrintBuilder.Append(sLineBreak);
-          // Convert once; the second ValueToStr call was pure waste when an
-          // OnPrint handler was attached.
-          printText := ValueToStr(value);
-          VM.PrintBuilder.Append(printText);
-          if Assigned(VM.OnPrint) then
-            VM.OnPrint(printText);
+          // The string conversion (managed local) lives in the helper —
+          // a managed local here would give this routine an unwind scope.
+          EmitPrint(stack.StackTop^);
         end;
 
         OP_POP: begin
@@ -6312,8 +6467,8 @@ begin
           value := vm.GlobalValues[i];
           if value = UNDEFINED_VAL then
           begin
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            RunErrNamed('Undefined variable', vm.GlobalMeta[i].Name);
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
          // pushStack(stack, value); xxx
@@ -6338,8 +6493,8 @@ begin
           {$ENDIF}
           if vm.GlobalValues[i] = UNDEFINED_VAL then
           begin
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            RunErrNamed('Undefined variable', vm.GlobalMeta[i].Name);
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
           vm.GlobalValues[i] := stack.StackTop[-1];
@@ -6586,7 +6741,7 @@ begin
           if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
           begin
             runtimeError('Operands must be numbers.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
           if not (GetNumber(stack.StackTop[-2]) < GetNumber(stack.StackTop[-1])) then
@@ -6630,7 +6785,7 @@ begin
           else
           begin
             runtimeError('Operands must be two numbers or two strings.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -6718,8 +6873,8 @@ begin
           value := vm.GlobalValues[i];
           if value = UNDEFINED_VAL then
           begin
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            RunErrNamed('Undefined variable', vm.GlobalMeta[i].Name);
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
           pushStack(stack, value);
@@ -6732,8 +6887,8 @@ begin
           {$ENDIF}
           if vm.GlobalValues[i] = UNDEFINED_VAL then
           begin
-            runtimeError('Undefined variable ''' + String(ObjStringToAnsiString(vm.GlobalMeta[i].Name)) + '''.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            RunErrNamed('Undefined variable', vm.GlobalMeta[i].Name);
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
           vm.GlobalValues[i] := stack.StackTop[-1];
@@ -6846,8 +7001,8 @@ begin
             fieldIdx := findFieldIndex(rec^.recordType, fieldName);
             if fieldIdx < 0 then
             begin
-              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrNamed('Undefined property', fieldName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Replace receiver with the field value in place (no pop/push).
@@ -6867,8 +7022,8 @@ begin
             if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
             begin
               if VM.RuntimeErrorStr = '' then
-                runtimeError('Undefined property ''' + ObjStringToWideStr(rttiPropName) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+                RunErrNamed('Undefined property', rttiPropName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Replace receiver with the property value in place (no pop/push).
@@ -6878,7 +7033,7 @@ begin
           begin
             recNameIdx := ip^; Inc(ip); // consume operand
             runtimeError('Only records and native objects have properties.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -6898,8 +7053,8 @@ begin
             fieldIdx := findFieldIndex(rec^.recordType, fieldName);
             if fieldIdx < 0 then
             begin
-              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrNamed('Undefined property', fieldName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             rec^.fields[fieldIdx] := stack.StackTop[-1];
@@ -6922,8 +7077,8 @@ begin
             if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, stack.StackTop[-1]) then
             begin
               if VM.RuntimeErrorStr = '' then
-                runtimeError('Undefined or read-only property ''' + ObjStringToWideStr(rttiPropName) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+                RunErrNamed('Undefined or read-only property', rttiPropName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Write the assigned value over the receiver, shrink by one:
@@ -6935,7 +7090,7 @@ begin
           begin
             recNameIdx := ip^; Inc(ip); // consume operand
             runtimeError('Only records and native objects have properties.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -6958,7 +7113,7 @@ begin
             if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
               invokeArgCount, stack.StackTop - invokeArgCount, nativeResult) then
             begin
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Collapse args + receiver to the result in one step (see OP_CALL).
@@ -6975,7 +7130,7 @@ begin
                 stack.StackTop - invokeArgCount);
               if VM.RuntimeErrorStr <> '' then
               begin
-                Result.code := INTERPRET_RUNTIME_ERROR;
+                outcome.code := INTERPRET_RUNTIME_ERROR;
                 Exit;
               end;
             end
@@ -6989,8 +7144,8 @@ begin
             else
             begin
               if VM.RuntimeErrorStr = '' then
-                runtimeError('Undefined method ''' + ObjStringToWideStr(invokeMethodName) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+                RunErrNamed('Undefined method', invokeMethodName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Pop args + receiver, push result
@@ -7001,7 +7156,7 @@ begin
           else
           begin
             runtimeError('Only dictionaries and native objects have methods.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -7022,7 +7177,7 @@ begin
             if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
               invokeArgCount, stack.StackTop - invokeArgCount, nativeResult) then
             begin
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Collapse args + receiver to the result in one step (see OP_CALL).
@@ -7038,7 +7193,7 @@ begin
                 stack.StackTop - invokeArgCount);
               if VM.RuntimeErrorStr <> '' then
               begin
-                Result.code := INTERPRET_RUNTIME_ERROR;
+                outcome.code := INTERPRET_RUNTIME_ERROR;
                 Exit;
               end;
             end
@@ -7052,8 +7207,8 @@ begin
             else
             begin
               if VM.RuntimeErrorStr = '' then
-                runtimeError('Undefined method ''' + ObjStringToWideStr(invokeMethodName) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+                RunErrNamed('Undefined method', invokeMethodName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Collapse args + receiver to the result in one step (see OP_CALL).
@@ -7063,7 +7218,7 @@ begin
           else
           begin
             runtimeError('Only dictionaries and native objects have methods.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -7083,8 +7238,8 @@ begin
             fieldIdx := findFieldIndex(rec^.recordType, fieldName);
             if fieldIdx < 0 then
             begin
-              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrNamed('Undefined property', fieldName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Replace receiver with the field value in place (no pop/push).
@@ -7104,8 +7259,8 @@ begin
             if not RttiGetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, vm.MemTracker, rttiResult) then
             begin
               if VM.RuntimeErrorStr = '' then
-                runtimeError('Undefined property ''' + ObjStringToWideStr(rttiPropName) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+                RunErrNamed('Undefined property', rttiPropName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Replace receiver with the property value in place (no pop/push).
@@ -7115,7 +7270,7 @@ begin
           begin
             recNameIdx := ReadLongIndex(ip);
             runtimeError('Only records and native objects have properties.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -7135,8 +7290,8 @@ begin
             fieldIdx := findFieldIndex(rec^.recordType, fieldName);
             if fieldIdx < 0 then
             begin
-              runtimeError('Undefined property ''' + String(ObjStringToAnsiString(fieldName)) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrNamed('Undefined property', fieldName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             rec^.fields[fieldIdx] := stack.StackTop[-1];
@@ -7159,8 +7314,8 @@ begin
             if not RttiSetProperty(nativeObj^.instance, nativeObj^.classInfo, rttiPropName, stack.StackTop[-1]) then
             begin
               if VM.RuntimeErrorStr = '' then
-                runtimeError('Undefined or read-only property ''' + ObjStringToWideStr(rttiPropName) + '''.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+                RunErrNamed('Undefined or read-only property', rttiPropName);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Write the assigned value over the receiver, shrink by one:
@@ -7172,7 +7327,7 @@ begin
           begin
             recNameIdx := ReadLongIndex(ip);
             runtimeError('Only records and native objects have properties.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -7190,14 +7345,14 @@ begin
             if not isNumber(value) then
             begin
               runtimeError('Array index must be a number.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             i := Trunc(GetNumber(value));
             if (i < 0) or (i >= pObjArray(GetObject(ValueB))^.Count) then
             begin
-              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(GetObject(ValueB))^.Count - 1) + '].');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrIndexBounds(i, pObjArray(GetObject(ValueB))^.Count);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Two slots were just popped, so this write is in-capacity —
@@ -7210,7 +7365,7 @@ begin
             if not DictGet(pObjDictionary(GetObject(ValueB)), value, ValueC) then
             begin
               runtimeError('Key not found in dictionary.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             // Two slots were just popped — in-capacity direct write.
@@ -7219,47 +7374,19 @@ begin
           end
           else if isNativeObject(ValueB) then
           begin
-            nativeObj := pObjNativeObject(GetObject(ValueB));
-            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled and
-               (nativeObj^.classInfo^.idxGet <> nil) then
+            // Marshal + invoke + exception mapping live in the helper — its
+            // try/except and RTTI TValue locals must not be in this routine.
+            if not NativeIndexGetChecked(pObjNativeObject(GetObject(ValueB)), value, nativeResult) then
             begin
-              if nativeObj^.instance = nil then
-              begin
-                runtimeError('Cannot index a destroyed native object.');
-                result.code := INTERPRET_RUNTIME_ERROR;
-                exit;
-              end;
-              // Default indexed property resolved once at registration
-              idxProp := nativeObj^.classInfo^.idxGet;
-              try
-                idxDelphiArgs[0] := LoxValueToDelphi(value, nativeObj^.classInfo^.idxGetParamType);
-                if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
-                idxDelphiVal := idxProp.GetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]]);
-                pushStack(stack, DelphiValueToLox(idxDelphiVal, vm.MemTracker));
-              except
-                on E: ELoxHalt do
-                  raise;
-                on E: ELoxRuntimeError do
-                  raise;
-                on E: Exception do
-                begin
-                  runtimeError('Indexed property get failed: ' + E.Message);
-                  result.code := INTERPRET_RUNTIME_ERROR;
-                  exit;
-                end;
-              end;
-            end
-            else
-            begin
-              runtimeError('Native object has no default indexed property.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
+            pushStack(stack, nativeResult);
           end
           else
           begin
             runtimeError('Only arrays and dictionaries support subscript access.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -7278,14 +7405,14 @@ begin
             if not isNumber(ValueB) then
             begin
               runtimeError('Array index must be a number.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             i := Trunc(GetNumber(ValueB));
             if (i < 0) or (i >= pObjArray(GetObject(stack.StackTop[-1]))^.Count) then
             begin
-              runtimeError('Array index ' + IntToStr(i) + ' out of bounds [0, ' + IntToStr(pObjArray(GetObject(stack.StackTop[-1]))^.Count - 1) + '].');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              RunErrIndexBounds(i, pObjArray(GetObject(stack.StackTop[-1]))^.Count);
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
             pObjArray(GetObject(stack.StackTop[-1]))^.Elements[i] := value;
@@ -7313,49 +7440,20 @@ begin
 
             ValueB := stack.StackTop^;
             nativeObj := pObjNativeObject(GetObject(stack.StackTop[-1]));
-            if (nativeObj^.classInfo <> nil) and nativeObj^.classInfo^.rttiEnabled and
-               (nativeObj^.classInfo^.idxSet <> nil) then
+            // Marshal + invoke + exception mapping live in the helper — its
+            // try/except and RTTI TValue locals must not be in this routine.
+            if not NativeIndexSetChecked(nativeObj, ValueB, value) then
             begin
-              if nativeObj^.instance = nil then
-              begin
-                runtimeError('Cannot index a destroyed native object.');
-                result.code := INTERPRET_RUNTIME_ERROR;
-                exit;
-              end;
-              // Default indexed property resolved once at registration
-              idxProp := nativeObj^.classInfo^.idxSet;
-              try
-                idxDelphiArgs[0] := LoxValueToDelphi(ValueB, nativeObj^.classInfo^.idxSetParamType);
-                if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
-                idxDelphiVal := LoxValueToDelphi(value, nativeObj^.classInfo^.idxSetValueType);
-                if VM.RuntimeErrorStr <> '' then begin result.code := INTERPRET_RUNTIME_ERROR; exit; end;
-                idxProp.SetValue(TObject(nativeObj^.instance), [idxDelphiArgs[0]], idxDelphiVal);
-                Dec(stack.StackTop); // pop the native object
-                pushStack(stack, value); // leave the assigned value
-              except
-                on E: ELoxHalt do
-                  raise;
-                on E: ELoxRuntimeError do
-                  raise;
-                on E: Exception do
-                begin
-                  runtimeError('Indexed property set failed: ' + E.Message);
-                  result.code := INTERPRET_RUNTIME_ERROR;
-                  exit;
-                end;
-              end;
-            end
-            else
-            begin
-              runtimeError('Native object has no writable default indexed property.');
-              result.code := INTERPRET_RUNTIME_ERROR;
+              outcome.code := INTERPRET_RUNTIME_ERROR;
               exit;
             end;
+            Dec(stack.StackTop); // pop the native object
+            pushStack(stack, value); // leave the assigned value
           end
           else
           begin
             runtimeError('Only arrays and dictionaries support subscript assignment.');
-            result.code := INTERPRET_RUNTIME_ERROR;
+            outcome.code := INTERPRET_RUNTIME_ERROR;
             exit;
           end;
         end;
@@ -7408,40 +7506,13 @@ begin
 
       else
         begin
-          runtimeError('Unknown opcode: ' + IntToStr(instruction));
-          result.code := INTERPRET_RUNTIME_ERROR;
+          RunErrUnknownOpcode(instruction);
+          outcome.code := INTERPRET_RUNTIME_ERROR;
           exit;
         end;
       end;
 
     end;
-    except
-        // Let control-flow exceptions unwind to CompileAndRun, which owns the
-        // INTERPRET_HALTED translation and the transient-VM-state reset.
-        on E: ELoxHalt do
-          raise;
-        on E: ELoxRuntimeError do
-          raise;
-        on E: Exception do
-        begin
-          HandleVMException(E);
-          result.code := INTERPRET_RUNTIME_ERROR;
-          exit;
-        end;
-        else
-        begin
-          // Non-class raise (e.g. `raise 123;`) or an OS-level escape that
-          // didn't surface as an Exception subclass. Build the most
-          // primitive diagnostic possible — no VM-state dereferences.
-          try
-            runtimeError('Non-class host exception in opcode ' + IntToStr(instruction));
-          except
-          end;
-          result.code := INTERPRET_RUNTIME_ERROR;
-          exit;
-        end;
-      end;
-
 end;
 
 {$ENDREGION}
