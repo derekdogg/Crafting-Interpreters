@@ -1,6 +1,6 @@
 // ============================================================
 // Space Invaders — Event-Callback Edition
-// Uses onKeyPressed/onKeyHeld/onMouseDown instead of polling.
+// Uses onKeyPressed/onKeyReleased callbacks instead of polling.
 // ============================================================
 
 setCanvasSize(480, 720);
@@ -88,9 +88,7 @@ while (i < maxEnemyBullets) {
 // --- Game state ---
 var score = 0;
 var lives = 3;
-var running = true;
 var gameOver = false;
-var lastTime = clock();
 
 // --- Helpers ---
 fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
@@ -467,14 +465,15 @@ fun resetWave() {
 // EVENT CALLBACKS — This is the key difference from the polling version
 // ============================================================
 
-onKeyHeld(fun(key) {
+// Movement uses edge-triggered press/release to maintain held state.
+// Do NOT use onKeyHeld as a per-frame movement signal: hosts may throttle
+// it to auto-repeat cadence (initial delay + repeat interval), which makes
+// motion jerky and frame-rate dependent.
+onKeyPressed(fun(key) {
   if (key == "left")  moveLeft = true;
   if (key == "right") moveRight = true;
-});
-
-onKeyPressed(fun(key) {
   if (key == "escape") {
-    running = false;
+    stopGameLoop();
   }
   if (key == "space" and !gameOver) {
     fireRequested = true;
@@ -484,22 +483,17 @@ onKeyPressed(fun(key) {
   }
 });
 
+onKeyReleased(fun(key) {
+  if (key == "left")  moveLeft = false;
+  if (key == "right") moveRight = false;
+});
+
 // ============================================================
-// Game loop — uses processEvents() instead of processMessages()
+// Game loop — the engine owns it. runGameLoop(60) pumps messages,
+// dispatches the callbacks above, then calls this once per frame
+// with dt (seconds, already clamped) at a steady 60fps.
 // ============================================================
-while (running) {
-  // Reset per-frame input flags
-  moveLeft = false;
-  moveRight = false;
-
-  // Pump messages + dispatch callbacks (sets moveLeft/Right, fireRequested, etc.)
-  processEvents();
-
-  var now = clock();
-  var dt = now - lastTime;
-  lastTime = now;
-  if (dt > 0.1) dt = 0.1;
-
+onFrame(fun(dt) {
   // --- Handle fire request ---
   if (fireRequested) {
     fireRequested = false;
@@ -518,7 +512,7 @@ while (running) {
   }
 
   if (!gameOver) {
-    // --- Update player from held keys ---
+    // --- Update player from movement state ---
     if (moveLeft)  playerX = playerX - playerSpeed * dt;
     if (moveRight) playerX = playerX + playerSpeed * dt;
     if (playerX < 0) playerX = 0;
@@ -787,6 +781,8 @@ while (running) {
   }
 
   present();
-}
+});
+
+runGameLoop(60);
 
 print "Final score: " + str(score);

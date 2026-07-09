@@ -1,0 +1,16 @@
+// Test: runGameLoop invokes onFrame once per frame with a sane dt,
+// and stopGameLoop() exits the loop so the script continues.
+var frames = 0;
+var dtOk = true;
+
+onFrame(fun(dt) {
+  frames = frames + 1;
+  if (dt < 0) dtOk = false;
+  if (dt > 0.1) dtOk = false;  // engine clamps dt at 0.1s
+  if (frames >= 5) stopGameLoop();
+});
+
+runGameLoop(0);  // 0 = uncapped, run frames as fast as possible
+
+print str(frames);       // expect: 5
+if (dtOk) print "dt ok"; // expect: dt ok

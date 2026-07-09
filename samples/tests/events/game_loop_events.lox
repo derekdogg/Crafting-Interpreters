@@ -1,0 +1,22 @@
+// Test: event callbacks are dispatched between onFrame calls inside
+// runGameLoop — an event queued during frame N fires before frame N+1.
+var presses = 0;
+var frames = 0;
+var pressFrame = 0;
+
+onKeyPressed(fun(key) {
+  presses = presses + 1;
+  pressFrame = frames;
+});
+
+onFrame(fun(dt) {
+  frames = frames + 1;
+  if (frames == 1) simulateKeyDown("a");
+  if (frames == 3) stopGameLoop();
+});
+
+runGameLoop(0);
+
+print str(presses);    // expect: 1
+print str(pressFrame); // expect: 1
+print str(frames);     // expect: 3

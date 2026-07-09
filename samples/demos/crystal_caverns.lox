@@ -1,0 +1,737 @@
+// ============================================================
+// CRYSTAL CAVERNS — engine showcase platformer
+//
+// Exercises the parts of the engine no other demo touches:
+//   * createTilemap/setTile/getTile/drawTilemap  — the level
+//   * setCamera            — smooth-follow scrolling (world + HUD reset)
+//   * createSurface/setRenderTarget/drawSurface  — pre-rendered parallax
+//   * setClipRect          — world viewport under the HUD strip
+//   * drawSpriteRotated    — spinning crystals
+//   * flipSprite           — left/right facing player + slimes
+//   * playTone/Sweep/Noise/Sequence — SFX + looping music
+//   * onFrame/runGameLoop/stopGameLoop + onKeyPressed/onKeyReleased
+//
+// Collect every crystal, then reach the door. Arrows/WASD to move,
+// SPACE to jump (release early for a short hop), ESC quits.
+// ============================================================
+
+var TILE = 16;
+var VIEW_W = 480;
+var VIEW_H = 240;   // world viewport height (15 tile rows)
+var HUD_H = 16;     // HUD strip above the world
+
+setCanvasSize(VIEW_W, VIEW_H + HUD_H);
+
+var COLS = 100;
+var ROWS = 15;
+var WORLD_W = COLS * TILE;
+
+// ------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------
+fun fmod(a, b) {
+  return a - floor(a / b) * b;
+}
+
+fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  if (ax + aw <= bx) return false;
+  if (bx + bw <= ax) return false;
+  if (ay + ah <= by) return false;
+  if (by + bh <= ay) return false;
+  return true;
+}
+
+// ------------------------------------------------------------
+// Sprites
+// ------------------------------------------------------------
+
+// Cave rock (solid)
+setPaletteColor("M", 66, 74, 94);
+setPaletteColor("D", 44, 48, 62);
+setPaletteColor("L", 92, 102, 128);
+var T_ROCK = createPaletteSprite(16, 16,
+  "MMMMMMMMMMMMMMMM" +
+  "MMMLMMMMMMMLLMMM" +
+  "MMLLMMMMDMMMLMMM" +
+  "MMMMMMMDDMMMMMMM" +
+  "MMMMMMMDMMMMMMMM" +
+  "MDDMMMMMMMMLLMMM" +
+  "MMDDMMMMMMMMMMMM" +
+  "MMMDMMMMMDDMMMMM" +
+  "MMMMMMMMMMDDMMMM" +
+  "MLLMMMMMMMMDMMMM" +
+  "MMLMMMDDMMMMMMMM" +
+  "MMMMMMMDDMMMMMMM" +
+  "MMMMMMMMMMMMLLMM" +
+  "MDMMMMMMMMMMMMMM" +
+  "MMDMMMMLLMMMMMMM" +
+  "MMMMMMMMMMMMMMMM"
+);
+
+// Wooden crate/platform (solid)
+setPaletteColor("L", 170, 120, 70);
+setPaletteColor("M", 120, 80, 45);
+setPaletteColor("D", 70, 45, 25);
+var T_PLAT = createPaletteSprite(16, 16,
+  "LLLLLLLLLLLLLLLL" +
+  "MMMMMMMMMMMMMMMM" +
+  "MMDMMMMMDMMMMDMM" +
+  "MMMMMMMMMMMMMMMM" +
+  "MMMMDMMMMMMDMMMM" +
+  "DMMMMMMDMMMMMMMD" +
+  "MMMMMMMMMMMMMMMM" +
+  "MMMDMMMMMDMMMMMM" +
+  "MMMMMMMMMMMMMMMM" +
+  "MDMMMMDMMMMMMDMM" +
+  "MMMMMMMMMMMMMMMM" +
+  "MMMMMDMMMMDMMMMM" +
+  "MMMMMMMMMMMMMMMM" +
+  "MMDMMMMMMMMMDMMM" +
+  "MMMMMMMMMMMMMMMM" +
+  "DDDDDDDDDDDDDDDD"
+);
+
+// Floor spikes (deadly, not solid)
+setPaletteColor("S", 150, 160, 175);
+setPaletteColor("D", 90, 95, 105);
+var T_SPIKE = createPaletteSprite(16, 16,
+  "................" +
+  "................" +
+  "................" +
+  "................" +
+  "................" +
+  "................" +
+  "................" +
+  "................" +
+  "...S........S..." +
+  "..SSS......SSS.." +
+  "..SSS......SSS.." +
+  ".SSSSS....SSSSS." +
+  ".SSSSS....SSSSS." +
+  "SSSSSSS..SSSSSSS" +
+  "SSSSSSS..SSSSSSS" +
+  "DDDDDDDDDDDDDDDD"
+);
+
+// Crystal collectible (drawn rotated, not a tile)
+setPaletteColor("C", 80, 220, 255);
+setPaletteColor("W", 235, 255, 255);
+setPaletteColor("B", 40, 110, 200);
+var sprCrystal = createPaletteSprite(12, 11,
+  ".....W......" +
+  "....WCC....." +
+  "...WCCCC...." +
+  "..WCCCCCC..." +
+  ".WCCCCCCCC.." +
+  "WCCCCCCCCCB." +
+  ".BCCCCCCCB.." +
+  "..BCCCCCB..." +
+  "...BCCCB...." +
+  "....BCB....." +
+  ".....B......"
+);
+
+// Player (miner), facing right; flipped copy for facing left
+setPaletteColor("H", 255, 210, 60);
+setPaletteColor("S", 235, 180, 140);
+setPaletteColor("K", 20, 20, 25);
+setPaletteColor("B", 60, 110, 200);
+setPaletteColor("D", 40, 40, 55);
+var sprPlayerR = createPaletteSprite(12, 14,
+  "..HHHHHHHH.." +
+  ".HHHHHHHHHH." +
+  ".HHSSSSSSHH." +
+  "..SKSSSSKS.." +
+  "..SSSSSSSS.." +
+  "..BBBBBBBB.." +
+  ".BBBBBBBBBB." +
+  ".BSBBBBBBSB." +
+  ".BSBBBBBBSB." +
+  ".BBBBBBBBBB." +
+  "..BBBBBBBB.." +
+  "..BBB..BBB.." +
+  "..DDD..DDD.." +
+  "..DDD..DDD.."
+);
+var sprPlayerL = flipSprite(sprPlayerR, "h");
+
+// Slime enemy, facing right; flipped copy for facing left
+setPaletteColor("G", 70, 190, 90);
+setPaletteColor("L", 140, 240, 150);
+setPaletteColor("W", 255, 255, 255);
+setPaletteColor("K", 15, 20, 15);
+var sprSlimeR = createPaletteSprite(14, 10,
+  "....GGGGGG...." +
+  "..GGGGGGGGGG.." +
+  ".GGGGGGGGGGGG." +
+  ".GGWWGGGGWWGG." +
+  ".GGKWGGGGKWGG." +
+  "GGGGGGGGGGGGGG" +
+  "GGGGGGGGGGGGGG" +
+  "GGGGGGGGGGGGGG" +
+  "GLGGLGGLLGGLGG" +
+  ".LLLLLLLLLLLL."
+);
+var sprSlimeL = flipSprite(sprSlimeR, "h");
+
+// Exit door, closed + open
+setPaletteColor("F", 110, 115, 130);
+setPaletteColor("W", 130, 85, 45);
+setPaletteColor("D", 95, 60, 30);
+setPaletteColor("Y", 255, 220, 90);
+var doorRow = "FWWWWWWWDWWWWWWF";
+var doorArt = "FFFFFFFFFFFFFFFF";
+var dr = 1;
+while (dr <= 22) {
+  if (dr == 12) {
+    doorArt = doorArt + "FWWWWWWWDWWWYWWF";
+  } else {
+    doorArt = doorArt + doorRow;
+  }
+  dr = dr + 1;
+}
+doorArt = doorArt + "FFFFFFFFFFFFFFFF";
+var sprDoorClosed = createPaletteSprite(16, 24, doorArt);
+
+setPaletteColor("K", 8, 8, 16);
+var openRow = "FKKKKKKKKKKKKKKF";
+doorArt = "FFFFFFFFFFFFFFFF";
+dr = 1;
+while (dr <= 22) {
+  if (dr == 7) {
+    doorArt = doorArt + "FKKKKYKKKKKKKKKF";
+  } else if (dr == 15) {
+    doorArt = doorArt + "FKKKKKKKKKKYKKKF";
+  } else {
+    doorArt = doorArt + openRow;
+  }
+  dr = dr + 1;
+}
+doorArt = doorArt + "FFFFFFFFFFFFFFFF";
+var sprDoorOpen = createPaletteSprite(16, 24, doorArt);
+
+// HUD heart
+setPaletteColor("R", 230, 60, 70);
+setPaletteColor("P", 255, 150, 160);
+var sprHeart = createPaletteSprite(8, 7,
+  ".RR..RR." +
+  "RPRRRRRR" +
+  "RRRRRRRR" +
+  ".RRRRRR." +
+  "..RRRR.." +
+  "...RR..." +
+  "........"
+);
+
+clearPalette();
+
+// ------------------------------------------------------------
+// Parallax backdrop — rendered ONCE to an offscreen surface,
+// then blitted each frame at half camera speed.
+// ------------------------------------------------------------
+var bgSurface = createSurface(VIEW_W, VIEW_H + HUD_H);
+setRenderTarget(bgSurface);
+setColor(16, 18, 30);
+fillRect(0, 0, VIEW_W, VIEW_H + HUD_H);
+setColor(22, 25, 40);
+fillRect(0, 170, VIEW_W, 86);
+// Distant rock blobs
+var bi = 0;
+while (bi < 26) {
+  setColor(24 + floor(random() * 10), 28 + floor(random() * 10), 44 + floor(random() * 14));
+  fillCircle(floor(random() * VIEW_W), 60 + floor(random() * 160), 8 + floor(random() * 18));
+  bi = bi + 1;
+}
+// Stalagmite silhouettes along the floor
+bi = 0;
+while (bi < VIEW_W) {
+  setColor(28, 32, 50);
+  var stalH = 24 + floor(random() * 56);
+  fillRect(bi + floor(random() * 8), VIEW_H + HUD_H - stalH, 8 + floor(random() * 8), stalH);
+  bi = bi + 24;
+}
+// Faint embedded crystals
+bi = 0;
+while (bi < 36) {
+  setColor(70 + floor(random() * 40), 110 + floor(random() * 40), 150 + floor(random() * 40));
+  drawPixel(floor(random() * VIEW_W), floor(random() * (VIEW_H + HUD_H)));
+  bi = bi + 1;
+}
+setRenderTarget(-1);
+
+// ------------------------------------------------------------
+// Level construction (builder style — tiles into the tilemap,
+// entities into arrays)
+// ------------------------------------------------------------
+var tmap = createTilemap(COLS, ROWS, TILE, TILE);
+
+fun fillTiles(c0, c1, r0, r1, id) {
+  var r = r0;
+  while (r <= r1) {
+    var c = c0;
+    while (c <= c1) {
+      setTile(tmap, c, r, id);
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+}
+
+fun ground(c0, c1, topRow)   { fillTiles(c0, c1, topRow, ROWS - 1, T_ROCK); }
+fun platform(c0, c1, row)    { fillTiles(c0, c1, row, row, T_PLAT); }
+fun spikes(c0, c1, row)      { fillTiles(c0, c1, row, row, T_SPIKE); }
+
+// Crystals
+var cryX = newArray();
+var cryY = newArray();
+var cryTaken = newArray();
+fun crystal(col, row) {
+  arrayPush(cryX, col * TILE + 2);
+  arrayPush(cryY, row * TILE + 2);
+  arrayPush(cryTaken, false);
+}
+
+// Slimes: x, y, dir, alive, plus patrol bounds
+var slX = newArray();
+var slY = newArray();
+var slDir = newArray();
+var slAlive = newArray();
+var slMinX = newArray();
+var slMaxX = newArray();
+var SLIME_W = 14;
+var SLIME_H = 10;
+fun slime(c0, c1, groundRow) {
+  arrayPush(slX, c0 * TILE + 8);
+  arrayPush(slY, groundRow * TILE - SLIME_H);
+  arrayPush(slDir, 1);
+  arrayPush(slAlive, true);
+  arrayPush(slMinX, c0 * TILE);
+  arrayPush(slMaxX, c1 * TILE - SLIME_W);
+}
+
+// --- The cavern ---
+fillTiles(0, COLS - 1, 0, 0, T_ROCK);   // ceiling
+ground(0, 34, 13);                       // starting stretch
+ground(35, 40, 14);                      // pit floor...
+spikes(35, 40, 13);                      // ...lined with spikes
+platform(36, 39, 11);                    // safe crossing above the pit
+ground(41, 77, 13);                      // long middle stretch
+ground(78, 83, 12);                      // step up
+ground(84, 99, 11);                      // final plateau
+
+platform(17, 20, 10);
+platform(23, 26, 8);
+platform(60, 64, 10);
+platform(66, 70, 7);
+
+crystal(18, 8);
+crystal(24, 6);
+crystal(38, 9);
+crystal(50, 11);
+crystal(61, 8);
+crystal(68, 5);
+crystal(80, 10);
+crystal(90, 9);
+var totalCrystals = arrayLen(cryX);
+
+slime(44, 56, 13);
+slime(62, 74, 13);
+
+// Exit door on the plateau (entity, not a tile)
+var doorX = 94 * TILE;
+var doorY = 11 * TILE - 24;
+var doorOpen = false;
+
+// Player spawn
+var spawnX = 2 * TILE;
+var spawnY = 11 * TILE;
+
+// ------------------------------------------------------------
+// Game state
+// ------------------------------------------------------------
+var state = "title";   // title | play | win | gameover
+
+var PW = 10;           // player hitbox
+var PH = 13;
+var px = spawnX;
+var py = spawnY;
+var vx = 0;
+var vy = 0;
+var facing = 1;
+var onGround = false;
+var coyote = 0;
+var jumpBuf = 0;
+var invuln = 0;
+var lives = 3;
+var taken = 0;
+var playTime = 0;
+var spin = 0;          // shared crystal/title rotation angle
+var camX = 0;
+
+var moveL = false;
+var moveR = false;
+
+var SPEED = 120;
+var GRAVITY = 780;
+var JUMP_V = 285;
+
+// ------------------------------------------------------------
+// Tile queries
+// ------------------------------------------------------------
+fun tileAt(wx, wy) {
+  return getTile(tmap, floor(wx / TILE), floor(wy / TILE));
+}
+
+fun solidAt(wx, wy) {
+  var t = tileAt(wx, wy);
+  return t == T_ROCK or t == T_PLAT;
+}
+
+fun deadlyAt(wx, wy) {
+  return tileAt(wx, wy) == T_SPIKE;
+}
+
+// ------------------------------------------------------------
+// Music
+// ------------------------------------------------------------
+var notes = newArray();
+fun note(f, d) {
+  var n = newArray();
+  arrayPush(n, f);
+  arrayPush(n, d);
+  arrayPush(n, 1);   // triangle wave
+  arrayPush(notes, n);
+}
+note(110, 190); note(165, 190); note(220, 190); note(262, 190);
+note(220, 190); note(165, 190); note(110, 190); note(131, 190);
+note(98, 190);  note(147, 190); note(196, 190); note(247, 190);
+note(196, 190); note(147, 190); note(98, 190);  note(131, 190);
+
+// ------------------------------------------------------------
+// Game flow
+// ------------------------------------------------------------
+fun respawn() {
+  px = spawnX;
+  py = spawnY;
+  vx = 0;
+  vy = 0;
+  camX = 0;
+}
+
+fun resetGame() {
+  lives = 3;
+  taken = 0;
+  playTime = 0;
+  invuln = 0;
+  doorOpen = false;
+  var i = 0;
+  while (i < totalCrystals) {
+    arraySet(cryTaken, i, false);
+    i = i + 1;
+  }
+  i = 0;
+  while (i < arrayLen(slX)) {
+    arraySet(slAlive, i, true);
+    arraySet(slX, i, arrayGet(slMinX, i) + 8);
+    arraySet(slDir, i, 1);
+    i = i + 1;
+  }
+  respawn();
+}
+
+fun hurt() {
+  if (invuln > 0) return;
+  lives = lives - 1;
+  playNoise(220, 0.25);
+  if (lives <= 0) {
+    state = "gameover";
+    stopSequence();
+  } else {
+    respawn();
+    invuln = 1.5;
+  }
+}
+
+// ------------------------------------------------------------
+// Input
+// ------------------------------------------------------------
+onKeyPressed(fun(key) {
+  if (key == "escape") stopGameLoop();
+  if (state == "play") {
+    if (key == "left" or key == "a")  moveL = true;
+    if (key == "right" or key == "d") moveR = true;
+    if (key == "space" or key == "up" or key == "w") jumpBuf = 0.12;
+  } else {
+    if (key == "enter" or key == "space") {
+      resetGame();
+      state = "play";
+      playSequence(notes, true, 0.12);
+    }
+  }
+});
+
+onKeyReleased(fun(key) {
+  if (key == "left" or key == "a")  moveL = false;
+  if (key == "right" or key == "d") moveR = false;
+  // Variable jump height: releasing early cuts the ascent
+  if ((key == "space" or key == "up" or key == "w") and vy < 0) {
+    vy = vy * 0.45;
+  }
+});
+
+// ------------------------------------------------------------
+// Update
+// ------------------------------------------------------------
+fun updatePlay(dt) {
+  playTime = playTime + dt;
+  spin = spin + 120 * dt;  // unbounded is fine: rotation and bob are periodic
+  if (invuln > 0) invuln = invuln - dt;
+  if (coyote > 0) coyote = coyote - dt;
+  if (jumpBuf > 0) jumpBuf = jumpBuf - dt;
+
+  // --- Horizontal movement + collision ---
+  vx = 0;
+  if (moveL) { vx = -SPEED; facing = -1; }
+  if (moveR) { vx = SPEED;  facing = 1; }
+  var nx = px + vx * dt;
+  if (nx < 0) nx = 0;
+  if (nx > WORLD_W - PW) nx = WORLD_W - PW;
+  if (vx > 0) {
+    if (solidAt(nx + PW, py) or solidAt(nx + PW, py + PH - 1)) {
+      nx = floor((nx + PW) / TILE) * TILE - PW - 0.01;
+    }
+  }
+  if (vx < 0) {
+    if (solidAt(nx, py) or solidAt(nx, py + PH - 1)) {
+      nx = (floor(nx / TILE) + 1) * TILE + 0.01;
+    }
+  }
+  px = nx;
+
+  // --- Vertical movement + collision ---
+  vy = vy + GRAVITY * dt;
+  var ny = py + vy * dt;
+  onGround = false;
+  if (vy > 0) {
+    if (solidAt(px, ny + PH) or solidAt(px + PW - 1, ny + PH)) {
+      ny = floor((ny + PH) / TILE) * TILE - PH;
+      vy = 0;
+      onGround = true;
+      coyote = 0.08;
+    }
+  }
+  if (vy < 0) {
+    if (solidAt(px, ny) or solidAt(px + PW - 1, ny)) {
+      ny = (floor(ny / TILE) + 1) * TILE + 0.01;
+      vy = 0;
+    }
+  }
+  py = ny;
+
+  // --- Jump (buffered + coyote time) ---
+  if (jumpBuf > 0 and (onGround or coyote > 0)) {
+    vy = -JUMP_V;
+    onGround = false;
+    coyote = 0;
+    jumpBuf = 0;
+    playSweep(500, 750, 80, 0.15);
+  }
+
+  // --- Hazards ---
+  if (deadlyAt(px + 2, py + PH - 1) or deadlyAt(px + PW - 2, py + PH - 1) or
+      deadlyAt(px + PW / 2, py + PH / 2)) {
+    hurt();
+  }
+  if (py > ROWS * TILE) hurt();
+
+  // --- Crystals ---
+  var i = 0;
+  while (i < totalCrystals) {
+    if (!arrayGet(cryTaken, i)) {
+      if (rectsOverlap(px, py, PW, PH, arrayGet(cryX, i), arrayGet(cryY, i), 12, 11)) {
+        arraySet(cryTaken, i, true);
+        taken = taken + 1;
+        playSweep(600, 1200, 120, 0.2);
+        if (taken == totalCrystals) {
+          doorOpen = true;
+          playSweep(300, 900, 300, 0.2);
+        }
+      }
+    }
+    i = i + 1;
+  }
+
+  // --- Slimes: patrol, stomp, touch ---
+  i = 0;
+  while (i < arrayLen(slX)) {
+    if (arrayGet(slAlive, i)) {
+      var sx = arrayGet(slX, i) + arrayGet(slDir, i) * 30 * dt;
+      if (sx < arrayGet(slMinX, i)) { sx = arrayGet(slMinX, i); arraySet(slDir, i, 1); }
+      if (sx > arrayGet(slMaxX, i)) { sx = arrayGet(slMaxX, i); arraySet(slDir, i, -1); }
+      arraySet(slX, i, sx);
+      var sy = arrayGet(slY, i);
+      if (rectsOverlap(px, py, PW, PH, sx, sy, SLIME_W, SLIME_H)) {
+        if (vy > 0 and py + PH < sy + 6) {
+          arraySet(slAlive, i, false);   // stomped!
+          vy = -180;
+          playTone(150, 80, 0.25);
+        } else {
+          hurt();
+        }
+      }
+    }
+    i = i + 1;
+  }
+
+  // --- Door ---
+  if (doorOpen and rectsOverlap(px, py, PW, PH, doorX + 2, doorY, 12, 24)) {
+    state = "win";
+    stopSequence();
+    playSweep(400, 1600, 400, 0.25);
+  }
+
+  // --- Camera: smooth follow, clamped to world ---
+  var target = px + PW / 2 - VIEW_W / 2;
+  camX = camX + (target - camX) * min(1, 6 * dt);
+  if (camX < 0) camX = 0;
+  if (camX > WORLD_W - VIEW_W) camX = WORLD_W - VIEW_W;
+}
+
+// ------------------------------------------------------------
+// Draw
+// ------------------------------------------------------------
+fun drawWorld() {
+  // Parallax backdrop at half camera speed, tiled horizontally
+  setCamera(0, 0);
+  var par = fmod(camX / 2, VIEW_W);
+  drawSurface(bgSurface, -par, 0);
+  drawSurface(bgSurface, VIEW_W - par, 0);
+
+  // World renders below the HUD strip, clipped to its viewport
+  setClipRect(0, HUD_H, VIEW_W, VIEW_H);
+  setCamera(floor(camX), -HUD_H);
+
+  drawTilemap(tmap, 0, 0);
+
+  // Door
+  if (doorOpen) {
+    drawSprite(sprDoorOpen, doorX, doorY);
+  } else {
+    drawSprite(sprDoorClosed, doorX, doorY);
+  }
+
+  // Crystals: spin + bob
+  var i = 0;
+  while (i < totalCrystals) {
+    if (!arrayGet(cryTaken, i)) {
+      var bob = floor(sin((spin + i * 45) * 3.14159 / 180) * 3);
+      // drawSpriteRotated anchors at the rotation CENTRE, so pass the
+      // middle of the 12x11 hitbox rather than its top-left corner.
+      drawSpriteRotated(sprCrystal, arrayGet(cryX, i) + 6, arrayGet(cryY, i) + 5 + bob, 1, spin);
+    }
+    i = i + 1;
+  }
+
+  // Slimes
+  i = 0;
+  while (i < arrayLen(slX)) {
+    if (arrayGet(slAlive, i)) {
+      if (arrayGet(slDir, i) > 0) {
+        drawSprite(sprSlimeR, floor(arrayGet(slX, i)), arrayGet(slY, i));
+      } else {
+        drawSprite(sprSlimeL, floor(arrayGet(slX, i)), arrayGet(slY, i));
+      }
+    }
+    i = i + 1;
+  }
+
+  // Player (blinks while invulnerable)
+  var visible = true;
+  if (invuln > 0 and fmod(invuln, 0.2) < 0.1) visible = false;
+  if (visible) {
+    if (facing > 0) {
+      drawSprite(sprPlayerR, floor(px) - 1, floor(py) - 1);
+    } else {
+      drawSprite(sprPlayerL, floor(px) - 1, floor(py) - 1);
+    }
+  }
+
+  clearClipRect();
+  setCamera(0, 0);
+}
+
+fun drawHud() {
+  setColor(10, 12, 20);
+  fillRect(0, 0, VIEW_W, HUD_H);
+  setColor(60, 70, 100);
+  fillRect(0, HUD_H - 1, VIEW_W, 1);
+
+  // Lives
+  var i = 0;
+  while (i < lives) {
+    drawSprite(sprHeart, 4 + i * 11, 4);
+    i = i + 1;
+  }
+
+  // Crystals
+  drawSprite(sprCrystal, 44, 2);
+  setColor(255, 255, 255);
+  drawText(60, 4, str(taken) + "/" + str(totalCrystals));
+  if (doorOpen) {
+    setColor(120, 255, 150);
+    drawText(100, 4, "DOOR OPEN!");
+  }
+
+  // Timer, right-aligned
+  setColor(255, 255, 255);
+  var t = "TIME " + str(floor(playTime));
+  drawText(VIEW_W - measureText(t) - 4, 4, t);
+}
+
+fun drawCenteredText(y, msg) {
+  drawText((VIEW_W - measureText(msg)) / 2, y, msg);
+}
+
+fun drawScreen(title, sub) {
+  setCamera(0, 0);
+  clearCanvas();
+  var par = fmod(spin, VIEW_W);
+  drawSurface(bgSurface, -par, 0);
+  drawSurface(bgSurface, VIEW_W - par, 0);
+  drawSpriteRotated(sprCrystal, VIEW_W / 2, 68, 3, spin);  // centre-anchored
+  setColor(120, 230, 255);
+  drawCenteredText(112, title);
+  setColor(255, 255, 255);
+  drawCenteredText(132, sub);
+  setColor(160, 170, 190);
+  drawCenteredText(170, "ARROWS/WASD move   SPACE jump");
+  drawCenteredText(184, "Collect every crystal, then reach the door");
+  drawCenteredText(210, "ENTER to play    ESC to quit");
+}
+
+// ------------------------------------------------------------
+// The frame callback + engine-owned loop
+// ------------------------------------------------------------
+onFrame(fun(dt) {
+  if (state == "play") {
+    updatePlay(dt);
+    clearCanvas();
+    drawWorld();
+    drawHud();
+  } else {
+    spin = spin + 40 * dt;
+    if (state == "title") {
+      drawScreen("CRYSTAL CAVERNS", "an engine showcase");
+    } else if (state == "win") {
+      drawScreen("YOU ESCAPED!", "cleared in " + str(floor(playTime)) + "s");
+    } else {
+      drawScreen("GAME OVER", str(taken) + "/" + str(totalCrystals) + " crystals collected");
+    }
+  }
+  present();
+});
+
+runGameLoop(60);
+
+stopSequence();
+print "Thanks for playing Crystal Caverns!";

@@ -38,7 +38,8 @@ type
     eckMouseDown,
     eckMouseUp,
     eckMouseMove,
-    eckClick
+    eckClick,
+    eckFrame       // per-frame update callback used by runGameLoop()
   );
 
   // Heap-allocated slot so the TValue address is stable for GC roots.
@@ -62,6 +63,7 @@ type
     FPendingClicks: TStringList;
     FDispatching: Boolean;
     FRunning: Boolean;
+    FGameLoopActive: Boolean;
     FOnLog: TLogEvent;
     FOnCheckAbort: TCheckAbortFunc;
     FHeldDispatchIntervalMs: DWORD;
@@ -98,6 +100,9 @@ type
     // Dispatch all pending events via InvokeCallback
     procedure DispatchPendingEvents;
 
+    // The onFrame callback (nil TValue if none registered)
+    function FrameCallback: TValue;
+
     // Register the event natives into the current VM
     procedure RegisterNatives;
 
@@ -110,6 +115,9 @@ type
 
     property Running: Boolean read FRunning write FRunning;
     property Dispatching: Boolean read FDispatching;
+    // True while runGameLoop() is executing. stopGameLoop() clears it to
+    // make the loop exit after the current frame.
+    property GameLoopActive: Boolean read FGameLoopActive write FGameLoopActive;
     property OnLog: TLogEvent read FOnLog write FOnLog;
     property OnCheckAbort: TCheckAbortFunc read FOnCheckAbort write FOnCheckAbort;
     // Minimum gap (ms) between repeat onKeyHeld dispatches for a held key.
@@ -125,13 +133,20 @@ var
 implementation
 
 uses
-  EventNatives;
+  Winapi.MMSystem, EventNatives;
 
 // --- TLoxEventEngine ---
 
 constructor TLoxEventEngine.Create;
 begin
   inherited Create;
+  // processEvents() yields with TThread.Sleep(1) each frame. At the default
+  // system timer resolution (~15.6ms) that quantizes the game loop to an
+  // uneven ~64Hz that beats against the monitor refresh, making dt-correct
+  // movement visibly judder. Request 1ms resolution for the engine's
+  // lifetime so Sleep(1) really is ~1ms. Requests are reference-counted
+  // per process and released in the destructor.
+  timeBeginPeriod(1);
   FCallbackSlots := TObjectDictionary<string, TCallbackSlot>.Create([doOwnsValues]);
   FPendingMoves := TDictionary<string, TMouseMoveEntry>.Create;
   FPendingKeys := TStringList.Create;
@@ -153,6 +168,7 @@ end;
 
 destructor TLoxEventEngine.Destroy;
 begin
+  timeEndPeriod(1);
   FCallbackSlots.Free;
   FPendingMoves.Free;
   FPendingKeys.Free;
@@ -190,6 +206,12 @@ begin
   FHeldNextDispatchTick.Clear;
   FCallbackSlots.Clear;  // TObjectDictionary frees owned slots
   FRunning := True;
+  FGameLoopActive := False;
+end;
+
+function TLoxEventEngine.FrameCallback: TValue;
+begin
+  Result := GetCallback(eckFrame, '');
 end;
 
 procedure TLoxEventEngine.QueueKeyDown(const KeyName: string;

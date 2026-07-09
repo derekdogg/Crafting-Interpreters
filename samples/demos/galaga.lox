@@ -1,0 +1,895 @@
+// ============================================================
+// Galaga — written in Lox
+// ============================================================
+// Formation flies in via curved entry paths, sways and breathes,
+// and enemies peel off to dive-bomb the player. Bosses take two
+// hits. ESC quits, ENTER restarts after game over.
+
+setCanvasSize(480, 720);
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+var SPR = 2;   // sprite scale
+
+// ------------------------------------------------------------
+// Sprites
+// ------------------------------------------------------------
+
+// Bee (Zako) — yellow body, blue wings. Two wing frames.
+setPaletteColor("Y", 255, 220, 40);
+setPaletteColor("B", 60, 120, 255);
+setPaletteColor("W", 240, 240, 255);
+var beeSprite1 = createPaletteSprite(13, 10,
+  "B...........B" +
+  ".B....Y....B." +
+  ".BB..YYY..BB." +
+  "..BB.YYY.BB.." +
+  "..BBYYYYYBB.." +
+  "...BYWYWYB..." +
+  "...YYYYYYY..." +
+  "....Y.Y.Y...." +
+  "...Y..Y..Y..." +
+  "..Y...Y...Y.."
+);
+var beeSprite2 = createPaletteSprite(13, 10,
+  "............." +
+  "B.....Y.....B" +
+  ".BB..YYY..BB." +
+  "..BB.YYY.BB.." +
+  "..BBYYYYYBB.." +
+  "...BYWYWYB..." +
+  "...YYYYYYY..." +
+  "....Y.Y.Y...." +
+  "....Y.Y.Y...." +
+  "...Y..Y..Y..."
+);
+
+// Butterfly (Goei) — red body, white wings.
+setPaletteColor("R", 255, 60, 60);
+setPaletteColor("W", 250, 250, 250);
+setPaletteColor("P", 255, 150, 150);
+var flySprite1 = createPaletteSprite(13, 10,
+  "W...........W" +
+  "WW....R....WW" +
+  ".WW..RRR..WW." +
+  ".WWW.RRR.WWW." +
+  "..WWRRRRRWW.." +
+  "..WWRPRPRWW.." +
+  "...WRRRRRW..." +
+  "....RRRRR...." +
+  "....R.R.R...." +
+  "...R..R..R..."
+);
+var flySprite2 = createPaletteSprite(13, 10,
+  "............." +
+  "W.....R.....W" +
+  ".WW..RRR..WW." +
+  ".WWW.RRR.WWW." +
+  "..WWRRRRRWW.." +
+  "..WWRPRPRWW.." +
+  "...WRRRRRW..." +
+  "....RRRRR...." +
+  "....RR.RR...." +
+  "....R...R...."
+);
+
+// Boss Galaga — green when fresh, blue when damaged.
+setPaletteColor("G", 80, 230, 100);
+setPaletteColor("D", 20, 120, 50);
+setPaletteColor("W", 240, 255, 240);
+var bossSprite1 = createPaletteSprite(15, 11,
+  "G.....GGG.....G" +
+  "GG...GGGGG...GG" +
+  ".GG.GGDGDGG.GG." +
+  ".GGGGGDGDGGGG.." +
+  "..GGGGGGGGGG..." +
+  "..GGWGGGGGWG..." +
+  "...GGGGGGGG...." +
+  "....GGGGGG....." +
+  "....GG.G.GG...." +
+  "...GG..G..GG..." +
+  "..G....G....G.."
+);
+setPaletteColor("G", 90, 150, 255);
+setPaletteColor("D", 30, 60, 160);
+setPaletteColor("W", 240, 240, 255);
+var bossSprite2 = createPaletteSprite(15, 11,
+  "G.....GGG.....G" +
+  "GG...GGGGG...GG" +
+  ".GG.GGDGDGG.GG." +
+  ".GGGGGDGDGGGG.." +
+  "..GGGGGGGGGG..." +
+  "..GGWGGGGGWG..." +
+  "...GGGGGGGG...." +
+  "....GGGGGG....." +
+  "....GG.G.GG...." +
+  "...GG..G..GG..." +
+  "..G....G....G.."
+);
+
+// Player fighter — white hull, red trim.
+setPaletteColor("W", 240, 240, 240);
+setPaletteColor("R", 230, 40, 40);
+setPaletteColor("C", 120, 200, 255);
+var playerSprite = createPaletteSprite(13, 12,
+  "......W......" +
+  "......W......" +
+  ".....WWW....." +
+  ".....WCW....." +
+  "..R..WWW..R.." +
+  "..R.WWWWW.R.." +
+  "..RWWWWWWWR.." +
+  ".RRWWWWWWWRR." +
+  ".RWWWRWRWWWR." +
+  "RRWWWRWRWWWRR" +
+  "RW...WWW...WR" +
+  "R.....W.....R"
+);
+
+// Explosion frames — shared by everything that dies.
+setPaletteColor("Y", 255, 255, 120);
+setPaletteColor("O", 255, 180, 40);
+setPaletteColor("R", 255, 90, 20);
+var explSprite1 = createPaletteSprite(12, 10,
+  "R...O..O...R" +
+  "..O.YYYY.O.." +
+  ".O.YYYYYY.O." +
+  "O.YYYYYYYY.O" +
+  "..YYYYYYYY.." +
+  "..YYYYYYYY.." +
+  "O.YYYYYYYY.O" +
+  ".O.YYYYYY.O." +
+  "..O.YYYY.O.." +
+  "R...O..O...R"
+);
+var explSprite2 = createPaletteSprite(12, 10,
+  ".R........R." +
+  "....O..O...." +
+  "..O......O.." +
+  "...O.YY.O..." +
+  "....YYYY...." +
+  "....YYYY...." +
+  "...O.YY.O..." +
+  "..O......O.." +
+  "....O..O...." +
+  ".R........R."
+);
+
+clearPalette();
+
+// ------------------------------------------------------------
+// Formation layout
+// ------------------------------------------------------------
+// Row 0:  4 bosses   (kind 2, 2 hp, 150 pts)
+// Row 1-2: 8 butterflies each (kind 1, 80 pts)
+// Row 3-4: 10 bees each       (kind 0, 50 pts)
+var rowCols = [4, 8, 8, 10, 10];
+var rowKind = [2, 1, 1, 0, 0];
+var numRows = 5;
+var cellW = 38;
+var cellH = 34;
+var formTop = 84;
+
+var enemyCount = 0;
+var rIdx = 0;
+while (rIdx < numRows) {
+  enemyCount = enemyCount + arrayGet(rowCols, rIdx);
+  rIdx = rIdx + 1;
+}
+
+// Per-enemy state (flat arrays, index = enemy id)
+var eKind = newArray();     // 0 bee, 1 butterfly, 2 boss
+var eRow = newArray();
+var eCol = newArray();
+var eAlive = newArray();
+var eHp = newArray();
+var eState = newArray();    // 0 entering, 1 in formation, 2 diving
+var eT = newArray();        // path parameter for enter/dive
+var eDelay = newArray();    // seconds before entry flight starts
+var eSx = newArray();       // path start x
+var eSy = newArray();       // path start y
+var eX = newArray();        // current screen position (computed)
+var eY = newArray();
+var eDiveAim = newArray();  // player x captured at dive start
+var eFired1 = newArray();   // fired first/second dive shot yet
+var eFired2 = newArray();
+
+var i = 0;
+rIdx = 0;
+while (rIdx < numRows) {
+  var c = 0;
+  while (c < arrayGet(rowCols, rIdx)) {
+    arrayPush(eKind, arrayGet(rowKind, rIdx));
+    arrayPush(eRow, rIdx);
+    arrayPush(eCol, c);
+    arrayPush(eAlive, true);
+    arrayPush(eHp, 1);
+    arrayPush(eState, 0);
+    arrayPush(eT, 0);
+    arrayPush(eDelay, 0);
+    arrayPush(eSx, 0);
+    arrayPush(eSy, 0);
+    arrayPush(eX, 0);
+    arrayPush(eY, -100);
+    arrayPush(eDiveAim, 0);
+    arrayPush(eFired1, false);
+    arrayPush(eFired2, false);
+    c = c + 1;
+    i = i + 1;
+  }
+  rIdx = rIdx + 1;
+}
+
+var enemyW = 13 * SPR;
+var enemyH = 10 * SPR;
+
+// ------------------------------------------------------------
+// Game state
+// ------------------------------------------------------------
+var playerW = 13 * SPR;
+var playerH = 12 * SPR;
+var playerX = w / 2 - playerW / 2;
+var playerY = h - 54;
+var playerSpeed = 240;
+var playerAlive = true;
+var respawnTimer = 0;    // > 0: waiting to respawn (blink pause)
+var invulnTimer = 0;     // > 0: just respawned, can't be hit
+
+var maxBullets = 2;
+var bulletX = newArray();
+var bulletY = newArray();
+var bulletActive = newArray();
+var bulletW = 3;
+var bulletH = 10;
+var bulletSpeed = 480;
+i = 0;
+while (i < maxBullets) {
+  arrayPush(bulletX, 0);
+  arrayPush(bulletY, 0);
+  arrayPush(bulletActive, false);
+  i = i + 1;
+}
+
+var maxEBullets = 8;
+var ebX = newArray();
+var ebY = newArray();
+var ebVx = newArray();
+var ebVy = newArray();
+var ebActive = newArray();
+var ebW = 4;
+var ebH = 8;
+i = 0;
+while (i < maxEBullets) {
+  arrayPush(ebX, 0);
+  arrayPush(ebY, 0);
+  arrayPush(ebVx, 0);
+  arrayPush(ebVy, 0);
+  arrayPush(ebActive, false);
+  i = i + 1;
+}
+
+var maxExplosions = 10;
+var explX = newArray();
+var explY = newArray();
+var explTimer = newArray();
+var explActive = newArray();
+i = 0;
+while (i < maxExplosions) {
+  arrayPush(explX, 0);
+  arrayPush(explY, 0);
+  arrayPush(explTimer, 0);
+  arrayPush(explActive, false);
+  i = i + 1;
+}
+var explDuration = 0.32;
+
+var score = 0;
+var hiScore = 0;
+var lives = 3;
+var stage = 1;
+var aliveCount = enemyCount;
+var running = true;
+var gameOver = false;
+var gameTime = 0;
+var lastTime = clock();
+
+// Dive scheduling
+var diveTimer = 0;
+var diveInterval = 2.4;   // shrinks with stage
+var diveSpeed = 0.42;     // dive path speed (t per second)
+
+// Wing-flap animation
+var animTimer = 0;
+var animFrame = 0;
+
+// Stage-start banner
+var bannerTimer = 0;      // > 0: showing "STAGE N"
+
+// ------------------------------------------------------------
+// Starfield (two-speed parallax)
+// ------------------------------------------------------------
+var numStars = 70;
+var starX = newArray();
+var starY = newArray();
+var starSpeed = newArray();
+var starBright = newArray();
+i = 0;
+while (i < numStars) {
+  arrayPush(starX, floor(random() * w));
+  arrayPush(starY, floor(random() * h));
+  var spd = 30 + random() * 90;
+  arrayPush(starSpeed, spd);
+  arrayPush(starBright, floor(70 + spd * 1.5));
+  i = i + 1;
+}
+
+// ------------------------------------------------------------
+// Sound
+// ------------------------------------------------------------
+var PULSE = 0;
+var TRI = 1;
+
+// Bouncy stage-start jingle, played once (not looped) at 40% volume
+// so it doesn't stomp the SFX. Uses the new playSequence volume arg.
+var introJingle = [
+  [392, 90, PULSE], [0, 25],  [523, 90, PULSE], [0, 25],
+  [659, 90, PULSE], [0, 25],  [784, 130, PULSE], [0, 40],
+  [659, 90, PULSE], [0, 25],  [784, 90, PULSE], [0, 25],
+  [880, 130, PULSE], [0, 40], [784, 90, TRI],  [0, 25],
+  [659, 90, TRI],  [0, 25],  [523, 90, TRI],  [0, 25],
+  [587, 130, PULSE], [0, 40], [659, 90, PULSE], [0, 25],
+  [784, 90, PULSE], [0, 25],  [1047, 240, PULSE]
+];
+
+fun sfxShoot()      { playSweep(1400, 500, 60, 0.25); }
+fun sfxEnemyDie()   { playNoise(160, 0.35); }
+fun sfxBossHit()    { playTone(180, 50, 0.3); }
+fun sfxDive()       { playSweep(300, 900, 220, 0.12); }
+fun sfxPlayerDie()  { playSweep(900, 60, 400, 0.5); playNoise(450, 0.45); }
+fun sfxEnemyShot()  { playSweep(700, 1000, 45, 0.15); }
+
+// ------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------
+fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  if (ax + aw <= bx) return false;
+  if (bx + bw <= ax) return false;
+  if (ay + ah <= by) return false;
+  if (by + bh <= ay) return false;
+  return true;
+}
+
+// Formation slot position: centered rows, side-to-side sway plus a
+// slow "breathing" spread of the column spacing.
+fun slotX(row, col) {
+  var n = arrayGet(rowCols, row);
+  var sway = sin(gameTime * 0.9) * 22;
+  var breath = 1 + 0.07 * sin(gameTime * 1.6);
+  return w / 2 + (col - (n - 1) / 2) * cellW * breath - enemyW / 2 + sway;
+}
+
+fun slotY(row) {
+  return formTop + row * cellH;
+}
+
+fun spawnExplosion(x, y) {
+  var s = 0;
+  while (s < maxExplosions) {
+    if (!arrayGet(explActive, s)) {
+      arraySet(explX, s, x);
+      arraySet(explY, s, y);
+      arraySet(explTimer, s, explDuration);
+      arraySet(explActive, s, true);
+      return nil;
+    }
+    s = s + 1;
+  }
+  return nil;
+}
+
+fun fireEnemyBullet(x, y) {
+  var s = 0;
+  while (s < maxEBullets) {
+    if (!arrayGet(ebActive, s)) {
+      // Aim at the player with a little spread.
+      var dx = (playerX + playerW / 2) - x + (random() - 0.5) * 60;
+      var dy = playerY - y;
+      if (dy < 60) dy = 60;
+      var len = sqrt(dx * dx + dy * dy);
+      var spd = 190 + stage * 12;
+      arraySet(ebX, s, x);
+      arraySet(ebY, s, y);
+      arraySet(ebVx, s, dx / len * spd);
+      arraySet(ebVy, s, dy / len * spd);
+      arraySet(ebActive, s, true);
+      sfxEnemyShot();
+      return nil;
+    }
+    s = s + 1;
+  }
+  return nil;
+}
+
+// Reset the whole formation for a new stage. Enemies stream in from
+// alternating sides in squads of eight.
+fun setupFormation() {
+  var k = 0;
+  while (k < enemyCount) {
+    arraySet(eAlive, k, true);
+    if (arrayGet(eKind, k) == 2) {
+      arraySet(eHp, k, 2);
+    } else {
+      arraySet(eHp, k, 1);
+    }
+    arraySet(eState, k, 0);
+    arraySet(eT, k, 0);
+    var squad = floor(k / 8);
+    arraySet(eDelay, k, squad * 1.5 + (k - squad * 8) * 0.16);
+    // Entry start point: alternate sides, above the screen.
+    var squadOdd = squad - floor(squad / 2) * 2;
+    if (squadOdd == 0) {
+      arraySet(eSx, k, -40);
+    } else {
+      arraySet(eSx, k, w + 40);
+    }
+    arraySet(eSy, k, -30 - (k - squad * 8) * 14);
+    arraySet(eX, k, arrayGet(eSx, k));
+    arraySet(eY, k, arrayGet(eSy, k));
+    arraySet(eFired1, k, false);
+    arraySet(eFired2, k, false);
+    k = k + 1;
+  }
+  aliveCount = enemyCount;
+  diveTimer = 0;
+  bannerTimer = 2.2;
+  playSequence(introJingle, false, 0.4);
+}
+
+// Send one random formation enemy on a dive. Prefers bees/butterflies;
+// bosses dive too but less often.
+fun startDive() {
+  var candidates = newArray();
+  var k = 0;
+  while (k < enemyCount) {
+    if (arrayGet(eAlive, k) and arrayGet(eState, k) == 1) {
+      if (arrayGet(eKind, k) == 2) {
+        if (random() < 0.35) arrayPush(candidates, k);
+      } else {
+        arrayPush(candidates, k);
+      }
+    }
+    k = k + 1;
+  }
+  var n = arrayLen(candidates);
+  if (n == 0) return nil;
+  var pick = arrayGet(candidates, floor(random() * n));
+  arraySet(eState, pick, 2);
+  arraySet(eT, pick, 0);
+  arraySet(eSx, pick, arrayGet(eX, pick));
+  arraySet(eSy, pick, arrayGet(eY, pick));
+  arraySet(eDiveAim, pick, playerX + playerW / 2 - enemyW / 2);
+  arraySet(eFired1, pick, false);
+  arraySet(eFired2, pick, false);
+  sfxDive();
+  return nil;
+}
+
+fun clearProjectiles() {
+  var k = 0;
+  while (k < maxBullets) {
+    arraySet(bulletActive, k, false);
+    k = k + 1;
+  }
+  k = 0;
+  while (k < maxEBullets) {
+    arraySet(ebActive, k, false);
+    k = k + 1;
+  }
+}
+
+fun killPlayer() {
+  playerAlive = false;
+  respawnTimer = 1.6;
+  lives = lives - 1;
+  spawnExplosion(playerX + playerW / 2 - 12, playerY);
+  sfxPlayerDie();
+  if (lives <= 0) {
+    gameOver = true;
+    if (score > hiScore) hiScore = score;
+  }
+}
+
+fun enemyPoints(kind, wasDiving) {
+  var pts = 50;
+  if (kind == 1) pts = 80;
+  if (kind == 2) pts = 150;
+  if (wasDiving) pts = pts * 2;
+  return pts;
+}
+
+fun restartGame() {
+  gameOver = false;
+  score = 0;
+  lives = 3;
+  stage = 1;
+  diveInterval = 2.4;
+  diveSpeed = 0.42;
+  playerAlive = true;
+  playerX = w / 2 - playerW / 2;
+  respawnTimer = 0;
+  invulnTimer = 0;
+  clearProjectiles();
+  setupFormation();
+}
+
+// Kick off stage 1.
+setupFormation();
+
+// ============================================================
+// Game loop
+// ============================================================
+while (running) {
+  processMessages();
+  var now = clock();
+  var dt = now - lastTime;
+  lastTime = now;
+  if (dt > 0.1) dt = 0.1;
+  gameTime = gameTime + dt;
+
+  // Wing-flap toggle
+  animTimer = animTimer + dt;
+  if (animTimer >= 0.28) {
+    animTimer = animTimer - 0.28;
+    animFrame = 1 - animFrame;
+  }
+  if (bannerTimer > 0) bannerTimer = bannerTimer - dt;
+
+  // --- Input ---
+  if (keyPressed("escape")) {
+    stopSequence();
+    running = false;
+  }
+  if (gameOver and keyPressed("enter")) restartGame();
+
+  if (!gameOver) {
+    // Player movement + respawn handling
+    if (playerAlive) {
+      if (keyHeld("left"))  playerX = playerX - playerSpeed * dt;
+      if (keyHeld("right")) playerX = playerX + playerSpeed * dt;
+      if (playerX < 4) playerX = 4;
+      if (playerX > w - playerW - 4) playerX = w - playerW - 4;
+      if (invulnTimer > 0) invulnTimer = invulnTimer - dt;
+
+      if (keyPressed("space")) {
+        var b = 0;
+        var fired = false;
+        while (b < maxBullets) {
+          if (!arrayGet(bulletActive, b) and !fired) {
+            arraySet(bulletActive, b, true);
+            arraySet(bulletX, b, playerX + playerW / 2 - bulletW / 2);
+            arraySet(bulletY, b, playerY - bulletH);
+            sfxShoot();
+            fired = true;
+          }
+          b = b + 1;
+        }
+      }
+    } else {
+      respawnTimer = respawnTimer - dt;
+      if (respawnTimer <= 0 and lives > 0) {
+        playerAlive = true;
+        playerX = w / 2 - playerW / 2;
+        invulnTimer = 2;
+      }
+    }
+
+    // --- Player bullets ---
+    i = 0;
+    while (i < maxBullets) {
+      if (arrayGet(bulletActive, i)) {
+        arraySet(bulletY, i, arrayGet(bulletY, i) - bulletSpeed * dt);
+        if (arrayGet(bulletY, i) + bulletH < 0) arraySet(bulletActive, i, false);
+      }
+      i = i + 1;
+    }
+
+    // --- Enemy state machine ---
+    var k = 0;
+    while (k < enemyCount) {
+      if (arrayGet(eAlive, k)) {
+        var st = arrayGet(eState, k);
+        var hx = slotX(arrayGet(eRow, k), arrayGet(eCol, k));
+        var hy = slotY(arrayGet(eRow, k));
+
+        if (st == 0) {
+          // Waiting, then curved entry flight to the home slot.
+          var d = arrayGet(eDelay, k);
+          if (d > 0) {
+            arraySet(eDelay, k, d - dt);
+          } else {
+            var t = arrayGet(eT, k) + dt * 0.55;
+            if (t >= 1) {
+              arraySet(eState, k, 1);
+              arraySet(eX, k, hx);
+              arraySet(eY, k, hy);
+            } else {
+              arraySet(eT, k, t);
+              // Ease toward home with a decaying sine curl.
+              var ease = t * t * (3 - 2 * t);
+              var sx = arrayGet(eSx, k);
+              var sy = arrayGet(eSy, k);
+              var curl = sin(t * 6.28318 * 1.5) * 90 * (1 - t);
+              arraySet(eX, k, sx + (hx - sx) * ease + curl);
+              arraySet(eY, k, sy + (hy - sy) * ease);
+            }
+          }
+        } else {
+          if (st == 1) {
+            // Sit in the swaying formation.
+            arraySet(eX, k, hx);
+            arraySet(eY, k, hy);
+          } else {
+            // Diving: swoop down in an S-curve toward the player,
+            // firing on the way. Off the bottom -> rejoin from the top.
+            var t = arrayGet(eT, k) + dt * diveSpeed;
+            arraySet(eT, k, t);
+            if (t >= 1) {
+              arraySet(eState, k, 0);
+              arraySet(eT, k, 0);
+              arraySet(eDelay, k, 0.4);
+              arraySet(eSx, k, arrayGet(eDiveAim, k));
+              arraySet(eSy, k, -30);
+            } else {
+              var sx = arrayGet(eSx, k);
+              var sy = arrayGet(eSy, k);
+              var aim = arrayGet(eDiveAim, k);
+              var wob = sin(t * 6.28318 * 2) * 70 * (1 - t * 0.5);
+              arraySet(eX, k, sx + (aim - sx) * t + wob);
+              arraySet(eY, k, sy + (h + 60 - sy) * t * t);
+              // Two aimed shots on the way down.
+              if (t > 0.25 and !arrayGet(eFired1, k)) {
+                arraySet(eFired1, k, true);
+                fireEnemyBullet(arrayGet(eX, k) + enemyW / 2, arrayGet(eY, k) + enemyH);
+              }
+              if (t > 0.5 and !arrayGet(eFired2, k)) {
+                arraySet(eFired2, k, true);
+                fireEnemyBullet(arrayGet(eX, k) + enemyW / 2, arrayGet(eY, k) + enemyH);
+              }
+            }
+          }
+        }
+      }
+      k = k + 1;
+    }
+
+    // --- Dive scheduling ---
+    diveTimer = diveTimer + dt;
+    if (diveTimer >= diveInterval and bannerTimer <= 0) {
+      diveTimer = 0;
+      startDive();
+      // Second simultaneous diver at higher stages.
+      if (stage >= 3 and random() < 0.5) startDive();
+    }
+
+    // --- Bullets vs enemies ---
+    i = 0;
+    while (i < maxBullets) {
+      if (arrayGet(bulletActive, i)) {
+        var bx = arrayGet(bulletX, i);
+        var by = arrayGet(bulletY, i);
+        var k2 = 0;
+        while (k2 < enemyCount) {
+          if (arrayGet(eAlive, k2) and arrayGet(bulletActive, i)) {
+            var ex = arrayGet(eX, k2);
+            var ey = arrayGet(eY, k2);
+            if (ey > -enemyH) {
+              if (rectsOverlap(bx, by, bulletW, bulletH, ex, ey, enemyW, enemyH)) {
+                arraySet(bulletActive, i, false);
+                var hp = arrayGet(eHp, k2) - 1;
+                arraySet(eHp, k2, hp);
+                if (hp <= 0) {
+                  arraySet(eAlive, k2, false);
+                  aliveCount = aliveCount - 1;
+                  score = score + enemyPoints(arrayGet(eKind, k2), arrayGet(eState, k2) == 2);
+                  spawnExplosion(ex, ey);
+                  sfxEnemyDie();
+                } else {
+                  sfxBossHit();  // boss armor ping (turns blue)
+                }
+              }
+            }
+          }
+          k2 = k2 + 1;
+        }
+      }
+      i = i + 1;
+    }
+
+    // --- Enemy bullets ---
+    i = 0;
+    while (i < maxEBullets) {
+      if (arrayGet(ebActive, i)) {
+        arraySet(ebX, i, arrayGet(ebX, i) + arrayGet(ebVx, i) * dt);
+        arraySet(ebY, i, arrayGet(ebY, i) + arrayGet(ebVy, i) * dt);
+        if (arrayGet(ebY, i) > h or arrayGet(ebX, i) < -10 or arrayGet(ebX, i) > w + 10) {
+          arraySet(ebActive, i, false);
+        } else {
+          if (playerAlive and invulnTimer <= 0) {
+            if (rectsOverlap(arrayGet(ebX, i), arrayGet(ebY, i), ebW, ebH,
+                             playerX + 4, playerY, playerW - 8, playerH)) {
+              arraySet(ebActive, i, false);
+              killPlayer();
+            }
+          }
+        }
+      }
+      i = i + 1;
+    }
+
+    // --- Diving enemies vs player ---
+    if (playerAlive and invulnTimer <= 0) {
+      var k3 = 0;
+      while (k3 < enemyCount) {
+        if (arrayGet(eAlive, k3) and arrayGet(eState, k3) == 2) {
+          if (rectsOverlap(arrayGet(eX, k3), arrayGet(eY, k3), enemyW, enemyH,
+                           playerX + 4, playerY, playerW - 8, playerH)) {
+            arraySet(eAlive, k3, false);
+            aliveCount = aliveCount - 1;
+            spawnExplosion(arrayGet(eX, k3), arrayGet(eY, k3));
+            killPlayer();
+          }
+        }
+        k3 = k3 + 1;
+      }
+    }
+
+    // --- Explosions ---
+    i = 0;
+    while (i < maxExplosions) {
+      if (arrayGet(explActive, i)) {
+        arraySet(explTimer, i, arrayGet(explTimer, i) - dt);
+        if (arrayGet(explTimer, i) <= 0) arraySet(explActive, i, false);
+      }
+      i = i + 1;
+    }
+
+    // --- Stage clear ---
+    if (aliveCount <= 0) {
+      stage = stage + 1;
+      diveInterval = max(0.8, 2.4 - stage * 0.2);
+      diveSpeed = min(0.75, 0.42 + stage * 0.04);
+      clearProjectiles();
+      setupFormation();
+    }
+  }
+
+  // ============================================================
+  // Draw
+  // ============================================================
+  clearCanvas();
+
+  // Starfield
+  i = 0;
+  while (i < numStars) {
+    arraySet(starY, i, arrayGet(starY, i) + arrayGet(starSpeed, i) * dt);
+    if (arrayGet(starY, i) >= h) {
+      arraySet(starY, i, 0);
+      arraySet(starX, i, floor(random() * w));
+    }
+    i = i + 1;
+  }
+  drawPixelsGray(starX, starY, starBright);
+
+  // Enemies
+  var k4 = 0;
+  while (k4 < enemyCount) {
+    if (arrayGet(eAlive, k4)) {
+      var ex = floor(arrayGet(eX, k4));
+      var ey = floor(arrayGet(eY, k4));
+      if (ey > -enemyH * 2) {
+        var kind = arrayGet(eKind, k4);
+        if (kind == 0) {
+          if (animFrame == 0) {
+            drawSpriteScaled(beeSprite1, ex, ey, SPR);
+          } else {
+            drawSpriteScaled(beeSprite2, ex, ey, SPR);
+          }
+        }
+        if (kind == 1) {
+          if (animFrame == 0) {
+            drawSpriteScaled(flySprite1, ex, ey, SPR);
+          } else {
+            drawSpriteScaled(flySprite2, ex, ey, SPR);
+          }
+        }
+        if (kind == 2) {
+          if (arrayGet(eHp, k4) >= 2) {
+            drawSpriteScaled(bossSprite1, ex, ey, SPR);
+          } else {
+            drawSpriteScaled(bossSprite2, ex, ey, SPR);
+          }
+        }
+      }
+    }
+    k4 = k4 + 1;
+  }
+
+  // Explosions
+  i = 0;
+  while (i < maxExplosions) {
+    if (arrayGet(explActive, i)) {
+      if (arrayGet(explTimer, i) > explDuration / 2) {
+        drawSpriteScaled(explSprite1, floor(arrayGet(explX, i)), floor(arrayGet(explY, i)), SPR);
+      } else {
+        drawSpriteScaled(explSprite2, floor(arrayGet(explX, i)), floor(arrayGet(explY, i)), SPR);
+      }
+    }
+    i = i + 1;
+  }
+
+  // Player (blinks while invulnerable)
+  if (playerAlive and !gameOver) {
+    var blink = floor(gameTime * 10);
+    var blinkOdd = blink - floor(blink / 2) * 2;
+    if (invulnTimer <= 0 or blinkOdd == 0) {
+      drawSpriteScaled(playerSprite, floor(playerX), playerY, SPR);
+    }
+  }
+
+  // Player bullets
+  setColor(255, 255, 255);
+  i = 0;
+  while (i < maxBullets) {
+    if (arrayGet(bulletActive, i)) {
+      fillRect(arrayGet(bulletX, i), arrayGet(bulletY, i), bulletW, bulletH);
+    }
+    i = i + 1;
+  }
+
+  // Enemy bullets
+  setColor(255, 120, 60);
+  i = 0;
+  while (i < maxEBullets) {
+    if (arrayGet(ebActive, i)) {
+      fillRect(arrayGet(ebX, i), arrayGet(ebY, i), ebW, ebH);
+    }
+    i = i + 1;
+  }
+
+  // HUD
+  setColor(255, 60, 60);
+  drawText(8, 6, "1UP");
+  setColor(255, 255, 255);
+  drawText(8, 16, str(score));
+  setColor(255, 60, 60);
+  drawText(w / 2 - 24, 6, "HI-SCORE");
+  setColor(255, 255, 255);
+  drawText(w / 2 - 12, 16, str(hiScore));
+  drawText(w - 66, 6, "STAGE " + str(stage));
+  // Spare-life ships, bottom left
+  i = 0;
+  while (i < lives - 1) {
+    drawSprite(playerSprite, 8 + i * 18, h - 16);
+    i = i + 1;
+  }
+
+  // Stage banner
+  if (bannerTimer > 0 and !gameOver) {
+    setColor(80, 200, 255);
+    drawText(w / 2 - 36, h / 2 - 20, "STAGE " + str(stage), 2);
+  }
+
+  // Game over overlay
+  if (gameOver) {
+    setColor(255, 0, 0);
+    drawText(w / 2 - 54, h / 2 - 24, "GAME OVER", 2);
+    setColor(255, 255, 255);
+    drawText(w / 2 - 84, h / 2 + 6, "ENTER to restart, ESC to quit");
+  }
+
+  present();
+}
+
+if (score > hiScore) hiScore = score;
+print "Final score: " + str(score) + "  (hi: " + str(hiScore) + ")";

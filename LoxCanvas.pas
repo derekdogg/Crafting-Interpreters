@@ -1207,6 +1207,13 @@ begin
       ch := Ord(s[i]);
       if (ch < FONT_FIRST) or (ch > FONT_LAST) then
         ch := FONT_FIRST;
+      // Skip fully off-screen glyphs entirely (mirrors the scale=1 path).
+      if (x + FONT_W * scale <= FClipX1) or (x >= bw) or
+         (y + FONT_H * scale <= FClipY1) or (y >= bh) then
+      begin
+        x := x + FONT_ADVANCE * scale;
+        Continue;
+      end;
       for gy := 0 to FONT_H - 1 do
       begin
         cnt := FGlyphCount[ch, gy];
@@ -1236,20 +1243,20 @@ end;
 function measureTextNative(argCount: integer; args: pValue): TValue;
 var
   textLen, scale: Integer;
-  s: string;
 begin
   if (argCount < 1) or (argCount > 2) then
   begin
     RuntimeError('measureText() takes 1 or 2 arguments (text [, scale]).');
     Exit(CreateNilValue);
   end;
-  if not isObject(args[0]) then
+  if not isString(args[0]) then
   begin
     RuntimeError('measureText() first argument must be a string.');
     Exit(CreateNilValue);
   end;
-  s := ObjStringToAnsiString(pObjString(GetObject(args[0])));
-  textLen := Length(s);
+  // Only the length is needed - read it off the ObjString directly
+  // instead of materialising a Delphi string copy.
+  textLen := pObjString(GetObject(args[0]))^.length;
   scale := 1;
   if argCount = 2 then
   begin
@@ -1318,7 +1325,7 @@ begin
     RuntimeError('keyHeld() takes 1 argument (key name).');
     Exit(CreateNilValue);
   end;
-  if not isObject(args[0]) then
+  if not isString(args[0]) then
   begin
     RuntimeError('keyHeld() argument must be a string.');
     Exit(CreateNilValue);
@@ -1340,7 +1347,7 @@ begin
     RuntimeError('keyPressed() takes 1 argument (key name).');
     Exit(CreateNilValue);
   end;
-  if not isObject(args[0]) then
+  if not isString(args[0]) then
   begin
     RuntimeError('keyPressed() argument must be a string.');
     Exit(CreateNilValue);
@@ -1531,6 +1538,15 @@ begin
   y2 := Trunc(GetNumber(args[3])) - FCameraY;
   bw := FClipX2;
   bh := FClipY2;
+  // Trivial reject: every plotted pixel lies inside the line's bounding
+  // box, so if that box misses the clip rect the whole walk is a no-op.
+  // Without this a long off-screen line still stepped every pixel.
+  if (Max(x1, x2) < FClipX1) or (Min(x1, x2) >= bw) or
+     (Max(y1, y2) < FClipY1) or (Min(y1, y2) >= bh) then
+  begin
+    Result := CreateNilValue;
+    Exit;
+  end;
   // Bresenham's line algorithm — crisp single-pixel line
   dx := Abs(x2 - x1);
   dy := -Abs(y2 - y1);
@@ -1856,7 +1872,6 @@ var
   cx, cy, r: Integer;
   bw, bh: Integer;
   x, y, d: Integer;
-  x0, x1, yy: Integer;
   row: PCardinal;
 
   procedure HLine(hx0, hx1, hy: Integer);
@@ -2331,7 +2346,7 @@ function drawSpriteRotatedNative(argCount: integer; args: pValue): TValue;
 var
   id, x, y, scale, sw, sh, dw, dh: Integer;
   bmp: TBitmap;
-  angle, cosA, sinA, cx, cy, srcCx, srcCy: Double;
+  angle, cosA, sinA, srcCx, srcCy: Double;
   dx, dy, sx, sy, bw, bh: Integer;
   baseX, baseY: Integer;
   dx0, dx1, dy0, dy1: Integer;
@@ -2385,21 +2400,23 @@ begin
   end;
   sw := bmp.Width * scale;
   sh := bmp.Height * scale;
-  // Bounding box of rotated sprite
-  dw := Ceil(Abs(sw * cosA) + Abs(sh * sinA));
-  dh := Ceil(Abs(sw * sinA) + Abs(sh * cosA));
-  // Center of destination bounding box (x, y is center of output)
-  cx := dw / 2.0;
-  cy := dh / 2.0;
+  // Bounding box of rotated sprite, padded so the content plus the
+  // supersample offsets always fit regardless of anchor rounding.
+  dw := Ceil(Abs(sw * cosA) + Abs(sh * sinA)) + 2;
+  dh := Ceil(Abs(sw * sinA) + Abs(sh * cosA)) + 2;
   // Center of source (scaled) sprite
   srcCx := sw / 2.0;
   srcCy := sh / 2.0;
   bw := FClipX2;
   bh := FClipY2;
 
-  // Hoist destination origin so the inner loop just adds dx/dy.
-  baseX := x - Trunc(cx);
-  baseY := y - Trunc(cy);
+  // (x, y) is the rotation centre. Anchor the box with an INTEGER half
+  // extent so the content centre lands on exactly (x, y) at every angle.
+  // Deriving the anchor from the float box centre (x - Trunc(dw/2) with
+  // the transform using dw/2.0) put the content at x + frac(dw/2), which
+  // wobbled +-0.5px as the box parity changed with the angle.
+  baseX := x - dw div 2;
+  baseY := y - dh div 2;
 
   // Pre-clip the destination bounding box against the clip rect so the
   // inner loop has no per-pixel screen-clip branches.
@@ -2440,8 +2457,10 @@ begin
   // for every destination pixel. Both forms are linear in dx and dy,
   // so we step them incrementally instead: per-column adds {cosA, -sinA},
   // per-row adds {sinA, cosA}. Removes 4 multiplies + 4 adds per pixel.
-  fxcRow := (dx0 - cx) * cosA + (dy0 - cy) * sinA + srcCx;
-  fycRow := -(dx0 - cx) * sinA + (dy0 - cy) * cosA + srcCy;
+  // Rotate about the integer box anchor (dw div 2, dh div 2) — the same
+  // point baseX/baseY were derived from, so the pivot is exact.
+  fxcRow := (dx0 - dw div 2) * cosA + (dy0 - dh div 2) * sinA + srcCx;
+  fycRow := -(dx0 - dw div 2) * sinA + (dy0 - dh div 2) * cosA + srcCy;
 
   // Initialize so the "did we already fetch this row?" cache is unset.
   srcRow := nil;
@@ -2461,8 +2480,12 @@ begin
 
       for i := 0 to 3 do
       begin
-        ifx := Trunc(fxc + fxOff[i]);
-        ify := Trunc(fyc + fyOff[i]);
+        // Floor, not Trunc: Trunc rounds toward zero, so sample positions
+        // in (-1, 0) — just outside the left/top edge — mapped to texel 0
+        // and slipped past the bounds check, growing an asymmetric fringe
+        // on two edges at some angles.
+        ifx := Floor(fxc + fxOff[i]);
+        ify := Floor(fyc + fyOff[i]);
         if (ifx < 0) or (ifx >= sw) or (ify < 0) or (ify >= sh) then Continue;
         if scaleIsOne then
         begin
@@ -2507,9 +2530,12 @@ begin
           outG := (sumG + Integer((dstPx shr 8) and $FF) * missing) shr 2;
           outR := (sumR + Integer((dstPx shr 16) and $FF) * missing) shr 2;
         end;
+        // Alpha must be $FF like every other writer: drawSurface treats
+        // zero-alpha pixels as transparent, so without this a rotated
+        // sprite drawn onto a surface vanishes when the surface is blitted.
         dstRow[baseX + dx] := (Cardinal(outR) shl 16) or
                               (Cardinal(outG) shl 8) or
-                               Cardinal(outB);
+                               Cardinal(outB) or $FF000000;
       end;
 
       // Step source coords by one destination column.
@@ -3275,7 +3301,8 @@ end;
 
 function drawSurfaceNative(argCount: integer; args: pValue): TValue;
 var
-  id, x, y, sx, sy, ax, ay: Integer;
+  id, x, y, sx, sy: Integer;
+  sx0, sx1, sy0, sy1: Integer;
   bw, bh: Integer;
   src: TBitmap;
   srcRow: PRGBQuadArray;
@@ -3305,20 +3332,28 @@ begin
   y := Trunc(GetNumber(args[2])) - FCameraY;
   bw := FClipX2;
   bh := FClipY2;
-  for sy := 0 to src.Height - 1 do
+  // Pre-clip: compute the visible sub-rectangle in SOURCE coordinates
+  // (same pattern as drawSprite/drawTilemap) so the inner loop has no
+  // per-pixel clip branches; only the alpha test remains.
+  sx0 := FClipX1 - x; if sx0 < 0 then sx0 := 0;
+  sy0 := FClipY1 - y; if sy0 < 0 then sy0 := 0;
+  sx1 := bw - x;      if sx1 > src.Width  then sx1 := src.Width;
+  sy1 := bh - y;      if sy1 > src.Height then sy1 := src.Height;
+  if (sx0 >= sx1) or (sy0 >= sy1) then
   begin
-    ay := y + sy;
-    if (ay < FClipY1) or (ay >= bh) then Continue;
+    Result := CreateNilValue;
+    Exit;
+  end;
+  for sy := sy0 to sy1 - 1 do
+  begin
     srcRow := src.ScanLine[sy];
-    dstRow := FRenderTarget.ScanLine[ay];
-    for sx := 0 to src.Width - 1 do
+    dstRow := FRenderTarget.ScanLine[y + sy];
+    for sx := sx0 to sx1 - 1 do
     begin
-      ax := x + sx;
-      if (ax < FClipX1) or (ax >= bw) then Continue;
       pixel := PCardinal(@srcRow[sx])^;
       // Skip fully transparent pixels (alpha = 0, i.e. cleared buffer)
       if (pixel and $FF000000) = 0 then Continue;
-      dstRow[ax] := pixel;
+      dstRow[x + sx] := pixel;
     end;
   end;
   Result := CreateNilValue;
