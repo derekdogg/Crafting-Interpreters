@@ -3256,8 +3256,14 @@ procedure EnsureArrayCapacity(arr : pObjArray; MemTracker : pMemTracker);
 var
   newCap, oldSize, newSize: Integer;
 begin
-  if arr^.Count < arr^.Capacity then Exit;
-  if arr^.Capacity = 0 then newCap := ARRAY_START_CAPACITY else newCap := arr^.Capacity * GROWTH_FACTOR;
+  if arr^.Count < arr^.Capacity then Exit;  ///no growth path return
+
+  //growth path
+  if arr^.Capacity = 0 then
+    newCap := ARRAY_START_CAPACITY
+  else
+    newCap := arr^.Capacity * GROWTH_FACTOR;
+
   oldSize := arr^.Capacity * SizeOf(TValue);
   newSize := newCap * SizeOf(TValue);
   Allocate(Pointer(arr^.Elements), oldSize, newSize, MemTracker);

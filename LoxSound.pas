@@ -340,13 +340,14 @@ var
   notePos, waveType: Integer;
   doLoop: Boolean;
   phase, phaseInc, env, vibrato, vibratoPhase: Double;
-  sustainLevel, sample: Double;
+  sustainLevel, sample, vol: Double;
   attackSamples, decaySamples, releaseSamples: Integer;
+  passBytes: Integer;
   sv: SmallInt;
 begin
-  if argCount <> 2 then
+  if (argCount < 2) or (argCount > 3) then
   begin
-    RuntimeError('playSequence() takes 2 arguments (notesArray, loop).');
+    RuntimeError('playSequence() takes 2-3 arguments (notesArray, loop [, volume]).');
     Exit(CreateNilValue);
   end;
   if not isArray(args[0]) then
@@ -360,6 +361,20 @@ begin
     Exit(CreateNilValue);
   end;
   doLoop := GetBoolean(args[1]);
+  // Optional volume (0.0..1.0) so music can sit under SFX in the mix,
+  // matching playTone/playSweep/playNoise.
+  vol := 1.0;
+  if argCount = 3 then
+  begin
+    if not isNumber(args[2]) then
+    begin
+      RuntimeError('playSequence() volume must be a number (0.0 to 1.0).');
+      Exit(CreateNilValue);
+    end;
+    vol := GetNumber(args[2]);
+    if vol < 0 then vol := 0;
+    if vol > 1 then vol := 1;
+  end;
 
   if not FReady then InitAudio;
   if not FSeqReady then
@@ -428,10 +443,10 @@ begin
   // Allocate buffer for all repeats
   SetLength(FSeqBuf, Integer(bufferBytes));
 
-  // Render with rich synthesis
+  // Render ONE pass with rich synthesis, then tile it below. Every repeat
+  // is bit-identical, so synthesizing each one (as this used to) cost
+  // repeats x the CPU and caused an audible hitch starting looped music.
   sampleIdx := 0;
-  for j := 0 to repeats - 1 do
-  begin
     for i := 0 to noteCount - 1 do
     begin
       noteArr := pObjArray(GetObject(notesArr^.Elements[i]));
@@ -513,13 +528,18 @@ begin
           if env < 0 then env := 0;
           if env > 1 then env := 1;
 
-          sv := Trunc(sample * env);
+          sv := Trunc(sample * env * vol);
           PutSample(FSeqBuf, sampleIdx, sv);
           sampleIdx := sampleIdx + 1;
         end;
       end;
     end;
-  end;
+
+  // Tile the rendered pass across the remaining repeats (memcpy, not synth).
+  passBytes := sampleIdx * 2;
+  if passBytes > 0 then
+    for j := 1 to repeats - 1 do
+      Move(FSeqBuf[0], FSeqBuf[j * passBytes], passBytes);
 
   // Play
   FillChar(FSeqWaveHdr, SizeOf(TWaveHdr), 0);
@@ -550,7 +570,7 @@ begin
   defineNative('playTone', playToneNative, -1);
   defineNative('playSweep', playSweepNative, -1);
   defineNative('playNoise', playNoiseNative, -1);
-  defineNative('playSequence', playSequenceNative, 2);
+  defineNative('playSequence', playSequenceNative, -1);  // 2-3 args, self-validates
   defineNative('stopSequence', stopSequenceNative, 0);
 end;
 

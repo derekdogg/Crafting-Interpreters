@@ -62,11 +62,10 @@ procedure TfrmEventTest.FormCreate(Sender: TObject);
 begin
   FEngine := TLoxEventEngine.Create;
   FEngine.OnLog := Log;
-  // Game-style auto-repeat for the interactive event-test form: a tap shorter
-  // than 250ms fires zero onKeyHeld events; holding past that streams them at
-  // ~20Hz. Tests leave the defaults (every frame, no delay).
-  FEngine.HeldDispatchInitialDelayMs := 250;
-  FEngine.HeldDispatchIntervalMs := 50;
+  // Engine defaults apply: onKeyHeld fires every processEvents() per held key,
+  // per the documented contract (docs/EventSystem/README.md). Auto-repeat-style
+  // throttling (HeldDispatchInitialDelayMs/IntervalMs) makes hold-to-move
+  // scripts jerky and frame-rate dependent, so it is deliberately not enabled.
   Panel1.OnMouseMove := Panel1MouseMove;
 end;
 

@@ -38,7 +38,8 @@ type
     eckMouseDown,
     eckMouseUp,
     eckMouseMove,
-    eckClick
+    eckClick,
+    eckFrame       // per-frame update callback used by runGameLoop()
   );
 
   // Heap-allocated slot so the TValue address is stable for GC roots.
@@ -62,6 +63,7 @@ type
     FPendingClicks: TStringList;
     FDispatching: Boolean;
     FRunning: Boolean;
+    FGameLoopActive: Boolean;
     FOnLog: TLogEvent;
     FOnCheckAbort: TCheckAbortFunc;
     FHeldDispatchIntervalMs: DWORD;
@@ -98,6 +100,9 @@ type
     // Dispatch all pending events via InvokeCallback
     procedure DispatchPendingEvents;
 
+    // The onFrame callback (nil TValue if none registered)
+    function FrameCallback: TValue;
+
     // Register the event natives into the current VM
     procedure RegisterNatives;
 
@@ -110,6 +115,9 @@ type
 
     property Running: Boolean read FRunning write FRunning;
     property Dispatching: Boolean read FDispatching;
+    // True while runGameLoop() is executing. stopGameLoop() clears it to
+    // make the loop exit after the current frame.
+    property GameLoopActive: Boolean read FGameLoopActive write FGameLoopActive;
     property OnLog: TLogEvent read FOnLog write FOnLog;
     property OnCheckAbort: TCheckAbortFunc read FOnCheckAbort write FOnCheckAbort;
     // Minimum gap (ms) between repeat onKeyHeld dispatches for a held key.
@@ -122,10 +130,39 @@ type
 var
   ActiveEngine: TLoxEventEngine;
 
+// High-resolution timing, scoped and reference-counted. TThread.Sleep(1) only
+// sleeps ~1ms while the process holds a 1ms timer-resolution request; at the
+// default ~15.6ms resolution it quantizes frame loops to an uneven ~64Hz that
+// judders against the monitor refresh. Holding the request process-wide for
+// the engine's whole lifetime would raise CPU wakeups/power draw even while
+// idle, so callers acquire it only around code that actually sleeps (the
+// runGameLoop body, the Sleep inside processEvents) and release immediately
+// after. Calls must be balanced; main-thread only.
+procedure AcquireHighResTiming;
+procedure ReleaseHighResTiming;
+
 implementation
 
 uses
-  EventNatives;
+  Winapi.MMSystem, EventNatives;
+
+var
+  HighResTimingRefs: Integer = 0;
+
+procedure AcquireHighResTiming;
+begin
+  Inc(HighResTimingRefs);
+  if HighResTimingRefs = 1 then
+    timeBeginPeriod(1);
+end;
+
+procedure ReleaseHighResTiming;
+begin
+  if HighResTimingRefs <= 0 then Exit;  // tolerate unbalanced release
+  Dec(HighResTimingRefs);
+  if HighResTimingRefs = 0 then
+    timeEndPeriod(1);
+end;
 
 // --- TLoxEventEngine ---
 
@@ -190,6 +227,12 @@ begin
   FHeldNextDispatchTick.Clear;
   FCallbackSlots.Clear;  // TObjectDictionary frees owned slots
   FRunning := True;
+  FGameLoopActive := False;
+end;
+
+function TLoxEventEngine.FrameCallback: TValue;
+begin
+  Result := GetCallback(eckFrame, '');
 end;
 
 procedure TLoxEventEngine.QueueKeyDown(const KeyName: string;
