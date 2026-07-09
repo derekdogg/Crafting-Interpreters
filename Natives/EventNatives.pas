@@ -1,4 +1,4 @@
-unit EventNatives;
+﻿unit EventNatives;
 
 // ============================================================
 // Native functions for the Lox event engine.
@@ -195,6 +195,11 @@ end;
 
 function stopGameLoopNative(argCount: integer; args: pValue): TValue;
 begin
+   if argCount <> 0 then
+   begin
+     RuntimeError('stopGameLoop() takes no arguments.');
+     Exit(CreateNilValue);
+   end;
   ActiveEngine.GameLoopActive := False;
   Result := CreateNilValue;
 end;
