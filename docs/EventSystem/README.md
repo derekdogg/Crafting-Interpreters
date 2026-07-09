@@ -66,6 +66,40 @@ Key points:
 - `processEvents()` is the heartbeat — it pumps the Windows message queue and dispatches any pending events
 - Without `processEvents()` in a loop, no events will fire
 
+### Engine-Owned Game Loop (preferred for games)
+
+Instead of hand-writing the `while`/`processEvents()`/`clock()` loop, register an
+`onFrame(fun(dt) { ... })` callback and call `runGameLoop(targetFps)`. The engine
+then owns the frame cycle — each frame it:
+
+1. Flushes print output and clears the per-frame poll edges (`keyPressed()` etc.)
+2. Pumps the Windows message queue
+3. Dispatches pending event callbacks (`onKeyPressed`, `onKeyHeld`, ...)
+4. Invokes `onFrame(dt)` with elapsed seconds since the last frame (clamped to 0.1)
+5. Sleeps precisely to hold the target frame rate (default 60fps; pass 0 for uncapped)
+
+`stopGameLoop()` — callable from any callback or from `onFrame` itself — makes
+`runGameLoop` return after the current frame, and the script continues after the
+call. Calling `processEvents()` while the loop is active is a runtime error (the
+loop already pumps every frame).
+
+```lox
+onKeyPressed(fun(key) {
+  if (key == "escape") stopGameLoop();
+});
+
+onFrame(fun(dt) {
+  update(dt);
+  draw();
+  present();
+});
+
+runGameLoop(60);
+```
+
+This gives correct, drift-free frame pacing for free — dt bookkeeping, clamping,
+and precision waiting are handled natively. See `samples/demos/space_invaders_events.lox`.
+
 ### Available Event Functions
 
 | Function | Callback Signature | Notes |
@@ -77,7 +111,10 @@ Key points:
 | `onMouseUp` | `fun(btn, x, y)` | Same as above |
 | `onMouseMove` | `fun(x, y)` | Coalesced: only latest position per frame |
 | `onClick` | `fun()` | Named-control clicks only (requires control name) |
+| `onFrame` | `fun(dt)` | Per-frame update callback for `runGameLoop` (dt in seconds, clamped to 0.1) |
 | `processEvents` | (no callback) | Pumps messages and dispatches queued events |
+| `runGameLoop` | (no callback) | Runs the engine-owned frame loop (optional target FPS arg, default 60, 0 = uncapped) |
+| `stopGameLoop` | (no callback) | Makes `runGameLoop` return after the current frame |
 
 ### Callback Replacement & Removal
 
