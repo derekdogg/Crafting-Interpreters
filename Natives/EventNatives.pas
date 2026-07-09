@@ -158,8 +158,16 @@ begin
   Application.ProcessMessages;
   // Dispatch any pending events as callbacks
   ActiveEngine.DispatchPendingEvents;
-  // Yield a millisecond so `while (running) processEvents();` doesn't peg a CPU core.
-  TThread.Sleep(1);
+  // Yield a millisecond so `while (running) processEvents();` doesn't peg a
+  // CPU core. Hold the 1ms timer resolution only for the sleep itself so
+  // hand-rolled frame loops stay smooth without the process keeping the
+  // system timer fast while idle.
+  AcquireHighResTiming;
+  try
+    TThread.Sleep(1);
+  finally
+    ReleaseHighResTiming;
+  end;
   // Check for abort (engine stopped or host app closing)
   if not ActiveEngine.Running then
   begin
@@ -199,9 +207,9 @@ end;
 // pauses / window drags don't produce physics jumps). targetFps defaults to
 // 60; pass 0 to run uncapped. Pacing uses an absolute QPC deadline per frame
 // (no drift accumulation): coarse TThread.Sleep(1) while >2ms remain — the
-// engine holds timeBeginPeriod(1) so that really is ~1ms — then yields until
-// the deadline. If a frame overruns, the deadline resets rather than
-// fast-forwarding to catch up.
+// loop holds a scoped timeBeginPeriod(1) while active so that really is
+// ~1ms — then yields until the deadline. If a frame overruns, the deadline
+// resets rather than fast-forwarding to catch up.
 function runGameLoopNative(argCount: integer; args: pValue): TValue;
 var
   targetFps, dt, remainMs: Double;
@@ -244,6 +252,9 @@ begin
   deadline := tPrev + frameTicks;
 
   ActiveEngine.GameLoopActive := True;
+  // Hold 1ms timer resolution for the duration of the loop (released in the
+  // finally below) so the pacing Sleep(1) really is ~1ms.
+  AcquireHighResTiming;
   try
     while ActiveEngine.GameLoopActive do
     begin
@@ -303,6 +314,7 @@ begin
       end;
     end;
   finally
+    ReleaseHighResTiming;
     ActiveEngine.GameLoopActive := False;
   end;
 end;

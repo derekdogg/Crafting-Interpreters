@@ -130,23 +130,45 @@ type
 var
   ActiveEngine: TLoxEventEngine;
 
+// High-resolution timing, scoped and reference-counted. TThread.Sleep(1) only
+// sleeps ~1ms while the process holds a 1ms timer-resolution request; at the
+// default ~15.6ms resolution it quantizes frame loops to an uneven ~64Hz that
+// judders against the monitor refresh. Holding the request process-wide for
+// the engine's whole lifetime would raise CPU wakeups/power draw even while
+// idle, so callers acquire it only around code that actually sleeps (the
+// runGameLoop body, the Sleep inside processEvents) and release immediately
+// after. Calls must be balanced; main-thread only.
+procedure AcquireHighResTiming;
+procedure ReleaseHighResTiming;
+
 implementation
 
 uses
   Winapi.MMSystem, EventNatives;
+
+var
+  HighResTimingRefs: Integer = 0;
+
+procedure AcquireHighResTiming;
+begin
+  Inc(HighResTimingRefs);
+  if HighResTimingRefs = 1 then
+    timeBeginPeriod(1);
+end;
+
+procedure ReleaseHighResTiming;
+begin
+  if HighResTimingRefs <= 0 then Exit;  // tolerate unbalanced release
+  Dec(HighResTimingRefs);
+  if HighResTimingRefs = 0 then
+    timeEndPeriod(1);
+end;
 
 // --- TLoxEventEngine ---
 
 constructor TLoxEventEngine.Create;
 begin
   inherited Create;
-  // processEvents() yields with TThread.Sleep(1) each frame. At the default
-  // system timer resolution (~15.6ms) that quantizes the game loop to an
-  // uneven ~64Hz that beats against the monitor refresh, making dt-correct
-  // movement visibly judder. Request 1ms resolution for the engine's
-  // lifetime so Sleep(1) really is ~1ms. Requests are reference-counted
-  // per process and released in the destructor.
-  timeBeginPeriod(1);
   FCallbackSlots := TObjectDictionary<string, TCallbackSlot>.Create([doOwnsValues]);
   FPendingMoves := TDictionary<string, TMouseMoveEntry>.Create;
   FPendingKeys := TStringList.Create;
@@ -168,7 +190,6 @@ end;
 
 destructor TLoxEventEngine.Destroy;
 begin
-  timeEndPeriod(1);
   FCallbackSlots.Free;
   FPendingMoves.Free;
   FPendingKeys.Free;
