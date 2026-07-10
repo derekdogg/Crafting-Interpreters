@@ -1,0 +1,7 @@
+// Export value edge cases: nil exports are real entries (dot-read returns
+// nil rather than erroring), and plain data exports round-trip.
+
+var M = require("lib/misc.lox");
+
+print M.nothing == nil; // expect: true
+print str(M.answer);    // expect: 42

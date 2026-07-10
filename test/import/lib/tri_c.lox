@@ -1,0 +1,9 @@
+// Three-module cycle fixture: a -> b -> c -> a. The require below closes
+// the cycle and returns tri_a's in-flight dict; A.tag is read only after
+// all three modules have finished loading.
+
+var A = require("tri_a.lox");
+
+var tag = "c";
+
+fun chain() { return tag + A.tag; }

@@ -1,0 +1,7 @@
+// Path canonicalisation: differently spelled paths to the same file
+// resolve to the same module instance (one execution, one dict).
+
+var A = require("lib/utils.lox");
+var B = require("./lib/../lib/utils.lox");
+
+print A == B; // expect: true

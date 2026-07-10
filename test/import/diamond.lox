@@ -1,0 +1,9 @@
+// Diamond dependency: main -> left -> shared and main -> right -> shared.
+// The shared module executes once ("shared loaded" appears once) and both
+// importers hold the same instance.
+
+var L = require("lib/diamond_left.lox"); // expect: shared loaded
+var R = require("lib/diamond_right.lox");
+
+print L.S == R.S; // expect: true
+print str(L.S.n); // expect: 1

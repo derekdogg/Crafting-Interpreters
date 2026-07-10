@@ -1,0 +1,5 @@
+// Fixture: record type + helpers as exports.
+
+record Point(x, y);
+
+fun area(p) { return p.x * p.y; }

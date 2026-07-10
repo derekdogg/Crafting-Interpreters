@@ -1,0 +1,16 @@
+// Record types are exported like any other top-level name, and the
+// constructor is callable directly through the module dict.
+
+var S = require("lib/shapes.lox");
+
+var p = S.Point(3, 4);
+print p.x;            // expect: 3
+print str(S.area(p)); // expect: 12
+
+p.x = 5;
+print str(S.area(p)); // expect: 20
+
+// Constructor also callable after pulling it out of the dict.
+var Point = S.Point;
+var q = Point(7, 2);
+print str(S.area(q)); // expect: 14

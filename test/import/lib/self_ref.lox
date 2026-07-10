@@ -1,0 +1,9 @@
+// Fixture: a module that requires itself. The re-entrant require returns
+// this module's own in-flight dict; by the time whoami() runs, it is fully
+// populated.
+
+var me = require("self_ref.lox");
+
+var tag = "self";
+
+fun whoami() { return me.tag; }

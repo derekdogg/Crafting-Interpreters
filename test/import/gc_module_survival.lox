@@ -1,0 +1,26 @@
+// Module dicts, exports, and module-internal state survive garbage
+// collection — including modules whose only reference is the cache itself.
+
+// A module required and immediately discarded is kept alive by the cache.
+require("lib/misc.lox");
+
+var C = require("lib/counter.lox");
+C.inc();
+
+// Churn allocations to trigger collections (verified below). The first GC
+// fires at GC_NEXT_INITIAL = 1 MB of tracked allocations, so this needs to
+// allocate a few MB of unique strings to be sure of crossing it.
+for (var i = 0; i < 1000; i = i + 1) {
+  var junk = [];
+  for (var j = 0; j < 40; j = j + 1) arrayPush(junk, "s" + str(i) + "_" + str(j));
+}
+print gcCollectionCount() > 0; // expect: true
+
+print str(C.inc());  // expect: 2
+print str(C.count);  // expect: 2
+
+var D = require("lib/counter.lox");
+print C == D; // expect: true
+
+var M = require("lib/misc.lox");
+print str(M.answer); // expect: 42

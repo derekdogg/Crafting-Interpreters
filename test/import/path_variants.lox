@@ -1,0 +1,12 @@
+// Every spelling of the same file resolves to one module instance:
+// extension auto-append, case differences (Windows filesystem), and
+// dot/dot-dot traversal.
+
+var A = require("lib/utils.lox");
+var B = require("lib/utils");
+var C = require("LIB/UTILS.LOX");
+var D = require("lib/./../lib/utils");
+
+print A == B; // expect: true
+print A == C; // expect: true
+print A == D; // expect: true

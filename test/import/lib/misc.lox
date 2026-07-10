@@ -1,0 +1,6 @@
+// Fixture: assorted export edge cases — a nil export, a plain value, and a
+// non-callable entry whose name collides with a builtin dict method.
+
+var nothing = nil;
+var answer = 42;
+var Size = 123;

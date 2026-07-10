@@ -1,0 +1,7 @@
+// Cycle fixture (a <-> b). The require below returns a's in-flight
+// (partially populated) dict; by the time greet() is actually called,
+// a has finished loading and A.label is bound.
+
+var A = require("cycle_a.lox");
+
+fun greet() { return "hi from b, talking to " + A.label; }

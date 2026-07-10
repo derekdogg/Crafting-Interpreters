@@ -1,0 +1,6 @@
+// Fixture: a module declaration that shadows a builtin native name. The
+// module gets its own fresh slot — the shared builtin is not overwritten.
+
+var str = "shadowed";
+
+fun read() { return str; }

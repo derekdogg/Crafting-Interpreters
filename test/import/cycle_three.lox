@@ -1,0 +1,6 @@
+// A three-module import cycle (a -> b -> c -> a) with calls across all
+// three modules after loading completes.
+
+var A = require("lib/tri_a.lox");
+
+print A.chain(); // expect: abca

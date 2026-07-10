@@ -1,0 +1,12 @@
+// A module with 300 top-level globals: its slot indices exceed one byte,
+// so its bytecode uses the LONG global opcodes — defines, reads, and
+// writes (including the dict write-through) must all still work.
+
+var L = require("lib/many_globals.lox");
+
+print str(L.v0);     // expect: 0
+print str(L.v255);   // expect: 255
+print str(L.v299);   // expect: 299
+print str(L.pick()); // expect: 449
+print str(L.bump()); // expect: 300
+print str(L.v299);   // expect: 300

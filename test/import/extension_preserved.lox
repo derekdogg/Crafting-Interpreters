@@ -1,0 +1,7 @@
+// '.lox' is auto-appended only when the request has no extension at all.
+// "lib/extdata.txt" stays lib/extdata.txt — it is not rewritten to
+// lib/extdata.txt.lox or lib/extdata.lox.
+
+var T = require("lib/extdata.txt");
+
+print str(T.fromTxt); // expect: 42

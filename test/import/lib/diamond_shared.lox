@@ -1,0 +1,6 @@
+// Diamond-dependency fixture: the shared leaf. The print proves the body
+// executes exactly once per VM regardless of how many importers exist.
+
+print "shared loaded"; // expect: shared loaded
+
+var n = 1;

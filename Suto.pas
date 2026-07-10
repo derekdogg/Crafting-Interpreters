@@ -569,8 +569,14 @@ type
 
   // Per-slot diagnostic metadata for the global slot table. Cold path only:
   // touched by runtime error reporting and by the GC name-marking walk.
+  // ModuleDict is also read on the OP_DEFINE_GLOBAL / OP_SET_GLOBAL paths,
+  // which are far cooler than the GET paths.
   TGlobalMeta = record
     Name : pObjString;  // interned name; used for 'Undefined variable X.' errors
+    // require(): export dict of the module that owns this slot, nil for
+    // main-script/builtin slots. When set, defines/assignments to the slot
+    // are written through to the dict so it stays a live namespace.
+    ModuleDict : pObjDictionary;
   end;
 
   //Virtual Machine
@@ -590,6 +596,19 @@ type
     GlobalCount      : Integer;
     GlobalCapacity   : Integer;
     GlobalNameToSlot : pTable;
+    // require(): slot count at the moment of the first user compile. Slots
+    // below this boundary are natives/builtins and are the only entries
+    // seeded into a module's private name->slot map. -1 until first
+    // CompileAndRun.
+    BuiltinGlobalCount : Integer;
+    // require(): while CompileModuleSource has swapped a module's private
+    // map into GlobalNameToSlot, this holds the main map (and keeps it
+    // GC-marked). nil outside module compiles.
+    ModuleCompileSavedMap : pTable;
+    // require(): export dict of the module currently being compiled. New
+    // global slots allocated during that compile carry it in
+    // GlobalMeta[].ModuleDict. nil outside module compiles.
+    CompilingModuleDict : pObjDictionary;
     OpenUpvalues    : pObjUpvalue;
     RuntimeErrorStr : String;
     // External GC roots: Delphi-side TValue slots that hold Lox objects
@@ -924,6 +943,11 @@ procedure UnregisterGCRoot(var slot: TValue);
 {$REGION 'Public Entry Points'}
 function CompileAndRun(source : pAnsiChar) : TInterpretResult;
 function InterpretResult(source : pAnsiChar) : TInterpretResult;
+// require(): compiles a module body against its own private global
+// name->slot namespace (seeded with builtins only) so top-level module
+// definitions land in fresh slots tagged with moduleDict. The caller must
+// keep moduleDict GC-reachable for the duration of the call.
+function CompileModuleSource(source : pAnsiChar; moduleDict : pObjDictionary) : pObjClosure;
 {$ENDREGION}
 
 {$REGION 'Native Registration'}
@@ -956,7 +980,7 @@ procedure ReleaseNativeInstance(instance : Pointer);
 procedure InitVM();
 procedure FreeVM();
 procedure GrowGlobals; inline;
-function  resolveGlobalSlot(name : pObjString) : Integer;
+function  resolveGlobalSlot(name : pObjString; isDeclaration : Boolean = false) : Integer;
 {$ENDREGION}
 
 {$REGION 'Garbage Collection'}
@@ -1033,7 +1057,7 @@ procedure beginScope(); inline;
 procedure endScope();
 procedure recordDeclaration();
 function identifierConstant(const name : TToken) : integer; inline;
-function identifierGlobalSlot(const name : TToken) : integer; inline;
+function identifierGlobalSlot(const name : TToken; isDeclaration : Boolean = false) : integer; inline;
 function parseVariable(const errorMsg : PAnsiChar) : integer; inline;
 procedure defineVariable(global : integer); inline;
 {$ENDREGION}
@@ -5636,6 +5660,17 @@ begin
   runtimeError(prefix + ' ''' + ObjStringToWideStr(name) + '''.');
 end;
 
+// require(): mirrors a module-owned global slot's new value into the
+// module's export dict — the dict IS the module namespace, populated
+// incrementally as the body runs (this is what makes import cycles work).
+// Kept out of RunLoop so the hot arms stay lean; callers guard on
+// GlobalMeta[slot].ModuleDict <> nil.
+procedure RunModuleDictWrite(slot: Integer; const v: TValue);
+begin
+  DictSet(VM.GlobalMeta[slot].ModuleDict,
+    StringToValue(VM.GlobalMeta[slot].Name), v, VM.MemTracker);
+end;
+
 procedure RunErrIndexBounds(idx, count: Integer);
 begin
   runtimeError('Array index ' + IntToStr(idx) + ' out of bounds [0, ' +
@@ -5717,6 +5752,55 @@ begin
   {$ENDIF}
   // A native may signal failure via RuntimeErrorStr without raising.
   Result := VM.RuntimeErrorStr = '';
+end;
+
+// OP_INVOKE dict arms: calls a non-closure callable found under a dict key —
+// natives, record constructors, native classes (closures need frame surgery
+// and stay inline in the dispatch arms). The callee sits in the receiver
+// slot (StackTop[-1-argCount]); on success that slot holds the result and
+// the args are popped. Returns False when a runtime error has been flagged.
+function CallDictCalleeChecked(const callee: TValue; argCount: Integer): Boolean;
+var
+  ret : TValue;
+  stack : pStack;
+  j : Integer;
+begin
+  Result := False;
+  stack := VM.Stack;
+  if isNative(callee) then
+  begin
+    if not CallNativeChecked(callee, argCount, stack.StackTop - argCount, ret) then
+      Exit;
+    stack.StackTop[-1 - argCount] := ret;
+    Dec(stack.StackTop, argCount);
+  end
+  else if isRecordType(callee) then
+  begin
+    // Mirrors OP_CALL's record-construction branch, with the receiver slot
+    // standing in for the callee slot.
+    if argCount <> pObjRecordType(GetObject(callee))^.fieldCount then
+    begin
+      RunErrArity(pObjRecordType(GetObject(callee))^.fieldCount, argCount);
+      Exit;
+    end;
+    ret := CreateObject(pObj(newRecord(pObjRecordType(GetObject(callee)), VM.MemTracker)));
+    pushStack(stack, ret);  // protect from GC while copying args
+    for j := 0 to argCount - 1 do
+      pObjRecord(GetObject(ret))^.fields[j] := (stack.StackTop - 1 - argCount + j)^;
+    // Collapse protect-copy + args + receiver to the result in one step.
+    stack.StackTop[-2 - argCount] := ret;
+    Dec(stack.StackTop, argCount + 1);
+  end
+  else
+  begin
+    Assert(isNativeClass(callee), 'CallDictCalleeChecked: unexpected callee kind');
+    if not ConstructNativeClass(pObjNativeClass(GetObject(callee))^.classInfo,
+      argCount, stack.StackTop - argCount, ret) then
+      Exit;
+    stack.StackTop[-1 - argCount] := ret;
+    Dec(stack.StackTop, argCount);
+  end;
+  Result := True;
 end;
 
 // OP_INDEX_GET on a native object via its cached default indexed property.
@@ -6504,6 +6588,8 @@ begin
             exit;
           end;
           vm.GlobalValues[i] := stack.StackTop[-1];
+          if vm.GlobalMeta[i].ModuleDict <> nil then
+            RunModuleDictWrite(i, stack.StackTop[-1]);
           // Assignment is an expression — leave the value on stack.
         end;
 
@@ -6813,6 +6899,8 @@ begin
           Assert(i < vm.GlobalCount, 'OP_DEFINE_GLOBAL: slot out of range');
           {$ENDIF}
           vm.GlobalValues[i] := stack.StackTop[-1];
+          if vm.GlobalMeta[i].ModuleDict <> nil then
+            RunModuleDictWrite(i, stack.StackTop[-1]);
           Dec(stack.StackTop);
         end;
 
@@ -6868,6 +6956,8 @@ begin
           Assert(i < vm.GlobalCount, 'OP_DEFINE_GLOBAL_LONG: slot out of range');
           {$ENDIF}
           vm.GlobalValues[i] := stack.StackTop[-1];
+          if vm.GlobalMeta[i].ModuleDict <> nil then
+            RunModuleDictWrite(i, stack.StackTop[-1]);
           Dec(stack.StackTop);
         end;
 
@@ -6898,6 +6988,8 @@ begin
             exit;
           end;
           vm.GlobalValues[i] := stack.StackTop[-1];
+          if vm.GlobalMeta[i].ModuleDict <> nil then
+            RunModuleDictWrite(i, stack.StackTop[-1]);
           // Assignment is an expression — leave the value on stack.
         end;
 
@@ -7035,6 +7127,26 @@ begin
             // Replace receiver with the property value in place (no pop/push).
             stack.StackTop[-1] := rttiResult;
           end
+          else if isDictionary(stack.StackTop[-1]) then
+          begin
+            // Dict dot-read: d.key is sugar for d["key"]. Module namespaces
+            // returned by require() rely on this (U.forEach, U.VERSION).
+            recNameIdx := ip^; Inc(ip);
+            {$IFOPT C+}
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY');
+            AssertFrameValues('OP_GET_PROPERTY');
+            {$ENDIF}
+            value := constants[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY: name constant is not a string');
+            if not DictGet(pObjDictionary(GetObject(stack.StackTop[-1])), value, ValueB) then
+            begin
+              RunErrNamed('Undefined property', ValueToString(value));
+              outcome.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            // Replace receiver with the entry value in place (no pop/push).
+            stack.StackTop[-1] := ValueB;
+          end
           else
           begin
             recNameIdx := ip^; Inc(ip); // consume operand
@@ -7092,6 +7204,23 @@ begin
             stack.StackTop[-2] := stack.StackTop[-1];
             Dec(stack.StackTop);
           end
+          else if isDictionary(stack.StackTop[-2]) then
+          begin
+            // Dict dot-write: d.key = v is sugar for d["key"] = v.
+            recNameIdx := ip^; Inc(ip);
+            {$IFOPT C+}
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY');
+            AssertFrameValues('OP_SET_PROPERTY');
+            {$ENDIF}
+            value := constants[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY: name constant is not a string');
+            DictSet(pObjDictionary(GetObject(stack.StackTop[-2])), value,
+              stack.StackTop[-1], vm.MemTracker);
+            // Write the assigned value over the receiver, shrink by one:
+            // [recv, value] -> [value] (assignment-expression result).
+            stack.StackTop[-2] := stack.StackTop[-1];
+            Dec(stack.StackTop);
+          end
           else
           begin
             recNameIdx := ip^; Inc(ip); // consume operand
@@ -7116,15 +7245,62 @@ begin
           invokeMethodName := ValueToString(ValueB);
           if isDictionary(value) then
           begin
-            if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
-              invokeArgCount, stack.StackTop - invokeArgCount, nativeResult) then
+            // Callable-key dispatch first: if the dict holds a callable under
+            // this key (module exports via require() — closures, natives,
+            // record constructors, native classes), call it. Falls back to
+            // the builtin dict methods (Set/Get/Keys/...) otherwise.
+            if DictGet(pObjDictionary(GetObject(value)), ValueB, nativeResult) and
+               (isClosure(nativeResult) or isNative(nativeResult) or
+                isRecordType(nativeResult) or isNativeClass(nativeResult)) then
             begin
-              outcome.code := INTERPRET_RUNTIME_ERROR;
-              exit;
+              if isClosure(nativeResult) then
+              begin
+                closure := pObjClosure(GetObject(nativeResult));
+                func := closure^.func;
+                if invokeArgCount <> func^.arity then
+                begin
+                  RunErrArity(func^.arity, invokeArgCount);
+                  outcome.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+                if VM.FrameCount = FRAMES_MAX then
+                begin
+                  RunErrStackOverflow(func^.name);
+                  outcome.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+                // Overwrite the receiver with the callee, then enter the
+                // frame exactly as OP_CALL's closure fast-path does.
+                stack.StackTop[-1 - invokeArgCount] := nativeResult;
+                frame^.ip := ip;
+                Inc(frame);
+                frame^.closure := closure;
+                frame^.slots := stack.StackTop - (invokeArgCount + 1);
+                Inc(VM.FrameCount);
+                ip := func^.chunk^.Code;
+                constants := func^.chunk^.Constants^.Values;
+              end
+              else
+              begin
+                if not CallDictCalleeChecked(nativeResult, invokeArgCount) then
+                begin
+                  outcome.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+              end;
+            end
+            else
+            begin
+              if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
+                invokeArgCount, stack.StackTop - invokeArgCount, nativeResult) then
+              begin
+                outcome.code := INTERPRET_RUNTIME_ERROR;
+                exit;
+              end;
+              // Collapse args + receiver to the result in one step (see OP_CALL).
+              stack.StackTop[-1 - invokeArgCount] := nativeResult;
+              Dec(stack.StackTop, invokeArgCount);
             end;
-            // Collapse args + receiver to the result in one step (see OP_CALL).
-            stack.StackTop[-1 - invokeArgCount] := nativeResult;
-            Dec(stack.StackTop, invokeArgCount);
           end
           else if isNativeObject(value) then
           begin
@@ -7180,15 +7356,57 @@ begin
           invokeMethodName := ValueToString(ValueB);
           if isDictionary(value) then
           begin
-            if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
-              invokeArgCount, stack.StackTop - invokeArgCount, nativeResult) then
+            // Callable-key dispatch first — see OP_INVOKE for commentary.
+            if DictGet(pObjDictionary(GetObject(value)), ValueB, nativeResult) and
+               (isClosure(nativeResult) or isNative(nativeResult) or
+                isRecordType(nativeResult) or isNativeClass(nativeResult)) then
             begin
-              outcome.code := INTERPRET_RUNTIME_ERROR;
-              exit;
+              if isClosure(nativeResult) then
+              begin
+                closure := pObjClosure(GetObject(nativeResult));
+                func := closure^.func;
+                if invokeArgCount <> func^.arity then
+                begin
+                  RunErrArity(func^.arity, invokeArgCount);
+                  outcome.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+                if VM.FrameCount = FRAMES_MAX then
+                begin
+                  RunErrStackOverflow(func^.name);
+                  outcome.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+                stack.StackTop[-1 - invokeArgCount] := nativeResult;
+                frame^.ip := ip;
+                Inc(frame);
+                frame^.closure := closure;
+                frame^.slots := stack.StackTop - (invokeArgCount + 1);
+                Inc(VM.FrameCount);
+                ip := func^.chunk^.Code;
+                constants := func^.chunk^.Constants^.Values;
+              end
+              else
+              begin
+                if not CallDictCalleeChecked(nativeResult, invokeArgCount) then
+                begin
+                  outcome.code := INTERPRET_RUNTIME_ERROR;
+                  exit;
+                end;
+              end;
+            end
+            else
+            begin
+              if not InvokeDictMethod(pObjDictionary(GetObject(value)), invokeMethodName,
+                invokeArgCount, stack.StackTop - invokeArgCount, nativeResult) then
+              begin
+                outcome.code := INTERPRET_RUNTIME_ERROR;
+                exit;
+              end;
+              // Collapse args + receiver to the result in one step (see OP_CALL).
+              stack.StackTop[-1 - invokeArgCount] := nativeResult;
+              Dec(stack.StackTop, invokeArgCount);
             end;
-            // Collapse args + receiver to the result in one step (see OP_CALL).
-            stack.StackTop[-1 - invokeArgCount] := nativeResult;
-            Dec(stack.StackTop, invokeArgCount);
           end
           else if isNativeObject(value) then
           begin
@@ -7272,6 +7490,24 @@ begin
             // Replace receiver with the property value in place (no pop/push).
             stack.StackTop[-1] := rttiResult;
           end
+          else if isDictionary(stack.StackTop[-1]) then
+          begin
+            // Dict dot-read — see OP_GET_PROPERTY for commentary.
+            recNameIdx := ReadLongIndex(ip);
+            {$IFOPT C+}
+            AssertConstantIndex(recNameIdx, 'OP_GET_PROPERTY_LONG');
+            AssertFrameValues('OP_GET_PROPERTY_LONG');
+            {$ENDIF}
+            value := constants[recNameIdx];
+            Assert(isString(value), 'OP_GET_PROPERTY_LONG: name constant is not a string');
+            if not DictGet(pObjDictionary(GetObject(stack.StackTop[-1])), value, ValueB) then
+            begin
+              RunErrNamed('Undefined property', ValueToString(value));
+              outcome.code := INTERPRET_RUNTIME_ERROR;
+              exit;
+            end;
+            stack.StackTop[-1] := ValueB;
+          end
           else
           begin
             recNameIdx := ReadLongIndex(ip);
@@ -7326,6 +7562,21 @@ begin
             end;
             // Write the assigned value over the receiver, shrink by one:
             // [recv, value] -> [value] (assignment-expression result).
+            stack.StackTop[-2] := stack.StackTop[-1];
+            Dec(stack.StackTop);
+          end
+          else if isDictionary(stack.StackTop[-2]) then
+          begin
+            // Dict dot-write — see OP_SET_PROPERTY for commentary.
+            recNameIdx := ReadLongIndex(ip);
+            {$IFOPT C+}
+            AssertConstantIndex(recNameIdx, 'OP_SET_PROPERTY_LONG');
+            AssertFrameValues('OP_SET_PROPERTY_LONG');
+            {$ENDIF}
+            value := constants[recNameIdx];
+            Assert(isString(value), 'OP_SET_PROPERTY_LONG: name constant is not a string');
+            DictSet(pObjDictionary(GetObject(stack.StackTop[-2])), value,
+              stack.StackTop[-1], vm.MemTracker);
             stack.StackTop[-2] := stack.StackTop[-1];
             Dec(stack.StackTop);
           end
@@ -7669,6 +7920,12 @@ begin
    AssertVMIsAssigned;
    {$ENDIF}
 
+   // require(): the first user compile marks the builtin boundary — every
+   // slot below it was registered by natives/builtins and is shared with
+   // module compiles; everything at or above it is user code and is not.
+   if VM.BuiltinGlobalCount < 0 then
+     VM.BuiltinGlobalCount := VM.GlobalCount;
+
    closure := compile(source);
 
 
@@ -7784,12 +8041,21 @@ end;
 // calls for the same interned pObjString return the same slot.
 // Callers must ensure `name` is GC-reachable (already on the value stack)
 // because TableSet below may trigger a collection.
-function resolveGlobalSlot(name : pObjString) : Integer;
+function resolveGlobalSlot(name : pObjString; isDeclaration : Boolean = false) : Integer;
 var
   v : TValue;
 begin
   if TableGet(VM.GlobalNameToSlot, name, v) then
-    Exit(Trunc(GetNumber(v)));
+  begin
+    Result := Trunc(GetNumber(v));
+    // require(): inside a module compile, a *declaration* whose name maps to
+    // a seeded builtin slot must not overwrite the shared builtin — fall
+    // through and give the module its own fresh slot (strict isolation).
+    // References (isDeclaration=false) keep resolving to the builtin.
+    if not ((VM.CompilingModuleDict <> nil) and isDeclaration and
+            (Result < VM.BuiltinGlobalCount)) then
+      Exit;
+  end;
 
   if VM.GlobalCount = VM.GlobalCapacity then
     GrowGlobals;
@@ -7797,6 +8063,7 @@ begin
   Result := VM.GlobalCount;
   Inc(VM.GlobalCount);
   VM.GlobalMeta[Result].Name := name;
+  VM.GlobalMeta[Result].ModuleDict := VM.CompilingModuleDict;
   VM.GlobalValues[Result]    := UNDEFINED_VAL;
   // Slot index stored as a NaN-boxed double. A million slots is exactly
   // representable, so the float round-trip is lossless.
@@ -8044,6 +8311,9 @@ begin
   VM.GlobalNameToSlot := nil;
   VM.GlobalCount := 0;
   VM.GlobalCapacity := 0;
+  VM.BuiltinGlobalCount := -1;
+  VM.ModuleCompileSavedMap := nil;
+  VM.CompilingModuleDict := nil;
   VM.OpenUpvalues := nil;
   VM.OnPrint := nil;
   VM.RuntimeErrorStr := '';
@@ -8426,7 +8696,24 @@ begin
   // MarkValue is a no-op for undefined slots.
   MarkTable(VM.GlobalNameToSlot);
   for i := 0 to VM.GlobalCount - 1 do
+  begin
     MarkValue(VM.GlobalValues[i]);
+    // require(): module slots outlive the transient per-module compile map
+    // that once held their name keys, so names must be marked here. The
+    // ModuleDict mark keeps a failed module's dict valid for its orphaned
+    // slots even after its cache entry is retired.
+    if VM.GlobalMeta[i].Name <> nil then
+      MarkObject(pObj(VM.GlobalMeta[i].Name));
+    if VM.GlobalMeta[i].ModuleDict <> nil then
+      MarkObject(pObj(VM.GlobalMeta[i].ModuleDict));
+  end;
+
+  // require(): while a module compile is active, the main name->slot map is
+  // parked here and must stay marked (its keys are interned strings).
+  if VM.ModuleCompileSavedMap <> nil then
+    MarkTable(VM.ModuleCompileSavedMap);
+  if VM.CompilingModuleDict <> nil then
+    MarkObject(pObj(VM.CompilingModuleDict));
 
   // Mark extra roots (externally-held closures for callbacks)
   for i := 0 to VM.ExtraRootCount - 1 do
@@ -10192,14 +10479,14 @@ end;
 // Global-scope equivalent of identifierConstant: interns the identifier and
 // returns its stable VM slot index. Used by parseVariable and namedVariable
 // when the name resolves to a global rather than a local/upvalue.
-function identifierGlobalSlot(const name : TToken) : integer;
+function identifierGlobalSlot(const name : TToken; isDeclaration : Boolean = false) : integer;
 var
   strObj : pObjString;
 begin
   strObj := CreateString(TokenToString(name), VM.MemTracker);
   // GC-protect during resolveGlobalSlot (its TableSet may allocate).
   pushStack(VM.Stack, StringToValue(strObj));
-  Result := resolveGlobalSlot(strObj);
+  Result := resolveGlobalSlot(strObj, isDeclaration);
   Dec(VM.Stack.StackTop);
 end;
 
@@ -10211,7 +10498,7 @@ begin
   if Current^.scopeDepth > 0 then
     Exit(0); // locals don't get stored in constant table
 
-  Result := identifierGlobalSlot(parser.previous);
+  Result := identifierGlobalSlot(parser.previous, true);
 end;
 
 procedure defineVariable(global : integer);
@@ -11076,6 +11363,73 @@ begin
 
   // ---- Exit assertions ----
   Assert(Current = nil, 'compile exit: Current compiler should be nil');
+end;
+
+// require(): compile a module body with its own private name->slot map so
+// its top-level definitions cannot collide with (or leak into) the main
+// script's globals. The map is seeded with the builtin entries only, so
+// natives (str, arrayLen, require, ...) resolve inside modules. Fresh slots
+// allocated during the compile are tagged with moduleDict (see
+// resolveGlobalSlot); the DEFINE/SET global opcodes then write those slots'
+// values through to the dict, which is the module's live export namespace.
+//
+// Compiles never nest (a nested require runs at module-body *runtime*, after
+// this compile has finished), so a single saved-map field suffices.
+function CompileModuleSource(source : pAnsiChar; moduleDict : pObjDictionary) : pObjClosure;
+var
+  moduleMap : pTable;
+  entry : pEntry;
+  i : Integer;
+  globalSnapshot : Integer;
+begin
+  Assert(moduleDict <> nil, 'CompileModuleSource: moduleDict is nil');
+  Assert(VM.ModuleCompileSavedMap = nil, 'CompileModuleSource: module compile already active');
+  Assert(VM.BuiltinGlobalCount >= 0, 'CompileModuleSource: builtin boundary not set (no CompileAndRun yet)');
+
+  moduleMap := nil;
+  InitTable(moduleMap, VM.MemTracker);
+  // Swap first: MarkRoots marks GlobalNameToSlot (now the module map) and
+  // ModuleCompileSavedMap (the main map), so both survive GCs triggered by
+  // the TableSet calls below and by the compile itself.
+  VM.ModuleCompileSavedMap := VM.GlobalNameToSlot;
+  VM.GlobalNameToSlot := moduleMap;
+  VM.CompilingModuleDict := moduleDict;
+  globalSnapshot := VM.GlobalCount;
+  try
+    // Seed builtin/native names. Tombstones have key = nil and are skipped.
+    for i := 0 to VM.ModuleCompileSavedMap.CurrentCapacity - 1 do
+    begin
+      entry := @VM.ModuleCompileSavedMap.Entries[i];
+      if (entry^.key <> nil) and
+         (Trunc(GetNumber(entry^.value)) < VM.BuiltinGlobalCount) then
+        TableSet(VM.GlobalNameToSlot, entry^.key, entry^.value, VM.MemTracker);
+    end;
+    Result := compile(source);
+    // Compile failure: roll back any globals allocated during this compile.
+    // The abandoned ObjFunction (if any) is unreachable and will be GC'd, so
+    // no live bytecode references the reclaimed slot indices. Without this,
+    // a persistent compile error would monotonically grow VM.GlobalCount on
+    // every require() retry and retain the discarded module dict via
+    // GlobalMeta[].ModuleDict (which MarkRoots unconditionally marks).
+    if Result = nil then
+    begin
+      for i := globalSnapshot to VM.GlobalCount - 1 do
+      begin
+        VM.GlobalMeta[i].Name       := nil;
+        VM.GlobalMeta[i].ModuleDict := nil;
+        VM.GlobalValues[i]          := UNDEFINED_VAL;
+      end;
+      VM.GlobalCount := globalSnapshot;
+    end;
+  finally
+    VM.CompilingModuleDict := nil;
+    // The module's slots are already burned into its bytecode; the map is
+    // compile-time-only state and can go. Slot names stay reachable via the
+    // GlobalMeta name-marking walk in MarkRoots.
+    FreeTable(VM.GlobalNameToSlot, VM.MemTracker);
+    VM.GlobalNameToSlot := VM.ModuleCompileSavedMap;
+    VM.ModuleCompileSavedMap := nil;
+  end;
 end;
 
 {$ENDREGION}

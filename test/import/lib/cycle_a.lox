@@ -1,0 +1,8 @@
+// Cycle fixture (a <-> b). Safe at load time: nothing calls across the
+// cycle until after both modules finish loading.
+
+var B = require("cycle_b.lox");
+
+fun greet() { return "hi from a, also " + B.greet(); }
+
+var label = "module A";

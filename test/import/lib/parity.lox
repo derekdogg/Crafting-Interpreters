@@ -1,0 +1,12 @@
+// Fixture: mutually recursive module functions — validates forward global
+// references *within* a module (isOdd is referenced before it is defined).
+
+fun isEven(n) {
+  if (n == 0) return true;
+  return isOdd(n - 1);
+}
+
+fun isOdd(n) {
+  if (n == 0) return false;
+  return isEven(n - 1);
+}

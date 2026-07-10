@@ -1,0 +1,7 @@
+// Fixture: a module whose body raises a runtime error mid-load. The
+// requiring script sees the error propagate out of require(), and the
+// cache entry is marked Failed (so a later require would re-attempt).
+
+var ok = 1;
+
+print undefinedThing; // expect runtime error: Undefined variable 'undefinedThing'

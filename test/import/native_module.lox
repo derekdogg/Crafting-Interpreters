@@ -1,0 +1,10 @@
+// A Pascal-registered native module resolves through the same require()
+// call as .lox files — script code cannot tell the difference. The builder
+// runs once; the second require returns the cached instance.
+
+var D = require("demo");
+var E = require("demo");
+
+print D.version;        // expect: 1.0
+print str(D.twice(21)); // expect: 42
+print D == E;           // expect: true

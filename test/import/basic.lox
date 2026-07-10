@@ -1,0 +1,19 @@
+// require() basics: import a library module, call its exports via dot
+// access, read an exported var, and pull an export out into a plain var.
+
+var U = require("lib/utils.lox");
+
+var nums = [1, 2, 3, 4, 5];
+var squares = U.map(nums, x => x * x);
+var total = U.reduce(squares, (a, b) => a + b, 0);
+
+print "utils v" + U.VERSION; // expect: utils v0.1.0
+print str(total);            // expect: 55
+
+U.forEach([1, 2], x => { print "n=" + str(x); });
+// expect: n=1
+// expect: n=2
+
+// Exports are ordinary values: assign one out and call it directly.
+var reduce = U.reduce;
+print str(reduce([1, 2, 3], (a, b) => a + b, 0)); // expect: 6

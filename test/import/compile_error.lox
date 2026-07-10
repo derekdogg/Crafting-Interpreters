@@ -1,0 +1,4 @@
+// A compile error inside a required module surfaces as a runtime error on
+// the require() call, naming the module.
+
+var B = require("lib/broken.txt"); // expect runtime error: require: compile failed

@@ -1,0 +1,9 @@
+// A module may declare a name that shadows a builtin native: the module's
+// own code and exports see the shadow, while the importing script's builtin
+// is untouched (strict isolation, declare-forces-fresh-slot).
+
+var M = require("lib/shadow_str.lox");
+
+print M.str;    // expect: shadowed
+print M.read(); // expect: shadowed
+print str(42);  // expect: 42

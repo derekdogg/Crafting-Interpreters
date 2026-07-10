@@ -1,0 +1,13 @@
+// Cycle-limitation fixture: when this file is loaded *as a module* (see
+// cycle_partial.lox), partial_b's load-time call across the cycle sees the
+// partially populated dict — greet is not bound yet — and errors.
+//
+// Standalone-run note: the top-level script is anonymous source text (like
+// Python's __main__), so partial_b's require("partial_a.lox") loads a
+// SECOND, fresh copy of this file as the module. That copy completes before
+// partial_b's load-time call, so running this file directly prints instead
+// of erroring:
+
+var B = require("partial_b.lox"); // expect: greet from partial_a
+
+fun greet() { return "greet from partial_a"; }

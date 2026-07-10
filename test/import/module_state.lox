@@ -1,0 +1,10 @@
+// Exported closures read/write a module-scope var, and the module dict
+// tracks those writes (the dict is the module's live namespace). This is
+// the test that specifically validates the per-module globals isolation.
+
+var C = require("lib/counter.lox");
+
+print str(C.inc());     // expect: 1
+print str(C.inc());     // expect: 2
+print str(C.current()); // expect: 2
+print str(C.count);     // expect: 2
