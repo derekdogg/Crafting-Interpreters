@@ -84,17 +84,20 @@ end;
 
 // Entries hold a GC root pointing at their heap-allocated DictValue slot.
 // Unregister the root before Dispose so that if a VM is still live when this
-// runs (unit-finalization order at shutdown, in particular), its ExtraRoots
-// list never retains a pointer into freed PModuleEntry memory.
-// UnregisterGCRoot is a no-op when the slot isn't in the list, so the
-// InitVM path (where the previous VM's roots are already gone) stays safe.
+// runs, its ExtraRoots list never retains a pointer into freed PModuleEntry
+// memory. When VM is nil (host has already called FreeVM before unit
+// finalization runs, or we're being called from RegisterImportNatives right
+// after a fresh initVM where the root list is empty anyway) there's nothing
+// to unregister — skip the call to avoid a nil-pointer AV inside
+// UnregisterGCRoot's VM.ExtraRootCount deref.
 procedure ClearModuleCache;
 var
   entry : PModuleEntry;
 begin
   for entry in ModuleCache.Values do
   begin
-    UnregisterGCRoot(entry^.DictValue);
+    if VM <> nil then
+      UnregisterGCRoot(entry^.DictValue);
     Dispose(entry);
   end;
   ModuleCache.Clear;
