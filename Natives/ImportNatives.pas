@@ -82,15 +82,21 @@ begin
   NativeBuilders.AddOrSetValue(name, builder);
 end;
 
-// Entries hold GC roots registered against the VM that created them; this is
-// only called when that VM is gone (next InitVM, or unit finalization), so
-// the roots die with the VM and only the Pascal memory needs releasing.
+// Entries hold a GC root pointing at their heap-allocated DictValue slot.
+// Unregister the root before Dispose so that if a VM is still live when this
+// runs (unit-finalization order at shutdown, in particular), its ExtraRoots
+// list never retains a pointer into freed PModuleEntry memory.
+// UnregisterGCRoot is a no-op when the slot isn't in the list, so the
+// InitVM path (where the previous VM's roots are already gone) stays safe.
 procedure ClearModuleCache;
 var
   entry : PModuleEntry;
 begin
   for entry in ModuleCache.Values do
+  begin
+    UnregisterGCRoot(entry^.DictValue);
     Dispose(entry);
+  end;
   ModuleCache.Clear;
   ImportStack.Clear;
 end;

@@ -11380,6 +11380,7 @@ var
   moduleMap : pTable;
   entry : pEntry;
   i : Integer;
+  globalSnapshot : Integer;
 begin
   Assert(moduleDict <> nil, 'CompileModuleSource: moduleDict is nil');
   Assert(VM.ModuleCompileSavedMap = nil, 'CompileModuleSource: module compile already active');
@@ -11393,6 +11394,7 @@ begin
   VM.ModuleCompileSavedMap := VM.GlobalNameToSlot;
   VM.GlobalNameToSlot := moduleMap;
   VM.CompilingModuleDict := moduleDict;
+  globalSnapshot := VM.GlobalCount;
   try
     // Seed builtin/native names. Tombstones have key = nil and are skipped.
     for i := 0 to VM.ModuleCompileSavedMap.CurrentCapacity - 1 do
@@ -11403,6 +11405,22 @@ begin
         TableSet(VM.GlobalNameToSlot, entry^.key, entry^.value, VM.MemTracker);
     end;
     Result := compile(source);
+    // Compile failure: roll back any globals allocated during this compile.
+    // The abandoned ObjFunction (if any) is unreachable and will be GC'd, so
+    // no live bytecode references the reclaimed slot indices. Without this,
+    // a persistent compile error would monotonically grow VM.GlobalCount on
+    // every require() retry and retain the discarded module dict via
+    // GlobalMeta[].ModuleDict (which MarkRoots unconditionally marks).
+    if Result = nil then
+    begin
+      for i := globalSnapshot to VM.GlobalCount - 1 do
+      begin
+        VM.GlobalMeta[i].Name       := nil;
+        VM.GlobalMeta[i].ModuleDict := nil;
+        VM.GlobalValues[i]          := UNDEFINED_VAL;
+      end;
+      VM.GlobalCount := globalSnapshot;
+    end;
   finally
     VM.CompilingModuleDict := nil;
     // The module's slots are already burned into its bytecode; the map is
