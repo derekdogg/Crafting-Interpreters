@@ -1,0 +1,6 @@
+// Errors from a native module's functions propagate like any native error.
+
+var D = require("demo");
+
+print str(D.twice(5)); // expect: 10
+D.twice("not a number"); // expect runtime error: twice() expects a number.

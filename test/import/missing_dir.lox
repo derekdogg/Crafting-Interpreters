@@ -1,0 +1,4 @@
+// Requiring a directory name is not a module: "lib" has no extension, so
+// resolution looks for lib.lox, which does not exist.
+
+var D = require("lib"); // expect runtime error: require: module 'lib' not found

@@ -1,0 +1,9 @@
+// Module-internal mutual recursion and forward references resolve against
+// the module's own namespace.
+
+var P = require("lib/parity.lox");
+
+print P.isEven(10); // expect: true
+print P.isOdd(10);  // expect: false
+print P.isOdd(7);   // expect: true
+print P.isEven(0);  // expect: true

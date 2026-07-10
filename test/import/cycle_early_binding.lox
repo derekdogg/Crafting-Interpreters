@@ -1,0 +1,8 @@
+// The module dict populates incrementally as the body runs: names bound
+// BEFORE a require are visible to the required module at load time, even
+// mid-cycle.
+
+var A = require("lib/early_a.lox");
+
+print A.B.captured; // expect: seen-early
+print A.late;       // expect: late

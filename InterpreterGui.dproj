@@ -156,6 +156,7 @@
         <DCCReference Include="Natives\SystemNatives.pas"/>
         <DCCReference Include="Natives\CallbackNatives.pas"/>
         <DCCReference Include="Natives\EventNatives.pas"/>
+        <DCCReference Include="Natives\ImportNatives.pas"/>
         <DCCReference Include="LoxEventEngine.pas"/>
         <DCCReference Include="fmEventTest.pas">
             <Form>frmEventTest</Form>

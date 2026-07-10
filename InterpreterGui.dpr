@@ -1,4 +1,4 @@
-program InterpreterGui;
+﻿program InterpreterGui;
 uses
   Vcl.Forms,
   Vcl.Themes,
@@ -21,6 +21,7 @@ uses
   SystemNatives in 'Natives\SystemNatives.pas',
   CallbackNatives in 'Natives\CallbackNatives.pas',
   EventNatives in 'Natives\EventNatives.pas',
+  ImportNatives in 'Natives\ImportNatives.pas',
   LoxEventEngine in 'LoxEventEngine.pas',
   fmEventTest in 'fmEventTest.pas' {frmEventTest};
 

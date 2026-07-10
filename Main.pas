@@ -86,7 +86,7 @@ var
 implementation
 uses
   NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, fmGame, fmEventTest,
-  LoxEventEngine;
+  LoxEventEngine, ImportNatives;
 
 {$R *.dfm}
 
@@ -350,6 +350,9 @@ var
 begin
   Memo2.Lines.Clear;
   txt := AnsiString(Memo1.Lines.Text);
+  // require() resolves the editor script's imports against its file's
+  // directory when it has been saved/loaded; falls back to the CWD.
+  SetScriptBaseDir(ExtractFilePath(FCurrentFilePath));
   FScriptRunning := True;
   Button1.Enabled := False;
   BtnRunGame.Enabled := False;
@@ -404,6 +407,9 @@ var
 begin
   Memo2.Lines.Clear;
   txt := AnsiString(Memo1.Lines.Text);
+  // require() resolves the editor script's imports against its file's
+  // directory when it has been saved/loaded; falls back to the CWD.
+  SetScriptBaseDir(ExtractFilePath(FCurrentFilePath));
   FScriptRunning := True;
   Button1.Enabled := False;
   BtnRunGame.Enabled := False;
@@ -886,6 +892,8 @@ var
   HasOutput, HasRuntimeError, HasCompileErrors, TestOK: Boolean;
 begin
   Content := TFile.ReadAllText(FilePath);
+  // require() resolves the top-level script's imports against its directory.
+  SetScriptBaseDir(ExtractFilePath(FilePath));
 
   Lines := TStringList.Create;
   ExpectedOutputs := TStringList.Create;
@@ -1203,6 +1211,8 @@ begin
     for F in Files do
     begin
       FileName := TPath.GetFileName(F);
+      // require() resolves the script's imports against its directory.
+      SetScriptBaseDir(ExtractFilePath(F));
       IsRtti := Pos('inject_rtti', LowerCase(FileName)) > 0;
       IsInject := (Pos('inject_', LowerCase(FileName)) > 0) and not IsRtti;
 

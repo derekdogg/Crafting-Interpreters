@@ -1,0 +1,4 @@
+// Documents the expected limitation, not a bug: top-level cross-cycle
+// access sees the partial module dict, so the call fails cleanly.
+
+var A = require("lib/partial_a.lox"); // expect runtime error: Undefined dictionary method 'greet'

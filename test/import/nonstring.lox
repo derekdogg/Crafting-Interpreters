@@ -1,0 +1,3 @@
+// require() rejects non-string arguments.
+
+require(42); // expect runtime error: require: expected string path

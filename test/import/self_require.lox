@@ -1,0 +1,7 @@
+// Self-import: a module requiring itself gets its own dict (the degenerate
+// one-module cycle).
+
+var S = require("lib/self_ref.lox");
+
+print S.whoami();  // expect: self
+print S == S.me;   // expect: true

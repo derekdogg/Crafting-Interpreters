@@ -1,0 +1,11 @@
+// Re-import is idempotent: two requires of the same path return the same
+// cached dict object (reference equality), and mutations through one
+// binding are visible through the other.
+
+var A = require("lib/utils.lox");
+var B = require("lib/utils.lox");
+
+print A == B; // expect: true
+
+A["extra"] = 99;
+print str(B["extra"]); // expect: 99

@@ -1,0 +1,15 @@
+// require() is an ordinary function: callable from inside functions and
+// loops. Repeated requires are cheap cache hits returning the same instance.
+
+fun load() { return require("lib/counter.lox"); }
+
+var C = load();
+C.inc();
+
+for (var i = 0; i < 50; i = i + 1) {
+  var again = load();
+  if (again != C) print "MISMATCH";
+  again.inc();
+}
+
+print str(C.count); // expect: 51

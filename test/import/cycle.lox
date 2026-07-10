@@ -1,0 +1,7 @@
+// Mutual import (a <-> b) with calls across the cycle from inside function
+// bodies: must not crash and must observe the fully populated modules.
+
+var A = require("lib/cycle_a.lox");
+
+print A.greet(); // expect: hi from a, also hi from b, talking to module A
+print A.B.greet(); // expect: hi from b, talking to module A

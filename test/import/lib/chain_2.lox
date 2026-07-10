@@ -1,0 +1,4 @@
+// Deep-require-chain fixture.
+
+var next = require("chain_3.lox");
+var depth = next.depth + 1;

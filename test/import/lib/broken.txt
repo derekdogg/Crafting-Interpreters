@@ -1,0 +1,3 @@
+// Fixture (deliberately .txt so the test runner never executes it
+// standalone): a module that fails to compile.
+var = ;

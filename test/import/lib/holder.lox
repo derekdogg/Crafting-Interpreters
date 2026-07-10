@@ -1,0 +1,3 @@
+// Fixture: exports a mutable compound value.
+
+var items = [1, 2];

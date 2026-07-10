@@ -1,0 +1,7 @@
+// Three-module cycle fixture: a -> b -> c -> a.
+
+var C = require("tri_c.lox");
+
+var tag = "b";
+
+fun chain() { return tag + C.chain(); }

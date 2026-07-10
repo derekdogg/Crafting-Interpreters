@@ -1,0 +1,3 @@
+// A .lox-syntax module deliberately stored with a .txt extension: proves
+// require() never replaces a user-supplied extension.
+var fromTxt = 42;

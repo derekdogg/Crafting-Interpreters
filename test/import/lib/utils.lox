@@ -1,0 +1,20 @@
+// Shared helper module used by the import tests. Everything declared at the
+// top level (fun / var / record) is exported. Harmless when run standalone.
+
+fun forEach(arr, fn) {
+  for (var i = 0; i < arrayLen(arr); i = i + 1) fn(arr[i]);
+}
+
+fun map(arr, fn) {
+  var out = [];
+  for (var i = 0; i < arrayLen(arr); i = i + 1) arrayPush(out, fn(arr[i]));
+  return out;
+}
+
+fun reduce(arr, fn, init) {
+  var acc = init;
+  for (var i = 0; i < arrayLen(arr); i = i + 1) acc = fn(acc, arr[i]);
+  return acc;
+}
+
+var VERSION = "0.1.0";

@@ -1,0 +1,4 @@
+// Nested requires five modules deep, each loading while its importer's
+// body is still executing, with relative paths resolved per importer.
+
+print str(require("lib/chain_1.lox").depth); // expect: 5

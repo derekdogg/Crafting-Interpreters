@@ -1,0 +1,4 @@
+// A require of a nonexistent module fails with a clean runtime error and
+// creates no cache entry.
+
+var M = require("lib/definitely_missing.lox"); // expect runtime error: require: module 'lib/definitely_missing.lox' not found

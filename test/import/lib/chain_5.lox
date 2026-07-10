@@ -1,0 +1,3 @@
+// Deep-require-chain fixture: the leaf.
+
+var depth = 1;

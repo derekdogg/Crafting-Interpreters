@@ -1,0 +1,3 @@
+// Diamond-dependency fixture: left importer of the shared leaf.
+
+var S = require("diamond_shared.lox"); // expect: shared loaded

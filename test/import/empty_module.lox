@@ -1,0 +1,6 @@
+// An empty module is a valid module: empty dict, cached like any other.
+
+var E = require("lib/empty.lox");
+
+print str(E.Size());                 // expect: 0
+print E == require("lib/empty.lox"); // expect: true

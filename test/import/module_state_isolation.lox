@@ -1,0 +1,16 @@
+// A module-scope var and a same-named global in the caller must not
+// collide: the module's closures see only the module's slot.
+
+var count = 100;
+
+var C = require("lib/counter.lox");
+C.inc();
+C.inc();
+C.inc();
+
+print str(count);       // expect: 100
+print str(C.count);     // expect: 3
+
+count = count + 1;
+print str(count);       // expect: 101
+print str(C.current()); // expect: 3

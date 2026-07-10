@@ -1,0 +1,14 @@
+// Documented limitation (implementation notes, point 3): writing into a
+// module dict from outside updates the dict but NOT the module's internal
+// slot — the module's own closures keep their own state, and the next
+// module-side write overwrites the external poke.
+
+var C = require("lib/counter.lox");
+C.inc();
+
+C.count = 100;
+print str(C.count);     // expect: 100
+print str(C.current()); // expect: 1
+
+C.inc();
+print str(C.count);     // expect: 2

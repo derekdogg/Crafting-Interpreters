@@ -1,0 +1,11 @@
+// Fixture for module_state tests: exported closures share module-scope
+// state. Harmless when run standalone.
+
+var count = 0;
+
+fun inc() {
+  count = count + 1;
+  return count;
+}
+
+fun current() { return count; }

@@ -1,0 +1,8 @@
+// Incremental-population fixture: `early` is defined BEFORE the require,
+// so early_b can read it from this module's partial dict at load time.
+
+var early = "seen-early";
+
+var B = require("early_b.lox");
+
+var late = "late";

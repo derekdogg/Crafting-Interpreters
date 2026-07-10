@@ -1,0 +1,6 @@
+// Incremental-population fixture: reads a name from the partially loaded
+// early_a at top level. Legal because early_a bound it before requiring us.
+
+var A = require("early_a.lox");
+
+var captured = A.early;

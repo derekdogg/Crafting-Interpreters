@@ -1,0 +1,6 @@
+// Cycle-limitation fixture: calling across the cycle at top level observes
+// the partially populated module dict — greet is not bound yet.
+
+var A = require("partial_a.lox");
+
+print A.greet(); // expect runtime error: Undefined dictionary method 'greet'

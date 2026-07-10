@@ -1,0 +1,4 @@
+// Fixture: a callable export whose name collides with a builtin dict
+// method. Callable exports win at call sites.
+
+fun Keys() { return "custom"; }

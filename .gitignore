@@ -47,6 +47,11 @@ samples/sql_*
 # Internal-only native modules (compiled only when INTERNAL_BUILD is defined)
 InternalNatives/
 
+# Private MSBuild overlay for the internal build (see InterpreterGui.dproj's
+# conditional <Import Project="Internal.props" ...>). Presence enables
+# INTERNAL_BUILD and pulls in InternalNatives\*.pas; absence = public build.
+Internal.props
+
 # Previous plans
 assertion-hardening-plan.md
 samples/# Code Citations.md

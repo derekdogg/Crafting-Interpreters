@@ -1,0 +1,18 @@
+// Precedence rules for dot-dispatch on module dicts:
+//  - a CALLABLE export shadows a same-named builtin dict method,
+//  - the builtin runs when the key is absent or holds a non-callable value,
+//  - dot-read and subscript retrieve the same export value.
+
+var K = require("lib/exports_keys.lox");
+
+print K.Keys();            // expect: custom
+print K["Keys"] == K.Keys; // expect: true
+var k = K["Keys"];
+print k();                 // expect: custom
+
+var M = require("lib/misc.lox");
+print str(M["Size"]); // expect: 123
+print str(M.Size());  // expect: 3
+
+var E = require("lib/empty.lox");
+print str(arrayLen(E.Keys())); // expect: 0

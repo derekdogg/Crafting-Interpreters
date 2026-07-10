@@ -1,0 +1,4 @@
+// A runtime error inside a module body propagates out of require() as a
+// normal runtime error.
+
+var B = require("lib/boom.lox"); // expect runtime error: Undefined variable 'undefinedThing'

@@ -1,0 +1,9 @@
+// Exported compound values are shared objects, not copies: mutations made
+// through one require binding are visible through a later require.
+
+var A = require("lib/holder.lox");
+arrayPush(A.items, 9);
+
+var B = require("lib/holder.lox");
+print str(arrayLen(B.items)); // expect: 3
+print str(B.items[2]);        // expect: 9

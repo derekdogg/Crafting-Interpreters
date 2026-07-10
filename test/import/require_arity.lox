@@ -1,0 +1,3 @@
+// require() takes exactly one argument.
+
+require(); // expect runtime error: require() takes exactly 1 argument.
