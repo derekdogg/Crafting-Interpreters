@@ -16,6 +16,7 @@ uses
   IntrospectionNatives in 'Natives\IntrospectionNatives.pas',
   MathNatives in 'Natives\MathNatives.pas',
   SqlNatives in 'Natives\SqlNatives.pas',
+  ProgressNatives in 'Natives\ProgressNatives.pas',
   StringNatives in 'Natives\StringNatives.pas',
   FileNatives in 'Natives\FileNatives.pas',
   SystemNatives in 'Natives\SystemNatives.pas',

@@ -1,0 +1,95 @@
+// ============================================================
+// PoC: non-blocking SQL from Lox  (see async-natives-sketch.md)
+//
+// Demonstrates the proposed migration-script surface:
+//   sqlExec(conn, sql) -> [ "error", "rowsAffected", "elapsedMs" ]
+//     The script blocks; the UI does not. FireDAC runs the statement
+//     on its own thread (CmdExecMode=amNonBlocking) and pumps
+//     paint/timer messages, so the progress dialog animates and the
+//     app never shows "(Not Responding)". Keyboard/mouse input is
+//     ignored while a statement runs.
+//   setProgress(label) / setProgress(label, current, total)
+//   hideProgress()
+//
+// Step 1 sleeps 10 seconds on the SQL Server — drag the window around
+// while it runs, or click Cancel (or press Escape) on the progress
+// dialog: the statement aborts server-side and comes back with
+// r.cancelled = true. Step 3 fails deliberately to show lenient errors:
+// the failure comes back as a value and the script decides what to do.
+//
+// Uses the same .env convention as the other sql samples:
+//   DB_SERVER, DB_NAME, DB_USER, DB_PASSWORD
+// ============================================================
+
+loadEnv();
+
+var config = [:];
+config.Set("server", env("DB_SERVER"));
+config.Set("database", env("DB_NAME"));
+config.Set("auth", "sql");
+config.Set("user", env("DB_USER"));
+config.Set("password", env("DB_PASSWORD"));
+
+print "Connecting...";
+var conn = sqlConnect(config);
+
+// The runSql helper a real migration script would use: label the step,
+// run it, report the outcome, stop the migration on failure.
+fun runSql(label, sql) {
+  setProgress(label);
+  var r = sqlExec(conn, sql);
+  if (r.cancelled) {
+    print label + " CANCELLED by user after " + str(r.elapsedMs) + " ms";
+    return false;
+  }
+  if (r.error != nil) {
+    print label + " FAILED: " + r.error;
+    return false;
+  }
+  print label + " ok (" + str(r.rowsAffected) + " rows, "
+              + str(r.elapsedMs) + " ms)";
+  return true;
+}
+
+// --- Step 1: a long statement. UI stays live for the full 10 seconds. ---
+runSql("Step 1/3: WAITFOR DELAY 10s",
+       "WAITFOR DELAY '00:00:10'");
+
+// --- Step 2: real DML with a row count (session temp table, no cleanup needed). ---
+runSql("Step 2/3: create + fill temp table",
+       "CREATE TABLE #poc (x INT); " +
+       "INSERT INTO #poc SELECT TOP (5000) 1 " +
+       "FROM sys.all_objects a CROSS JOIN sys.all_objects b;");
+
+// --- Step 3: deliberate failure. Error is a value, not a script abort. ---
+if (!runSql("Step 3/3: deliberate error",
+            "SELECT * FROM NoSuchTable_PoC")) {
+  print "(expected failure — script continues and decides what to do)";
+}
+
+// --- Bonus: determinate progress via chunked DML, the pattern a real ---
+// --- backfill would use. Each chunk is quick, so the bar moves and    ---
+// --- there are natural cancel/abort points between chunks.            ---
+var total = 5000;
+var done = 0;
+var more = true;
+while (more) {
+  setProgress("Chunked backfill", done, total);
+  var r = sqlExec(conn, "UPDATE TOP (1000) #poc SET x = 2 WHERE x = 1");
+  if (r.error != nil) {
+    print "Backfill FAILED: " + r.error;
+    more = false;
+  } else {
+    if (r.rowsAffected == 0) {
+      more = false;
+    } else {
+      done = done + r.rowsAffected;
+    }
+  }
+}
+setProgress("Chunked backfill", total, total);
+print "Backfill done: " + str(done) + " rows in chunks of 1000.";
+
+//hideProgress();
+sqlClose(conn);
+print "PoC complete.";

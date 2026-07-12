@@ -111,6 +111,8 @@
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
         <VerInfo_Locale>1033</VerInfo_Locale>
+        <DCC_DebugInformation>0</DCC_DebugInformation>
+        <DCC_DebugInfoInExe>false</DCC_DebugInfoInExe>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2)'!=''">
         <DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols>
@@ -151,6 +153,7 @@
         <DCCReference Include="Natives\IntrospectionNatives.pas"/>
         <DCCReference Include="Natives\MathNatives.pas"/>
         <DCCReference Include="Natives\SqlNatives.pas"/>
+        <DCCReference Include="Natives\ProgressNatives.pas"/>
         <DCCReference Include="Natives\StringNatives.pas"/>
         <DCCReference Include="Natives\FileNatives.pas"/>
         <DCCReference Include="Natives\SystemNatives.pas"/>
