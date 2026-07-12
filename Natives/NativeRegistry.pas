@@ -48,7 +48,11 @@ var
   i: Integer;
 begin
   for i := 0 to High(Shutdowns) do
-    Shutdowns[i]();
+    try
+      Shutdowns[i]();
+    except
+      // Swallow shutdown exceptions to keep VM teardown best-effort.
+    end;
 end;
 
 end.
