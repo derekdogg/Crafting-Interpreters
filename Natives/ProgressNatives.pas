@@ -447,19 +447,8 @@ type
     function IsFormMouseMessage(const AMsg: TMsg): Boolean;
     {$ENDIF}
   public
-    procedure Initialize; override;
     destructor Destroy; override;
   end;
-
-procedure TLoxGUIxAsyncExecuteImpl.Initialize;
-begin
-  inherited Initialize;
-  // Mirror FireDAC's TFDGUIxFormsAsyncExecuteImpl.Initialize: ensure the
-  // singleton is nil at construction so a stale pointer from a prior
-  // impl instance (unlikely — we're a factory singleton — but cheap) is
-  // dropped before GetForm rehydrates it.
-  ProgressForm := nil;
-end;
 
 destructor TLoxGUIxAsyncExecuteImpl.Destroy;
 begin
