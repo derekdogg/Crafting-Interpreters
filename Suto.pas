@@ -8353,6 +8353,10 @@ begin
   AssertVMIsAssigned;
   AssertMemTrackerIsNotNil(VM.MemTracker);
   {$ENDIF}
+  // Per-script teardown for native modules with state that outlives
+  // the VM (e.g. host UI). Runs before we start dismantling anything
+  // so a shutdown proc can still safely observe VM state.
+  ShutdownAllNatives;
   {$IFDEF DEBUG_LOG_GC}
   try
   {$ENDIF}
