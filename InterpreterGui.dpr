@@ -32,7 +32,7 @@ begin
   reportMemoryLeaksOnShutDown := true;
   Application.Initialize;
   Application.MainFormOnTaskbar := True;
-  Application.CreateForm(TForm4, Form4);
+
   // frmGame is constructed lazily by Form4.FormCreate before InitCanvas.
   Application.Run;
 end.

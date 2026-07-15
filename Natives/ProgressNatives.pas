@@ -26,6 +26,15 @@
 // destructor that FDFreeAndNil-equivalents the singleton — so it slots
 // in wherever the stock TFDGUIxFormsAsyncExecuteImpl would.
 //
+// Why not a private provider name? FireDAC's provider selection is
+// global (FFDGUIxProvider in FireDAC.UI.Intf, consulted whenever the
+// executor resolves IFDGUIxAsyncExecuteDialog via FDCreateInterface
+// with an empty AProvider). There is no per-TFDConnection override.
+// A private provider would additionally require registering a matching
+// IFDGUIxWaitCursor under the same name (the async executor also
+// resolves that) and scope-swapping FFDGUIxProvider around every op.
+// Not worth it for a script host that owns the process's dialog UX.
+//
 // When sqlExec/sqlQuery run with CmdExecMode=amCancelDialog, FireDAC's
 // executor:
 //   - calls our Show(AExecutor) before the statement and Hide after —
@@ -47,8 +56,8 @@
 //     pump — same recipe as the stock form's tmrDelayTimer.
 //
 // IMPORTANT: do not link FireDAC.VCLUI.Async anywhere in the project.
-// It registers the stock dialog under the same 'Forms' provider and the
-// winner would depend on unit-initialization order.
+// It registers the stock dialog under the same 'Forms' provider and
+// the winner depends on unit-initialization order.
 // ============================================================
 
 interface
@@ -98,6 +107,12 @@ type
     // the impl's Get/SetShowDelay/HideDelay can delegate here, matching
     // the FireDAC storage-on-form pattern.
     FShowDelay, FHideDelay: Integer;
+    // The caller-configured Cancel caption (IFDGUIxAsyncExecuteDialog.
+    // CancelCaption). The button itself temporarily shows 'Cancelling...'
+    // after a click; ArmCancel restores it from here, so a host-set
+    // caption survives across statements (the stock dialog never rewrites
+    // its button caption, so its SetCancelCaption sticks — ours must too).
+    FCancelBaseCaption: string;
     // Opaque handle from FDGUIxBeginModal, matched by FDGUIxEndModal.
     // Non-nil only while the form is actually Visible AND FModalData
     // was returned by BeginModal.
@@ -175,10 +190,11 @@ begin
   FElapsedLabel.Parent := Self;
   FElapsedLabel.SetBounds(16, 72, ClientWidth - 32 - 106, 20);
 
+  FCancelBaseCaption := 'Cancel';
   FCancelBtn := TButton.Create(Self);
   FCancelBtn.Parent := Self;
   FCancelBtn.SetBounds(ClientWidth - 106, 68, 90, 26);
-  FCancelBtn.Caption := 'Cancel';
+  FCancelBtn.Caption := FCancelBaseCaption;
   FCancelBtn.Visible := False;
   FCancelBtn.OnClick := CancelClick;
 
@@ -262,22 +278,14 @@ begin
 
   FRequestVisible := want;
 
-  // Elapsed clock is tied to *requested* visibility, not actual: a
-  // sub-delay op that never draws the dialog also never needs an
-  // elapsed reading, so we harmlessly start/stop the stopwatch inside
-  // the debounce window.
+  // The elapsed clock is handled in ApplyVisibility, on the *actual*
+  // show/hide transition — not here. Keying it to requests would reset
+  // it to 0:00 between back-to-back statements whose disarm/re-arm falls
+  // inside the debounce window, i.e. while the dialog visibly stays up.
   if want then
-  begin
-    FStopwatch := TStopwatch.StartNew;
-    FElapsedTimer.Enabled := True;
-    FDelayTimer.Interval := FShowDelay;
-  end
+    FDelayTimer.Interval := FShowDelay
   else
-  begin
-    FElapsedTimer.Enabled := False;
-    FStopwatch.Stop;
     FDelayTimer.Interval := FHideDelay;
-  end;
   FDelayTimer.Enabled := True;
 end;
 
@@ -297,12 +305,19 @@ begin
   FDGUIxCancel;
   if FRequestVisible then
   begin
+    // Elapsed measures "how long has this dialog been on screen": start
+    // at the real Show, keep running across statements while it stays up.
+    FStopwatch := TStopwatch.StartNew;
+    ElapsedTimerTick(nil);
+    FElapsedTimer.Enabled := True;
     FModalData := FDGUIxBeginModal(Self, False);
     inherited Show;
     Application.ProcessMessages;
   end
   else
   begin
+    FElapsedTimer.Enabled := False;
+    FStopwatch.Stop;
     if FModalData <> nil then
       FDGUIxEndModal(FModalData);
     FModalData := nil;
@@ -355,7 +370,7 @@ end;
 procedure TLoxProgressForm.ArmCancel(const AExecutor: IFDStanAsyncExecutor);
 begin
   FExecutor := AExecutor;
-  FCancelBtn.Caption := 'Cancel';
+  FCancelBtn.Caption := FCancelBaseCaption;
   FCancelBtn.Enabled := True;
   FCancelBtn.Visible := (AExecutor <> nil) and AExecutor.Operation.AbortSupported;
   // A script that never called setProgress still gets a cancellable
@@ -391,6 +406,9 @@ begin
   FStopwatch.Stop;
   if Visible then
   begin
+    // Same recipe as ApplyVisibility's hide branch: release any mouse
+    // capture/drag before flipping visibility, then balance BeginModal.
+    FDGUIxCancel;
     if FModalData <> nil then
       FDGUIxEndModal(FModalData);
     FModalData := nil;
@@ -410,11 +428,14 @@ end;
 
 function TLoxProgressForm.GetCancelCaptionText: string;
 begin
-  Result := FCancelBtn.Caption;
+  // Report the configured caption, not the button's transient
+  // 'Cancelling...' state.
+  Result := FCancelBaseCaption;
 end;
 
 procedure TLoxProgressForm.SetCancelCaptionText(const AValue: string);
 begin
+  FCancelBaseCaption := AValue;
   FCancelBtn.Caption := AValue;
 end;
 
@@ -473,12 +494,14 @@ end;
 
 procedure TLoxGUIxAsyncExecuteImpl.Hide;
 begin
-  if not FDGUIxSilent() then
-    // DisarmCancel clears the FireDAC visibility request; the form's
-    // reconciler decides whether it actually hides (script may still
-    // be holding it up via setProgress).
-    if ProgressForm <> nil then
-      ProgressForm.DisarmCancel;
+  // Deliberately NOT gated on FDGUIxSilent (the stock impl is): if silent
+  // mode flips on between FireDAC's Show and Hide, the stock dialog's
+  // request flag sticks and the form stays up. Hiding is always safe, so
+  // always disarm. DisarmCancel clears the FireDAC visibility request;
+  // the form's reconciler decides whether it actually hides (the script
+  // may still be holding it up via setProgress).
+  if ProgressForm <> nil then
+    ProgressForm.DisarmCancel;
 end;
 
 {$IFDEF MSWINDOWS}
@@ -593,7 +616,6 @@ begin
 end;
 
 // --- Natives ---
-
 function setProgressNative(argCount: integer; args: pValue): TValue;
 begin
   Result := CreateNilValue;
