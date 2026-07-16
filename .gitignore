@@ -47,10 +47,14 @@ samples/sql_*
 # Internal-only native modules (compiled only when INTERNAL_BUILD is defined)
 InternalNatives/
 
-# Private MSBuild overlay for the internal build (see InterpreterGui.dproj's
-# conditional <Import Project="Internal.props" ...>). Presence enables
-# INTERNAL_BUILD and pulls in InternalNatives\*.pas; absence = public build.
+# Private MSBuild overlay imported by InterpreterGui.dproj via
+# <Import Project="Internal.props" Condition="Exists('Internal.props')"/>.
+# Presence defines INTERNAL_BUILD (enabling the {$IFDEF INTERNAL_BUILD} uses
+# block in InterpreterGui.dpr) and adds the InternalNatives/SynEdit/JCL search
+# paths; absence = public build. msbuild only — the IDE ignores .props imports.
+# Build with bat\build-internal.bat.
 Internal.props
+bat/build-internal.bat
 
 # Previous plans
 assertion-hardening-plan.md

@@ -1,0 +1,61 @@
+// Native widget demo — Delphi-styled push buttons on the 320x240 canvas.
+//
+// Uses the LoxWidgets engine (Windows.DrawFrameControl underneath) so
+// the buttons look pixel-perfect Delphi TButton on the classic theme.
+// The engine owns the frame plumbing: runGameLoop(60) pumps messages
+// and dispatches events, then calls onFrame once per frame at a steady
+// 60fps. Buttons carry their click handler (attached at creation or
+// via setButtonOnClick), fired from inside updateWidgets() — so the
+// frame callback is pure update + draw, no click polling.
+
+setCanvasSize(320, 240);
+
+var counter = 0;
+var incEnabled = true;
+
+// Forward declarations so the handlers below can reference the ids.
+var incBtn;
+var toggleBtn;
+
+incBtn = createButton( 20,  40, 120, 28, "Increment", fun() {
+  counter = counter + 1;
+});
+
+createButton( 20,  80, 120, 28, "Reset", fun() {
+  counter = 0;
+});
+
+toggleBtn = createButton( 20, 120, 120, 28, "Disable Inc", fun() {
+  incEnabled = !incEnabled;
+  setWidgetEnabled(incBtn, incEnabled);
+  if (incEnabled) {
+    setWidgetCaption(toggleBtn, "Disable Inc");
+  } else {
+    setWidgetCaption(toggleBtn, "Enable Inc");
+  }
+});
+
+createButton( 20, 200, 120, 28, "Quit", fun() {
+  stopGameLoop();
+});
+
+onFrame(fun(dt) {
+  updateWidgets();  // reads input AND fires any click handlers
+
+  // Background + labels.
+  setColor(40, 60, 90);
+  clearCanvas();
+
+  setColor(255, 255, 255);
+  drawText(20, 12, "LoxWidgets demo - click a button");
+  drawText(160, 44, "Counter: " + str(counter));
+
+  // Draw the retained widgets over the current scene.
+  drawWidgets();
+
+  present();
+});
+
+runGameLoop(60);
+
+print "Final counter: " + str(counter);

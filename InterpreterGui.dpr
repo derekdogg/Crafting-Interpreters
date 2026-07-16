@@ -24,7 +24,8 @@ uses
   EventNatives in 'Natives\EventNatives.pas',
   ImportNatives in 'Natives\ImportNatives.pas',
   LoxEventEngine in 'LoxEventEngine.pas',
-  fmEventTest in 'fmEventTest.pas' {frmEventTest};
+  fmEventTest in 'fmEventTest.pas' {frmEventTest},
+  WidgetNatives in 'Natives\WidgetNatives.pas';
 
 {$R *.res}
 
@@ -34,5 +35,6 @@ begin
   Application.MainFormOnTaskbar := True;
 
   // frmGame is constructed lazily by Form4.FormCreate before InitCanvas.
+  Application.CreateForm(TForm4, Form4);
   Application.Run;
 end.

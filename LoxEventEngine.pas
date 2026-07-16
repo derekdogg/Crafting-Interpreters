@@ -531,6 +531,9 @@ begin
     VK_ESCAPE: Result := 'escape';
     VK_BACK:   Result := 'backspace';
     VK_TAB:    Result := 'tab';
+    VK_DELETE: Result := 'delete';
+    VK_HOME:   Result := 'home';
+    VK_END:    Result := 'end';
   else
     if (Key >= Ord('A')) and (Key <= Ord('Z')) then
       Result := Chr(Key + 32)  // lowercase

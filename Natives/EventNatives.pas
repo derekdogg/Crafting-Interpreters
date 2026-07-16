@@ -30,7 +30,8 @@ procedure RegisterEventNatives;
 implementation
 
 uses
-  Vcl.Forms, System.SysUtils, System.Classes, LoxEventEngine, LoxCanvas;
+  Winapi.DwmApi, Vcl.Forms, System.SysUtils, System.Classes, LoxEventEngine,
+  LoxCanvas;
 
 // --- Helper: parse optional (controlName, closure) or (closure) ---
 // Returns True if args are valid; sets controlName and closure.
@@ -215,10 +216,35 @@ end;
 // loop holds a scoped timeBeginPeriod(1) while active so that really is
 // ~1ms — then yields until the deadline. If a frame overruns, the deadline
 // resets rather than fast-forwarding to catch up.
+//
+// IMPORTANT for canvas scripts: present() ends with DwmFlush, i.e. it is
+// already vsynced to the compositor. A script that presents every frame
+// should therefore run UNCAPPED (runGameLoop(0)) and scale movement by dt —
+// the compositor paces the loop at the monitor's true refresh and dt stays
+// steady. Passing a fixed target (e.g. 60) adds a second, unsynchronised
+// clock on top of the vsync: on non-60Hz panels frames then straddle a
+// varying number of composition ticks and dt oscillates, which reads as
+// juddery motion at speed. Use a fixed target only for loops that don't
+// present (or don't animate).
+// QPC ticks per display refresh from the DWM compositor, 0 when
+// unavailable. qpcRefreshPeriod shares QueryPerformanceCounter's time
+// base, so it compares directly against QPC deltas.
+function DisplayRefreshTicks: Int64;
+var
+  ti: DWM_TIMING_INFO;
+begin
+  Result := 0;
+  FillChar(ti, SizeOf(ti), 0);
+  ti.cbSize := SizeOf(ti);
+  if Succeeded(DwmGetCompositionTimingInfo(0, ti)) then
+    Result := Int64(ti.qpcRefreshPeriod);
+end;
+
 function runGameLoopNative(argCount: integer; args: pValue): TValue;
 var
   targetFps, dt, remainMs: Double;
   freq, tPrev, tNow, frameTicks, deadline: Int64;
+  rawTicks, refreshTicks, k: Int64;
   cb, dummy, dtArg: TValue;
 begin
   Result := CreateNilValue;
@@ -284,8 +310,29 @@ begin
       if not ActiveEngine.GameLoopActive then Break;
 
       QueryPerformanceCounter(tNow);
-      dt := (tNow - tPrev) / freq;
+      rawTicks := tNow - tPrev;
       tPrev := tNow;
+
+      // De-jitter dt for vsynced scripts. present() blocks on DwmFlush,
+      // so frames are DISPLAYED at exact multiples of the refresh
+      // period — but the measured loop time also contains scheduler
+      // wake-up noise, ProcessMessages bursts and DwmFlush return
+      // jitter (±1-2ms). Feeding that noise into onFrame(dt) becomes
+      // positional jitter proportional to movement speed. When the
+      // measured interval is within a quarter period of a whole number
+      // of refreshes, the true display interval WAS that whole number —
+      // snap to it. Non-presenting loops are unaffected: their frame
+      // times are nowhere near a refresh multiple (k = 0), and genuine
+      // hitches (> k ± period/4) pass through unsnapped.
+      refreshTicks := DisplayRefreshTicks;
+      if refreshTicks > 0 then
+      begin
+        k := (rawTicks + refreshTicks div 2) div refreshTicks;  // nearest multiple
+        if (k >= 1) and (Abs(rawTicks - k * refreshTicks) <= refreshTicks div 4) then
+          rawTicks := k * refreshTicks;
+      end;
+
+      dt := rawTicks / freq;
       if dt > 0.1 then dt := 0.1;
 
       // Re-fetch each frame: the script may re-register onFrame mid-loop.

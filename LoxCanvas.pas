@@ -43,6 +43,7 @@ type
     procedure WMGetDlgCode(var Msg: TWMGetDlgCode); message WM_GETDLGCODE;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
     procedure KeyUp(var Key: Word; Shift: TShiftState); override;
+    procedure KeyPress(var Key: Char); override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
     procedure MouseUp(Button: TMouseButton; Shift: TShiftState;
@@ -72,6 +73,31 @@ procedure ClearAllKeyState;
 // only transitions that occurred during the current frame's pump.
 procedure ClearFrameEdges;
 function GameCanvas: TLoxGameCanvas;
+
+// -- Public accessors for host-side add-ons (widget engine, overlays, etc.) --
+// Return the fixed logical canvas dimensions.
+function CanvasLogicalWidth: Integer;
+function CanvasLogicalHeight: Integer;
+// Ensure the back buffer exists and is bound as the current render
+// target. Safe to call before any drawing. Returns the current target.
+function CanvasEnsureRenderTarget: TBitmap;
+// Latest logical mouse coords (already clamped to the 320x240 playfield,
+// updated by TLoxGameCanvas.MouseMove).
+function CanvasMouseLogicalX: Integer;
+function CanvasMouseLogicalY: Integer;
+// Currently-held state for a mouse button. Button: 0=left, 1=right, 2=middle.
+function CanvasMouseButtonHeld(Button: Integer): Boolean;
+// True on the frame the button transitioned up->down. Cleared by
+// ClearFrameEdges (i.e. at the top of every processMessages() tick).
+function CanvasMouseButtonClickedEdge(Button: Integer): Boolean;
+// True on the frame the named key transitioned up->down (same edge set
+// the keyPressed() native reads). Cleared by ClearFrameEdges.
+function CanvasKeyPressedEdge(const KeyName: string): Boolean;
+// Characters typed since the last ClearFrameEdges, in arrival order —
+// the WM_CHAR stream, so shift state, keyboard layout and autorepeat
+// are already applied. Control chars are included (#8 backspace,
+// #13 enter, #9 tab, #27 escape); consumers filter what they want.
+function CanvasTypedChars: string;
 
 implementation
 
@@ -165,6 +191,10 @@ var
   // key press, no matter how many times the script polls it within
   // that frame.
   FKeysPressed: TDictionary<string, Boolean>;
+  // WM_CHAR stream for the current frame, appended by
+  // TLoxGameCanvas.KeyPress and cleared by ClearFrameEdges. Capped (see
+  // KeyPress) so autorepeat can't grow it unboundedly within one frame.
+  FTypedChars: string;
   // Latest known mouse position in LOGICAL pixel coords (clamped to the
   // 320x240 playfield) and held state for the three primary buttons.
   // Updated by TLoxGameCanvas.MouseMove/Down/Up and queried by the
@@ -352,6 +382,11 @@ begin
     VK_SPACE:  Result := 'space';
     VK_RETURN: Result := 'enter';
     VK_ESCAPE: Result := 'escape';
+    VK_BACK:   Result := 'backspace';
+    VK_TAB:    Result := 'tab';
+    VK_DELETE: Result := 'delete';
+    VK_HOME:   Result := 'home';
+    VK_END:    Result := 'end';
   else
     if (Key >= Ord('A')) and (Key <= Ord('Z')) then
       Result := LowerCase(Char(Key))
@@ -486,16 +521,30 @@ begin
     inherited;
 end;
 
+procedure TLoxGameCanvas.KeyPress(var Key: Char);
+begin
+  // Collect the WM_CHAR stream for the widget engine (edit boxes).
+  // WM_CHAR gives shift/layout-correct characters plus key autorepeat
+  // for free — none of which the VK-name path in KeyDown can provide.
+  // Note KeyDown consuming a key (Key := 0) does NOT suppress its
+  // WM_CHAR: TranslateMessage queued it before KeyDown ever ran.
+  if Length(FTypedChars) < 64 then
+    FTypedChars := FTypedChars + Key;
+  Key := #0;
+end;
+
 procedure TLoxGameCanvas.WMPaint(var Msg: TWMPaint);
 var
   PS: TPaintStruct;
   DC: HDC;
 begin
-  // Repaint fallback: the active game loop presents directly via GetDC
-  // and ValidateRect, so WM_PAINT only fires when the window genuinely
-  // needs to redraw (uncover, restore, alt-tab, resize). Re-blit the
-  // last presented frame from FFrontBuffer so the user sees something
-  // sensible even when the script is paused or finished.
+  // THE presentation path. presentNative pushes each frame through
+  // here via InvalidateRect + UpdateWindow so every pixel reaches the
+  // window inside BeginPaint/EndPaint — the update protocol DWM
+  // tracks; direct GetDC blits made the compositor apply updates
+  // partially (frame "trails"). Also serves as the repaint fallback
+  // (uncover, restore, alt-tab, resize) by re-blitting the last
+  // presented frame when the script is paused or finished.
   DC := BeginPaint(Handle, PS);
   try
     if FHasFrontFrame and (FFrontBuffer <> nil) then
@@ -1298,6 +1347,7 @@ begin
     FKeysHeld.Clear;
   if FKeysPressed <> nil then
     FKeysPressed.Clear;
+  FTypedChars := '';
   for i := 0 to High(FMouseBtn) do
   begin
     FMouseBtn[i] := False;
@@ -1313,6 +1363,7 @@ begin
     FKeysPressed.Clear;
   for i := 0 to High(FMouseBtnClicked) do
     FMouseBtnClicked[i] := False;
+  FTypedChars := '';
 end;
 
 function keyHeldNative(argCount: integer; args: pValue): TValue;
@@ -1495,20 +1546,25 @@ begin
   if FRenderTargetId < 0 then
     FRenderTarget := FBackBuffer;
   FHasFrontFrame := True;
-  // Direct DC presentation: bypass WM_PAINT round-trip entirely.
-  // The composed staging bitmap is copied to the window in one BitBlt.
+  // Present through the real WM_PAINT protocol rather than blitting a
+  // raw GetDC. The old direct-DC + ValidateRect path bypassed the
+  // update tracking DWM uses to decide what to recompose; the
+  // compositor could then apply our updates PARTIALLY — visible as
+  // nested outline "trails" of recent frames behind fast-moving
+  // shapes, especially at larger window sizes and after resizes.
+  // InvalidateRect + UpdateWindow delivers the frame synchronously
+  // through BeginPaint/EndPaint (WMPaint blits FFrontBuffer scaled),
+  // which marks the update complete atomically for the compositor.
   if (FGameSurface <> nil) and FGameSurface.HandleAllocated then
   begin
-    var dc := GetDC(FGameSurface.Handle);
-    // Use Windows.GetClientRect to read true physical client pixels.
-    // TControl.ClientWidth can be affected by VCL per-monitor DPI scaling;
-    // GetClientRect is always device pixels, which is what BitBlt needs.
-    var rc: TRect;
-    Winapi.Windows.GetClientRect(FGameSurface.Handle, rc);
-    PresentScaled(dc, rc.Right - rc.Left, rc.Bottom - rc.Top);
-    ReleaseDC(FGameSurface.Handle, dc);
-    ValidateRect(FGameSurface.Handle, nil);
+    InvalidateRect(FGameSurface.Handle, nil, False);
+    UpdateWindow(FGameSurface.Handle);
   end;
+  // Drain the thread's GDI batch so the paint above is fully on the
+  // redirection surface before we wait on composition — without this
+  // the DwmFlush below can wait out a pass that samples the PREVIOUS
+  // frame (skips/judder on fast-moving objects).
+  GdiFlush;
   // Pace presentation to the DWM composition cycle for effective vsync.
   DwmFlush;
   Result := CreateNilValue;
@@ -3475,6 +3531,71 @@ begin
   defineNative('mouseClicked', mouseClickedNative, 1);
   defineNative('spriteWidth', spriteWidthNative, 1);
   defineNative('spriteHeight', spriteHeightNative, 1);
+end;
+
+// -- Public accessors --------------------------------------------------
+// Thin wrappers around the internal state used by the canvas natives.
+// Kept here so host-side add-ons (e.g. LoxWidgets) don't have to reach
+// into implementation-section variables. All accessors are safe to call
+// before InitCanvas: they either return sensible defaults (0, False,
+// nil) or, in CanvasEnsureRenderTarget's case, lazily create the back
+// buffer so the caller can draw immediately after startup.
+
+function CanvasLogicalWidth: Integer;
+begin
+  Result := LOGICAL_W;
+end;
+
+function CanvasLogicalHeight: Integer;
+begin
+  Result := LOGICAL_H;
+end;
+
+function CanvasEnsureRenderTarget: TBitmap;
+begin
+  EnsureBackBuffer;
+  Result := FRenderTarget;
+end;
+
+function CanvasMouseLogicalX: Integer;
+begin
+  Result := FMouseX;
+end;
+
+function CanvasMouseLogicalY: Integer;
+begin
+  Result := FMouseY;
+end;
+
+function CanvasMouseButtonHeld(Button: Integer): Boolean;
+begin
+  if (Button < 0) or (Button > High(FMouseBtn)) then
+    Result := False
+  else
+    Result := FMouseBtn[Button];
+end;
+
+function CanvasMouseButtonClickedEdge(Button: Integer): Boolean;
+begin
+  if (Button < 0) or (Button > High(FMouseBtnClicked)) then
+    Result := False
+  else
+    Result := FMouseBtnClicked[Button];
+end;
+
+function CanvasKeyPressedEdge(const KeyName: string): Boolean;
+var
+  pressed: Boolean;
+begin
+  pressed := False;
+  if FKeysPressed <> nil then
+    FKeysPressed.TryGetValue(KeyName, pressed);
+  Result := pressed;
+end;
+
+function CanvasTypedChars: string;
+begin
+  Result := FTypedChars;
 end;
 
 end.

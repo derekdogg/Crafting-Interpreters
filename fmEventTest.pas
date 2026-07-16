@@ -52,7 +52,7 @@ var
 implementation
 
 uses
-  LoxCanvas, LoxSound, Main;
+  LoxCanvas, LoxSound, WidgetNatives, Main;
 
 {$R *.dfm}
 
@@ -210,6 +210,7 @@ begin
     // Register canvas + sound + event natives
     RegisterCanvasNatives;
     RegisterSoundNatives;
+    RegisterWidgetNatives;
     FEngine.RegisterNatives;
     FEngine.RegisterGCRoots;
 
