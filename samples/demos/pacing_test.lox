@@ -46,10 +46,13 @@ onFrame(fun(dt) {
   barX = barX + 2;
   if (barX > 318) barX = 0;
 
-  // 3: dt-driven box
+  // 3: dt-driven box. Reflect the overshoot across the boundary rather
+  // than clamping — clamping would silently drop up to one frame's
+  // worth of motion at each bounce, exactly the kind of dt anomaly
+  // this diagnostic is supposed to expose.
   bx = bx + dx * 320 * dt;
-  if (bx < 20)  { bx = 20;  dx = 1; }
-  if (bx > 288) { bx = 288; dx = -1; }
+  if (bx < 20)  { bx = 40 - bx;  dx = 1; }
+  if (bx > 288) { bx = 576 - bx; dx = -1; }
 
   setColor(15, 15, 20);
   clearCanvas();
