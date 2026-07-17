@@ -34,7 +34,10 @@ onFrame(fun(dt) {
   frames1s = frames1s + 1;
   t = t + dt;
   if (t >= 1) {
-    fps = frames1s;
+    // Normalise by the actual window length, not a flat 1s: t sits in
+    // [1, 1 + last_dt) at this point, so `fps = frames1s` would under-
+    // report by up to one frame each reporting window.
+    fps = frames1s / t;
     frames1s = 0;
     t = t - 1;
   }

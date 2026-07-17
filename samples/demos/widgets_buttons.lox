@@ -2,11 +2,12 @@
 //
 // Uses the LoxWidgets engine (Windows.DrawFrameControl underneath) so
 // the buttons look pixel-perfect Delphi TButton on the classic theme.
-// The engine owns the frame plumbing: runGameLoop(60) pumps messages
-// and dispatches events, then calls onFrame once per frame at a steady
-// 60fps. Buttons carry their click handler (attached at creation or
-// via setButtonOnClick), fired from inside updateWidgets() — so the
-// frame callback is pure update + draw, no click polling.
+// The engine owns the frame plumbing: runGameLoop(0) pumps messages
+// and dispatches events, then calls onFrame each frame paced by
+// present() (DwmFlush vsyncs to the compositor's real refresh rate).
+// Buttons carry their click handler (attached at creation or via
+// setButtonOnClick), fired from inside updateWidgets() — so the frame
+// callback is pure update + draw, no click polling.
 
 setCanvasSize(320, 240);
 
@@ -43,8 +44,7 @@ onFrame(fun(dt) {
   updateWidgets();  // reads input AND fires any click handlers
 
   // Background + labels.
-  setColor(40, 60, 90);
-  clearCanvas();
+  clearCanvas(40, 60, 90);
 
   setColor(255, 255, 255);
   drawText(20, 12, "LoxWidgets demo - click a button");
@@ -56,6 +56,9 @@ onFrame(fun(dt) {
   present();
 });
 
-runGameLoop(60);
+// Uncapped: present() is vsynced (DwmFlush), so the compositor paces
+// the loop at the monitor's real refresh rate. A fixed runGameLoop(60)
+// target would fight that pacing and judder on non-60Hz displays.
+runGameLoop(0);
 
 print "Final counter: " + str(counter);

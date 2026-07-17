@@ -39,8 +39,7 @@ createButton(20, 200, 120, 28, "Quit", fun() { stopGameLoop(); });
 onFrame(fun(dt) {
   updateWidgets();
 
-  setColor(r, g, b);
-  clearCanvas();
+  clearCanvas(r, g, b);
 
   setColor(255, 255, 255);
   drawText(20, 16, "LoxWidgets combo demo");
@@ -50,6 +49,9 @@ onFrame(fun(dt) {
   present();
 });
 
-runGameLoop(60);
+// Uncapped: present() is vsynced (DwmFlush), so the compositor paces
+// the loop at the monitor's real refresh rate. A fixed runGameLoop(60)
+// target would fight that pacing and judder on non-60Hz displays.
+runGameLoop(0);
 
 print "Final pick: " + getComboText(colorCombo);

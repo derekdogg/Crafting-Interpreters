@@ -349,9 +349,18 @@ function WidgetsCount: Integer;
 
 // Free a specific widget or every widget. Freeing a currently-hovered
 // widget mid-frame is safe — its slot is nilled out and Update/Draw
-// skip nil entries.
+// skip nil entries. WidgetsClear preserves the monotonic ID counter
+// so stale IDs held by scripts stay dead across a clear (they never
+// re-alias a fresh widget) — use WidgetsResetSession at VM init when
+// a genuine ID-space reset is required.
 procedure WidgetsFree(Id: Integer);
 procedure WidgetsClear;
+
+// VM/session initialisation: clear all widgets AND reset the ID
+// counter to 1. Only appropriate at a hard session boundary (a new
+// VM starting up), never mid-script — recycling IDs mid-run breaks
+// the "stale IDs stay dead" invariant documented in the unit header.
+procedure WidgetsResetSession;
 
 // Per-frame poll: builds a TFrameInput from LoxCanvas mouse state and
 // routes it to every widget (capture-exclusive, then topmost-first).
@@ -380,17 +389,16 @@ uses
 
 var
   // Flat list of live widgets. Freed slots are nilled (not compacted)
-  // so external IDs stay stable across frees. WidgetsClear resets
-  // everything including the ID counter.
+  // so external IDs stay stable across frees. WidgetsClear empties the
+  // list without touching FNextId; only WidgetsResetSession resets the
+  // counter.
   FWidgets: TObjectList<TLoxWidget> = nil;
   // Monotonic ID allocator. 1-based so that scripts can use 0 as "no
-  // widget" sentinel if they want. Reset by WidgetsClear.
+  // widget" sentinel if they want. Only reset by WidgetsResetSession
+  // (a hard VM/session boundary); WidgetsClear deliberately leaves it
+  // alone so IDs never get recycled mid-session and stale ids stay
+  // dead across a clearWidgets() call.
   FNextId: Integer = 1;
-  // Previous frame's held state for the primary (left) mouse button.
-  // Used to detect the down->up edge for click completion without
-  // being coupled to CanvasMouseButtonClickedEdge (which is a
-  // down-edge trigger, not what we need for release-inside logic).
-  FPrevLeftDown: Boolean = False;
   // Id of the widget holding keyboard focus; 0 = none. See the focus
   // model in the unit header.
   FFocusedId: Integer = 0;
@@ -1656,9 +1664,16 @@ procedure WidgetsClear;
 begin
   if FWidgets <> nil then
     FWidgets.Clear;
-  FNextId := 1;
-  FPrevLeftDown := False;
+  // Deliberately do NOT reset FNextId here — recycling IDs mid-session
+  // would let a stale id held by the script alias a fresh widget on
+  // the next create*(). WidgetsResetSession owns the counter reset.
   FFocusedId := 0;
+end;
+
+procedure WidgetsResetSession;
+begin
+  WidgetsClear;
+  FNextId := 1;
 end;
 
 // -- Per-frame input and rendering -------------------------------------
@@ -1671,10 +1686,7 @@ var
   Capturer, Popup: TLoxWidget;
 begin
   if FWidgets = nil then
-  begin
-    FPrevLeftDown := False;
     Exit;
-  end;
 
   Frame.MouseX := CanvasMouseLogicalX;
   Frame.MouseY := CanvasMouseLogicalY;
@@ -1683,9 +1695,31 @@ begin
   // pump (cleared each processMessages tick). It gives us the
   // pressed-this-frame signal without needing our own edge tracker.
   Frame.LeftPressedEdge := CanvasMouseButtonClickedEdge(0);
-  // Release edge: derived here because the canvas doesn't expose one.
-  // We compare the previous frame's held state to this frame's.
-  Frame.LeftReleasedEdge := FPrevLeftDown and not Frame.LeftDown;
+  // Release edge comes straight from the input pump too, so a
+  // same-pump press+release pair delivers BOTH edges this frame — a
+  // sub-frame click completes correctly (release-inside fires and the
+  // gesture releases capture) instead of being lost by held-state
+  // sampling that only sees down->down between frames.
+  Frame.LeftReleasedEdge := CanvasMouseButtonReleasedEdge(0);
+  // Letterbox / pillarbox suppression. CanvasMouseLogicalX/Y are
+  // clamped to the playfield, so a pointer sitting in a bar reports
+  // as an on-edge pixel — which would let bar clicks focus/activate
+  // widgets flush against the canvas edge. When the raw host point
+  // is actually outside the playfield we force the coords out of any
+  // widget's bounds (so every HitTest returns False, matching the
+  // pointer being "elsewhere") and swallow the press edge so bar
+  // clicks never start a widget gesture. The release edge is left
+  // intact on purpose: a widget that captured while the pointer was
+  // still inside the playfield needs the release to reach it or the
+  // capture stays stuck; with hit-testing forced to False the release
+  // fires the standard release-outside path, cancelling the click
+  // cleanly.
+  if not CanvasMouseInPlayfield then
+  begin
+    Frame.MouseX := -1;
+    Frame.MouseY := -1;
+    Frame.LeftPressedEdge := False;
+  end;
   // Keyboard for the focused widget: this frame's WM_CHAR stream and
   // the edge-triggered navigation keys.
   Frame.Chars := CanvasTypedChars;
@@ -1744,8 +1778,6 @@ begin
   // keyboard focus, like clicking a form's background in VCL.
   if Frame.LeftPressedEdge and not Claimed then
     FFocusedId := 0;
-
-  FPrevLeftDown := Frame.LeftDown;
 end;
 
 procedure WidgetsDrawAll;
@@ -1756,12 +1788,13 @@ var
 begin
   if (FWidgets = nil) or (FWidgets.Count = 0) then Exit;
 
-  // Force the back buffer into existence so scripts can call
-  // drawWidgets() before any other draw native has run this frame
-  // (e.g. a menu screen that only shows buttons on a clearCanvas
-  // background). Also rebinds FRenderTarget onto the back buffer if
-  // the last surface got yanked.
-  Bm := CanvasEnsureRenderTarget;
+  // Widgets always render onto the documented back buffer that
+  // present() blits, regardless of any script-selected render target.
+  // CanvasEnsureBackBuffer materialises FBackBuffer on demand (so
+  // drawWidgets() works before any other draw native has run this
+  // frame, e.g. a menu screen over a clearCanvas background) without
+  // disturbing FRenderTarget.
+  Bm := CanvasEnsureBackBuffer;
   if Bm = nil then Exit;
 
   // A popup-active widget (open dropdown) is deferred and drawn last

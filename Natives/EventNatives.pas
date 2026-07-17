@@ -155,6 +155,14 @@ begin
   end;
   // Flush print output
   ActiveEngine.FlushOutput;
+  // Reset per-frame edge state (typed chars, key/mouse press+release
+  // edges) before the pump so poll natives and the widget engine see
+  // only transitions that occur during THIS processEvents() tick \u2014
+  // matching runGameLoop's contract. Without this a manual loop like
+  //   while (running) processEvents();
+  // would accumulate WM_CHAR text forever and leave click/nav edges
+  // stuck true after their originating frame.
+  ClearFrameEdges;
   // Pump Windows messages (delivers key/mouse to VCL handlers)
   Application.ProcessMessages;
   // Dispatch any pending events as callbacks
@@ -245,6 +253,8 @@ var
   targetFps, dt, remainMs: Double;
   freq, tPrev, tNow, frameTicks, deadline: Int64;
   rawTicks, refreshTicks, k: Int64;
+  presentedThisFrame: Boolean;
+  presentCountBefore: Int64;
   cb, dummy, dtArg: TValue;
 begin
   Result := CreateNilValue;
@@ -281,6 +291,8 @@ begin
     frameTicks := 0;
   QueryPerformanceCounter(tPrev);
   deadline := tPrev + frameTicks;
+  // No previous frame yet, so nothing to snap on the first iteration.
+  presentedThisFrame := False;
 
   ActiveEngine.GameLoopActive := True;
   // Hold 1ms timer resolution for the duration of the loop (released in the
@@ -321,11 +333,14 @@ begin
       // positional jitter proportional to movement speed. When the
       // measured interval is within a quarter period of a whole number
       // of refreshes, the true display interval WAS that whole number —
-      // snap to it. Non-presenting loops are unaffected: their frame
-      // times are nowhere near a refresh multiple (k = 0), and genuine
-      // hitches (> k ± period/4) pass through unsnapped.
+      // snap to it. Only apply this to frames whose previous iteration
+      // actually presented (i.e. was paced by DwmFlush); a heavy
+      // non-presenting frame that happens to land near a refresh
+      // multiple must NOT be snapped or we'd inject phantom time into
+      // its dt. Genuine hitches on presenting frames (> k ± period/4)
+      // pass through unsnapped.
       refreshTicks := DisplayRefreshTicks;
-      if refreshTicks > 0 then
+      if presentedThisFrame and (refreshTicks > 0) then
       begin
         k := (rawTicks + refreshTicks div 2) div refreshTicks;  // nearest multiple
         if (k >= 1) and (Abs(rawTicks - k * refreshTicks) <= refreshTicks div 4) then
@@ -339,10 +354,17 @@ begin
       cb := ActiveEngine.FrameCallback;
       if isClosure(cb) then
       begin
+        // Snapshot the present count so we can tell whether onFrame
+        // called present() this iteration; that gates the snap on the
+        // NEXT iteration's rawTicks.
+        presentCountBefore := CanvasPresentCount;
         dtArg := CreateNumber(dt);
         InvokeCallback(cb, [dtArg], dummy);
         if VM.RuntimeErrorStr <> '' then Exit;
-      end;
+        presentedThisFrame := CanvasPresentCount <> presentCountBefore;
+      end
+      else
+        presentedThisFrame := False;
       if not ActiveEngine.GameLoopActive then Break;
 
       if frameTicks > 0 then

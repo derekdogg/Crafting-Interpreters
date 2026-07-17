@@ -280,6 +280,28 @@ begin
   end;
 end;
 
+// Widget handlers are always dispatched with either 0 args or 1 arg
+// (the widget id — the Delphi Sender analogue). FireEdge picks the
+// arity at dispatch time. Anything with 2+ declared parameters would
+// end up called with 0 args and blow up mid-frame; rejecting the
+// closure at registration time surfaces the mistake next to the
+// offending code instead.
+function ValidateHandlerArity(const NativeName, ArgLabel: string;
+  const cb: TValue): Boolean;
+var
+  arity: Integer;
+begin
+  arity := pObjClosure(GetObject(cb))^.func^.arity;
+  if (arity < 0) or (arity > 1) then
+  begin
+    RuntimeError(NativeName + '() ' + ArgLabel +
+      ' must take 0 or 1 arguments.');
+    Result := False;
+  end
+  else
+    Result := True;
+end;
+
 function createButtonNative(argCount: integer; args: pValue): TValue;
 var
   x, y, w, h, id: Integer;
@@ -304,6 +326,9 @@ begin
     RuntimeError('createButton() onClick must be a function.');
     Exit(CreateNilValue);
   end;
+  if (argCount = 6) and
+     not ValidateHandlerArity('createButton', 'onClick', args[5]) then
+    Exit(CreateNilValue);
   caption := string(AsAnsiString(args[4]));
   id := WidgetsCreateButton(x, y, w, h, caption);
   if argCount = 6 then
@@ -311,11 +336,41 @@ begin
   Result := CreateNumber(id);
 end;
 
+// -- Kind guards ---------------------------------------------------------
+
+// Guard for kind-specific accessors: unknown/stale ids stay silent
+// no-ops (matching the generic setters — could be a race against
+// freeWidget), but an EXISTING widget of the wrong kind is a script
+// bug and errors loudly.
+function RequireKind(id: Integer; Kind: TWidgetKind;
+  const NativeName, KindDesc: string): Boolean;
+begin
+  Result := False;
+  if not WidgetsExists(id) then Exit;
+  if not WidgetsIsKind(id, Kind) then
+  begin
+    RuntimeError(NativeName + '(): widget ' + IntToStr(id) +
+      ' is not ' + KindDesc + '.');
+    Exit;
+  end;
+  Result := True;
+end;
+
+function RequireEdit(id: Integer; const NativeName: string): Boolean;
+begin
+  Result := RequireKind(id, wkEdit, NativeName, 'an edit box');
+end;
+
 // Shared body for the handler-attachment natives: <name>(id, fn)
 // attaches or replaces the handler for one edge kind; nil detaches it
 // and returns the widget to polling-only behaviour for that edge.
+// widgetKind + KindDesc are the widget kind the caller’s edge belongs
+// to (a click edge on a button, change on an edit/combo/radio, ...);
+// RequireKind's semantics carry through unchanged — stale ids stay
+// silent no-ops (matching the setters), wrong-kind ids error loudly.
 function AttachCallbackNative(argCount: integer; args: pValue;
-  const NativeName: string; kind: TWidgetCallbackKind): TValue;
+  const NativeName: string; kind: TWidgetCallbackKind;
+  widgetKind: TWidgetKind; const KindDesc: string): TValue;
 var
   id: Integer;
 begin
@@ -326,10 +381,16 @@ begin
     Exit;
   end;
   if not ArgNumOrErr(args, 0, NativeName, 'id', id) then Exit;
+  // Validate the kind BEFORE looking at args[1] so wrong-kind ids
+  // error even when detaching with nil — a slot mis-attached in the
+  // wrong widget shouldn't be quietly “cleared” either.
+  if WidgetsExists(id) and
+     not RequireKind(id, widgetKind, NativeName, KindDesc) then Exit;
   if isNill(args[1]) then
     DetachWidgetCallback(id, kind)
   else if isClosure(args[1]) then
   begin
+    if not ValidateHandlerArity(NativeName, 'fn', args[1]) then Exit;
     // Stale/unknown ids are silently ignored, matching the setters.
     if WidgetsExists(id) then
       SetWidgetCallback(id, kind, args[1]);
@@ -340,17 +401,20 @@ end;
 
 function setButtonOnClickNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := AttachCallbackNative(argCount, args, 'setButtonOnClick', wcbClick);
+  Result := AttachCallbackNative(argCount, args, 'setButtonOnClick',
+    wcbClick, wkButton, 'a button');
 end;
 
 function setEditOnChangeNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := AttachCallbackNative(argCount, args, 'setEditOnChange', wcbChange);
+  Result := AttachCallbackNative(argCount, args, 'setEditOnChange',
+    wcbChange, wkEdit, 'an edit box');
 end;
 
 function setEditOnSubmitNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := AttachCallbackNative(argCount, args, 'setEditOnSubmit', wcbSubmit);
+  Result := AttachCallbackNative(argCount, args, 'setEditOnSubmit',
+    wcbSubmit, wkEdit, 'an edit box');
 end;
 
 function setWidgetCaptionNative(argCount: integer; args: pValue): TValue;
@@ -560,6 +624,30 @@ begin
   Result := CreateBoolean(Query(id));
 end;
 
+// Same shape as BoolQueryNative but kind-guarded: used by the edge-
+// CONSUMING natives (editChanged / editSubmitted / comboChanged /
+// radioChanged) so a wrong-kind id doesn't silently read-and-clear
+// the base ChangedEdge belonging to a legitimate widget of another
+// kind. Stale/unknown ids stay silent (RequireKind's usual contract),
+// matching every other setter.
+function KindConsumeEdgeNative(argCount: integer; args: pValue;
+  const NativeName: string; Query: TBoolWidgetQuery;
+  Kind: TWidgetKind; const KindDesc: string): TValue;
+var
+  id: Integer;
+begin
+  Result := CreateBoolean(False);
+  if argCount <> 1 then
+  begin
+    RuntimeError(NativeName + '() takes 1 argument (id).');
+    Exit;
+  end;
+  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then Exit;
+  if WidgetsExists(id) and
+     not RequireKind(id, Kind, NativeName, KindDesc) then Exit;
+  Result := CreateBoolean(Query(id));
+end;
+
 function buttonClickedNative(argCount: integer; args: pValue): TValue;
 begin
   // Consume-once: the underlying call clears the edge after reading.
@@ -584,31 +672,6 @@ end;
 function widgetVisibleNative(argCount: integer; args: pValue): TValue;
 begin
   Result := BoolQueryNative(argCount, args, 'widgetVisible', WidgetsIsVisible);
-end;
-
-// -- Kind guards ---------------------------------------------------------
-
-// Guard for kind-specific accessors: unknown/stale ids stay silent
-// no-ops (matching the generic setters — could be a race against
-// freeWidget), but an EXISTING widget of the wrong kind is a script
-// bug and errors loudly.
-function RequireKind(id: Integer; Kind: TWidgetKind;
-  const NativeName, KindDesc: string): Boolean;
-begin
-  Result := False;
-  if not WidgetsExists(id) then Exit;
-  if not WidgetsIsKind(id, Kind) then
-  begin
-    RuntimeError(NativeName + '(): widget ' + IntToStr(id) +
-      ' is not ' + KindDesc + '.');
-    Exit;
-  end;
-  Result := True;
-end;
-
-function RequireEdit(id: Integer; const NativeName: string): Boolean;
-begin
-  Result := RequireKind(id, wkEdit, NativeName, 'an edit box');
 end;
 
 // -- Edit-box natives --------------------------------------------------
@@ -700,13 +763,16 @@ end;
 
 function editChangedNative(argCount: integer; args: pValue): TValue;
 begin
-  // Consume-once, like buttonClicked. Returns False for non-edit ids.
-  Result := BoolQueryNative(argCount, args, 'editChanged', WidgetsConsumeChanged);
+  // Consume-once, like buttonClicked, but kind-guarded so it can't
+  // clear a combo/radio's ChangedEdge from under them.
+  Result := KindConsumeEdgeNative(argCount, args, 'editChanged',
+    WidgetsConsumeChanged, wkEdit, 'an edit box');
 end;
 
 function editSubmittedNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := BoolQueryNative(argCount, args, 'editSubmitted', WidgetsConsumeSubmitted);
+  Result := KindConsumeEdgeNative(argCount, args, 'editSubmitted',
+    WidgetsConsumeSubmitted, wkEdit, 'an edit box');
 end;
 
 // -- Item-list natives (shared bodies for combo box and radio group) ----
@@ -753,30 +819,42 @@ begin
 end;
 
 function ListItemCountNative(argCount: integer; args: pValue;
-  const NativeName: string): TValue;
+  const NativeName: string; Kind: TWidgetKind;
+  const KindDesc: string): TValue;
 var
   id: Integer;
 begin
+  Result := CreateNumber(0);
   if argCount <> 1 then
   begin
     RuntimeError(NativeName + '() takes 1 argument (id).');
-    Exit(CreateNilValue);
+    Exit;
   end;
-  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then Exit(CreateNilValue);
+  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then
+    Exit(CreateNilValue);
+  // Stale ids: RequireKind returns False silently, we fall through to
+  // the 0 default. Wrong-kind ids error loudly.
+  if WidgetsExists(id) and
+     not RequireKind(id, Kind, NativeName, KindDesc) then Exit;
   Result := CreateNumber(WidgetsListItemCount(id));
 end;
 
 function GetListIndexNative(argCount: integer; args: pValue;
-  const NativeName: string): TValue;
+  const NativeName: string; Kind: TWidgetKind;
+  const KindDesc: string): TValue;
 var
   id: Integer;
 begin
+  Result := CreateNumber(-1);
   if argCount <> 1 then
   begin
     RuntimeError(NativeName + '() takes 1 argument (id).');
-    Exit(CreateNilValue);
+    Exit;
   end;
-  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then Exit(CreateNilValue);
+  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then
+    Exit(CreateNilValue);
+  if WidgetsExists(id) and
+     not RequireKind(id, Kind, NativeName, KindDesc) then Exit;
   Result := CreateNumber(WidgetsGetListIndex(id));
 end;
 
@@ -849,12 +927,14 @@ end;
 
 function comboItemCountNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := ListItemCountNative(argCount, args, 'comboItemCount');
+  Result := ListItemCountNative(argCount, args, 'comboItemCount',
+    wkCombo, 'a combo box');
 end;
 
 function getComboIndexNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := GetListIndexNative(argCount, args, 'getComboIndex');
+  Result := GetListIndexNative(argCount, args, 'getComboIndex',
+    wkCombo, 'a combo box');
 end;
 
 function setComboIndexNative(argCount: integer; args: pValue): TValue;
@@ -870,13 +950,16 @@ end;
 function comboChangedNative(argCount: integer; args: pValue): TValue;
 begin
   // Same consume-once edge as editChanged — ChangedEdge lives on the
-  // widget base class.
-  Result := BoolQueryNative(argCount, args, 'comboChanged', WidgetsConsumeChanged);
+  // widget base class, so kind-guarded consumption keeps siblings
+  // from clearing each other's edges.
+  Result := KindConsumeEdgeNative(argCount, args, 'comboChanged',
+    WidgetsConsumeChanged, wkCombo, 'a combo box');
 end;
 
 function setComboOnChangeNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := AttachCallbackNative(argCount, args, 'setComboOnChange', wcbChange);
+  Result := AttachCallbackNative(argCount, args, 'setComboOnChange',
+    wcbChange, wkCombo, 'a combo box');
 end;
 
 // -- Radio-group natives ---------------------------------------------------
@@ -917,12 +1000,14 @@ end;
 
 function radioItemCountNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := ListItemCountNative(argCount, args, 'radioItemCount');
+  Result := ListItemCountNative(argCount, args, 'radioItemCount',
+    wkRadioGroup, 'a radio group');
 end;
 
 function getRadioIndexNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := GetListIndexNative(argCount, args, 'getRadioIndex');
+  Result := GetListIndexNative(argCount, args, 'getRadioIndex',
+    wkRadioGroup, 'a radio group');
 end;
 
 function setRadioIndexNative(argCount: integer; args: pValue): TValue;
@@ -937,12 +1022,14 @@ end;
 
 function radioChangedNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := BoolQueryNative(argCount, args, 'radioChanged', WidgetsConsumeChanged);
+  Result := KindConsumeEdgeNative(argCount, args, 'radioChanged',
+    WidgetsConsumeChanged, wkRadioGroup, 'a radio group');
 end;
 
 function setRadioOnChangeNative(argCount: integer; args: pValue): TValue;
 begin
-  Result := AttachCallbackNative(argCount, args, 'setRadioOnChange', wcbChange);
+  Result := AttachCallbackNative(argCount, args, 'setRadioOnChange',
+    wcbChange, wkRadioGroup, 'a radio group');
 end;
 
 // -- Focus natives -----------------------------------------------------
@@ -977,8 +1064,11 @@ begin
   // don't leak between runs — same lifecycle rule as
   // RegisterCanvasNatives clearing sprites / tilemaps / surfaces.
   // ClearCallbackSlots also drops handler TValues that belonged to the
-  // previous (freed) VM before the new VM can ever see them.
-  WidgetsClear;
+  // previous (freed) VM before the new VM can ever see them. This is
+  // the only sanctioned place to reset the widget ID counter; the
+  // mid-session clearWidgets() native uses WidgetsClear, which
+  // preserves FNextId so stale ids stay dead across a clear.
+  WidgetsResetSession;
   ClearCallbackSlots;
 
   // Constructors (one per widget kind).

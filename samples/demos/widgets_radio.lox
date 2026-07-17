@@ -39,8 +39,7 @@ onFrame(fun(dt) {
   if (by < 16)  { by = 16;  dy = 1; }
   if (by > 224) { by = 224; dy = -1; }
 
-  setColor(40, 60, 90);
-  clearCanvas();
+  clearCanvas(40, 60, 90);
 
   setColor(255, 255, 255);
   drawText(20, 16, "LoxWidgets radio demo");

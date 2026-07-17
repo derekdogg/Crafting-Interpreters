@@ -35,8 +35,7 @@ focusWidget(nameEdit);
 onFrame(fun(dt) {
   updateWidgets();  // reads input AND fires the handlers above
 
-  setColor(40, 60, 90);
-  clearCanvas();
+  clearCanvas(40, 60, 90);
 
   setColor(255, 255, 255);
   drawText(20, 16, "LoxWidgets edit demo");
@@ -52,6 +51,9 @@ onFrame(fun(dt) {
   present();
 });
 
-runGameLoop(60);
+// Uncapped: present() is vsynced (DwmFlush), so the compositor paces
+// the loop at the monitor's real refresh rate. A fixed runGameLoop(60)
+// target would fight that pacing and judder on non-60Hz displays.
+runGameLoop(0);
 
 print "Done. Text changed " + str(changes) + " times.";
