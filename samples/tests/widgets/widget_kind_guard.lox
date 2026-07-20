@@ -1,0 +1,6 @@
+// Test: kind-specific accessors reject an EXISTING widget of the wrong
+// kind with a runtime error (stale ids stay silent; wrong kind is a
+// script bug and must be loud).
+var b = createButton(10, 10, 50, 20, "B");
+setEditText(b, "x");
+// expect runtime error: setEditText(): widget 1 is not an edit box.

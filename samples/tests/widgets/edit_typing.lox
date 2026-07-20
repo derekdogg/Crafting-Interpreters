@@ -1,0 +1,43 @@
+// Test: typing into a focused edit box via the simulated WM_CHAR
+// stream — text accumulates at the caret, editChanged is a
+// consume-once edge, unfocused edits ignore the stream.
+var e = createEdit(10, 10, 100, 20);
+var other = createEdit(10, 50, 100, 20);
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    focusWidget(e);
+    simulateChars("abc");
+  }
+  if (frame == 2) {
+    if (getEditText(e) == "abc") print "typed";        // expect: typed
+    if (getEditText(other) == "") print "only focused"; // expect: only focused
+    if (editChanged(e)) print "changed";               // expect: changed
+    if (!editChanged(e)) print "consumed";             // expect: consumed
+    simulateChars("d");
+  }
+  if (frame == 3) {
+    if (getEditText(e) == "abcd") print "appended";    // expect: appended
+    // Consume the changed edge from typing "d" above — otherwise it
+    // would still be pending and make the setEditText check below
+    // observe THAT edge instead of proving setEditText fires none of
+    // its own.
+    editChanged(e);
+    // Programmatic set moves the caret to the end, no changed edge.
+    setEditText(e, "xy");
+    if (getEditText(e) == "xy") print "set";           // expect: set
+    if (!editChanged(e)) print "set silent";           // expect: set silent
+    simulateChars("z");
+  }
+  if (frame == 4) {
+    if (getEditText(e) == "xyz") print "caret at end"; // expect: caret at end
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                          // expect: done

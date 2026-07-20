@@ -1,0 +1,27 @@
+// Test: createPaletteSprite maps each character through setPaletteColor;
+// an undefined character falls back to opaque white (independent of the
+// currently active setColor()); '.' is the transparency key, same as
+// createSprite. clearPalette resets the char->color table so it doesn't
+// leak into the next sprite.
+setCanvasSize(320, 240);
+clearCanvas();
+
+setPaletteColor("R", 255, 0, 0);
+setPaletteColor("B", 0, 0, 255);
+var spr = createPaletteSprite(3, 1, "R.B");
+clearPalette();
+
+drawSprite(spr, 20, 20);
+var red = 255 * 65536;
+var blue = 255;
+if (getPixel(20, 20) == red) print "red mapped";      // expect: red mapped
+if (getPixel(22, 20) == blue) print "blue mapped";    // expect: blue mapped
+if (getPixel(21, 20) == 0) print "dot transparent";   // expect: dot transparent
+
+// An undefined character (palette cleared above) falls back to opaque
+// white regardless of the currently active setColor().
+setColor(9, 9, 9);
+var spr2 = createPaletteSprite(1, 1, "Q");
+drawSprite(spr2, 50, 50);
+var white = 255 * 65536 + 255 * 256 + 255;
+if (getPixel(50, 50) == white) print "undefined white"; // expect: undefined white

@@ -219,21 +219,25 @@ end;
 // Windows messages, dispatch event callbacks, then invoke onFrame(dt) with
 // the elapsed seconds since the previous frame (clamped to 0.1s so debugger
 // pauses / window drags don't produce physics jumps). targetFps defaults to
-// 60; pass 0 to run uncapped. Pacing uses an absolute QPC deadline per frame
-// (no drift accumulation): coarse TThread.Sleep(1) while >2ms remain — the
-// loop holds a scoped timeBeginPeriod(1) while active so that really is
-// ~1ms — then yields until the deadline. If a frame overruns, the deadline
-// resets rather than fast-forwarding to catch up.
+// 0 (uncapped); pass a positive number to cap instead. Pacing uses an
+// absolute QPC deadline per frame (no drift accumulation): coarse
+// TThread.Sleep(1) while >2ms remain — the loop holds a scoped
+// timeBeginPeriod(1) while active so that really is ~1ms — then yields
+// until the deadline. If a frame overruns, the deadline resets rather than
+// fast-forwarding to catch up.
 //
 // IMPORTANT for canvas scripts: present() ends with DwmFlush, i.e. it is
 // already vsynced to the compositor. A script that presents every frame
-// should therefore run UNCAPPED (runGameLoop(0)) and scale movement by dt —
-// the compositor paces the loop at the monitor's true refresh and dt stays
-// steady. Passing a fixed target (e.g. 60) adds a second, unsynchronised
-// clock on top of the vsync: on non-60Hz panels frames then straddle a
-// varying number of composition ticks and dt oscillates, which reads as
-// juddery motion at speed. Use a fixed target only for loops that don't
-// present (or don't animate).
+// should run UNCAPPED (the default — call runGameLoop() with no argument,
+// or runGameLoop(0) explicitly) and scale movement by dt — the compositor
+// paces the loop at the monitor's true refresh and dt stays steady. Passing
+// a fixed target (e.g. 60) adds a second, unsynchronised clock on top of
+// the vsync: on non-60Hz panels frames then straddle a varying number of
+// composition ticks and dt oscillates, which reads as juddery motion at
+// speed. Only pass a fixed target for loops that don't present every frame
+// (or don't animate) — e.g. a logic-only tick loop with no canvas output,
+// where nothing else throttles the loop and an uncapped run would peg a
+// CPU core.
 // QPC ticks per display refresh from the DWM compositor, 0 when
 // unavailable. qpcRefreshPeriod shares QueryPerformanceCounter's time
 // base, so it compares directly against QPC deltas.
@@ -268,7 +272,7 @@ begin
     RuntimeError('runGameLoop() is already running.');
     Exit;
   end;
-  targetFps := 60;
+  targetFps := 0;  // uncapped by default — present() paces via vsync (DwmFlush)
   if argCount > 0 then
   begin
     if (argCount <> 1) or not isNumber(args[0]) then
@@ -394,6 +398,14 @@ begin
 end;
 
 // --- Simulation natives (for scripted testing) ---
+// Each native feeds BOTH input paths a real device event would reach:
+// the event engine's queues (callback dispatch — onKeyPressed etc.)
+// and, via CanvasSimulate*, the canvas poll state (keyPressed/keyHeld/
+// mouseX/mouseDown/mouseClicked and the widget engine). The canvas
+// side is applied at the next frame-edge reset, so simulated input
+// becomes visible to polls and widgets on the FRAME AFTER the
+// simulate call — the same latency real pumped input has. Mouse
+// coordinates are LOGICAL canvas pixels.
 
 function simulateKeyDownNative(argCount: integer; args: pValue): TValue;
 var
@@ -406,6 +418,7 @@ begin
   end;
   key := string(AsAnsiString(args[0]));
   ActiveEngine.QueueKeyDown(key);
+  CanvasSimulateKey(key, True);
   Result := CreateNilValue;
 end;
 
@@ -420,6 +433,7 @@ begin
   end;
   key := string(AsAnsiString(args[0]));
   ActiveEngine.QueueKeyUp(key);
+  CanvasSimulateKey(key, False);
   Result := CreateNilValue;
 end;
 
@@ -436,6 +450,7 @@ begin
   x := Trunc(GetNumber(args[1]));
   y := Trunc(GetNumber(args[2]));
   ActiveEngine.QueueMouseDown(btn, x, y);
+  CanvasSimulateMouseButton(btn, True, x, y);
   Result := CreateNilValue;
 end;
 
@@ -452,6 +467,7 @@ begin
   x := Trunc(GetNumber(args[1]));
   y := Trunc(GetNumber(args[2]));
   ActiveEngine.QueueMouseUp(btn, x, y);
+  CanvasSimulateMouseButton(btn, False, x, y);
   Result := CreateNilValue;
 end;
 
@@ -467,6 +483,23 @@ begin
   x := Trunc(GetNumber(args[0]));
   y := Trunc(GetNumber(args[1]));
   ActiveEngine.QueueMouseMove(x, y);
+  CanvasSimulateMouseMove(x, y);
+  Result := CreateNilValue;
+end;
+
+// simulateChars(text) — inject text into the frame's WM_CHAR stream
+// (what edit boxes read). Canvas-side only: there is no per-character
+// event callback to queue. Use simulateKeyDown for keys that must also
+// fire callbacks/nav edges; its char (if any) is synthesized
+// automatically, so don't ALSO simulateChars the same keystroke.
+function simulateCharsNative(argCount: integer; args: pValue): TValue;
+begin
+  if (argCount <> 1) or not isString(args[0]) then
+  begin
+    RuntimeError('simulateChars() takes 1 string argument.');
+    Exit(CreateNilValue);
+  end;
+  CanvasSimulateChars(string(AsAnsiString(args[0])));
   Result := CreateNilValue;
 end;
 
@@ -487,12 +520,14 @@ begin
   defineNative('onFrame', onFrameNative, 1);
   defineNative('runGameLoop', runGameLoopNative, -1);  // 0-1 args
   defineNative('stopGameLoop', stopGameLoopNative, 0);
-  // Simulation natives (for scripted testing — queue events without VCL)
+  // Simulation natives (for scripted testing — synthesize input
+  // without VCL; feeds callbacks AND poll state AND widgets)
   defineNative('simulateKeyDown', simulateKeyDownNative, 1);
   defineNative('simulateKeyUp', simulateKeyUpNative, 1);
   defineNative('simulateMouseDown', simulateMouseDownNative, 3);
   defineNative('simulateMouseUp', simulateMouseUpNative, 3);
   defineNative('simulateMouseMove', simulateMouseMoveNative, 2);
+  defineNative('simulateChars', simulateCharsNative, 1);
 end;
 
 end.

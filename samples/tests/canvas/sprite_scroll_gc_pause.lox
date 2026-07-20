@@ -1,0 +1,171 @@
+// Test: what happens when GC kicks in mid-scroll?
+//
+// CollectGarbage (Suto.pas ~L1900 trigger, ~L8930 implementation) is a
+// synchronous, stop-the-world mark-sweep with NO scheduled safe point —
+// it can fire from any heap allocation, anywhere in a script's
+// execution. This test forces one deliberately (collectGarbage())
+// instead of waiting for the allocation threshold, mid-scroll.
+//
+// Timing mechanics (see Natives/EventNatives.pas runGameLoopNative):
+// `tPrev` — the timestamp used to compute the NEXT frame's dt — is
+// captured BEFORE onFrame() is invoked. So a pause that happens INSIDE
+// onFrame(N) does NOT show up in dt(N) (already computed and passed
+// in); it gets folded entirely into dt(N+1) instead, exactly like any
+// other hitch. The refresh-multiple de-jitter snap explicitly does not
+// snap an interval that isn't a whole multiple of the refresh period,
+// so a real GC pause reads as an honest, larger dt on the frame after
+// — not hidden, not silently dropped, not corrupting earlier frames.
+//
+// This deliberately does NOT assert a specific dt magnitude — how long
+// a real collection takes is machine-dependent and asserting on it
+// would make the test flaky. What actually matters, and what this
+// checks, is that the VM/canvas state comes out the other side
+// uncorrupted: no crash, no garbled pixels, no lost scroll progress,
+// correct final position — i.e. a GC pause is a HITCH, not a bug.
+//
+// IMPORTANT: present() clears the ENTIRE new back buffer on every call
+// (LoxCanvas.pas presentNative) — with double buffering, the back
+// buffer is the picture from TWO present() calls ago, not "last
+// frame's picture", so every frame must fully redraw regardless of
+// whether the quantized position changed. An earlier version of this
+// test (and its siblings) skipped the redraw on "unchanged" frames as
+// an optimization, which left the presented frame blank on every
+// skipped frame — a visible flicker the per-frame checks couldn't
+// catch since they only ran on frames where a redraw happened.
+setCanvasSize(900, 240);
+clearCanvas();
+
+var BACKGROUND = 0;
+var Y = 50;
+var W = 5;
+var H = 4;
+var SPEED = 60;     // pixels per second
+var DURATION = 3;   // real seconds — enough to see it through, short enough not to be a soak test
+
+// Lopsided staircase — see sprite_scroll_smoothness.lox for why an
+// asymmetric shape catches bugs a solid block would miss.
+setColor(255, 140, 0);
+var spr = createSprite(W, H,
+  "XXXXX" +
+  "XXXX." +
+  "XXX.." +
+  "XX..."
+);
+var orange = 255 * 65536 + 140 * 256;
+
+fun isOpaque(dx, dy) {
+  return dx < (W - dy);
+}
+
+fun footprintMatches(x, y) {
+  var ok = true;
+  var dy = 0;
+  while (dy < H) {
+    var dx = 0;
+    while (dx < W) {
+      var expected = BACKGROUND;
+      if (isOpaque(dx, dy)) expected = orange;
+      if (getPixel(x + dx, y + dy) != expected) ok = false;
+      dx = dx + 1;
+    }
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+fun footprintAllClear(x, y) {
+  var ok = true;
+  var dy = 0;
+  while (dy < H) {
+    var dx = 0;
+    while (dx < W) {
+      if (getPixel(x + dx, y + dy) != BACKGROUND) ok = false;
+      dx = dx + 1;
+    }
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+fun perimeterClear(x, y) {
+  var ok = true;
+  var dx = -1;
+  while (dx <= W) {
+    if (getPixel(x + dx, y - 1) != BACKGROUND) ok = false;
+    if (getPixel(x + dx, y + H) != BACKGROUND) ok = false;
+    dx = dx + 1;
+  }
+  var dy = -1;
+  while (dy <= H) {
+    if (getPixel(x - 1, y + dy) != BACKGROUND) ok = false;
+    if (getPixel(x + W, y + dy) != BACKGROUND) ok = false;
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+// Manufactures real, non-trivial garbage for collectGarbage() to
+// actually walk and reclaim — a collection over an empty heap wouldn't
+// exercise anything. It's all unreachable the moment the function
+// returns (the array isn't kept), so the very next collection has real
+// work to do.
+fun churnGarbage(count) {
+  var junk = newArray();
+  var i = 0;
+  while (i < count) {
+    arrayPush(junk, "garbage-" + str(i));
+    i = i + 1;
+  }
+  return arrayLen(junk);
+}
+
+var START_X = 20;
+var elapsed = 0;
+var prevDrawX = 0 - 1;   // sentinel: nothing drawn yet
+var footprintOk = true;
+var placementOk = true;
+var gcForced = false;
+
+onFrame(fun(dt) {
+  elapsed = elapsed + dt;
+
+  // Partway through the run: manufacture garbage and force a REAL
+  // collection mid-scroll — the actual "GC kicks in" scenario. Guarded
+  // so it only fires once.
+  if ((!gcForced) and (elapsed >= DURATION / 2)) {
+    churnGarbage(5000);
+    collectGarbage();
+    gcForced = true;
+  }
+
+  var worldX = START_X + SPEED * elapsed;
+  var drawX = floor(worldX);
+
+  // Redraw EVERY frame, unconditionally — see the header comment on
+  // why skipping this when the position hasn't changed is unsafe with
+  // a double-buffered present().
+  clearCanvas();
+  drawSprite(spr, drawX, Y);
+
+  if (!footprintMatches(drawX, Y)) footprintOk = false;
+  if (!perimeterClear(drawX, Y)) placementOk = false;
+
+  prevDrawX = drawX;
+
+  present();
+
+  if (elapsed >= DURATION) {
+    if (gcForced) print "gc forced mid-scroll";           // expect: gc forced mid-scroll
+    if (footprintOk) print "no missing pixels";           // expect: no missing pixels
+    if (placementOk) print "correct placement";           // expect: correct placement
+    // Generous tolerance: a real pause can legitimately show up as one
+    // bigger jump (dt-scaled motion catching up to real elapsed time),
+    // capped by the loop's own 0.1s-per-frame dt clamp.
+    var expectedX = START_X + SPEED * DURATION;
+    if (abs(prevDrawX - expectedX) <= 8) print "scroll completed correctly"; // expect: scroll completed correctly
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                             // expect: done

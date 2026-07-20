@@ -1,0 +1,42 @@
+// Test: setEditMaxLength caps USER input (typed overflow is dropped);
+// Enter fires the submit edge; an onSubmit handler consumes it.
+var e = createEdit(10, 10, 100, 20);
+var submits = 0;
+var frame = 0;
+
+setEditMaxLength(e, 3);
+setEditOnSubmit(e, fun() { submits = submits + 1; });
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    focusWidget(e);
+    simulateChars("abcdef");
+  }
+  if (frame == 2) {
+    if (getEditText(e) == "abc") print "capped";      // expect: capped
+    simulateKeyDown("enter");
+    simulateKeyUp("enter");
+  }
+  if (frame == 3) {
+    if (submits == 1) print "submitted";              // expect: submitted
+    if (!editSubmitted(e)) print "consumed";          // expect: consumed
+    // Detach: the poll sees the edge instead.
+    setEditOnSubmit(e, nil);
+    simulateKeyDown("enter");
+    simulateKeyUp("enter");
+  }
+  if (frame == 4) {
+    if (submits == 1) print "detached";               // expect: detached
+    if (editSubmitted(e)) print "poll sees";          // expect: poll sees
+    // Shrinking max length truncates existing text immediately.
+    setEditMaxLength(e, 2);
+    if (getEditText(e) == "ab") print "truncated";    // expect: truncated
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                         // expect: done

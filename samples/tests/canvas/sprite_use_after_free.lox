@@ -1,0 +1,6 @@
+// Test: drawing a freed sprite id is a runtime error.
+setCanvasSize(320, 240);
+var s = createSprite(2, 2, "XXXX");
+freeSprite(s);
+drawSprite(s, 0, 0);
+// expect runtime error: drawSprite() sprite has been freed.

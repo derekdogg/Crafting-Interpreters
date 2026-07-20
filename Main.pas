@@ -86,7 +86,7 @@ var
 implementation
 uses
   NativeObjectTestUnit, IOUtils, Types, StrUtils, Math, fmGame, fmEventTest,
-  LoxEventEngine, ImportNatives;
+  LoxEventEngine, ImportNatives, LoxCanvas, WidgetNatives;
 
 {$R *.dfm}
 
@@ -329,8 +329,15 @@ procedure TForm4.FormDestroy(Sender: TObject);
 var
   N: TTreeNode;
 begin
-  // Canvas + event queue are owned by frmGame and freed in its
-  // FormDestroy.
+  // Canvas globals (FSprites, FSurfaces, FTilemaps, FKeysHeld/Pressed,
+  // FPendingSim, back/front buffers, ...) are normally freed by
+  // frmGame's own FormDestroy (FreeCanvas) — but frmGame is created
+  // on demand, not auto-created in the .dpr, so a session that only
+  // ever runs the test suite through this form (never opening the
+  // game preview window) leaves them all leaked at process exit.
+  // FreeCanvas is FreeAndNil-based throughout, so calling it here too
+  // is a harmless no-op on the fields frmGame already freed.
+  FreeCanvas;
   N := TestTree.Items.GetFirstNode;
   while N <> nil do
   begin
@@ -1222,12 +1229,23 @@ begin
       f1 := 0;
 
       try
-        if Pos('\events\', LowerCase(F)) > 0 then
+        if (Pos('\events\', LowerCase(F)) > 0) or
+           (Pos('\input\', LowerCase(F)) > 0) or
+           (Pos('\widgets\', LowerCase(F)) > 0) or
+           (Pos('\canvas\', LowerCase(F)) > 0) then
         begin
-          // Event engine test — run with engine active
+          // Event engine test (canvas/input/widgets tests also drive
+          // onFrame, runGameLoop, and the simulate*() natives, all of
+          // which live on the event engine) — run with canvas +
+          // (widget) + engine natives active, mirroring fmGame.pas's
+          // RunScript wiring. Canvas-only tests that never touch
+          // onFrame/events are unaffected by the engine being present.
           Content := TFile.ReadAllText(F);
           InitVM;
           try
+            RegisterCanvasNatives;
+            if Pos('\widgets\', LowerCase(F)) > 0 then
+              RegisterWidgetNatives;
             var Engine := TLoxEventEngine.Create;
             try
               Engine.RegisterNatives;

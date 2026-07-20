@@ -489,9 +489,11 @@ onKeyReleased(fun(key) {
 });
 
 // ============================================================
-// Game loop — the engine owns it. runGameLoop(60) pumps messages,
+// Game loop — the engine owns it. runGameLoop() pumps messages,
 // dispatches the callbacks above, then calls this once per frame
-// with dt (seconds, already clamped) at a steady 60fps.
+// with dt (seconds, already clamped). Uncapped: present() vsyncs via
+// DwmFlush, so the compositor paces the loop at the monitor's real
+// refresh rate — a fixed target would fight that pacing and judder.
 // ============================================================
 onFrame(fun(dt) {
   // --- Handle fire request ---
@@ -783,6 +785,6 @@ onFrame(fun(dt) {
   present();
 });
 
-runGameLoop(60);
+runGameLoop();
 
 print "Final score: " + str(score);

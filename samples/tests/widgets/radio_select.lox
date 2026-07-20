@@ -1,0 +1,53 @@
+// Test: radio group — one widget owns the whole group; clicking an
+// item row selects it (and focuses the group), arrows step the
+// selection while focused, programmatic setRadioIndex fires no edge,
+// and the selection clamps at both ends.
+//
+// Geometry note: the click targets item ROW 0 at y+24, which lands in
+// row 0 for any GUI font between 10 and 22px tall; deeper rows are
+// font-dependent, so they are exercised via the keyboard.
+var r = createRadioGroup(10, 10, 120, 100, "G");
+addRadioItem(r, "A");
+addRadioItem(r, "B");
+addRadioItem(r, "C");
+
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    if (getRadioIndex(r) == 0 - 1) print "starts none"; // expect: starts none
+    simulateMouseDown(0, 30, 34);
+    simulateMouseUp(0, 30, 34);
+  }
+  if (frame == 2) {
+    if (getRadioIndex(r) == 0) print "clicked";        // expect: clicked
+    if (radioChanged(r)) print "changed";              // expect: changed
+    if (focusedWidget() == r) print "focused";         // expect: focused
+    simulateKeyDown("down");
+    simulateKeyUp("down");
+  }
+  if (frame == 3) {
+    if (getRadioIndex(r) == 1) print "arrow";          // expect: arrow
+    if (radioChanged(r)) print "arrow edge";           // expect: arrow edge
+    setRadioIndex(r, 2);
+    if (getRadioText(r) == "C") print "set text";      // expect: set text
+    if (!radioChanged(r)) print "set silent";          // expect: set silent
+    simulateKeyDown("down");
+    simulateKeyUp("down");
+  }
+  if (frame == 4) {
+    if (getRadioIndex(r) == 2) print "clamp end";      // expect: clamp end
+    simulateKeyDown("up");
+    simulateKeyUp("up");
+  }
+  if (frame == 5) {
+    if (getRadioIndex(r) == 1) print "up";             // expect: up
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                          // expect: done

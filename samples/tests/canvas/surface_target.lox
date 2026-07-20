@@ -1,0 +1,27 @@
+// Test: surfaces as render targets — drawing lands on the bound
+// surface (getPixel follows the target), setRenderTarget(-1) rebinds
+// the back buffer, drawSurface blits with transparent (alpha-0) skip.
+setCanvasSize(320, 240);
+clearCanvas();
+
+var blue = 255;
+var surf = createSurface(16, 16);
+
+setRenderTarget(surf);
+setColor(0, 0, 255);
+fillRect(0, 0, 4, 4);
+if (getPixel(0, 0) == blue) print "on surface";       // expect: on surface
+if (getPixel(15, 15) == 0) print "surface clear";     // expect: surface clear
+// Surface bounds apply while it is the target.
+if (getPixel(16, 0) == -1) print "surface oob";       // expect: surface oob
+
+setRenderTarget(0 - 1);
+if (getPixel(0, 0) == 0) print "back buffer";         // expect: back buffer
+
+drawSurface(surf, 100, 100);
+if (getPixel(100, 100) == blue) print "blitted";      // expect: blitted
+// The surface's untouched (alpha-0) pixels don't overwrite the target.
+setColor(255, 0, 0);
+fillRect(110, 110, 1, 1);
+drawSurface(surf, 100, 100);
+if (getPixel(110, 110) == 255 * 65536) print "alpha skip"; // expect: alpha skip

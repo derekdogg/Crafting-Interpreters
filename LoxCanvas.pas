@@ -121,6 +121,24 @@ function CanvasMouseButtonReleasedEdge(Button: Integer): Boolean;
 // True on the frame the named key transitioned up->down (same edge set
 // the keyPressed() native reads). Cleared by ClearFrameEdges.
 function CanvasKeyPressedEdge(const KeyName: string): Boolean;
+
+// -- Simulated input (scripted testing) --------------------------------
+// Queue synthetic input that becomes visible to the POLL state (keyHeld/
+// keyPressed/mouseX/mouseDown/mouseClicked, and therefore the widget
+// engine) at the NEXT frame-edge reset — i.e. the next ClearFrameEdges,
+// exactly the phase where real pumped input lands. The event engine's
+// simulate* natives call these alongside their own queueing so one
+// simulateKeyDown() drives callbacks AND polls AND widgets coherently.
+// CanvasSimulateKey synthesizes the key's WM_CHAR the way
+// TranslateMessage would (letters/digits/space/enter/backspace/tab/
+// escape), so a simulated Enter reaches an edit box's char stream just
+// like a physical keystroke. Entries are applied in queue order, so a
+// down+up queued in the same frame produces both edges that frame —
+// same as a real same-pump press+release.
+procedure CanvasSimulateKey(const KeyName: string; Down: Boolean);
+procedure CanvasSimulateMouseButton(Btn: Integer; Down: Boolean; X, Y: Integer);
+procedure CanvasSimulateMouseMove(X, Y: Integer);
+procedure CanvasSimulateChars(const Text: string);
 // Characters typed since the last ClearFrameEdges, in arrival order —
 // the WM_CHAR stream, so shift state, keyboard layout and autorepeat
 // are already applied. Control chars are included (#8 backspace,
@@ -228,6 +246,21 @@ var
   // TLoxGameCanvas.KeyPress and cleared by ClearFrameEdges. Capped (see
   // KeyPress) so autorepeat can't grow it unboundedly within one frame.
   FTypedChars: string;
+
+type
+  // Simulated-input queue entry (see the CanvasSimulate* interface
+  // docs). Drained by ClearFrameEdges.
+  TSimInputKind = (sikKey, sikMouseButton, sikMouseMove, sikChars);
+  TSimInput = record
+    Kind: TSimInputKind;
+    KeyName: string;
+    Text: string;
+    Down: Boolean;
+    Btn, X, Y: Integer;
+  end;
+
+var
+  FPendingSim: TList<TSimInput> = nil;
   // Latest known mouse position in LOGICAL pixel coords (clamped to the
   // 320x240 playfield) and held state for the three primary buttons.
   // Updated by TLoxGameCanvas.MouseMove/Down/Up and queried by the
@@ -726,6 +759,7 @@ begin
   FRenderTargetId := -1;
   FreeAndNil(FKeysHeld);
   FreeAndNil(FKeysPressed);
+  FreeAndNil(FPendingSim);
   FreeAndNil(FGameSurface);
 end;
 
@@ -1415,11 +1449,146 @@ begin
   if FKeysPressed <> nil then
     FKeysPressed.Clear;
   FTypedChars := '';
+  if FPendingSim <> nil then
+    FPendingSim.Clear;  // drop leftover simulated input between runs
   for i := 0 to High(FMouseBtn) do
   begin
     FMouseBtn[i] := False;
     FMouseBtnClicked[i] := False;
   end;
+end;
+
+// The WM_CHAR TranslateMessage would produce for a simulated key-down,
+// #0 for keys with no char (arrows, home/end/delete...).
+function SimKeyToChar(const KeyName: string): Char;
+begin
+  Result := #0;
+  if Length(KeyName) = 1 then
+  begin
+    // 'a'..'z', '0'..'9' — the key name IS the typed char.
+    if CharInSet(KeyName[1], ['a'..'z', '0'..'9']) then
+      Result := KeyName[1];
+  end
+  else if KeyName = 'space' then Result := ' '
+  else if KeyName = 'enter' then Result := #13
+  else if KeyName = 'backspace' then Result := #8
+  else if KeyName = 'tab' then Result := #9
+  else if KeyName = 'escape' then Result := #27;
+end;
+
+procedure AppendTypedChars(const S: string);
+begin
+  // Same cap as TLoxGameCanvas.KeyPress.
+  if Length(FTypedChars) + Length(S) <= 64 then
+    FTypedChars := FTypedChars + S;
+end;
+
+// Apply one queued simulated input, mirroring exactly what the VCL
+// handlers (KeyDown/KeyPress/MouseDown/MouseUp/MouseMove) do for the
+// real thing.
+procedure ApplySimInput(const Si: TSimInput);
+var
+  ch: Char;
+begin
+  case Si.Kind of
+    sikKey:
+      begin
+        SetKeyState(Si.KeyName, Si.Down);
+        if Si.Down then
+        begin
+          ch := SimKeyToChar(Si.KeyName);
+          if ch <> #0 then
+            AppendTypedChars(ch);
+        end;
+      end;
+    sikMouseButton:
+      begin
+        FMouseX := Si.X;
+        FMouseY := Si.Y;
+        // Simulated coords are logical-space, definitionally inside
+        // the playfield — without this the letterbox suppression in
+        // WidgetsUpdate would discard all simulated widget input
+        // (FMouseInPlayfield starts False until a real mouse event).
+        FMouseInPlayfield := True;
+        if (Si.Btn >= 0) and (Si.Btn <= High(FMouseBtn)) then
+        begin
+          if Si.Down then
+          begin
+            if not FMouseBtn[Si.Btn] then
+              FMouseBtnClicked[Si.Btn] := True;
+            FMouseBtn[Si.Btn] := True;
+          end
+          else
+          begin
+            if FMouseBtn[Si.Btn] then
+              FMouseBtnReleased[Si.Btn] := True;
+            FMouseBtn[Si.Btn] := False;
+          end;
+        end;
+      end;
+    sikMouseMove:
+      begin
+        FMouseX := Si.X;
+        FMouseY := Si.Y;
+        FMouseInPlayfield := True;  // see sikMouseButton note
+      end;
+    sikChars:
+      AppendTypedChars(Si.Text);
+  end;
+end;
+
+procedure QueueSimInput(const Si: TSimInput);
+begin
+  if FPendingSim = nil then
+    FPendingSim := TList<TSimInput>.Create;
+  FPendingSim.Add(Si);
+end;
+
+procedure CanvasSimulateKey(const KeyName: string; Down: Boolean);
+var
+  si: TSimInput;
+begin
+  if KeyName = '' then Exit;
+  si := Default(TSimInput);
+  si.Kind := sikKey;
+  si.KeyName := KeyName;
+  si.Down := Down;
+  QueueSimInput(si);
+end;
+
+procedure CanvasSimulateMouseButton(Btn: Integer; Down: Boolean; X, Y: Integer);
+var
+  si: TSimInput;
+begin
+  si := Default(TSimInput);
+  si.Kind := sikMouseButton;
+  si.Btn := Btn;
+  si.Down := Down;
+  si.X := X;
+  si.Y := Y;
+  QueueSimInput(si);
+end;
+
+procedure CanvasSimulateMouseMove(X, Y: Integer);
+var
+  si: TSimInput;
+begin
+  si := Default(TSimInput);
+  si.Kind := sikMouseMove;
+  si.X := X;
+  si.Y := Y;
+  QueueSimInput(si);
+end;
+
+procedure CanvasSimulateChars(const Text: string);
+var
+  si: TSimInput;
+begin
+  if Text = '' then Exit;
+  si := Default(TSimInput);
+  si.Kind := sikChars;
+  si.Text := Text;
+  QueueSimInput(si);
 end;
 
 procedure ClearFrameEdges;
@@ -1433,6 +1602,16 @@ begin
   for i := 0 to High(FMouseBtnReleased) do
     FMouseBtnReleased[i] := False;
   FTypedChars := '';
+  // Apply simulated input queued since the last reset. This runs in
+  // the same frame phase where the message pump delivers real input
+  // (right after the edge wipe), so simulated edges live for exactly
+  // one frame like physical ones.
+  if (FPendingSim <> nil) and (FPendingSim.Count > 0) then
+  begin
+    for i := 0 to FPendingSim.Count - 1 do
+      ApplySimInput(FPendingSim[i]);
+    FPendingSim.Clear;
+  end;
 end;
 
 function keyHeldNative(argCount: integer; args: pValue): TValue;
@@ -3524,6 +3703,39 @@ begin
   Result := CreateNilValue;
 end;
 
+// getPixel(x, y) -> number — the current render target's pixel as a
+// packed 0xRRGGBB value (alpha stripped), or -1 for out-of-bounds
+// coordinates. Reads whatever the drawing natives last wrote (back
+// buffer, or the surface bound via setRenderTarget), unaffected by the
+// camera offset — pass buffer coordinates, not world coordinates.
+// Primarily a scripted-testing hook: lets a test assert exactly what
+// fillRect/drawLine/clip/camera produced. Compare against
+// r*65536 + g*256 + b.
+function getPixelNative(argCount: integer; args: pValue): TValue;
+var
+  x, y: Integer;
+  pixel: Cardinal;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('getPixel() takes 2 arguments (x, y).');
+    Exit(CreateNilValue);
+  end;
+  if (not isNumber(args[0])) or (not isNumber(args[1])) then
+  begin
+    RuntimeError('getPixel() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x := Trunc(GetNumber(args[0]));
+  y := Trunc(GetNumber(args[1]));
+  if (x < 0) or (y < 0) or (x >= FRenderTarget.Width) or
+     (y >= FRenderTarget.Height) then
+    Exit(CreateNumber(-1));
+  pixel := PCardinal(FRenderTarget.ScanLine[y])[x];
+  Result := CreateNumber(pixel and $00FFFFFF);  // BGRA -> 0xRRGGBB
+end;
+
 procedure RegisterCanvasNatives;
 begin
   // Unbind the current render target BEFORE clearing the surfaces list,
@@ -3568,6 +3780,7 @@ begin
   defineNative('drawCircle', drawCircleNative, 3);
   defineNative('fillCircle', fillCircleNative, 3);
   defineNative('drawPixel', drawPixelNative, 2);
+  defineNative('getPixel', getPixelNative, 2);
   defineNative('drawPixels', drawPixelsNative, 2);
   defineNative('drawPixelsGray', drawPixelsGrayNative, 3);
   defineNative('createSprite', createSpriteNative, 3);

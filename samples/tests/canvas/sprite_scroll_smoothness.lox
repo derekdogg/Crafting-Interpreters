@@ -1,0 +1,185 @@
+// Test: scrolling a sprite across several frames — checks the classic
+// smoothness checklist from the engine's own frame-pacing review
+// (graphics-smoothness-review.md) at the pixel-data level:
+//   - correct placement    (the sprite lands on the EXACT expected
+//                            integer column every frame, AND the whole
+//                            ring immediately outside its bounding box
+//                            is background — not just a sample point;
+//                            catches misalignment/overdraw/off-by-one,
+//                            NOT frame-to-frame timing — that's speedOk)
+//   - constant speed        (frame-to-frame displacement is always
+//                            exactly STEP, no drift/acceleration — the
+//                            actual "jitter over time" check)
+//   - no missing pixels     (an ASYMMETRIC shape is checked pixel-by-
+//                            pixel against its exact pattern, not just
+//                            "some pixels are opaque somewhere" — a
+//                            uniform solid block wouldn't catch a
+//                            flipped/transposed/shifted-by-one bug the
+//                            way a lopsided shape does)
+//   - no trailing artifacts (erasing just the OLD footprint and
+//                            redrawing at the new one leaves nothing
+//                            of the sprite behind)
+//
+// Movement is frame-counted (not dt-scaled) so the test is
+// deterministic regardless of real elapsed time between frames.
+// Note: this only verifies buffer/pixel data via getPixel — it can't
+// observe on-screen DWM compositing artifacts (the "trails behind
+// fast-moving shapes" issue documented in LoxCanvas.pas's presentNative
+// comments), which would need visual/screenshot inspection instead.
+setCanvasSize(320, 240);
+clearCanvas();
+
+// Every comparison below assumes the canvas background reads as this
+// value — true today because clearCanvas() defaults to (0,0,0) and
+// eraseFootprint() below explicitly repaints with the same color. If
+// the background ever stops being black, update BOTH this constant and
+// eraseFootprint()'s setColor() call together.
+var BACKGROUND = 0;
+
+var STEP = 8;   // > W below, so consecutive footprints never overlap
+var Y = 50;
+var W = 5;
+var H = 4;
+var FRAMES = 6; // how many frames the scroll runs for
+
+// Lopsided staircase — asymmetric under both horizontal AND vertical
+// flip, so a mirrored/transposed/off-by-one draw fails a per-pixel
+// check instead of silently still "looking full".
+//   XXXXX
+//   XXXX.
+//   XXX..
+//   XX...
+setColor(255, 140, 0);   // solid orange, easy to tell apart from background
+var spr = createSprite(W, H,
+  "XXXXX" +
+  "XXXX." +
+  "XXX.." +
+  "XX..."
+);
+var orange = 255 * 65536 + 140 * 256;
+
+// Opaque columns per row of the staircase above: row 0 has 5, row 1
+// has 4, row 2 has 3, row 3 has 2 — i.e. column dx is opaque at row dy
+// iff dx < (W - dy).
+fun isOpaque(dx, dy) {
+  return dx < (W - dy);
+}
+
+// True only if EVERY pixel of the WxH footprint at (x, y) matches the
+// staircase's exact shape — a missing opaque pixel OR a stray pixel
+// where one of the '.' gaps should be both fail this.
+fun footprintMatches(x, y) {
+  var ok = true;
+  var dy = 0;
+  while (dy < H) {
+    var dx = 0;
+    while (dx < W) {
+      var expected = BACKGROUND; // background
+      if (isOpaque(dx, dy)) expected = orange;
+      if (getPixel(x + dx, y + dy) != expected) ok = false;
+      dx = dx + 1;
+    }
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+// True only if EVERY pixel of the WxH footprint at (x, y) is plain
+// background — used to confirm an erased/previous position is truly
+// clear, regardless of the staircase's own opaque/transparent shape.
+fun footprintAllClear(x, y) {
+  var ok = true;
+  var dy = 0;
+  while (dy < H) {
+    var dx = 0;
+    while (dx < W) {
+      if (getPixel(x + dx, y + dy) != BACKGROUND) ok = false;
+      dx = dx + 1;
+    }
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+// True only if the ENTIRE one-pixel ring immediately outside the WxH
+// bounding box at (x, y) — full top edge, full bottom edge, full left
+// edge, full right edge, corners included — is background. Catches a
+// sprite landing one column/row early or late in any direction, not
+// just a single sample to the left/right of one row.
+fun perimeterClear(x, y) {
+  var ok = true;
+  var dx = -1;
+  while (dx <= W) {
+    if (getPixel(x + dx, y - 1) != BACKGROUND) ok = false;
+    if (getPixel(x + dx, y + H) != BACKGROUND) ok = false;
+    dx = dx + 1;
+  }
+  var dy = -1;
+  while (dy <= H) {
+    if (getPixel(x - 1, y + dy) != BACKGROUND) ok = false;
+    if (getPixel(x + W, y + dy) != BACKGROUND) ok = false;
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+// Repaints with BACKGROUND — must stay in sync with the constant above;
+// this is what actually makes the canvas read back as BACKGROUND.
+fun eraseFootprint(x, y) {
+  setColor(0, 0, 0);
+  fillRect(x, y, W, H);
+}
+
+var worldX = 20;
+var prevX = 0;
+var frame = 0;
+var speedOk = true;
+var placementOk = true;
+var footprintOk = true;
+var noTrailOk = true;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+
+  if (frame > 1) {
+    // Constant speed: every frame must advance by exactly STEP.
+    if (worldX - prevX != STEP) speedOk = false;
+    // Erase ONLY the previous frame's footprint (not a full clear) —
+    // a real leftover pixel here is a genuine trailing artifact, not
+    // an artifact of nuking the whole canvas every frame.
+    eraseFootprint(prevX, Y);
+    if (!footprintAllClear(prevX, Y)) noTrailOk = false;
+  }
+
+  drawSprite(spr, worldX, Y);
+
+  // No missing pixels: the exact asymmetric shape must match, not
+  // just "something opaque somewhere in the box".
+  if (!footprintMatches(worldX, Y)) footprintOk = false;
+
+  // Correct placement: the full ring immediately outside the bounding
+  // box must still be background — the sprite must land EXACTLY on
+  // the expected integer pixel on every side, never one row/column
+  // off. This checks spatial alignment, not frame-to-frame timing
+  // (that's speedOk above).
+  if (!perimeterClear(worldX, Y)) placementOk = false;
+
+  prevX = worldX;
+  worldX = worldX + STEP;
+
+  if (frame == FRAMES) {
+    if (footprintOk) print "no missing pixels";    // expect: no missing pixels
+    if (placementOk) print "correct placement";    // expect: correct placement
+    if (speedOk) print "constant speed";           // expect: constant speed
+    if (noTrailOk) print "no trailing artifacts";  // expect: no trailing artifacts
+    // Makes the movement contract explicit: after FRAMES steps of
+    // STEP each, the sprite must have actually reached the expected
+    // final position, not just kept locally-consistent spacing.
+    if (prevX == 20 + STEP * (FRAMES - 1)) print "final position"; // expect: final position
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                      // expect: done
+

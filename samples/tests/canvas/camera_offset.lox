@@ -1,0 +1,16 @@
+// Test: setCamera(cx, cy) shifts world-space drawing by (-cx, -cy);
+// getPixel reads BUFFER coordinates (unaffected by the camera).
+setCanvasSize(320, 240);
+clearCanvas();
+
+var green = 255 * 256;
+setColor(0, 255, 0);
+
+setCamera(5, 7);
+fillRect(10, 10, 2, 2);   // world (10,10) -> buffer (5,3)
+if (getPixel(5, 3) == green) print "shifted";       // expect: shifted
+if (getPixel(10, 10) == 0) print "not at world";    // expect: not at world
+
+setCamera(0, 0);
+fillRect(10, 10, 2, 2);
+if (getPixel(10, 10) == green) print "camera reset"; // expect: camera reset

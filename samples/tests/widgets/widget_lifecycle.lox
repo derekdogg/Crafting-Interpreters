@@ -1,0 +1,30 @@
+// Test: widget lifetime — freeWidget kills one id (stale ids are
+// silent no-ops on setters and defaults on getters), clearWidgets
+// empties the lot, and ids are NEVER recycled within a session (a
+// stale id can't alias a fresh widget).
+var a = createButton(10, 10, 50, 20, "A");
+var b = createButton(10, 40, 50, 20, "B");
+
+if (widgetCount() == 2) print "two";              // expect: two
+if (widgetExists(a)) print "a exists";            // expect: a exists
+
+freeWidget(a);
+if (widgetCount() == 1) print "one";              // expect: one
+if (!widgetExists(a)) print "a gone";             // expect: a gone
+if (widgetExists(b)) print "b stays";             // expect: b stays
+
+// Stale id: setters silently ignore, getters return defaults.
+setWidgetCaption(a, "ghost");
+setWidgetEnabled(a, true);
+if (!widgetEnabled(a)) print "stale default";     // expect: stale default
+if (!buttonClicked(a)) print "stale no click";    // expect: stale no click
+
+clearWidgets();
+if (widgetCount() == 0) print "cleared";          // expect: cleared
+if (!widgetExists(b)) print "b gone";             // expect: b gone
+
+// Ids continue monotonically across clearWidgets — no recycling.
+var c = createButton(10, 10, 50, 20, "C");
+if (c > b) print "no recycle";                    // expect: no recycle
+if (widgetExists(c)) print "c exists";            // expect: c exists
+if (!widgetExists(a)) print "a still dead";       // expect: a still dead

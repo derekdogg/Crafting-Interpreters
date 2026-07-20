@@ -1,0 +1,25 @@
+// Test: setClipRect(x, y, w, h) confines drawing to the clip window;
+// clearClipRect restores full-target drawing.
+setCanvasSize(320, 240);
+clearCanvas();
+
+var white = 255 * 65536 + 255 * 256 + 255;
+setColor(255, 255, 255);
+
+setClipRect(50, 50, 10, 10);
+// A rect crossing the clip boundary only lands inside it.
+fillRect(45, 45, 20, 20);
+if (getPixel(50, 50) == white) print "in tl";        // expect: in tl
+if (getPixel(59, 59) == white) print "in br";        // expect: in br
+if (getPixel(49, 50) == 0) print "clipped left";     // expect: clipped left
+if (getPixel(60, 50) == 0) print "clipped right";    // expect: clipped right
+if (getPixel(50, 49) == 0) print "clipped top";      // expect: clipped top
+if (getPixel(50, 60) == 0) print "clipped bottom";   // expect: clipped bottom
+
+// Fully-outside draw does nothing.
+fillRect(100, 100, 5, 5);
+if (getPixel(100, 100) == 0) print "outside noop";   // expect: outside noop
+
+clearClipRect();
+fillRect(100, 100, 5, 5);
+if (getPixel(100, 100) == white) print "clip off";   // expect: clip off

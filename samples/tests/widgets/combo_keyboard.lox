@@ -1,0 +1,62 @@
+// Test: combo box keyboard protocol — closed + focused, up/down step
+// the selection directly; open, they move the highlight, Enter commits
+// it, Escape folds without selecting; the selection clamps at the ends.
+var c = createCombo(10, 10, 100, 22);
+addComboItem(c, "A");
+addComboItem(c, "B");
+addComboItem(c, "C");
+setComboIndex(c, 0);
+focusWidget(c);
+
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    simulateKeyDown("down");
+    simulateKeyUp("down");
+  }
+  if (frame == 2) {
+    if (getComboIndex(c) == 1) print "closed step";  // expect: closed step
+    if (comboChanged(c)) print "changed";            // expect: changed
+    // Open the dropdown (highlight starts on the selection).
+    simulateMouseDown(0, 60, 21);
+    simulateMouseUp(0, 60, 21);
+  }
+  if (frame == 3) {
+    simulateKeyDown("down");   // highlight 1 -> 2 (selection unmoved)
+    simulateKeyUp("down");
+  }
+  if (frame == 4) {
+    if (getComboIndex(c) == 1) print "open no move"; // expect: open no move
+    simulateKeyDown("enter");
+    simulateKeyUp("enter");
+  }
+  if (frame == 5) {
+    if (getComboIndex(c) == 2) print "commit";       // expect: commit
+    if (comboChanged(c)) print "commit edge";        // expect: commit edge
+    // Reopen, then Escape folds without selecting.
+    simulateMouseDown(0, 60, 21);
+    simulateMouseUp(0, 60, 21);
+  }
+  if (frame == 6) {
+    simulateKeyDown("escape");
+    simulateKeyUp("escape");
+  }
+  if (frame == 7) {
+    if (getComboIndex(c) == 2) print "escape keeps"; // expect: escape keeps
+    if (!comboChanged(c)) print "escape silent";     // expect: escape silent
+    // Closed at the last item: down clamps.
+    simulateKeyDown("down");
+    simulateKeyUp("down");
+  }
+  if (frame == 8) {
+    if (getComboIndex(c) == 2) print "clamped";      // expect: clamped
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                        // expect: done

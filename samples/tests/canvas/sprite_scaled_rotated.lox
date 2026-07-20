@@ -1,0 +1,70 @@
+// Test: drawSpriteScaled blows up each source pixel into an NxN block
+// of solid color, stopping exactly at the scaled edge, and skips
+// transparent source pixels the same way an unscaled drawSprite does;
+// drawSpriteRotated draws something near its anchor and leaves the
+// rest of the canvas alone (exact per-pixel color/anchor isn't
+// asserted for the rotated case — edges are 2x2 supersampled/
+// anti-aliased and the precise rasterisation is an implementation
+// detail, so only "something landed near the anchor" is checked).
+setCanvasSize(320, 240);
+clearCanvas();
+
+// Confirm the starting canvas is actually blank before relying on
+// "untouched" meaning "still 0" everywhere below.
+if (getPixel(200, 200) == 0) print "canvas starts clear"; // expect: canvas starts clear
+
+setColor(255, 255, 0);
+var spr = createSprite(2, 2, "XXXX");
+drawSpriteScaled(spr, 10, 10, 4);
+var yellow = 255 * 65536 + 255 * 256;
+// A 2x2 opaque sprite scaled by 4 occupies exactly an 8x8 area
+// covering x=[10..17], y=[10..17] — nothing outside that box should
+// have been touched.
+if (getPixel(10, 10) == yellow) print "scaled tl";      // expect: scaled tl
+if (getPixel(17, 17) == yellow) print "scaled br";      // expect: scaled br
+if (getPixel(13, 10) == yellow) print "scaled top edge";   // expect: scaled top edge
+if (getPixel(10, 14) == yellow) print "scaled left edge";  // expect: scaled left edge
+if (getPixel(14, 14) == yellow) print "scaled centre";     // expect: scaled centre
+if (getPixel(18, 18) == 0) print "scaled stops";        // expect: scaled stops
+
+// Scaling also preserves transparency: an opaque source pixel scales
+// into a solid block, but a transparent ('.') source pixel's scaled
+// block is left completely alone (matches drawSprite's magenta-key
+// skip, just applied per scaled block instead of per source pixel).
+clearCanvas(255, 0, 255);  // magenta sentinel background
+setColor(0, 255, 0);
+var half = createSprite(2, 1, "X.");
+drawSpriteScaled(half, 100, 100, 3);
+var lime = 255 * 256;
+var sentinel = 255 * 65536 + 255;
+if (getPixel(100, 100) == lime) print "scaled opaque block";          // expect: scaled opaque block
+if (getPixel(102, 100) == lime) print "opaque block edge";            // expect: opaque block edge
+if (getPixel(103, 100) == sentinel) print "scaled transparent block"; // expect: scaled transparent block
+if (getPixel(105, 100) == sentinel) print "transparent block edge";   // expect: transparent block edge
+
+clearCanvas();
+setColor(0, 255, 255);
+var dot = createSprite(4, 4,
+  "XXXX" +
+  "XXXX" +
+  "XXXX" +
+  "XXXX"
+);
+drawSpriteRotated(dot, 60, 60, 1, 45);
+// Scan a small neighborhood around the anchor rather than asserting
+// the exact centre pixel — the anti-aliased rasteriser's precise
+// pixel-centre/sampling convention is an implementation detail that
+// could shift by a pixel without the rotation being "wrong".
+var found = false;
+var ny = -1;
+while (ny <= 1) {
+  var nx = -1;
+  while (nx <= 1) {
+    if (getPixel(60 + nx, 60 + ny) != 0) found = true;
+    nx = nx + 1;
+  }
+  ny = ny + 1;
+}
+if (found) print "rotated drew near anchor";               // expect: rotated drew near anchor
+if (getPixel(200, 200) == 0) print "elsewhere untouched";  // expect: elsewhere untouched
+

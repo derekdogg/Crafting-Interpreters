@@ -1,0 +1,16 @@
+// Test: clearCanvas floods the whole target with the given color (or
+// zero for the no-arg form), and getPixel bounds-checks to -1.
+setCanvasSize(320, 240);
+
+clearCanvas(10, 20, 30);
+var c = 10 * 65536 + 20 * 256 + 30;
+if (getPixel(0, 0) == c) print "corner tl";        // expect: corner tl
+if (getPixel(319, 239) == c) print "corner br";    // expect: corner br
+if (getPixel(160, 120) == c) print "center";       // expect: center
+
+clearCanvas();
+if (getPixel(160, 120) == 0) print "cleared";      // expect: cleared
+
+if (getPixel(320, 0) == -1) print "oob x";         // expect: oob x
+if (getPixel(0, 240) == -1) print "oob y";         // expect: oob y
+if (getPixel(0 - 1, 0) == -1) print "oob neg";     // expect: oob neg
