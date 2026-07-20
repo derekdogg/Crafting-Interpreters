@@ -199,20 +199,24 @@ var
   FDispatchingCallbacks: Boolean = False;
 
 // Drop every stored handler. When the current VM still owns the slots
-// (clearWidgets mid-run) the GC roots must be unregistered before the
-// slot objects are freed, or the collector would scan freed memory.
-// At RegisterWidgetNatives time the roots belonged to the previous,
-// already-freed VM (roots live in VM.ExtraRoots), so UnregisterGCRoot
-// finds no match and is a harmless no-op.
+// (clearWidgets mid-run, or RegisterWidgetNatives resetting state for a
+// fresh VM) the GC roots must be unregistered before the slot objects
+// are freed, or the collector would scan freed memory. At unit
+// finalization the host may already have called FreeVM and nil'd the
+// global VM (e.g. a form's OnDestroy runs before finalization sections),
+// so skip the calls entirely then — there's nothing to unregister, and
+// UnregisterGCRoot derefs VM.ExtraRootCount unconditionally, which would
+// AV on a nil VM.
 procedure ClearCallbackSlots;
 var
   slot: TCallbackSlot;
   k: TWidgetCallbackKind;
 begin
   if FCallbackSlots = nil then Exit;
-  for slot in FCallbackSlots.Values do
-    for k := Low(TWidgetCallbackKind) to High(TWidgetCallbackKind) do
-      UnregisterGCRoot(slot.Callbacks[k]);
+  if VM <> nil then
+    for slot in FCallbackSlots.Values do
+      for k := Low(TWidgetCallbackKind) to High(TWidgetCallbackKind) do
+        UnregisterGCRoot(slot.Callbacks[k]);
   FCallbackSlots.Clear;  // doOwnsValues frees the slot objects
 end;
 
@@ -630,13 +634,22 @@ end;
 // the base ChangedEdge belonging to a legitimate widget of another
 // kind. Stale/unknown ids stay silent (RequireKind's usual contract),
 // matching every other setter.
+//
+// Uniform error-path shape (matches every other helper in this file):
+// Result defaults to CreateNilValue and every error path is a bare
+// Exit — so a caller that ignored VM.RuntimeErrorStr would still see
+// nil rather than a value that collides with a legitimate answer
+// ("edge did not fire" for a boolean edge, 0 for item count, -1 for
+// no selection). The stale-id contract is preserved via the
+// underlying WidgetsConsume*/WidgetsList* calls, which return the
+// documented sentinels themselves.
 function KindConsumeEdgeNative(argCount: integer; args: pValue;
   const NativeName: string; Query: TBoolWidgetQuery;
   Kind: TWidgetKind; const KindDesc: string): TValue;
 var
   id: Integer;
 begin
-  Result := CreateBoolean(False);
+  Result := CreateNilValue;
   if argCount <> 1 then
   begin
     RuntimeError(NativeName + '() takes 1 argument (id).');
@@ -824,18 +837,18 @@ function ListItemCountNative(argCount: integer; args: pValue;
 var
   id: Integer;
 begin
-  Result := CreateNumber(0);
+  Result := CreateNilValue;
   if argCount <> 1 then
   begin
     RuntimeError(NativeName + '() takes 1 argument (id).');
     Exit;
   end;
-  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then
-    Exit(CreateNilValue);
-  // Stale ids: RequireKind returns False silently, we fall through to
-  // the 0 default. Wrong-kind ids error loudly.
+  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then Exit;
   if WidgetsExists(id) and
      not RequireKind(id, Kind, NativeName, KindDesc) then Exit;
+  // Stale ids: WidgetsListItemCount returns 0 for an unknown widget,
+  // preserving the "stale ids are silent" contract from the module
+  // header — no separate sentinel default needed here.
   Result := CreateNumber(WidgetsListItemCount(id));
 end;
 
@@ -845,16 +858,18 @@ function GetListIndexNative(argCount: integer; args: pValue;
 var
   id: Integer;
 begin
-  Result := CreateNumber(-1);
+  Result := CreateNilValue;
   if argCount <> 1 then
   begin
     RuntimeError(NativeName + '() takes 1 argument (id).');
     Exit;
   end;
-  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then
-    Exit(CreateNilValue);
+  if not ArgNumOrErr(args, 0, NativeName, 'id', id) then Exit;
   if WidgetsExists(id) and
      not RequireKind(id, Kind, NativeName, KindDesc) then Exit;
+  // Stale ids: WidgetsGetListIndex returns -1 (the documented "no
+  // selection" sentinel) for an unknown widget, preserving the
+  // "stale ids are silent" contract from the module header.
   Result := CreateNumber(WidgetsGetListIndex(id));
 end;
 
@@ -1145,6 +1160,12 @@ end;
 initialization
 
 finalization
+  // Route through ClearCallbackSlots (rather than freeing the dictionary
+  // directly) so any roots still live in VM.ExtraRoots are unregistered
+  // before the slot objects are freed — otherwise, if the VM outlives
+  // this unit's finalization, the GC would scan pointers into freed
+  // memory on its next collection.
+  ClearCallbackSlots;
   FreeAndNil(FCallbackSlots);
 
 end.
