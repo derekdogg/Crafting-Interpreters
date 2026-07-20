@@ -1,0 +1,59 @@
+// Edit box demo — a classic sunken TEdit on the 320x240 canvas.
+//
+// Click the edit to focus it (caret follows the click), type away —
+// shift, layout and autorepeat all behave like a real edit control.
+// Enter or the Greet button submits; Escape-free minimalism otherwise.
+// Also shows onChange (live change counter) and focusWidget().
+
+setCanvasSize(320, 240);
+
+var greeting = "Type a name, press Enter or click Greet";
+var changes = 0;
+var nameEdit;
+
+fun greet() {
+  var name = getEditText(nameEdit);
+  if (name == "") {
+    greeting = "Hello, mysterious stranger!";
+  } else {
+    greeting = "Hello, " + name + "!";
+  }
+  setEditText(nameEdit, "");
+  focusWidget(nameEdit);  // keep typing without re-clicking
+}
+
+nameEdit = createEdit(20, 70, 180, 22);
+setEditMaxLength(nameEdit, 24);
+setEditOnSubmit(nameEdit, fun() { greet(); });
+setEditOnChange(nameEdit, fun() { changes = changes + 1; });
+
+createButton(210, 67, 80, 28, "Greet", fun() { greet(); });
+createButton(20, 200, 120, 28, "Quit", fun() { stopGameLoop(); });
+
+focusWidget(nameEdit);
+
+onFrame(fun(dt) {
+  updateWidgets();  // reads input AND fires the handlers above
+
+  clearCanvas(40, 60, 90);
+
+  setColor(255, 255, 255);
+  drawText(20, 16, "LoxWidgets edit demo");
+  drawText(20, 40, greeting);
+  drawText(20, 104, "Text changes so far: " + str(changes));
+  if (focusedWidget() == nameEdit) {
+    drawText(20, 120, "(edit is focused - type!)");
+  } else {
+    drawText(20, 120, "(click the edit to focus it)");
+  }
+
+  drawWidgets();
+  present();
+});
+
+// Uncapped: present() is vsynced (DwmFlush), so the compositor paces
+// the loop at the monitor's real refresh rate. A fixed runGameLoop(60)
+// target would fight that pacing and judder on non-60Hz displays.
+runGameLoop(0);
+
+print "Done. Text changed " + str(changes) + " times.";

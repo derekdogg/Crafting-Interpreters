@@ -1,0 +1,57 @@
+// Combo box demo — a classic drop-down list on the 320x240 canvas.
+//
+// The combo overlays the widgets and text beneath it while open, and
+// swallows the click that folds it (the Quit button under the dropdown
+// never fires from a fold-click). Keyboard: click to focus, up/down to
+// step the selection, click the field (or arrow) to drop the list,
+// Enter commits the highlight, Escape folds.
+
+setCanvasSize(320, 240);
+
+var r = 40;
+var g = 60;
+var b = 90;
+
+var colorCombo = createCombo(20, 50, 140, 22);
+addComboItem(colorCombo, "Midnight Blue");
+addComboItem(colorCombo, "Forest Green");
+addComboItem(colorCombo, "Crimson");
+addComboItem(colorCombo, "Goldenrod");
+addComboItem(colorCombo, "Slate Grey");
+setComboIndex(colorCombo, 0);
+
+setComboOnChange(colorCombo, fun(id) {
+  var i = getComboIndex(id);
+  if (i == 0) { r = 40;  g = 60;  b = 90;  }
+  if (i == 1) { r = 30;  g = 90;  b = 45;  }
+  if (i == 2) { r = 120; g = 25;  b = 40;  }
+  if (i == 3) { r = 140; g = 110; b = 30;  }
+  if (i == 4) { r = 70;  g = 75;  b = 85;  }
+});
+
+// Deliberately placed under the dropdown's overlay area to show the
+// popup swallowing clicks that fold it.
+createButton(20, 120, 120, 28, "Under the list", fun() {
+  print "button under the dropdown clicked";
+});
+createButton(20, 200, 120, 28, "Quit", fun() { stopGameLoop(); });
+
+onFrame(fun(dt) {
+  updateWidgets();
+
+  clearCanvas(r, g, b);
+
+  setColor(255, 255, 255);
+  drawText(20, 16, "LoxWidgets combo demo");
+  drawText(20, 36, "Background: " + getComboText(colorCombo));
+
+  drawWidgets();
+  present();
+});
+
+// Uncapped: present() is vsynced (DwmFlush), so the compositor paces
+// the loop at the monitor's real refresh rate. A fixed runGameLoop(60)
+// target would fight that pacing and judder on non-60Hz displays.
+runGameLoop(0);
+
+print "Final pick: " + getComboText(colorCombo);

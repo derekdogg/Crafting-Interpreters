@@ -1,0 +1,81 @@
+// Frame-pacing diagnostic. Three instruments that separate WHERE
+// motion roughness comes from:
+//
+//  1. GREEN BAR — moves exactly 2px per FRAME (frame-counted, ignores
+//     dt). If presentation is clean, the sweep is perfectly even. Any
+//     visible skip, stall or double-step = a frame dropped or shown
+//     twice between present() and the screen (composition problem).
+//
+//  2. PARITY SQUARE (top right) — alternates white/black every frame.
+//     Clean delivery = a steady uniform 50% shimmer. Visible beating,
+//     stutter, or moments where it looks solid = uneven frame
+//     delivery (two same-parity frames reached the screen in a row).
+//
+//  3. ORANGE BOX — moves by dt at 320 px/s (the widgets_radio
+//     "Frantic" case). If this is rough while 1 and 2 are clean, the
+//     problem is timing math (the dt fed to the script), not
+//     presentation.
+//
+// Also shows fps (frames counted per summed-dt second) — at vsync it
+// should sit exactly at the monitor refresh (60/120/144...).
+
+setCanvasSize(320, 240);
+
+var frame = 0;
+var barX = 0;
+var bx = 20;
+var dx = 1;
+var t = 0;
+var frames1s = 0;
+var fps = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  frames1s = frames1s + 1;
+  t = t + dt;
+  if (t >= 1) {
+    // Normalise by the actual window length, not a flat 1s: t sits in
+    // [1, 1 + last_dt) at this point, so `fps = frames1s` would under-
+    // report by up to one frame each reporting window.
+    fps = frames1s / t;
+    frames1s = 0;
+    t = t - 1;
+  }
+
+  // 1: frame-locked bar
+  barX = barX + 2;
+  if (barX > 318) barX = 0;
+
+  // 3: dt-driven box. Reflect the overshoot across the boundary rather
+  // than clamping — clamping would silently drop up to one frame's
+  // worth of motion at each bounce, exactly the kind of dt anomaly
+  // this diagnostic is supposed to expose.
+  bx = bx + dx * 320 * dt;
+  if (bx < 20)  { bx = 40 - bx;  dx = 1; }
+  if (bx > 288) { bx = 576 - bx; dx = -1; }
+
+  setColor(15, 15, 20);
+  clearCanvas();
+
+  setColor(80, 220, 120);
+  fillRect(barX, 0, 2, 100);
+
+  // 2: parity square, blinks every frame
+  if (frame - floor(frame / 2) * 2 == 0) {
+    setColor(255, 255, 255);
+  } else {
+    setColor(0, 0, 0);
+  }
+  fillRect(296, 8, 16, 16);
+
+  setColor(255, 255, 255);
+  drawText(4, 110, "fps: " + str(fps));
+  drawText(4, 122, "bar: per-frame  box: per-dt");
+
+  setColor(255, 160, 40);
+  fillRect(bx, 150, 12, 12);
+
+  present();
+});
+
+runGameLoop(0);

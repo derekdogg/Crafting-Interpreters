@@ -1,0 +1,61 @@
+// Radio group demo — a classic TRadioGroup on the 320x240 canvas,
+// driving the speed of a bouncing square.
+//
+// The whole group is one widget: click an item's row to select it, or
+// click the group (focus) and use up/down. Selection fires the
+// onChange handler; the focus rect sits on the selected item's label.
+
+setCanvasSize(320, 240);
+
+var speed = 60;   // pixels per second
+var bx = 160;
+var by = 40;
+var dx = 1;
+var dy = 1;
+
+var speedGroup = createRadioGroup(20, 40, 130, 76, "Speed");
+addRadioItem(speedGroup, "Strolling");
+addRadioItem(speedGroup, "Brisk");
+addRadioItem(speedGroup, "Frantic");
+setRadioIndex(speedGroup, 0);
+
+setRadioOnChange(speedGroup, fun(id) {
+  var i = getRadioIndex(id);
+  if (i == 0) speed = 60;
+  if (i == 1) speed = 150;
+  if (i == 2) speed = 320;
+});
+
+createButton(20, 200, 120, 28, "Quit", fun() { stopGameLoop(); });
+
+onFrame(fun(dt) {
+  updateWidgets();
+
+  // Bounce the square inside the canvas.
+  bx = bx + dx * speed * dt;
+  by = by + dy * speed * dt;
+  if (bx < 160) { bx = 160; dx = 1; }
+  if (bx > 304) { bx = 304; dx = -1; }
+  if (by < 16)  { by = 16;  dy = 1; }
+  if (by > 224) { by = 224; dy = -1; }
+
+  clearCanvas(40, 60, 90);
+
+  setColor(255, 255, 255);
+  drawText(20, 16, "LoxWidgets radio demo");
+  drawText(20, 130, "Pace: " + getRadioText(speedGroup));
+
+  setColor(255, 200, 60);
+  fillRect(bx, by, 12, 12);
+
+  drawWidgets();
+  present();
+});
+
+// Uncapped: present() is vsynced (DwmFlush), so the compositor paces
+// the loop at the monitor's real refresh and dt stays steady. A fixed
+// runGameLoop(60) target would fight that pacing and judder the square
+// on non-60Hz displays.
+runGameLoop(0);
+
+print "Final pace: " + getRadioText(speedGroup);

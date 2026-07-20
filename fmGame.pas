@@ -70,7 +70,7 @@ var
 implementation
 
 uses
-  LoxCanvas, LoxSound, Main;
+  LoxCanvas, LoxSound, WidgetNatives, Main;
 
 {$R *.dfm}
 
@@ -123,6 +123,7 @@ begin
     defineNative('processMessages', processMessagesNative, 0);
     RegisterCanvasNatives;
     RegisterSoundNatives;
+    RegisterWidgetNatives;
 
     // Event engine natives (onKeyPressed, onKeyHeld, processEvents, etc.)
     FEngine.RegisterNatives;
