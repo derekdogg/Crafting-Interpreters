@@ -3,7 +3,7 @@
 setCanvasSize(320, 240);
 clearCanvas();
 
-var white = 255 * 65536 + 255 * 256 + 255;
+var white = rgb(255, 255, 255);
 setColor(255, 255, 255);
 
 drawPixel(3, 4);

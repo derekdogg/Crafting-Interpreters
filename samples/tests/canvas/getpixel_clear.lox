@@ -3,7 +3,7 @@
 setCanvasSize(320, 240);
 
 clearCanvas(10, 20, 30);
-var c = 10 * 65536 + 20 * 256 + 30;
+var c = rgb(10, 20, 30);
 if (getPixel(0, 0) == c) print "corner tl";        // expect: corner tl
 if (getPixel(319, 239) == c) print "corner br";    // expect: corner br
 if (getPixel(160, 120) == c) print "center";       // expect: center

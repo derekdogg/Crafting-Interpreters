@@ -16,7 +16,7 @@ if (getPixel(200, 200) == 0) print "canvas starts clear"; // expect: canvas star
 setColor(255, 255, 0);
 var spr = createSprite(2, 2, "XXXX");
 drawSpriteScaled(spr, 10, 10, 4);
-var yellow = 255 * 65536 + 255 * 256;
+var yellow = rgb(255, 255, 0);
 // A 2x2 opaque sprite scaled by 4 occupies exactly an 8x8 area
 // covering x=[10..17], y=[10..17] — nothing outside that box should
 // have been touched.
@@ -35,8 +35,8 @@ clearCanvas(255, 0, 255);  // magenta sentinel background
 setColor(0, 255, 0);
 var half = createSprite(2, 1, "X.");
 drawSpriteScaled(half, 100, 100, 3);
-var lime = 255 * 256;
-var sentinel = 255 * 65536 + 255;
+var lime = rgb(0, 255, 0);
+var sentinel = rgb(255, 0, 255);
 if (getPixel(100, 100) == lime) print "scaled opaque block";          // expect: scaled opaque block
 if (getPixel(102, 100) == lime) print "opaque block edge";            // expect: opaque block edge
 if (getPixel(103, 100) == sentinel) print "scaled transparent block"; // expect: scaled transparent block

@@ -231,6 +231,45 @@ var
   // whether the last frame actually presented (i.e. was paced by
   // DwmFlush) and only then snap dt to a refresh multiple.
   FPresentCount: Int64;
+  // TEMPORARY diagnostic instrumentation (see
+  // docs/pacing-test-144hz-judder-finding.md): split timing of
+  // present()'s two phases, so a script can tell whether cost is in
+  // the GDI InvalidateRect/UpdateWindow (WM_PAINT) delivery or in the
+  // GdiFlush/DwmFlush wait. Exposed via presentGdiMs()/presentFlushMs().
+  FLastPresentGdiMs: Double;
+  FLastPresentFlushMs: Double;
+  // DwmFlush's return HRESULT was previously discarded entirely, and
+  // even now that it's captured, a non-S_OK value is ACTED ON (see
+  // presentNative: falls back to a short sleep so a persistent
+  // failure can't leave the loop unthrottled), not just recorded.
+  // Also exposed to scripts via presentFlushResult()/presentFlushFailed()
+  // for diagnostics (see docs/pacing-test-144hz-judder-finding.md).
+  FLastDwmFlushResult: Integer;
+  // GdiFlush's return BOOL was previously discarded entirely, and even
+  // now that it's captured, a False result is ACTED ON (see
+  // presentNative: a bounded retry loop, since GdiFlush exists
+  // specifically to guarantee this frame's drawing is fully committed
+  // to the redirection surface BEFORE DwmFlush waits — leaving it
+  // unaddressed risks DwmFlush sampling a STALE/partial frame, the
+  // documented cause of "skips/judder on fast-moving objects"), not
+  // just recorded. Also exposed via presentGdiFlushFailed() for
+  // diagnostics (see docs/pacing-test-144hz-judder-finding.md).
+  FLastGdiFlushOk: Boolean;
+  // TEMPORARY diagnostic instrumentation (see
+  // docs/pacing-test-144hz-judder-finding.md §4l/review of
+  // drawTextNative): splits drawText()'s own per-call cost into two
+  // phases, prompted by a script-feedback review specifically
+  // suspecting ObjStringToAnsiString()'s conversion cost and/or
+  // TBitmap.ScanLine's per-row property-access cost as hidden
+  // contributors to the `drawing` bucket §4l already measured (2.5-
+  // 6.1ms for ~14 calls/frame). CUMULATIVE (never reset) totals across
+  // ALL drawText() calls since VM start, like dwmFramesDropped() etc.
+  // — scripts read these at the start/end of a reporting window and
+  // compute the delta themselves. Exposed via drawTextConvMs()/
+  // drawTextRenderMs()/drawTextCallCount().
+  FDrawTextCallCount: Int64;
+  FDrawTextConvMs: Double;    // cumulative: ObjStringToAnsiString() only
+  FDrawTextRenderMs: Double;  // cumulative: glyph-cache lookup + ScanLine + pixel writes
   FClipX1, FClipY1, FClipX2, FClipY2: Integer;  // clip rect (inclusive x1,y1 to exclusive x2,y2)
   FClipActive: Boolean;  // true when user has set a clip rect
   FPalette: array[0..255] of Cardinal;   // char -> BGRA color
@@ -428,7 +467,18 @@ begin
   dy := (ch - dh) div 2;
   stageDC := FPresentBuffer.Canvas.Handle;
   // Compose the full client image off-screen, then copy it in one blit.
-  PatBlt(stageDC, 0, 0, cw, ch, BLACKNESS);
+  // Only clear where StretchBlt WON'T fully overwrite — i.e. the
+  // letterbox/pillarbox border, when there is one. Previously this
+  // PatBlt unconditionally cleared the ENTIRE cw x ch staging buffer
+  // every WM_PAINT, even when dw=cw and dh=ch (no border at all — the
+  // common case: setCanvasSize resizes the host window to exactly
+  // match the logical resolution, so scale=1 with zero letterboxing).
+  // In that case the clear was 100% wasted work, immediately
+  // overwritten by the StretchBlt below, inside the same synchronous
+  // WM_PAINT handler presentGdiMs() times (see
+  // docs/pacing-test-144hz-judder-finding.md §4d).
+  if (dx > 0) or (dy > 0) then
+    PatBlt(stageDC, 0, 0, cw, ch, BLACKNESS);
   // COLORONCOLOR == nearest-neighbor for 32-bit blits. Required for
   // pixel-art crispness; HALFTONE would smooth and ruin the look.
   SetStretchBltMode(stageDC, COLORONCOLOR);
@@ -916,6 +966,36 @@ begin
   Result := CreateNilValue;
 end;
 
+// rgb(r, g, b) -> number
+// Packs an r/g/b triple (each 0..255) into the same 0xRRGGBB integer format
+// getPixel() returns, so scripts/tests can write rgb(255, 0, 0) instead of
+// spelling out r*65536 + g*256 + b by hand every time.
+function rgbNative(argCount: integer; args: pValue): TValue;
+var
+  r, g, b: Integer;
+begin
+  if argCount <> 3 then
+  begin
+    RuntimeError('rgb() takes 3 arguments (r, g, b).');
+    Exit(CreateNilValue);
+  end;
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) then
+  begin
+    RuntimeError('rgb() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  r := Trunc(GetNumber(args[0]));
+  g := Trunc(GetNumber(args[1]));
+  b := Trunc(GetNumber(args[2]));
+  if (r < 0) or (r > 255) or (g < 0) or (g > 255) or (b < 0) or (b > 255) then
+  begin
+    RuntimeError('rgb() values must be in the range 0..255.');
+    Exit(CreateNilValue);
+  end;
+  Result := CreateNumber(r * 65536 + g * 256 + b);
+end;
+
 function setCameraNative(argCount: integer; args: pValue): TValue;
 begin
   if argCount <> 2 then
@@ -1037,6 +1117,12 @@ const
   FONT_ADVANCE = 6;  // 5px glyph + 1px spacing
   FONT_FIRST = 32;
   FONT_LAST  = 126;
+  // Row-major rendering precompute cap (see the scale=1 hot path
+  // below) — comfortably beyond any practical single-line drawText()
+  // call at this engine's typical canvas widths. Longer strings are
+  // still drawn correctly; characters beyond this cap are simply not
+  // rendered rather than causing an array-bounds error.
+  MAX_DRAWTEXT_CHARS = 512;
   FONT_DATA: array[0..664] of Byte = (
     // 32 space
     $00,$00,$00,$00,$00,$00,$00,
@@ -1230,14 +1316,19 @@ const
     $00,$00,$08,$15,$02,$00,$00
   );
 var
-  x, y, scale, i, gx, gy, charIdx, k: Integer;
+  x, y, scale, i, gx, gy, charIdx, k, n: Integer;
   ax, ay, px, py, bw, bh: Integer;
   s: AnsiString;
   ch: Byte;
   rowBits: Byte;
   cnt: Byte;
   dstRow: PCardinal;
-  fullyVisible: Boolean;
+  qFreq, qConvStart, qConvEnd, qRenderEnd: Int64;
+  // Row-major rendering precompute (see the scale=1 hot path below).
+  charCh: array[0..MAX_DRAWTEXT_CHARS - 1] of Byte;
+  charX: array[0..MAX_DRAWTEXT_CHARS - 1] of Integer;
+  charSkip: array[0..MAX_DRAWTEXT_CHARS - 1] of Boolean;
+  charFullyVisible: array[0..MAX_DRAWTEXT_CHARS - 1] of Boolean;
 begin
   if (argCount < 3) or (argCount > 4) then
   begin
@@ -1291,62 +1382,86 @@ begin
 
   x := Trunc(GetNumber(args[0])) - FCameraX;
   y := Trunc(GetNumber(args[1])) - FCameraY;
+  // TEMPORARY diagnostic (see FDrawTextConvMs above): time the string
+  // conversion in isolation from the glyph-rendering loop below.
+  QueryPerformanceFrequency(qFreq);
+  QueryPerformanceCounter(qConvStart);
   s := ObjStringToAnsiString(pObjString(GetObject(args[2])));
+  QueryPerformanceCounter(qConvEnd);
+  if qFreq > 0 then
+    FDrawTextConvMs := FDrawTextConvMs + (qConvEnd - qConvStart) * 1000.0 / qFreq;
+  Inc(FDrawTextCallCount);
   bw := FClipX2;
   bh := FClipY2;
 
   if scale = 1 then
   begin
-    // Hot path: scale=1. For each glyph, branch once on whether it is
-    // fully inside the clip rect. If so, the inner loop has zero clip
-    // branches and writes only the set pixels via FGlyphCol.
-    for i := 1 to Length(s) do
+    // Hot path: scale=1. Row-major rendering (see docs/pacing-test-144hz
+    // -judder-finding.md — a script-feedback review + direct measurement
+    // via drawTextRenderMs()/drawTextCallCount() found this loop
+    // averaging ~212us/call, the dominant cost within drawText(), far
+    // higher than the ~0.1us ObjStringToAnsiString() conversion the
+    // same review also flagged). Root cause: the ORIGINAL character-
+    // major loop called FRenderTarget.ScanLine[y+gy] once per row PER
+    // CHARACTER — for a 40-character line that's up to 280 ScanLine
+    // property-getter calls, when every character on a single-line
+    // drawText() call shares the exact same 7 absolute row
+    // y-coordinates (y is constant across the whole string; drawText()
+    // does not support embedded newlines). Restructured to compute each
+    // character's resolved glyph code / x position / visibility ONCE
+    // in a first pass (cheap: array writes, no ScanLine calls), then
+    // iterate rows in the OUTER loop and characters in the INNER loop,
+    // so ScanLine is called exactly FONT_H (7) times per drawText()
+    // call regardless of string length, not 7*length. Produces
+    // bit-identical output to the original nested-loop order — same
+    // pixels, same fullyVisible/per-pixel-clip fast/slow split, just a
+    // different iteration order. Capped at MAX_DRAWTEXT_CHARS per call
+    // (well beyond any on-screen line's practical length at LOGICAL_W)
+    // to keep the precompute arrays fixed-size (no per-call heap
+    // allocation).
+    n := Length(s);
+    if n > MAX_DRAWTEXT_CHARS then n := MAX_DRAWTEXT_CHARS;
+    for i := 0 to n - 1 do
     begin
-      ch := Ord(s[i]);
+      ch := Ord(s[i + 1]);
       if (ch < FONT_FIRST) or (ch > FONT_LAST) then
         ch := FONT_FIRST;
-
-      // Skip fully off-screen glyphs entirely.
-      if (x + FONT_W <= FClipX1) or (x >= bw) or
-         (y + FONT_H <= FClipY1) or (y >= bh) then
+      charCh[i] := ch;
+      charX[i] := x;
+      charSkip[i] := (x + FONT_W <= FClipX1) or (x >= bw) or
+                     (y + FONT_H <= FClipY1) or (y >= bh);
+      charFullyVisible[i] := (x >= FClipX1) and (x + FONT_W <= bw) and
+                             (y >= FClipY1) and (y + FONT_H <= bh);
+      x := x + FONT_ADVANCE;
+    end;
+    for gy := 0 to FONT_H - 1 do
+    begin
+      ay := y + gy;
+      if (ay < FClipY1) or (ay >= bh) then Continue;
+      dstRow := nil;
+      for i := 0 to n - 1 do
       begin
-        x := x + FONT_ADVANCE;
-        Continue;
-      end;
-
-      fullyVisible := (x >= FClipX1) and (x + FONT_W <= bw) and
-                      (y >= FClipY1) and (y + FONT_H <= bh);
-
-      if fullyVisible then
-      begin
-        for gy := 0 to FONT_H - 1 do
+        if charSkip[i] then Continue;
+        ch := charCh[i];
+        cnt := FGlyphCount[ch, gy];
+        if cnt = 0 then Continue;
+        if dstRow = nil then
+          dstRow := FRenderTarget.ScanLine[ay];  // once per ROW, not per character
+        if charFullyVisible[i] then
         begin
-          cnt := FGlyphCount[ch, gy];
-          if cnt = 0 then Continue;
-          dstRow := FRenderTarget.ScanLine[y + gy];
           for k := 0 to cnt - 1 do
-            dstRow[x + FGlyphCol[ch, gy, k]] := FCurrentPixel;
-        end;
-      end
-      else
-      begin
-        // Partially clipped glyph: per-pixel checks.
-        for gy := 0 to FONT_H - 1 do
+            dstRow[charX[i] + FGlyphCol[ch, gy, k]] := FCurrentPixel;
+        end
+        else
         begin
-          cnt := FGlyphCount[ch, gy];
-          if cnt = 0 then Continue;
-          ay := y + gy;
-          if (ay < FClipY1) or (ay >= bh) then Continue;
-          dstRow := FRenderTarget.ScanLine[ay];
           for k := 0 to cnt - 1 do
           begin
-            ax := x + FGlyphCol[ch, gy, k];
+            ax := charX[i] + FGlyphCol[ch, gy, k];
             if (ax >= FClipX1) and (ax < bw) then
               dstRow[ax] := FCurrentPixel;
           end;
         end;
       end;
-      x := x + FONT_ADVANCE;
     end;
   end
   else
@@ -1387,6 +1502,13 @@ begin
       x := x + FONT_ADVANCE * scale;
     end;
   end;
+  // TEMPORARY diagnostic (see FDrawTextRenderMs above): everything from
+  // the glyph-cache lookup through the final pixel write, i.e. the
+  // whole render loop above, excluding the string conversion already
+  // timed separately.
+  QueryPerformanceCounter(qRenderEnd);
+  if qFreq > 0 then
+    FDrawTextRenderMs := FDrawTextRenderMs + (qRenderEnd - qConvEnd) * 1000.0 / qFreq;
   Result := CreateNilValue;
 end;
 
@@ -1773,6 +1895,8 @@ end;
 function presentNative(argCount: integer; args: pValue): TValue;
 var
   Temp: TBitmap;
+  qFreq, qStart, qMid, qEnd: Int64;
+  gdiFlushAttempts: Integer;
 begin
   EnsureBackBuffer;
   // Swap buffers: promote back buffer to front, reuse old front as new back.
@@ -1804,19 +1928,117 @@ begin
   // InvalidateRect + UpdateWindow delivers the frame synchronously
   // through BeginPaint/EndPaint (WMPaint blits FFrontBuffer scaled),
   // which marks the update complete atomically for the compositor.
+  // TEMPORARY diagnostic split-timing (see
+  // docs/pacing-test-144hz-judder-finding.md §5): measure the GDI
+  // redraw phase separately from the GdiFlush+DwmFlush wait phase, so
+  // a script can tell which one is costing time when dt jitter shows up.
+  QueryPerformanceFrequency(qFreq);
+  QueryPerformanceCounter(qStart);
   if (FGameSurface <> nil) and FGameSurface.HandleAllocated then
   begin
     InvalidateRect(FGameSurface.Handle, nil, False);
     UpdateWindow(FGameSurface.Handle);
   end;
+  QueryPerformanceCounter(qMid);
   // Drain the thread's GDI batch so the paint above is fully on the
   // redirection surface before we wait on composition — without this
   // the DwmFlush below can wait out a pass that samples the PREVIOUS
-  // frame (skips/judder on fast-moving objects).
-  GdiFlush;
+  // frame (skips/judder on fast-moving objects). GdiFlush is cheap
+  // when there's nothing left to flush, so — rather than just
+  // recording a False result for diagnostics and moving on regardless
+  // — retry a bounded few times when it reports the batch wasn't
+  // fully flushed, actually acting on the result instead of only
+  // observing it. FLastGdiFlushOk still reflects the final outcome,
+  // exposed via presentGdiFlushFailed().
+  FLastGdiFlushOk := GdiFlush;
+  gdiFlushAttempts := 1;
+  while (not FLastGdiFlushOk) and (gdiFlushAttempts < 3) do
+  begin
+    FLastGdiFlushOk := GdiFlush;
+    Inc(gdiFlushAttempts);
+  end;
   // Pace presentation to the DWM composition cycle for effective vsync.
-  DwmFlush;
+  FLastDwmFlushResult := DwmFlush;
+  if FLastDwmFlushResult <> 0 then
+  begin
+    // DwmFlush did not report a successful wait. This is the only
+    // pacing mechanism this engine relies on for vsync — if it's ever
+    // genuinely failing (not just observed for diagnostics, see
+    // presentFlushFailed()), leaving the loop to run completely
+    // unthrottled would peg a CPU core and produce a near-zero dt.
+    // Fall back to a short sleep so a persistent failure degrades to
+    // a slow, bounded loop instead of a runaway spin. Not a
+    // substitute for real vsync — just a floor.
+    Sleep(1);
+  end;
+  QueryPerformanceCounter(qEnd);
+  if qFreq > 0 then
+  begin
+    FLastPresentGdiMs := (qMid - qStart) * 1000.0 / qFreq;
+    FLastPresentFlushMs := (qEnd - qMid) * 1000.0 / qFreq;
+  end;
   Result := CreateNilValue;
+end;
+
+// TEMPORARY diagnostic natives (see docs/pacing-test-144hz-judder-finding.md
+// §5) — return the last present() call's two phase timings in
+// milliseconds: presentGdiMs() is InvalidateRect+UpdateWindow (synchronous
+// WM_PAINT delivery), presentFlushMs() is GdiFlush+DwmFlush (the vsync wait).
+function presentGdiMsNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(FLastPresentGdiMs);
+end;
+
+function presentFlushMsNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(FLastPresentFlushMs);
+end;
+
+// TEMPORARY diagnostic natives (see FDrawTextCallCount/ConvMs/RenderMs
+// above, and docs/pacing-test-144hz-judder-finding.md): CUMULATIVE
+// (never reset) totals since VM start, prompted by a script-feedback
+// review specifically suspecting ObjStringToAnsiString()'s conversion
+// cost and/or TBitmap.ScanLine's per-row cost. Scripts read these at
+// the start/end of a reporting window and compute the delta
+// themselves, same pattern as dwmFramesDropped() etc.
+function drawTextCallCountNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(Double(FDrawTextCallCount));
+end;
+
+function drawTextConvMsNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(FDrawTextConvMs);
+end;
+
+function drawTextRenderMsNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(FDrawTextRenderMs);
+end;
+
+// TEMPORARY diagnostic natives (see docs/pacing-test-144hz-judder-finding.md):
+// presentFlushResult() returns the raw HRESULT DwmFlush returned on the
+// last present() call (0 = S_OK = success); presentFlushFailed() is the
+// convenience boolean (True when the result was NOT S_OK, i.e. DwmFlush
+// did not report a successful wait for that frame).
+function presentFlushResultNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(FLastDwmFlushResult);
+end;
+
+function presentFlushFailedNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateBoolean(FLastDwmFlushResult <> 0);
+end;
+
+// TEMPORARY diagnostic native (see docs/pacing-test-144hz-judder-finding.md):
+// True when the last present() call's GdiFlush returned False, i.e. the
+// thread's GDI batch was NOT fully flushed before DwmFlush waited —
+// per the comment at GdiFlush's call site, this is a documented
+// mechanism for DwmFlush sampling a stale/partial frame.
+function presentGdiFlushFailedNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateBoolean(not FLastGdiFlushOk);
 end;
 
 function drawLineNative(argCount: integer; args: pValue): TValue;
@@ -3773,7 +3995,15 @@ begin
   defineNative('setColor', setColorNative, 3);
   defineNative('fillRect', fillRectNative, 4);
   defineNative('drawText', drawTextNative, -1);
+  defineNative('drawTextCallCount', drawTextCallCountNative, 0);
+  defineNative('drawTextConvMs', drawTextConvMsNative, 0);
+  defineNative('drawTextRenderMs', drawTextRenderMsNative, 0);
   defineNative('present', presentNative, 0);
+  defineNative('presentGdiMs', presentGdiMsNative, 0);
+  defineNative('presentFlushMs', presentFlushMsNative, 0);
+  defineNative('presentFlushResult', presentFlushResultNative, 0);
+  defineNative('presentFlushFailed', presentFlushFailedNative, 0);
+  defineNative('presentGdiFlushFailed', presentGdiFlushFailedNative, 0);
   defineNative('drawLine', drawLineNative, 4);
   defineNative('drawLineAA', drawLineAANative, 4);
   defineNative('drawRect', drawRectNative, 4);
@@ -3781,6 +4011,7 @@ begin
   defineNative('fillCircle', fillCircleNative, 3);
   defineNative('drawPixel', drawPixelNative, 2);
   defineNative('getPixel', getPixelNative, 2);
+  defineNative('rgb', rgbNative, 3);
   defineNative('drawPixels', drawPixelsNative, 2);
   defineNative('drawPixelsGray', drawPixelsGrayNative, 3);
   defineNative('createSprite', createSpriteNative, 3);

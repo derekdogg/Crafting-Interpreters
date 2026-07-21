@@ -1,0 +1,156 @@
+// Feature-elimination experiment requested by a script-feedback review
+// (see docs/pacing-test-144hz-judder-finding.md) as an alternative to
+// more timing instrumentation: instead of measuring COST, measure the
+// MISS RATE directly at four discrete workload levels and see whether
+// it tracks workload or stays flat.
+//
+// Edit MODE below and re-run for each value, letting it run 30-60+
+// seconds each time (this reads the CUMULATIVE histogram, not the
+// per-second one — see the finding doc §4m's "small samples lie for
+// rare events" lesson). Report all four `cumulative (...)` lines back.
+//
+//   MODE 0: present() only. No clearCanvas() call at all from the
+//           script — note the engine's presentNative() ALREADY clears
+//           the back buffer automatically after every buffer swap
+//           (see ClearBuffer() call site in LoxCanvas.pas), so this
+//           tests the theoretical floor: zero script-issued drawing
+//           commands of any kind, not even a clear.
+//   MODE 1: clearCanvas(r,g,b) + present(). Matches
+//           pacing_test_blank.lox's workload (one explicit clear).
+//   MODE 2: clearCanvas + ONE drawText call + present(). Isolates
+//           whether crossing from "zero text" to "any text at all"
+//           by itself is where a jump happens (font/glyph-cache
+//           first-touch cost, or a fixed per-call native/VM dispatch
+//           cost that's independent of how MUCH text is drawn).
+//   MODE 3: clearCanvas + FOURTEEN drawText calls (same count/rough
+//           text weight as pacing_test_split_timing.lox's diagnostic
+//           screen) + present(). Matches the "heavy" calibration point
+//           already on record (~27% cumulative 2x-bucket rate).
+//
+// Reporting itself (the histogram/cumulative drawText lines below)
+// costs the SAME small, fixed amount in every mode — like
+// pacing_test_blank.lox, this is treated as a constant "control"
+// overhead present in every arm, not part of the workload being
+// varied. Only the MODE-gated block below changes between runs.
+//
+// What the result tells us:
+//   - If all four modes land at a SIMILAR cumulative 2x-bucket rate
+//     (close to the already-measured ~27%), that confirms §4n: the
+//     ceiling is set by something other than script/text-rendering
+//     cost, and a text-rendering bug is NOT implicated.
+//   - If MODE 0/1 are near 0% (matching pacing_test_blank.lox's
+//     already-measured ~0.53%) but MODE 2 ALONE jumps to ~27%, that
+//     points at a fixed per-call cost in drawText/font
+//     setup/glyph-cache-first-touch, not text volume — a genuine,
+//     previously unconsidered lead.
+//   - If the rate increases roughly proportionally from MODE 0 through
+//     MODE 3 (e.g. 0% / 5% / 15% / 27%), that points at text-rendering
+//     cost scaling with volume — also a genuine lead, and would argue
+//     for auditing drawTextNative()'s hot path further (though a direct
+//     source read of drawTextNative already found a lazily-built,
+//     one-time glyph cache and a branch-free fully-visible hot path —
+//     no obvious O(n^2) or per-frame glyph-rasterization bug there).
+
+var MODE = 0;
+
+setCanvasSize(400, 340);
+
+var frame = 0;
+var t = 0;
+var bucketBelow = 0;    // dt < 5.5ms
+var bucket1x = 0;       // 5.5ms <= dt < 8.5ms
+var bucketMid = 0;      // 8.5ms <= dt < 12ms
+var bucket2x = 0;       // 12ms <= dt < 16ms
+var bucketWorse = 0;    // dt >= 16ms
+var reportBucketBelow = 0;
+var reportBucket1x = 0;
+var reportBucketMid = 0;
+var reportBucket2x = 0;
+var reportBucketWorse = 0;
+var totalFrames = 0;
+var totalBelow = 0;
+var total1x = 0;
+var totalMid = 0;
+var total2x = 0;
+var totalWorse = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+
+  if (frame > 1) {
+    var dtMsNow = dt * 1000;
+    totalFrames = totalFrames + 1;
+    if (dtMsNow < 5.5) {
+      bucketBelow = bucketBelow + 1;
+      totalBelow = totalBelow + 1;
+    } else if (dtMsNow < 8.5) {
+      bucket1x = bucket1x + 1;
+      total1x = total1x + 1;
+    } else if (dtMsNow < 12) {
+      bucketMid = bucketMid + 1;
+      totalMid = totalMid + 1;
+    } else if (dtMsNow < 16) {
+      bucket2x = bucket2x + 1;
+      total2x = total2x + 1;
+    } else {
+      bucketWorse = bucketWorse + 1;
+      totalWorse = totalWorse + 1;
+    }
+    t = t + dt;
+    if (t >= 1) {
+      t = t - 1;
+      reportBucketBelow = bucketBelow;
+      reportBucket1x = bucket1x;
+      reportBucketMid = bucketMid;
+      reportBucket2x = bucket2x;
+      reportBucketWorse = bucketWorse;
+      bucketBelow = 0;
+      bucket1x = 0;
+      bucketMid = 0;
+      bucket2x = 0;
+      bucketWorse = 0;
+    }
+  }
+
+  // ---- MODE-gated workload (the only thing that changes between runs) ----
+  if (MODE == 0) {
+    // present() only — no clearCanvas() call from the script at all.
+    // presentNative() still clears the back buffer automatically after
+    // the swap, so the screen will still be black; this mode tests
+    // whether the SCRIPT'S OWN explicit clear call matters at all.
+  } else if (MODE == 1) {
+    clearCanvas(15, 15, 20);
+  } else if (MODE == 2) {
+    clearCanvas(15, 15, 20);
+    setColor(255, 255, 255);
+    drawText(4, 100, "single line");
+  } else {
+    clearCanvas(15, 15, 20);
+    setColor(255, 255, 255);
+    drawText(4, 24, "line one two three four five six seven");
+    drawText(4, 40, "line eight nine ten eleven twelve");
+    drawText(4, 56, "line thirteen fourteen fifteen sixteen");
+    drawText(4, 72, "line seventeen eighteen nineteen twenty");
+    drawText(4, 88, "line twentyone twentytwo twentythree");
+    drawText(4, 104, "line twentyfour twentyfive twentysix");
+    drawText(4, 120, "line twentyseven twentyeight twentynine");
+    drawText(4, 136, "line thirty thirtyone thirtytwo");
+    drawText(4, 152, "line thirtythree thirtyfour thirtyfive");
+    drawText(4, 168, "line thirtysix thirtyseven thirtyeight");
+    drawText(4, 184, "line thirtynine forty fortyone fortytwo");
+    drawText(4, 200, "line fortythree fortyfour fortyfive");
+    drawText(4, 216, "line fortysix fortyseven fortyeight");
+    drawText(4, 232, "line fortynine fifty fiftyone fiftytwo");
+  }
+  // ---- end MODE-gated workload ----
+
+  setColor(255, 255, 255);
+  drawText(4, 260, "MODE " + str(MODE) + " -- dt histogram/sec (<5.5/5.5-8.5/8.5-12/12-16/>=16ms):");
+  drawText(4, 272, "  " + str(reportBucketBelow) + " / " + str(reportBucket1x) + " / " + str(reportBucketMid) + " / " + str(reportBucket2x) + " / " + str(reportBucketWorse));
+  drawText(4, 292, "cumulative (" + str(totalFrames) + " frames):");
+  drawText(4, 304, "  " + str(totalBelow) + " / " + str(total1x) + " / " + str(totalMid) + " / " + str(total2x) + " / " + str(totalWorse));
+
+  present();
+});
+
+runGameLoop(0);

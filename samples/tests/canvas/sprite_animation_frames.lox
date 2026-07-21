@@ -8,8 +8,8 @@ var frameA = createSprite(2, 2, "XXXX");
 setColor(0, 0, 255);
 var frameB = createSprite(2, 2, "XXXX");
 
-var red = 255 * 65536;
-var blue = 255;
+var red = rgb(255, 0, 0);
+var blue = rgb(0, 0, 255);
 
 var frame = 0;
 

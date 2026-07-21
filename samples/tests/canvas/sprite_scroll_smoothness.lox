@@ -56,7 +56,7 @@ var spr = createSprite(W, H,
   "XXX.." +
   "XX..."
 );
-var orange = 255 * 65536 + 140 * 256;
+var orange = rgb(255, 140, 0);
 
 // Opaque columns per row of the staircase above: row 0 has 5, row 1
 // has 4, row 2 has 3, row 3 has 2 — i.e. column dx is opaque at row dy

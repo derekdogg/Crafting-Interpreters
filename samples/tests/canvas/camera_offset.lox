@@ -3,7 +3,7 @@
 setCanvasSize(320, 240);
 clearCanvas();
 
-var green = 255 * 256;
+var green = rgb(0, 255, 0);
 setColor(0, 255, 0);
 
 setCamera(5, 7);

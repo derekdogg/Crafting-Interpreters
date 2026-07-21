@@ -1,0 +1,104 @@
+// Companion to pacing_test.lox — same three instruments, but with EVERY
+// drawText() call removed. This exists to test hypothesis 1 from
+// docs/pacing-test-144hz-judder-finding.md: that pacing_test.lox's ~13
+// drawText() calls per frame (title, captions, status, interpretation
+// table) are themselves expensive enough to occasionally miss a 144Hz
+// refresh window, producing the observed alternating 1x/2x judder. If
+// that judder disappears here (a scene with only 4 fillRect() calls and
+// a clearCanvas() per frame), the cost is in the text renderer. If it
+// persists at the same magnitude, the cause is elsewhere (compositor/OS
+// scheduling, or the 143.99Hz refresh rate itself) and drawText is
+// cleared as a suspect.
+//
+// dt timing still has to be reported WITHOUT text, so the status isn't
+// a sentence — it's a big color-coded swatch at the bottom of the
+// window: green = steady (<=3ms jitter spread, the same threshold
+// pacing_test.lox uses for "OK"), red = elevated ("CHECK CLOSER"
+// equivalent). Same binary verdict, just conveyed as color instead of
+// words.
+//
+//  1. GREEN BAR (top) — moves exactly 2px per FRAME, ignores dt.
+//  2. PARITY SQUARE (top right) — alternates white/black every frame,
+//     same "ignores dt" property as the bar.
+//  3. ORANGE BOX (middle) — moves by dt at 320 px/s — the only
+//     instrument driven by dt.
+//  4. STATUS SWATCH (bottom) — green/red readout of dt jitter, the one
+//     verdict that's computable rather than eyeballed.
+
+var WIDTH = 400;
+var HEIGHT = 300;
+setCanvasSize(WIDTH, HEIGHT);
+
+var frame = 0;
+var barX = 0;
+var BOX_LEFT = 20;
+var BOX_RIGHT = WIDTH - 32;
+var bx = BOX_LEFT;
+var dx = 1;
+var t = 0;
+var frames1s = 0;
+var dtMin = 1;
+var dtMax = 0;
+var jitterSpreadMs = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+
+  // Frame 1's dt covers window creation + the first present()'s
+  // one-time setup cost — excluded from the jitter stats for the same
+  // reason pacing_test.lox excludes it (see that file's comments).
+  if (frame > 1) {
+    frames1s = frames1s + 1;
+    t = t + dt;
+    if (dt < dtMin) dtMin = dt;
+    if (dt > dtMax) dtMax = dt;
+    if (t >= 1) {
+      frames1s = 0;
+      t = t - 1;
+      jitterSpreadMs = (dtMax - dtMin) * 1000;
+      dtMin = 1;
+      dtMax = 0;
+    }
+  }
+
+  // 1: frame-locked bar
+  barX = barX + 2;
+  if (barX > WIDTH - 2) barX = 0;
+
+  // 3: dt-driven box. Reflect the overshoot across the boundary rather
+  // than clamping — see pacing_test.lox for why.
+  bx = bx + dx * 320 * dt;
+  if (bx < BOX_LEFT)  { bx = 2 * BOX_LEFT - bx;  dx = 1; }
+  if (bx > BOX_RIGHT) { bx = 2 * BOX_RIGHT - bx; dx = -1; }
+
+  // NOTE: clearCanvas() with zero args ignores setColor() and always
+  // fills with raw zero bytes (black) — only the 3-arg
+  // clearCanvas(r, g, b) form actually honors a color.
+  clearCanvas(15, 15, 20);
+
+  setColor(80, 220, 120);
+  fillRect(barX, 0, 2, 100);
+
+  // 2: parity square, blinks every frame
+  if (frame - floor(frame / 2) * 2 == 0) {
+    setColor(255, 255, 255);
+  } else {
+    setColor(0, 0, 0);
+  }
+  fillRect(WIDTH - 24, 8, 16, 16);
+
+  setColor(255, 160, 40);
+  fillRect(bx, 140, 12, 12);
+
+  // 4: status swatch — green/red, no text
+  if (jitterSpreadMs > 3) {
+    setColor(220, 40, 40);
+  } else {
+    setColor(60, 200, 90);
+  }
+  fillRect(20, 220, WIDTH - 40, 40);
+
+  present();
+});
+
+runGameLoop(0);

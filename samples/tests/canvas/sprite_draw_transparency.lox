@@ -19,8 +19,8 @@ if (spriteWidth(spr) == 3) print "width";     // expect: width
 if (spriteHeight(spr) == 3) print "height";   // expect: height
 
 drawSprite(spr, 0, 0);
-var green = 200 * 256;
-var bg = 10 * 65536 + 20 * 256 + 30;
+var green = rgb(0, 200, 0);
+var bg = rgb(10, 20, 30);
 if (getPixel(0, 0) == green) print "corner opaque";  // expect: corner opaque
 if (getPixel(1, 0) == bg) print "gap stays bg";      // expect: gap stays bg
 if (getPixel(1, 1) == green) print "center opaque";  // expect: center opaque

@@ -54,7 +54,7 @@ var spr = createSprite(W, H,
   "XXX.." +
   "XX..."
 );
-var orange = 255 * 65536 + 140 * 256;
+var orange = rgb(255, 140, 0);
 
 fun isOpaque(dx, dy) {
   return dx < (W - dy);

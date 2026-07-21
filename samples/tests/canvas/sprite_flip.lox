@@ -9,8 +9,8 @@ var horiz = createPaletteSprite(2, 1, "RB");   // left red, right blue
 var vert  = createPaletteSprite(1, 2, "RB");   // top red, bottom blue
 clearPalette();
 
-var red = 255 * 65536;
-var blue = 255;
+var red = rgb(255, 0, 0);
+var blue = rgb(0, 0, 255);
 
 var flippedH = flipSprite(horiz, "h");
 if (flippedH != horiz) print "new id h";             // expect: new id h

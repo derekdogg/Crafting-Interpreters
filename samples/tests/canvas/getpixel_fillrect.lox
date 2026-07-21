@@ -3,7 +3,7 @@
 setCanvasSize(320, 240);
 clearCanvas();
 
-var red = 255 * 65536;
+var red = rgb(255, 0, 0);
 setColor(255, 0, 0);
 fillRect(10, 20, 5, 4);
 
