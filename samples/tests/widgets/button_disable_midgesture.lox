@@ -1,0 +1,32 @@
+// Test: disabling a button mid-gesture drops its capture — the pending
+// click never fires (matches VCL: disable during drag kills OnClick).
+var b = createButton(10, 10, 50, 20, "B");
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    simulateMouseDown(0, 35, 20);
+  }
+  if (frame == 2) {
+    if (buttonPressed(b)) print "pressed";       // expect: pressed
+    setWidgetEnabled(b, false);
+    if (!buttonPressed(b)) print "unpressed";    // expect: unpressed
+    simulateMouseUp(0, 35, 20);
+  }
+  if (frame == 3) {
+    if (!buttonClicked(b)) print "no click";     // expect: no click
+    setWidgetEnabled(b, true);
+    simulateMouseDown(0, 35, 20);
+    simulateMouseUp(0, 35, 20);
+  }
+  if (frame == 4) {
+    if (buttonClicked(b)) print "reenabled";     // expect: reenabled
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                    // expect: done

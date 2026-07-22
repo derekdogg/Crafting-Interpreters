@@ -1,0 +1,43 @@
+// Test: sprites across frames — swapping which sprite id is drawn per
+// onFrame call (flipbook-style animation), and setCamera panning the
+// on-screen draw position for the SAME world coordinates across frames.
+setCanvasSize(320, 240);
+
+setColor(255, 0, 0);
+var frameA = createSprite(2, 2, "XXXX");
+setColor(0, 0, 255);
+var frameB = createSprite(2, 2, "XXXX");
+
+var red = rgb(255, 0, 0);
+var blue = rgb(0, 0, 255);
+
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  clearCanvas();
+
+  if (frame == 1) {
+    setCamera(0, 0);
+    drawSprite(frameA, 10, 10);
+    if (getPixel(10, 10) == red) print "frame1 red";  // expect: frame1 red
+  }
+  if (frame == 2) {
+    setCamera(0, 0);
+    drawSprite(frameB, 10, 10);
+    if (getPixel(10, 10) == blue) print "frame2 blue same spot"; // expect: frame2 blue same spot
+  }
+  if (frame == 3) {
+    // Pan the camera: the same world coordinates now land 5px left,
+    // and the old buffer position is empty (cleared, nothing draws
+    // there this frame).
+    setCamera(5, 0);
+    drawSprite(frameB, 10, 10);
+    if (getPixel(5, 10) == blue) print "frame3 panned";        // expect: frame3 panned
+    if (getPixel(10, 10) == 0) print "frame3 old spot empty";  // expect: frame3 old spot empty
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                                  // expect: done

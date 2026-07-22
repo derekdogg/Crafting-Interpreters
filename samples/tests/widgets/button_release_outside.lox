@@ -1,0 +1,36 @@
+// Test: release-inside contract — dragging off a pressed button drops
+// the pushed visual, and releasing outside cancels the click entirely.
+var b = createButton(10, 10, 50, 20, "B");
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    simulateMouseDown(0, 35, 20);
+  }
+  if (frame == 2) {
+    if (buttonPressed(b)) print "pressed";        // expect: pressed
+    simulateMouseMove(200, 200);
+  }
+  if (frame == 3) {
+    // Capture continues but the pushed look releases while outside.
+    if (!buttonPressed(b)) print "dragged off";   // expect: dragged off
+    simulateMouseMove(35, 20);
+  }
+  if (frame == 4) {
+    // Dragging back on re-applies the pushed look (still capturing).
+    if (buttonPressed(b)) print "back on";        // expect: back on
+    simulateMouseMove(200, 200);
+    simulateMouseUp(0, 200, 200);
+  }
+  if (frame == 5) {
+    if (!buttonClicked(b)) print "no click";      // expect: no click
+    if (!buttonPressed(b)) print "gesture over";  // expect: gesture over
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                     // expect: done

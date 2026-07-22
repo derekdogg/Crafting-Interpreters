@@ -1,0 +1,23 @@
+// Test: a press+release delivered in the SAME frame still completes a
+// click — the canvas exposes both the down and up edges of a same-pump
+// pair, so sub-frame gestures aren't lost to held-state sampling.
+var b = createButton(10, 10, 50, 20, "B");
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    simulateMouseDown(0, 35, 20);
+    simulateMouseUp(0, 35, 20);
+  }
+  if (frame == 2) {
+    if (buttonClicked(b)) print "subframe click";   // expect: subframe click
+    if (!buttonPressed(b)) print "not stuck";       // expect: not stuck
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                       // expect: done

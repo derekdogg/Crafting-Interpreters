@@ -1,0 +1,152 @@
+// Test: a REAL vsync-paced DIAGONAL scroll — like sprite_scroll_vsync_20s.lox,
+// but moves along BOTH axes simultaneously (not axis-aligned), for ~10
+// real seconds. Calls present() every frame and runs UNCAPPED
+// (runGameLoop(0)), so present()'s DwmFlush genuinely paces the loop to
+// the monitor's real refresh rate — a real vsync timing test, not a
+// synthetic frame-counted one.
+//
+// X and Y use DIFFERENT speeds (not a clean 45-degree line) so a bug
+// that only shows up when the axes move at different rates — e.g. an
+// accidental x/y swap, or an offset term applied to only one axis —
+// can't hide behind symmetry the way it could with equal speeds.
+//
+// Movement on each axis is derived from the TOTAL elapsed dt every
+// frame (not an accumulating "+=" per axis), so per-frame rounding
+// can't drift either axis away from its intended constant real-world
+// speed over the run.
+//
+// Canvas is sized to comfortably fit the ENTIRE diagonal travel
+// distance on BOTH axes (START + SPEED*DURATION + sprite size, with
+// margin) — same reasoning as sprite_scroll_vsync_20s.lox: an
+// out-of-bounds coordinate makes getPixel() return -1, which fails
+// every pixel-based check for the rest of the run.
+//
+// IMPORTANT: present() clears the ENTIRE new back buffer on every call
+// (LoxCanvas.pas presentNative) — with double buffering, the back
+// buffer is the picture from TWO present() calls ago, not "last
+// frame's picture", so every frame must fully redraw regardless of
+// whether the quantized position changed on either axis. An earlier
+// version of this test skipped the redraw when neither axis had ticked
+// over to a new integer pixel, which left the presented frame blank on
+// those frames — a visible flicker the per-frame checks couldn't catch
+// since they only ran on frames where a redraw happened.
+setCanvasSize(650, 450);
+clearCanvas();
+
+var BACKGROUND = 0;
+var W = 5;
+var H = 4;
+var SPEED_X = 50;   // pixels per second, horizontal
+var SPEED_Y = 35;   // pixels per second, vertical — deliberately different from SPEED_X
+var DURATION = 10;  // real seconds to scroll for
+
+// Lopsided staircase — see sprite_scroll_smoothness.lox for why an
+// asymmetric shape catches bugs a solid block would miss.
+//   XXXXX
+//   XXXX.
+//   XXX..
+//   XX...
+setColor(255, 140, 0);
+var spr = createSprite(W, H,
+  "XXXXX" +
+  "XXXX." +
+  "XXX.." +
+  "XX..."
+);
+var orange = rgb(255, 140, 0);
+
+fun isOpaque(dx, dy) {
+  return dx < (W - dy);
+}
+
+fun footprintMatches(x, y) {
+  var ok = true;
+  var dy = 0;
+  while (dy < H) {
+    var dx = 0;
+    while (dx < W) {
+      var expected = BACKGROUND;
+      if (isOpaque(dx, dy)) expected = orange;
+      if (getPixel(x + dx, y + dy) != expected) ok = false;
+      dx = dx + 1;
+    }
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+// True only if the ENTIRE one-pixel ring immediately outside the WxH
+// bounding box at (x, y) is background — catches the sprite landing
+// one row/column off in ANY direction (horizontal, vertical, or a
+// combination, since the sprite now moves on both axes at once).
+fun perimeterClear(x, y) {
+  var ok = true;
+  var dx = -1;
+  while (dx <= W) {
+    if (getPixel(x + dx, y - 1) != BACKGROUND) ok = false;
+    if (getPixel(x + dx, y + H) != BACKGROUND) ok = false;
+    dx = dx + 1;
+  }
+  var dy = -1;
+  while (dy <= H) {
+    if (getPixel(x - 1, y + dy) != BACKGROUND) ok = false;
+    if (getPixel(x + W, y + dy) != BACKGROUND) ok = false;
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+var START_X = 20;
+var START_Y = 20;
+var elapsed = 0;
+var prevDrawX = 0 - 1;   // sentinel: nothing drawn yet
+var prevDrawY = 0 - 1;
+var footprintOk = true;
+var placementOk = true;
+var startClock = clock();
+
+onFrame(fun(dt) {
+  elapsed = elapsed + dt;
+
+  var worldX = START_X + SPEED_X * elapsed;
+  var worldY = START_Y + SPEED_Y * elapsed;
+  var drawX = floor(worldX);
+  var drawY = floor(worldY);
+
+  // Redraw EVERY frame, unconditionally — see the header comment on
+  // why skipping this when neither axis's quantized position changed
+  // is unsafe with a double-buffered present().
+  clearCanvas();
+  drawSprite(spr, drawX, drawY);
+
+  if (!footprintMatches(drawX, drawY)) footprintOk = false;
+  if (!perimeterClear(drawX, drawY)) placementOk = false;
+
+  prevDrawX = drawX;
+  prevDrawY = drawY;
+
+  present();   // real vsync pacing — this is what makes the loop take ~10s
+
+  if (elapsed >= DURATION) {
+    var wallClockSecs = clock() - startClock;
+
+    if (footprintOk) print "no missing pixels";     // expect: no missing pixels
+    if (placementOk) print "correct placement";     // expect: correct placement
+    // The accumulated dt and an independently-measured wall clock must
+    // agree — see sprite_scroll_vsync_20s.lox for why this matters.
+    if (abs(wallClockSecs - elapsed) < 1) print "dt matches wall clock"; // expect: dt matches wall clock
+
+    // Confirms BOTH axes covered the right TOTAL ground over the full
+    // run, not just that individual steps looked locally consistent.
+    // Tolerance covers one worst-case clamped frame (0.1s * speed) per axis.
+    var expectedX = START_X + SPEED_X * DURATION;
+    var expectedY = START_Y + SPEED_Y * DURATION;
+    if (abs(prevDrawX - expectedX) <= 6) print "reached expected x"; // expect: reached expected x
+    if (abs(prevDrawY - expectedY) <= 5) print "reached expected y"; // expect: reached expected y
+
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                        // expect: done

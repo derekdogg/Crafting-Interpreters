@@ -1,0 +1,33 @@
+// Test: the full button gesture via simulated mouse — hover, pressed
+// while held inside, click edge on release-inside, consume-once poll.
+var b = createButton(10, 10, 50, 20, "B");
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    if (!buttonHover(b)) print "no hover";        // expect: no hover
+    simulateMouseMove(35, 20);
+  }
+  if (frame == 2) {
+    if (buttonHover(b)) print "hover";            // expect: hover
+    if (!buttonPressed(b)) print "not pressed";   // expect: not pressed
+    simulateMouseDown(0, 35, 20);
+  }
+  if (frame == 3) {
+    if (buttonPressed(b)) print "pressed";        // expect: pressed
+    if (!buttonClicked(b)) print "no click yet";  // expect: no click yet
+    simulateMouseUp(0, 35, 20);
+  }
+  if (frame == 4) {
+    if (!buttonPressed(b)) print "released";      // expect: released
+    if (buttonClicked(b)) print "clicked";        // expect: clicked
+    if (!buttonClicked(b)) print "consumed";      // expect: consumed
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                     // expect: done

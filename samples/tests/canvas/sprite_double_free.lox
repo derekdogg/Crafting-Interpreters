@@ -1,0 +1,7 @@
+// Test: freeing an already-freed sprite id is a runtime error (unlike
+// widgets, which treat stale ids as silent no-ops — sprites are a
+// lower-level resource and a double-free is a script bug).
+var s = createSprite(2, 2, "XXXX");
+freeSprite(s);
+freeSprite(s);
+// expect runtime error: freeSprite() sprite already freed.

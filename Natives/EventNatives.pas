@@ -33,6 +33,31 @@ uses
   Winapi.DwmApi, Vcl.Forms, System.SysUtils, System.Classes, LoxEventEngine,
   LoxCanvas;
 
+// TEMPORARY diagnostic (see docs/pacing-test-144hz-judder-finding.md):
+// last-measured time, in ms, spent in the game loop's OWN per-iteration
+// overhead (FlushOutput + ClearFrameEdges + Application.ProcessMessages +
+// DispatchPendingEvents) — the work that happens at the top of every
+// runGameLoopNative iteration, BEFORE dt is computed and BEFORE the
+// script's onFrame/present() even runs. Never previously measured:
+// presentGdiMs()/presentFlushMs() only cover present()'s two phases,
+// which leaves this loop-housekeeping cost as a genuine blind spot that
+// could itself be part of (or all of) the judder.
+var
+  FLastLoopOverheadMs: Double = 0;  // Diagnostic (added per script-feedback review of
+  // pacing-test-144hz-judder-finding.md): total wall-clock time spent
+  // inside InvokeCallback for onFrame — i.e. the ENTIRE script callback,
+  // including its own drawing work (setColor/clearCanvas/drawText/string
+  // concatenation/VM dispatch) AND present() (whose two phases are
+  // separately reported via presentGdiMs()/presentFlushMs()). This was
+  // the one piece of the frame that was never measured at all: the
+  // loop-overhead and gdi/flush natives left an unaccounted gap between
+  // them — the script's own per-frame work before present() is called —
+  // that could plausibly explain part of the "missing" time between
+  // measured components and observed dt. Approx script-only cost =
+  // lastCallbackMs() - presentGdiMs() - presentFlushMs() (assuming
+  // present() is called exactly once per onFrame invocation, true for
+  // all the pacing_test*.lox scripts).
+  FLastCallbackMs: Double = 0;
 // --- Helper: parse optional (controlName, closure) or (closure) ---
 // Returns True if args are valid; sets controlName and closure.
 
@@ -219,33 +244,202 @@ end;
 // Windows messages, dispatch event callbacks, then invoke onFrame(dt) with
 // the elapsed seconds since the previous frame (clamped to 0.1s so debugger
 // pauses / window drags don't produce physics jumps). targetFps defaults to
-// 60; pass 0 to run uncapped. Pacing uses an absolute QPC deadline per frame
-// (no drift accumulation): coarse TThread.Sleep(1) while >2ms remain — the
-// loop holds a scoped timeBeginPeriod(1) while active so that really is
-// ~1ms — then yields until the deadline. If a frame overruns, the deadline
-// resets rather than fast-forwarding to catch up.
+// 0 (uncapped); pass a positive number to cap instead. Pacing uses an
+// absolute QPC deadline per frame (no drift accumulation): coarse
+// TThread.Sleep(1) while >2ms remain — the loop holds a scoped
+// timeBeginPeriod(1) while active so that really is ~1ms — then yields
+// until the deadline. If a frame overruns, the deadline resets rather than
+// fast-forwarding to catch up.
 //
 // IMPORTANT for canvas scripts: present() ends with DwmFlush, i.e. it is
 // already vsynced to the compositor. A script that presents every frame
-// should therefore run UNCAPPED (runGameLoop(0)) and scale movement by dt —
-// the compositor paces the loop at the monitor's true refresh and dt stays
-// steady. Passing a fixed target (e.g. 60) adds a second, unsynchronised
-// clock on top of the vsync: on non-60Hz panels frames then straddle a
-// varying number of composition ticks and dt oscillates, which reads as
-// juddery motion at speed. Use a fixed target only for loops that don't
-// present (or don't animate).
+// should run UNCAPPED (the default — call runGameLoop() with no argument,
+// or runGameLoop(0) explicitly) and scale movement by dt — the compositor
+// paces the loop at the monitor's true refresh and dt stays steady. Passing
+// a fixed target (e.g. 60) adds a second, unsynchronised clock on top of
+// the vsync: on non-60Hz panels frames then straddle a varying number of
+// composition ticks and dt oscillates, which reads as juddery motion at
+// speed. Only pass a fixed target for loops that don't present every frame
+// (or don't animate) — e.g. a logic-only tick loop with no canvas output,
+// where nothing else throttles the loop and an uncapped run would peg a
+// CPU core.
 // QPC ticks per display refresh from the DWM compositor, 0 when
 // unavailable. qpcRefreshPeriod shares QueryPerformanceCounter's time
 // base, so it compares directly against QPC deltas.
+//
+// Passes the game window's TOP-LEVEL HWND rather than NULL. Per
+// DwmGetCompositionTimingInfo's documented contract, NULL retrieves
+// DESKTOP-WIDE timing (in practice, tied to one fixed reference
+// monitor — confirmed via docs/pacing-test-144hz-judder-finding.md
+// §5a: dragging the window to a second, 59.94Hz monitor still reported
+// the primary 144Hz monitor's rate with hwnd=NULL). Passing the actual
+// window handle resolves timing for whichever monitor that window is
+// currently on, which is what dt-pacing/snapping actually needs.
+//
+// MUST be the top-level form's handle, not GameCanvas's own child-
+// control handle: DwmGetCompositionTimingInfo apparently requires a
+// top-level HWND and fails silently (Succeeded() = False) on a child
+// window, which surfaced as displayRefreshHz() reporting 0 after an
+// earlier version of this fix passed GameCanvas.Handle directly.
+//
+// EVEN WITH the top-level form handle, this call has proven unreliable
+// on at least one real system — it either fails or succeeds with
+// qpcRefreshPeriod=0 (confirmed: displayRefreshHz() still reported 0
+// after switching to the form handle). Rather than leave the de-jitter
+// snap silently disabled everywhere (0 ticks = snapping never fires,
+// a regression versus the pre-fix baseline which at least worked for
+// the primary monitor), fall back to hwnd=NULL if the specific-handle
+// call doesn't yield a usable value. This restores known-working
+// behavior when the per-window call fails, at the cost of reverting to
+// primary-monitor timing in that case — see §5a for the residual
+// multi-monitor limitation this leaves open.
 function DisplayRefreshTicks: Int64;
 var
   ti: DWM_TIMING_INFO;
+  wnd: HWND;
+  frm: TCustomForm;
 begin
   Result := 0;
   FillChar(ti, SizeOf(ti), 0);
   ti.cbSize := SizeOf(ti);
-  if Succeeded(DwmGetCompositionTimingInfo(0, ti)) then
-    Result := Int64(ti.qpcRefreshPeriod);
+  wnd := 0;
+  if (GameCanvas <> nil) and GameCanvas.HandleAllocated then
+  begin
+    frm := GetParentForm(GameCanvas);
+    if (frm <> nil) and frm.HandleAllocated then
+      wnd := frm.Handle
+    else
+      wnd := GameCanvas.Handle;
+  end;
+  if (wnd = 0) or (not Succeeded(DwmGetCompositionTimingInfo(wnd, ti))) or
+     (ti.qpcRefreshPeriod = 0) then
+  begin
+    // Specific-handle query didn't yield a usable value — fall back to
+    // the known-working NULL (desktop-wide) query rather than leaving
+    // the snap logic permanently disabled at 0.
+    FillChar(ti, SizeOf(ti), 0);
+    ti.cbSize := SizeOf(ti);
+    DwmGetCompositionTimingInfo(0, ti);
+  end;
+  Result := Int64(ti.qpcRefreshPeriod);
+end;
+
+// Diagnostic (see docs/pacing-test-144hz-judder-finding.md §4o): DWM's
+// OWN self-reported, cumulative composition counters, read via the
+// SAME DwmGetCompositionTimingInfo call DisplayRefreshTicks already
+// uses (same window-handle resolution + NULL fallback). cFramesDropped
+// and cFramesMissed are documented as running counts of frames DWM
+// itself considers dropped/missed for this window since creation — if
+// these track this script's own dt-histogram 2x/worse bucket counts,
+// that's OS-level confirmation without needing PresentMon (which only
+// tracks DXGI/D3D swapchain presents, not a plain GDI-composited
+// window like this one — see the finding doc).
+//
+// CAVEAT: DWM_TIMING_INFO's per-frame counters (as opposed to
+// qpcRefreshPeriod/rateRefresh) are widely reported as unreliable or
+// not meaningfully populated on Windows 8+ — this API's per-frame
+// tracking model predates significant internal DWM changes. Worth
+// trying because it's nearly free (same call already in use), but
+// don't be surprised if these read back as 0 or don't move at all.
+function GetDwmFrameCounters(out dropped, missed, late: UInt64): Boolean;
+var
+  ti: DWM_TIMING_INFO;
+  wnd: HWND;
+  frm: TCustomForm;
+begin
+  dropped := 0;
+  missed := 0;
+  late := 0;
+  FillChar(ti, SizeOf(ti), 0);
+  ti.cbSize := SizeOf(ti);
+  wnd := 0;
+  if (GameCanvas <> nil) and GameCanvas.HandleAllocated then
+  begin
+    frm := GetParentForm(GameCanvas);
+    if (frm <> nil) and frm.HandleAllocated then
+      wnd := frm.Handle
+    else
+      wnd := GameCanvas.Handle;
+  end;
+  Result := (wnd <> 0) and Succeeded(DwmGetCompositionTimingInfo(wnd, ti));
+  if not Result then
+  begin
+    FillChar(ti, SizeOf(ti), 0);
+    ti.cbSize := SizeOf(ti);
+    Result := Succeeded(DwmGetCompositionTimingInfo(0, ti));
+  end;
+  if Result then
+  begin
+    dropped := ti.cFramesDropped;
+    missed := ti.cFramesMissed;
+    late := ti.cFramesLate;
+  end;
+end;
+
+function dwmFramesDroppedNative(argCount: integer; args: pValue): TValue;
+var
+  dropped, missed, late: UInt64;
+begin
+  GetDwmFrameCounters(dropped, missed, late);
+  Result := CreateNumber(Double(dropped));
+end;
+
+function dwmFramesMissedNative(argCount: integer; args: pValue): TValue;
+var
+  dropped, missed, late: UInt64;
+begin
+  GetDwmFrameCounters(dropped, missed, late);
+  Result := CreateNumber(Double(missed));
+end;
+
+function dwmFramesLateNative(argCount: integer; args: pValue): TValue;
+var
+  dropped, missed, late: UInt64;
+begin
+  GetDwmFrameCounters(dropped, missed, late);
+  Result := CreateNumber(Double(late));
+end;
+
+// Diagnostic native (see docs/pacing-test-144hz-judder-finding.md):
+// reports the refresh rate the engine's dt-snapping logic believes it's
+// running at, i.e. exactly what DisplayRefreshTicks/qpcRefreshPeriod
+// resolves to for the monitor the game window is currently on. Useful
+// to sanity-check against Windows Display Settings when testing on a
+// multi-monitor setup with mixed refresh rates — see the fix note on
+// DisplayRefreshTicks above for the bug this used to have (hwnd=NULL
+// silently ignored which monitor the window was actually on).
+function displayRefreshHzNative(argCount: integer; args: pValue): TValue;
+var
+  ticks, freq: Int64;
+begin
+  ticks := DisplayRefreshTicks;
+  if ticks <= 0 then
+  begin
+    Result := CreateNumber(0);
+    Exit;
+  end;
+  QueryPerformanceFrequency(freq);
+  Result := CreateNumber(freq / ticks);
+end;
+
+// Diagnostic native (see docs/pacing-test-144hz-judder-finding.md):
+// last-measured game-loop-overhead time in ms (see FLastLoopOverheadMs
+// above) — the loop's own per-iteration cost, distinct from and
+// additional to present()'s presentGdiMs()/presentFlushMs().
+function loopOverheadMsNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(FLastLoopOverheadMs);
+end;
+
+// Diagnostic native (see docs/pacing-test-144hz-judder-finding.md):
+// last-measured total onFrame callback time in ms (see FLastCallbackMs
+// above) — the whole script callback including its own drawing work AND
+// present(). Subtract presentGdiMs()+presentFlushMs() to approximate
+// the script's own per-frame cost (drawText/setColor/string
+// concatenation/VM dispatch) in isolation.
+function lastCallbackMsNative(argCount: integer; args: pValue): TValue;
+begin
+  Result := CreateNumber(FLastCallbackMs);
 end;
 
 function runGameLoopNative(argCount: integer; args: pValue): TValue;
@@ -253,6 +447,8 @@ var
   targetFps, dt, remainMs: Double;
   freq, tPrev, tNow, frameTicks, deadline: Int64;
   rawTicks, refreshTicks, k: Int64;
+  loopTop: Int64;
+  qCallbackStart, qCallbackEnd: Int64;
   presentedThisFrame: Boolean;
   presentCountBefore: Int64;
   cb, dummy, dtArg: TValue;
@@ -268,7 +464,7 @@ begin
     RuntimeError('runGameLoop() is already running.');
     Exit;
   end;
-  targetFps := 60;
+  targetFps := 0;  // uncapped by default — present() paces via vsync (DwmFlush)
   if argCount > 0 then
   begin
     if (argCount <> 1) or not isNumber(args[0]) then
@@ -301,6 +497,7 @@ begin
   try
     while ActiveEngine.GameLoopActive do
     begin
+      QueryPerformanceCounter(loopTop);
       ActiveEngine.FlushOutput;
       // Reset keyPressed()/mouseClicked() edge state before the pump so the
       // polling natives also work per-frame inside onFrame.
@@ -322,6 +519,8 @@ begin
       if not ActiveEngine.GameLoopActive then Break;
 
       QueryPerformanceCounter(tNow);
+      if freq > 0 then
+        FLastLoopOverheadMs := (tNow - loopTop) * 1000.0 / freq;
       rawTicks := tNow - tPrev;
       tPrev := tNow;
 
@@ -359,7 +558,17 @@ begin
         // NEXT iteration's rawTicks.
         presentCountBefore := CanvasPresentCount;
         dtArg := CreateNumber(dt);
+        // Diagnostic (see FLastCallbackMs above): time the ENTIRE
+        // callback, not just present()'s two phases — this closes the
+        // gap a script-feedback review identified between loopOverheadMs
+        // and presentGdiMs()/presentFlushMs(), where the script's own
+        // per-frame drawing work (drawText/setColor/concatenation/VM
+        // dispatch) was never accounted for at all.
+        QueryPerformanceCounter(qCallbackStart);
         InvokeCallback(cb, [dtArg], dummy);
+        QueryPerformanceCounter(qCallbackEnd);
+        if freq > 0 then
+          FLastCallbackMs := (qCallbackEnd - qCallbackStart) * 1000.0 / freq;
         if VM.RuntimeErrorStr <> '' then Exit;
         presentedThisFrame := CanvasPresentCount <> presentCountBefore;
       end
@@ -394,6 +603,14 @@ begin
 end;
 
 // --- Simulation natives (for scripted testing) ---
+// Each native feeds BOTH input paths a real device event would reach:
+// the event engine's queues (callback dispatch — onKeyPressed etc.)
+// and, via CanvasSimulate*, the canvas poll state (keyPressed/keyHeld/
+// mouseX/mouseDown/mouseClicked and the widget engine). The canvas
+// side is applied at the next frame-edge reset, so simulated input
+// becomes visible to polls and widgets on the FRAME AFTER the
+// simulate call — the same latency real pumped input has. Mouse
+// coordinates are LOGICAL canvas pixels.
 
 function simulateKeyDownNative(argCount: integer; args: pValue): TValue;
 var
@@ -406,6 +623,7 @@ begin
   end;
   key := string(AsAnsiString(args[0]));
   ActiveEngine.QueueKeyDown(key);
+  CanvasSimulateKey(key, True);
   Result := CreateNilValue;
 end;
 
@@ -420,6 +638,7 @@ begin
   end;
   key := string(AsAnsiString(args[0]));
   ActiveEngine.QueueKeyUp(key);
+  CanvasSimulateKey(key, False);
   Result := CreateNilValue;
 end;
 
@@ -436,6 +655,7 @@ begin
   x := Trunc(GetNumber(args[1]));
   y := Trunc(GetNumber(args[2]));
   ActiveEngine.QueueMouseDown(btn, x, y);
+  CanvasSimulateMouseButton(btn, True, x, y);
   Result := CreateNilValue;
 end;
 
@@ -452,6 +672,7 @@ begin
   x := Trunc(GetNumber(args[1]));
   y := Trunc(GetNumber(args[2]));
   ActiveEngine.QueueMouseUp(btn, x, y);
+  CanvasSimulateMouseButton(btn, False, x, y);
   Result := CreateNilValue;
 end;
 
@@ -467,6 +688,23 @@ begin
   x := Trunc(GetNumber(args[0]));
   y := Trunc(GetNumber(args[1]));
   ActiveEngine.QueueMouseMove(x, y);
+  CanvasSimulateMouseMove(x, y);
+  Result := CreateNilValue;
+end;
+
+// simulateChars(text) — inject text into the frame's WM_CHAR stream
+// (what edit boxes read). Canvas-side only: there is no per-character
+// event callback to queue. Use simulateKeyDown for keys that must also
+// fire callbacks/nav edges; its char (if any) is synthesized
+// automatically, so don't ALSO simulateChars the same keystroke.
+function simulateCharsNative(argCount: integer; args: pValue): TValue;
+begin
+  if (argCount <> 1) or not isString(args[0]) then
+  begin
+    RuntimeError('simulateChars() takes 1 string argument.');
+    Exit(CreateNilValue);
+  end;
+  CanvasSimulateChars(string(AsAnsiString(args[0])));
   Result := CreateNilValue;
 end;
 
@@ -487,12 +725,21 @@ begin
   defineNative('onFrame', onFrameNative, 1);
   defineNative('runGameLoop', runGameLoopNative, -1);  // 0-1 args
   defineNative('stopGameLoop', stopGameLoopNative, 0);
-  // Simulation natives (for scripted testing — queue events without VCL)
+  // TEMPORARY diagnostic (see docs/pacing-test-144hz-judder-finding.md)
+  defineNative('displayRefreshHz', displayRefreshHzNative, 0);
+  defineNative('dwmFramesDropped', dwmFramesDroppedNative, 0);
+  defineNative('dwmFramesMissed', dwmFramesMissedNative, 0);
+  defineNative('dwmFramesLate', dwmFramesLateNative, 0);
+  defineNative('loopOverheadMs', loopOverheadMsNative, 0);
+  defineNative('lastCallbackMs', lastCallbackMsNative, 0);
+  // Simulation natives (for scripted testing — synthesize input
+  // without VCL; feeds callbacks AND poll state AND widgets)
   defineNative('simulateKeyDown', simulateKeyDownNative, 1);
   defineNative('simulateKeyUp', simulateKeyUpNative, 1);
   defineNative('simulateMouseDown', simulateMouseDownNative, 3);
   defineNative('simulateMouseUp', simulateMouseUpNative, 3);
   defineNative('simulateMouseMove', simulateMouseMoveNative, 2);
+  defineNative('simulateChars', simulateCharsNative, 1);
 end;
 
 end.

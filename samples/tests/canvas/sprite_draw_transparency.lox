@@ -1,0 +1,27 @@
+// Test: createSprite paints every non-'.' character with the CURRENT
+// color at creation time; '.' is the magenta transparency key and
+// never overwrites existing canvas content when the sprite is drawn.
+setCanvasSize(320, 240);
+clearCanvas();
+
+// Pre-fill the draw target with a distinct background color so a
+// transparent sprite pixel is visibly different from an opaque one.
+setColor(10, 20, 30);
+fillRect(0, 0, 10, 10);
+
+setColor(0, 200, 0);
+var spr = createSprite(3, 3,
+  "X.X" +
+  ".X." +
+  "X.X"
+);
+if (spriteWidth(spr) == 3) print "width";     // expect: width
+if (spriteHeight(spr) == 3) print "height";   // expect: height
+
+drawSprite(spr, 0, 0);
+var green = rgb(0, 200, 0);
+var bg = rgb(10, 20, 30);
+if (getPixel(0, 0) == green) print "corner opaque";  // expect: corner opaque
+if (getPixel(1, 0) == bg) print "gap stays bg";      // expect: gap stays bg
+if (getPixel(1, 1) == green) print "center opaque";  // expect: center opaque
+if (getPixel(2, 2) == green) print "br opaque";      // expect: br opaque

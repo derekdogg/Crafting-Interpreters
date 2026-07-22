@@ -142,7 +142,7 @@ unit WidgetNatives;
 //     drawWidgets();
 //     present();
 //   });
-//   runGameLoop(60);
+//   runGameLoop();
 //
 // A manual while-loop also works — call processMessages() (or
 // processEvents()) yourself at the top of each iteration, before

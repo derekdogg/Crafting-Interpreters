@@ -1,0 +1,35 @@
+// Test: overlapping widgets — the topmost (last created) claims the
+// pointer; the one underneath sees it as elsewhere. Creation order is
+// z-order.
+var bottom = createButton(10, 10, 60, 20, "Bottom");
+var top = createButton(40, 10, 60, 20, "Top");   // overlaps 40..70
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    simulateMouseMove(50, 20);   // inside BOTH
+  }
+  if (frame == 2) {
+    if (buttonHover(top)) print "top hover";           // expect: top hover
+    if (!buttonHover(bottom)) print "bottom blocked";  // expect: bottom blocked
+    simulateMouseDown(0, 50, 20);
+    simulateMouseUp(0, 50, 20);
+  }
+  if (frame == 3) {
+    if (buttonClicked(top)) print "top clicked";       // expect: top clicked
+    if (!buttonClicked(bottom)) print "bottom quiet";  // expect: bottom quiet
+    // The non-overlapped part of the bottom button still works.
+    simulateMouseDown(0, 20, 20);
+    simulateMouseUp(0, 20, 20);
+  }
+  if (frame == 4) {
+    if (buttonClicked(bottom)) print "bottom clicked"; // expect: bottom clicked
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                          // expect: done

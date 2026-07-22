@@ -1,0 +1,6 @@
+// Test: an id that was never allocated (out of range) is a runtime
+// error, same message class as a freed id but for the "never existed"
+// case.
+setCanvasSize(320, 240);
+drawSprite(999, 0, 0);
+// expect runtime error: drawSprite() invalid sprite id.

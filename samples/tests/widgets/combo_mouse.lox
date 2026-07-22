@@ -1,0 +1,71 @@
+// Test: combo box mouse protocol — click opens the dropdown, clicking
+// the first item selects it (consume-once change edge), and while
+// open a press outside the dropdown folds it AND is swallowed (the
+// button underneath never fires).
+//
+// Geometry note: only item ROW 0 has a font-independent click target
+// (8px below the field top works for any GUI font >= 6px tall); other
+// rows are exercised by the keyboard test.
+var c = createCombo(10, 10, 100, 22);
+addComboItem(c, "A");
+addComboItem(c, "B");
+addComboItem(c, "C");
+setComboIndex(c, 2);
+
+var under = 0;
+var b = createButton(10, 60, 100, 22, "Under", fun() { under = under + 1; });
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    if (!comboChanged(c)) print "set silent";        // expect: set silent
+    // Open: click the field.
+    simulateMouseDown(0, 60, 21);
+    simulateMouseUp(0, 60, 21);
+  }
+  if (frame == 2) {
+    // Open now; click item row 0 (field bottom is y=32, +8 => 40).
+    simulateMouseDown(0, 20, 40);
+    simulateMouseUp(0, 20, 40);
+  }
+  if (frame == 3) {
+    if (getComboIndex(c) == 0) print "picked A";     // expect: picked A
+    if (getComboText(c) == "A") print "text A";      // expect: text A
+    if (comboChanged(c)) print "changed";            // expect: changed
+    if (!comboChanged(c)) print "consumed";          // expect: consumed
+    // Reopen.
+    simulateMouseDown(0, 60, 21);
+    simulateMouseUp(0, 60, 21);
+  }
+  if (frame == 4) {
+    // Open; press far outside the dropdown, over nothing.
+    simulateMouseDown(0, 250, 200);
+    simulateMouseUp(0, 250, 200);
+  }
+  if (frame == 5) {
+    if (getComboIndex(c) == 0) print "fold keeps";   // expect: fold keeps
+    // Reopen; press ON the button under the dropdown's area.
+    simulateMouseDown(0, 60, 21);
+    simulateMouseUp(0, 60, 21);
+  }
+  if (frame == 6) {
+    simulateMouseDown(0, 60, 71);
+    simulateMouseUp(0, 60, 71);
+  }
+  if (frame == 7) {
+    if (under == 0) print "swallowed";               // expect: swallowed
+    // Combo folded by that press: a fresh click on the button now works.
+    simulateMouseDown(0, 60, 71);
+    simulateMouseUp(0, 60, 71);
+  }
+  if (frame == 8) {
+    if (under == 1) print "button works";            // expect: button works
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                        // expect: done

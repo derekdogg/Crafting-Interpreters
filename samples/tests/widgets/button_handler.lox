@@ -1,0 +1,37 @@
+// Test: click handlers — attached at createButton or setButtonOnClick,
+// fired from inside updateWidgets, fun(id) receives the widget id, and
+// a handled click is CONSUMED (the poll never sees it). Detaching with
+// nil restores polling behaviour.
+var clicks = 0;
+var lastId = 0;
+var b = createButton(10, 10, 50, 20, "B", fun(id) {
+  clicks = clicks + 1;
+  lastId = id;
+});
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+  updateWidgets();
+
+  if (frame == 1) {
+    simulateMouseDown(0, 35, 20);
+    simulateMouseUp(0, 35, 20);
+  }
+  if (frame == 2) {
+    if (clicks == 1) print "handler fired";       // expect: handler fired
+    if (lastId == b) print "id passed";           // expect: id passed
+    if (!buttonClicked(b)) print "poll consumed"; // expect: poll consumed
+    setButtonOnClick(b, nil);
+    simulateMouseDown(0, 35, 20);
+    simulateMouseUp(0, 35, 20);
+  }
+  if (frame == 3) {
+    if (clicks == 1) print "detached";            // expect: detached
+    if (buttonClicked(b)) print "poll works";     // expect: poll works
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                     // expect: done

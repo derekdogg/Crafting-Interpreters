@@ -1,0 +1,20 @@
+// Test: fillRect writes exactly its half-open [x..x+w) [y..y+h) rect,
+// verified per-pixel with getPixel (packed 0xRRGGBB, -1 out of bounds).
+setCanvasSize(320, 240);
+clearCanvas();
+
+var red = rgb(255, 0, 0);
+setColor(255, 0, 0);
+fillRect(10, 20, 5, 4);
+
+// All four inside corners carry the color.
+if (getPixel(10, 20) == red) print "tl";      // expect: tl
+if (getPixel(14, 20) == red) print "tr";      // expect: tr
+if (getPixel(10, 23) == red) print "bl";      // expect: bl
+if (getPixel(14, 23) == red) print "br";      // expect: br
+
+// Half-open: the x+w column and y+h row are untouched.
+if (getPixel(15, 20) == 0) print "right open";   // expect: right open
+if (getPixel(10, 24) == 0) print "bottom open";  // expect: bottom open
+if (getPixel(9, 20) == 0) print "left edge";     // expect: left edge
+if (getPixel(10, 19) == 0) print "top edge";     // expect: top edge

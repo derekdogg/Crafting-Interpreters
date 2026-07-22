@@ -1,64 +1,189 @@
-// Frame-pacing diagnostic. Three instruments that separate WHERE
-// motion roughness comes from:
+// Frame-pacing diagnostic. The on-screen UI (title, per-instrument
+// "what you should see" captions, and an interpretation table) is
+// designed to be self-explanatory to someone who has never opened this
+// source file. The comments below are for the person maintaining this
+// test — they explain WHY it's built this way, not what to look at
+// (that's the screen's job now).
 //
 //  1. GREEN BAR — moves exactly 2px per FRAME (frame-counted, ignores
-//     dt). If presentation is clean, the sweep is perfectly even. Any
-//     visible skip, stall or double-step = a frame dropped or shown
-//     twice between present() and the screen (composition problem).
+//     dt entirely). If presentation is clean, the sweep is perfectly
+//     even. Any visible skip, stall or double-step = a frame dropped
+//     or shown twice between present() and the screen — a composition
+//     problem, NOT a script timing problem, because this instrument
+//     never even reads dt.
 //
-//  2. PARITY SQUARE (top right) — alternates white/black every frame.
-//     Clean delivery = a steady uniform 50% shimmer. Visible beating,
-//     stutter, or moments where it looks solid = uneven frame
-//     delivery (two same-parity frames reached the screen in a row).
+//  2. PARITY SQUARE (top right) — alternates white/black every frame,
+//     same "ignores dt" property as the bar, so it fails (or doesn't)
+//     for exactly the same reason. It's a second, differently-shaped
+//     witness to the same class of problem — a beat pattern here that
+//     doesn't show up in the bar (or vice versa) is still useful
+//     information, but both are asking "is presentation clean?", never
+//     "is the dt math clean?".
 //
 //  3. ORANGE BOX — moves by dt at 320 px/s (the widgets_radio
-//     "Frantic" case). If this is rough while 1 and 2 are clean, the
-//     problem is timing math (the dt fed to the script), not
-//     presentation.
+//     "Frantic" case). This is the ONLY instrument driven by dt, so
+//     it's the one that isolates timing-math bugs: if this is rough
+//     while 1 and 2 are clean, the problem is the dt VALUE fed to the
+//     script, not how frames reach the screen.
 //
-// Also shows fps (frames counted per summed-dt second) — at vsync it
-// should sit exactly at the monitor refresh (60/120/144...).
+// Because 1 and 2 answer "is presentation clean?" and 3 answers "is dt
+// clean?", comparing them tells you WHICH subsystem to investigate —
+// that comparison is spelled out as a table on screen (WHAT THIS
+// MEANS) rather than left for the reader to work out.
+//
+// dt jitter (min/max dt seen in the last reporting second, in ms) is
+// the one instrument here that ISN'T purely visual: frame drops/dupes
+// on the actual monitor can't be observed from inside the script (it
+// only sees its own loop, not what the compositor displayed), which is
+// why 1 and 2 stay eyeball-only and get no computed verdict — only a
+// human watching the window can judge those two. Jitter in the dt
+// VALUES fed to the script IS directly measurable though, so it gets an
+// actual color-coded status line: green "OK" or red "CHECK CLOSER"
+// (>3ms spread — a rough eyeball threshold, not a hard pass/fail line).
 
-setCanvasSize(320, 240);
+var WIDTH = 480;
+var HEIGHT = 370;
+setCanvasSize(WIDTH, HEIGHT);
 
 var frame = 0;
 var barX = 0;
-var bx = 20;
+var BOX_LEFT = 20;
+var BOX_RIGHT = WIDTH - 32;
+var bx = BOX_LEFT;
 var dx = 1;
 var t = 0;
 var frames1s = 0;
 var fps = 0;
+var dtMin = 1;
+var dtMax = 0;
+var dtMinMs = 0;
+var dtMaxMs = 0;
+var hasStats = false;   // true once the first full 1s reporting window has closed
+// Cumulative (all-time, never reset) dt histogram — see
+// pacing_test_blank.lox / pacing_test_split_timing.lox for the same
+// 5-bucket scheme. Added to get a third, large-N calibration point on
+// the script-cost-vs-miss-rate spectrum: this script's per-frame cost
+// (bar/square/box + 8 drawText calls) sits between those two tests'
+// extremes and is closer to a realistic HUD than either of them —
+// see docs/pacing-test-144hz-judder-finding.md §4m.
+var bucketBelow = 0;    // dt < 5.5ms
+var bucket1x = 0;       // 5.5ms <= dt < 8.5ms
+var bucketMid = 0;      // 8.5ms <= dt < 12ms
+var bucket2x = 0;       // 12ms <= dt < 16ms
+var bucketWorse = 0;    // dt >= 16ms
+var totalFrames = 0;
+var totalBelow = 0;
+var total1x = 0;
+var totalMid = 0;
+var total2x = 0;
+var totalWorse = 0;
+var reportBucketBelow = 0;
+var reportBucket1x = 0;
+var reportBucketMid = 0;
+var reportBucket2x = 0;
+var reportBucketWorse = 0;
+// Isolates the cost of the histogram/cumulative reporting lines
+// themselves (added after this script's original content), timed via
+// clock() (see SystemNatives.pas) — so we can tell how much of any
+// elevated miss rate is genuinely this script's ORIGINAL content vs.
+// the instrumentation bolted on to measure it. See
+// docs/pacing-test-144hz-judder-finding.md §4n.
+var lastReportOverheadMs = 0;
+var reportOverheadMin = 1000;
+var reportOverheadMax = 0;
+var reportReportOverheadMin = 0;
+var reportReportOverheadMax = 0;
+
+fun round1(x) {
+  return floor(x * 10 + 0.5) / 10;
+}
 
 onFrame(fun(dt) {
   frame = frame + 1;
-  frames1s = frames1s + 1;
-  t = t + dt;
-  if (t >= 1) {
-    // Normalise by the actual window length, not a flat 1s: t sits in
-    // [1, 1 + last_dt) at this point, so `fps = frames1s` would under-
-    // report by up to one frame each reporting window.
-    fps = frames1s / t;
-    frames1s = 0;
-    t = t - 1;
+
+  // Frame 1's dt covers window creation + the first present()'s one-time
+  // DWM buffer setup, not steady-state pacing — it routinely hits the
+  // 0.1s clamp ceiling. Folding it into fps/jitter would report a
+  // misleadingly low fps and an "elevated" jitter flag on a run that's
+  // actually fine, so it's excluded from the stats (still drawn/shown
+  // like any other frame, just not counted here).
+  if (frame > 1) {
+    frames1s = frames1s + 1;
+    t = t + dt;
+    if (dt < dtMin) dtMin = dt;
+    if (dt > dtMax) dtMax = dt;
+    var dtMsNow = dt * 1000;
+    totalFrames = totalFrames + 1;
+    if (dtMsNow < 5.5) {
+      bucketBelow = bucketBelow + 1;
+      totalBelow = totalBelow + 1;
+    } else if (dtMsNow < 8.5) {
+      bucket1x = bucket1x + 1;
+      total1x = total1x + 1;
+    } else if (dtMsNow < 12) {
+      bucketMid = bucketMid + 1;
+      totalMid = totalMid + 1;
+    } else if (dtMsNow < 16) {
+      bucket2x = bucket2x + 1;
+      total2x = total2x + 1;
+    } else {
+      bucketWorse = bucketWorse + 1;
+      totalWorse = totalWorse + 1;
+    }
+    if (lastReportOverheadMs < reportOverheadMin) reportOverheadMin = lastReportOverheadMs;
+    if (lastReportOverheadMs > reportOverheadMax) reportOverheadMax = lastReportOverheadMs;
+    if (t >= 1) {
+      // Normalise by the actual window length, not a flat 1s: t sits in
+      // [1, 1 + last_dt) at this point, so `fps = frames1s` would under-
+      // report by up to one frame each reporting window.
+      fps = frames1s / t;
+      frames1s = 0;
+      t = t - 1;
+      dtMinMs = round1(dtMin * 1000);
+      dtMaxMs = round1(dtMax * 1000);
+      dtMin = 1;
+      dtMax = 0;
+      hasStats = true;
+      reportBucketBelow = bucketBelow;
+      reportBucket1x = bucket1x;
+      reportBucketMid = bucketMid;
+      reportBucket2x = bucket2x;
+      reportBucketWorse = bucketWorse;
+      bucketBelow = 0;
+      bucket1x = 0;
+      bucketMid = 0;
+      bucket2x = 0;
+      bucketWorse = 0;
+      reportReportOverheadMin = round1(reportOverheadMin);
+      reportReportOverheadMax = round1(reportOverheadMax);
+      reportOverheadMin = 1000;
+      reportOverheadMax = 0;
+    }
   }
 
   // 1: frame-locked bar
   barX = barX + 2;
-  if (barX > 318) barX = 0;
+  if (barX > WIDTH - 2) barX = 0;
 
   // 3: dt-driven box. Reflect the overshoot across the boundary rather
   // than clamping — clamping would silently drop up to one frame's
   // worth of motion at each bounce, exactly the kind of dt anomaly
   // this diagnostic is supposed to expose.
   bx = bx + dx * 320 * dt;
-  if (bx < 20)  { bx = 40 - bx;  dx = 1; }
-  if (bx > 288) { bx = 576 - bx; dx = -1; }
+  if (bx < BOX_LEFT)  { bx = 2 * BOX_LEFT - bx;  dx = 1; }
+  if (bx > BOX_RIGHT) { bx = 2 * BOX_RIGHT - bx; dx = -1; }
 
-  setColor(15, 15, 20);
-  clearCanvas();
+  // NOTE: clearCanvas() with zero args ignores setColor() and always
+  // fills with raw zero bytes (black) — only the 3-arg
+  // clearCanvas(r, g, b) form actually honors a color.
+  clearCanvas(15, 15, 20);
+
+  setColor(255, 255, 255);
+  drawText(4, 8, "FRAME PACING DIAGNOSTIC");
+  drawText(4, 20, "shows whether motion stutter is presentation or timing (dt) related");
 
   setColor(80, 220, 120);
-  fillRect(barX, 0, 2, 100);
+  fillRect(barX, 36, 2, 90);
 
   // 2: parity square, blinks every frame
   if (frame - floor(frame / 2) * 2 == 0) {
@@ -66,14 +191,54 @@ onFrame(fun(dt) {
   } else {
     setColor(0, 0, 0);
   }
-  fillRect(296, 8, 16, 16);
+  fillRect(WIDTH - 24, 40, 16, 16);
 
   setColor(255, 255, 255);
-  drawText(4, 110, "fps: " + str(fps));
-  drawText(4, 122, "bar: per-frame  box: per-dt");
+  drawText(4, 134, "green bar: should move in perfectly even 2px steps");
+  drawText(4, 146, "flashing square (top-right): should flicker steadily, no pauses");
 
   setColor(255, 160, 40);
-  fillRect(bx, 150, 12, 12);
+  fillRect(bx, 170, 12, 12);
+
+  setColor(255, 255, 255);
+  drawText(4, 192, "orange box: should glide smoothly at a constant speed");
+  drawText(4, 203, "if only this stutters, timing (dt) math is likely wrong");
+
+  var jitterSpread = dtMaxMs - dtMinMs;
+  var statusText = "dt timing: measuring...";
+  var statusR = 180;
+  var statusG = 180;
+  var statusB = 180;
+  if (hasStats) {
+    statusText = "dt timing: OK";
+    statusR = 80;
+    statusG = 220;
+    statusB = 120;
+    if (jitterSpread > 3) {
+      statusText = "dt timing: CHECK CLOSER";
+      statusR = 255;
+      statusG = 70;
+      statusB = 70;
+    }
+  }
+
+  setColor(255, 255, 255);
+  drawText(4, 222, "fps:" + str(round1(fps)) + "   jitter:" + str(dtMinMs) + "-" + str(dtMaxMs) + "ms");
+  setColor(statusR, statusG, statusB);
+  drawText(4, 233, statusText);
+
+  setColor(255, 255, 255);
+  drawText(4, 250, "WHAT THIS MEANS:");
+  drawText(4, 261, "bar/square wrong, box fine -> presentation problem");
+  drawText(4, 272, "bar/square fine, box wrong -> timing (dt) problem");
+  drawText(4, 283, "all three fine -> no problem detected");
+  drawText(4, 294, "bar/square AND box wrong -> investigate both");
+  drawText(4, 306, "(bar/square have no computed verdict - judge by eye)");
+  var tBeforeReport = clock();
+  drawText(4, 322, "dt histogram/sec (<5.5/5.5-8.5/8.5-12/12-16/>=16ms): " + str(reportBucketBelow) + "/" + str(reportBucket1x) + "/" + str(reportBucketMid) + "/" + str(reportBucket2x) + "/" + str(reportBucketWorse));
+  drawText(4, 334, "cumulative (" + str(totalFrames) + " frames): " + str(totalBelow) + "/" + str(total1x) + "/" + str(totalMid) + "/" + str(total2x) + "/" + str(totalWorse));
+  lastReportOverheadMs = (clock() - tBeforeReport) * 1000;
+  drawText(4, 346, "(reporting lines' own cost: " + str(reportReportOverheadMin) + "-" + str(reportReportOverheadMax) + "ms)");
 
   present();
 });

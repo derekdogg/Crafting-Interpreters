@@ -1,0 +1,29 @@
+// Test: flipSprite("h")/("v") mirror columns/rows into a NEW sprite id
+// — the source sprite is left completely untouched by the flip.
+setCanvasSize(320, 240);
+clearCanvas();
+
+setPaletteColor("R", 255, 0, 0);
+setPaletteColor("B", 0, 0, 255);
+var horiz = createPaletteSprite(2, 1, "RB");   // left red, right blue
+var vert  = createPaletteSprite(1, 2, "RB");   // top red, bottom blue
+clearPalette();
+
+var red = rgb(255, 0, 0);
+var blue = rgb(0, 0, 255);
+
+var flippedH = flipSprite(horiz, "h");
+if (flippedH != horiz) print "new id h";             // expect: new id h
+drawSprite(flippedH, 10, 10);
+if (getPixel(10, 10) == blue) print "h left blue";   // expect: h left blue
+if (getPixel(11, 10) == red) print "h right red";    // expect: h right red
+
+// Source sprite is unchanged by the flip.
+drawSprite(horiz, 10, 20);
+if (getPixel(10, 20) == red) print "source untouched"; // expect: source untouched
+if (getPixel(11, 20) == blue) print "source right blue"; // expect: source right blue
+
+var flippedV = flipSprite(vert, "v");
+drawSprite(flippedV, 30, 10);
+if (getPixel(30, 10) == blue) print "v top blue";    // expect: v top blue
+if (getPixel(30, 11) == red) print "v bottom red";   // expect: v bottom red

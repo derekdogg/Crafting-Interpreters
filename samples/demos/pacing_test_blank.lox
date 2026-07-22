@@ -1,0 +1,132 @@
+// Second follow-up to pacing_test.lox / pacing_test_no_text.lox — see
+// docs/pacing-test-144hz-judder-finding.md §4a and §5.
+//
+// pacing_test_no_text.lox already showed the judder persists on a scene
+// with only 4 fillRect() calls + clearCanvas() per frame, which weakens
+// (but doesn't fully rule out) the "render cost is too high" hypothesis.
+// This test goes one step further: draw NOTHING at all beyond a solid
+// background clear. There is no bar, no square, no box, no swatch shape
+// — the dt-timing verdict is carried by the CLEAR COLOR itself (green =
+// steady, red = elevated), so the only per-frame work is exactly one
+// clearCanvas() call and one present().
+//
+// If the judder still shows up here — the whole window flickering
+// between green and red at a similar rate to the other two tests —
+// that's strong evidence the cause is in runGameLoopNative's loop body
+// or presentNative's GDI+DwmFlush delivery itself, not anything the
+// script draws (there's nothing left to draw that could be blamed).
+// If it's steady green here but not in pacing_test_no_text.lox, the 4
+// fillRect() calls themselves would become the new suspect.
+//
+// UPDATED (see docs/pacing-test-144hz-judder-finding.md §4l): the
+// original red/green verdict was a visual "looks red ~40% of the time"
+// eyeball estimate — not directly comparable to the real per-second dt
+// histogram `pacing_test_split_timing.lox` now reports (same 5-bucket
+// scheme: <5.5/5.5-8.5/8.5-12/12-16/>=16ms). Added the SAME numeric
+// histogram here (2 extra drawText lines/frame — negligible next to
+// that test's 14) so the two can be compared on equal footing: does a
+// near-zero-cost callback show a HIGHER, LOWER, or SIMILAR miss rate
+// to the heavy, 6.6ms-script-only diagnostic screen? If script cost
+// eating into the 144Hz budget were the primary cause, this should
+// show close to 0% in the 12-16ms bucket; if it shows a similar or
+// higher rate than the heavy test, that's evidence against script cost
+// being the primary driver.
+
+setCanvasSize(400, 340);
+
+var frame = 0;
+var t = 0;
+var dtMin = 1;
+var dtMax = 0;
+var jitterSpreadMs = 0;
+// dt histogram buckets — identical scheme to pacing_test_split_timing.lox.
+var bucketBelow = 0;    // dt < 5.5ms
+var bucket1x = 0;       // 5.5ms <= dt < 8.5ms
+var bucketMid = 0;      // 8.5ms <= dt < 12ms
+var bucket2x = 0;       // 12ms <= dt < 16ms
+var bucketWorse = 0;    // dt >= 16ms
+var reportBucketBelow = 0;
+var reportBucket1x = 0;
+var reportBucketMid = 0;
+var reportBucket2x = 0;
+var reportBucketWorse = 0;
+// Cumulative (all-time, never reset) counts alongside the per-second
+// ones above — a single one-second window is a small, noisy sample
+// (144 frames); letting this run for 30-60s and reading these instead
+// gives a much larger, more trustworthy N before drawing conclusions
+// from a near-zero-cost script's miss rate.
+var totalFrames = 0;
+var totalBelow = 0;
+var total1x = 0;
+var totalMid = 0;
+var total2x = 0;
+var totalWorse = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+
+  // Frame 1 excluded from stats — see pacing_test.lox for why.
+  if (frame > 1) {
+    t = t + dt;
+    if (dt < dtMin) dtMin = dt;
+    if (dt > dtMax) dtMax = dt;
+    var dtMsNow = dt * 1000;
+    totalFrames = totalFrames + 1;
+    if (dtMsNow < 5.5) {
+      bucketBelow = bucketBelow + 1;
+      totalBelow = totalBelow + 1;
+    } else if (dtMsNow < 8.5) {
+      bucket1x = bucket1x + 1;
+      total1x = total1x + 1;
+    } else if (dtMsNow < 12) {
+      bucketMid = bucketMid + 1;
+      totalMid = totalMid + 1;
+    } else if (dtMsNow < 16) {
+      bucket2x = bucket2x + 1;
+      total2x = total2x + 1;
+    } else {
+      bucketWorse = bucketWorse + 1;
+      totalWorse = totalWorse + 1;
+    }
+    if (t >= 1) {
+      t = t - 1;
+      jitterSpreadMs = (dtMax - dtMin) * 1000;
+      reportBucketBelow = bucketBelow;
+      reportBucket1x = bucket1x;
+      reportBucketMid = bucketMid;
+      reportBucket2x = bucket2x;
+      reportBucketWorse = bucketWorse;
+      dtMin = 1;
+      dtMax = 0;
+      bucketBelow = 0;
+      bucket1x = 0;
+      bucketMid = 0;
+      bucket2x = 0;
+      bucketWorse = 0;
+    }
+  }
+
+  // The ENTIRE frame is just this: clear to a status color, then
+  // present. No shapes, no text, nothing else drawn — except the two
+  // histogram lines added above, which are the only per-frame drawing
+  // cost this script has (negligible next to 14 drawText calls).
+  // NOTE: clearCanvas() with zero args ignores setColor() and always
+  // fills with raw zero bytes (black) — it only honors a color via the
+  // 3-arg clearCanvas(r, g, b) form. setColor()+clearCanvas() silently
+  // discards the color; use the direct form here.
+  if (jitterSpreadMs > 3) {
+    clearCanvas(220, 40, 40);
+  } else {
+    clearCanvas(60, 200, 90);
+  }
+
+  setColor(255, 255, 255);
+  drawText(4, 8, "dt histogram/sec (<5.5/5.5-8.5/8.5-12/12-16/>=16ms):");
+  drawText(4, 20, "  " + str(reportBucketBelow) + " / " + str(reportBucket1x) + " / " + str(reportBucketMid) + " / " + str(reportBucket2x) + " / " + str(reportBucketWorse));
+  drawText(4, 40, "cumulative (" + str(totalFrames) + " frames):");
+  drawText(4, 52, "  " + str(totalBelow) + " / " + str(total1x) + " / " + str(totalMid) + " / " + str(total2x) + " / " + str(totalWorse));
+
+  present();
+});
+
+runGameLoop(0);

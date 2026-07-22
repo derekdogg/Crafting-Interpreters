@@ -731,7 +731,7 @@ onFrame(fun(dt) {
   present();
 });
 
-runGameLoop(60);
+runGameLoop();
 
 stopSequence();
 print "Thanks for playing Crystal Caverns!";

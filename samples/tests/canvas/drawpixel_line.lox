@@ -1,0 +1,26 @@
+// Test: drawPixel writes one pixel; drawLine includes BOTH endpoints
+// (Bresenham), horizontal, vertical and diagonal.
+setCanvasSize(320, 240);
+clearCanvas();
+
+var white = rgb(255, 255, 255);
+setColor(255, 255, 255);
+
+drawPixel(3, 4);
+if (getPixel(3, 4) == white) print "pixel";        // expect: pixel
+if (getPixel(4, 4) == 0) print "just one";         // expect: just one
+
+drawLine(10, 10, 15, 10);
+if (getPixel(10, 10) == white) print "h start";    // expect: h start
+if (getPixel(15, 10) == white) print "h end";      // expect: h end
+if (getPixel(16, 10) == 0) print "h stop";         // expect: h stop
+
+drawLine(20, 20, 20, 25);
+if (getPixel(20, 20) == white) print "v start";    // expect: v start
+if (getPixel(20, 25) == white) print "v end";      // expect: v end
+if (getPixel(20, 26) == 0) print "v stop";         // expect: v stop
+
+drawLine(30, 30, 34, 34);
+if (getPixel(30, 30) == white) print "d start";    // expect: d start
+if (getPixel(32, 32) == white) print "d mid";      // expect: d mid
+if (getPixel(34, 34) == white) print "d end";      // expect: d end

@@ -1,0 +1,143 @@
+// Test: a REAL vsync-paced scroll — unlike sprite_scroll_smoothness.lox
+// (frame-counted, deterministic, completes instantly because it never
+// calls present()), this one calls present() every frame and runs
+// UNCAPPED (runGameLoop(0)), so present()'s DwmFlush genuinely paces the
+// loop to the monitor's real refresh rate for ~20 real seconds. This is
+// a deliberately slow soak test — it exercises the actual dt-accounting
+// pipeline (0.1s clamp, refresh-multiple de-jitter snapping) over a run
+// long enough for small per-frame errors to become visible, which a
+// fast synthetic test can't do.
+//
+// Movement is expressed as pixels/second and derived from the TOTAL
+// elapsed dt each frame (not an accumulating "+=" of a per-frame delta),
+// so per-frame rounding can't drift the position away from the intended
+// constant real-world speed over the full 20 seconds.
+//
+// IMPORTANT: present() swaps front/back buffers and clears the NEW back
+// buffer on every call (LoxCanvas.pas presentNative). With double
+// buffering the back buffer isn't "last frame's picture" — it's the
+// picture from TWO present() calls ago — so the sprite must be redrawn
+// EVERY frame regardless of whether its quantized position changed.
+// An earlier version of this test skipped the redraw on "unchanged"
+// frames as an optimization; since the buffer is cleared unconditionally
+// either way, that left the presented frame blank on every skipped
+// frame — a visible flicker that the per-frame pixel checks couldn't
+// catch because they only ever ran on the frames where a redraw
+// happened. Always redraw; never assume "nothing changed" with a
+// double-buffered swap.
+//
+// Canvas is sized to comfortably fit the ENTIRE scroll distance
+// (START_X + SPEED*DURATION + sprite width, with margin) so the sprite
+// never runs off the right edge mid-test — once a coordinate goes out
+// of bounds, getPixel() returns -1 (neither `orange` nor `BACKGROUND`),
+// which would fail every pixel-based check for the remainder of the run.
+setCanvasSize(900, 240);
+clearCanvas();
+
+var BACKGROUND = 0;
+var Y = 50;
+var W = 5;
+var H = 4;
+var SPEED = 40;     // pixels per second
+var DURATION = 20;  // real seconds to scroll for
+
+// Lopsided staircase — see sprite_scroll_smoothness.lox for why an
+// asymmetric shape catches bugs a solid block would miss.
+//   XXXXX
+//   XXXX.
+//   XXX..
+//   XX...
+setColor(255, 140, 0);
+var spr = createSprite(W, H,
+  "XXXXX" +
+  "XXXX." +
+  "XXX.." +
+  "XX..."
+);
+var orange = rgb(255, 140, 0);
+
+fun isOpaque(dx, dy) {
+  return dx < (W - dy);
+}
+
+fun footprintMatches(x, y) {
+  var ok = true;
+  var dy = 0;
+  while (dy < H) {
+    var dx = 0;
+    while (dx < W) {
+      var expected = BACKGROUND;
+      if (isOpaque(dx, dy)) expected = orange;
+      if (getPixel(x + dx, y + dy) != expected) ok = false;
+      dx = dx + 1;
+    }
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+fun perimeterClear(x, y) {
+  var ok = true;
+  var dx = -1;
+  while (dx <= W) {
+    if (getPixel(x + dx, y - 1) != BACKGROUND) ok = false;
+    if (getPixel(x + dx, y + H) != BACKGROUND) ok = false;
+    dx = dx + 1;
+  }
+  var dy = -1;
+  while (dy <= H) {
+    if (getPixel(x - 1, y + dy) != BACKGROUND) ok = false;
+    if (getPixel(x + W, y + dy) != BACKGROUND) ok = false;
+    dy = dy + 1;
+  }
+  return ok;
+}
+
+var START_X = 20;
+var elapsed = 0;
+var prevDrawX = 0 - 1;   // sentinel: nothing drawn yet
+var footprintOk = true;
+var placementOk = true;
+var startClock = clock();
+
+onFrame(fun(dt) {
+  elapsed = elapsed + dt;
+
+  var worldX = START_X + SPEED * elapsed;
+  var drawX = floor(worldX);
+
+  // Redraw EVERY frame, unconditionally — see the header comment on
+  // why skipping this when the position hasn't changed is unsafe with
+  // a double-buffered present().
+  clearCanvas();
+  drawSprite(spr, drawX, Y);
+
+  if (!footprintMatches(drawX, Y)) footprintOk = false;
+  if (!perimeterClear(drawX, Y)) placementOk = false;
+
+  prevDrawX = drawX;
+
+  present();   // real vsync pacing — this is what makes the loop take ~20s
+
+  if (elapsed >= DURATION) {
+    var wallClockSecs = clock() - startClock;
+
+    if (footprintOk) print "no missing pixels";     // expect: no missing pixels
+    if (placementOk) print "correct placement";     // expect: correct placement
+    // The accumulated dt and an independently-measured wall clock must
+    // agree — if the engine's dt accounting (clamping, refresh-multiple
+    // snapping) ever drifted from real time, a run this long would
+    // surface it even though a single frame's drift is imperceptible.
+    if (abs(wallClockSecs - elapsed) < 1) print "dt matches wall clock"; // expect: dt matches wall clock
+    // Confirms the scroll covered the right TOTAL ground over the full
+    // run, not just that individual steps looked locally consistent.
+    // Tolerance covers one worst-case clamped frame (0.1s * SPEED = 4px).
+    var expectedX = START_X + SPEED * DURATION;
+    if (abs(prevDrawX - expectedX) <= 5) print "reached expected distance"; // expect: reached expected distance
+
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                        // expect: done

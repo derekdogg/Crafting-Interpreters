@@ -1,0 +1,33 @@
+// Test: simulated keys drive the POLL natives (not just callbacks).
+// keyPressed is true for exactly one frame (no repeat), keyHeld stays
+// true until the up. Simulated input becomes visible the frame AFTER
+// the simulate call — same latency as real pumped input.
+var frame = 0;
+
+onFrame(fun(dt) {
+  frame = frame + 1;
+
+  if (frame == 1) {
+    if (!keyHeld("a")) print "idle";                 // expect: idle
+    simulateKeyDown("a");
+    // Not visible until next frame's edge reset.
+    if (!keyPressed("a")) print "not yet";           // expect: not yet
+  }
+  if (frame == 2) {
+    if (keyPressed("a")) print "pressed";            // expect: pressed
+    if (keyHeld("a")) print "held";                  // expect: held
+  }
+  if (frame == 3) {
+    if (!keyPressed("a")) print "edge once";         // expect: edge once
+    if (keyHeld("a")) print "still held";            // expect: still held
+    simulateKeyUp("a");
+  }
+  if (frame == 4) {
+    if (!keyHeld("a")) print "released";             // expect: released
+    if (!keyPressed("a")) print "no ghost";          // expect: no ghost
+    stopGameLoop();
+  }
+});
+
+runGameLoop(0);
+print "done";                                        // expect: done

@@ -1,0 +1,365 @@
+// Diagnostic: splits the frame into three timed pieces —
+//   1. loop overhead — FlushOutput+ClearFrameEdges+ProcessMessages+
+//      DispatchPendingEvents, at the top of every runGameLoopNative
+//      iteration, BEFORE dt is even computed or onFrame runs.
+//   2. gdi — InvalidateRect+UpdateWindow (synchronous WM_PAINT delivery).
+//   3. flush — GdiFlush+DwmFlush (the vsync wait).
+// documented in docs/pacing-test-144hz-judder-finding.md §4c/§4d. Uses
+// TEMPORARY diagnostic natives (presentGdiMs()/presentFlushMs() in
+// LoxCanvas.pas, loopOverheadMs() in EventNatives.pas) that can be
+// removed once the investigation concludes.
+//
+// Text is fine to use here (unlike pacing_test_no_text.lox /
+// pacing_test_blank.lox) — those tests existed specifically to rule
+// render cost in/out, and that question is already settled (a blank
+// frame still judders, see the finding doc §4a/5). This test asks a
+// different question: which piece of the frame's own bookkeeping the
+// time actually goes to.
+//
+// Read each second:
+//   dt jitter      — same measurement as pacing_test.lox, for reference.
+//   gdi (WM_PAINT) — min/max time spent in InvalidateRect+UpdateWindow.
+//   flush (Dwm)    — min/max time spent in GdiFlush+DwmFlush.
+//   callback       — min/max TOTAL time inside InvokeCallback for onFrame
+//                    (the whole script callback: setColor/clearCanvas/
+//                    drawText/string concatenation/VM dispatch, PLUS
+//                    present()). Added after a script-feedback review
+//                    identified this as the one piece of the frame never
+//                    measured at all — loopOverheadMs and gdi/flush left
+//                    an unaccounted gap between them where the script's
+//                    own per-frame drawing cost was invisible.
+//   script-only    — derived: callback - gdi - flush, i.e. the script's
+//                    own drawing/dispatch cost with present()'s two
+//                    phases subtracted out. Read at the SAME point as
+//                    gdi/flush (top of the NEXT onFrame), so all three
+//                    (callback, gdi, flush) refer to the SAME prior
+//                    frame — closing the frame-boundary correlation gap
+//                    the reviewer flagged (previously gdi/flush lagged
+//                    dt/loop by one frame with nothing tying them
+//                    together explicitly).
+//   loop overhead  — min/max time spent in the loop's own per-iteration
+//                    housekeeping, never measured before this (§4d) —
+//                    it's a genuine blind spot distinct from present().
+//   DwmFlush fails — count of present() calls per second where DwmFlush
+//                    returned a non-S_OK result (its return value was
+//                    previously discarded entirely — see finding doc
+//                    §4f). A failure means that frame's "vsync wait"
+//                    may not have actually waited at all, which would
+//                    directly explain an anomalously short dt on the
+//                    NEXT frame (the sub-refresh-period dtMin found in
+//                    §4e). "dt on fail" shows the dt (ms) observed on
+//                    the last frame a failure was seen, for exactly
+//                    that correlation check.
+//   dt histogram   — per-second bucket counts instead of just min/max
+//                    (also per script-feedback review): min/max alone
+//                    can't distinguish "99% clean, 1% double-refresh"
+//                    (classic periodic frame miss) from "20/60/20% split
+//                    across three bands" (loop not phase-locked to the
+//                    compositor at all) — these look identical in a
+//                    min/max readout but mean very different things.
+//                    Buckets are centered on 1x/2x the 143.99Hz refresh
+//                    period this was investigated on (6.94ms/13.89ms):
+//                    <5.5 (below 1x — the "drops to ~4.6ms" anomaly),
+//                    5.5-8.5 (~1x refresh), 8.5-12 (between — would be
+//                    unusual), 12-16 (~2x refresh), >=16 (worse stall).
+//   script breakdown — attribution WITHIN script-only, requested by a
+//                    follow-up script-feedback review: bookkeeping (the
+//                    min/max/histogram tracking above), drawing (the
+//                    setColor/clearCanvas/drawText calls below, incl.
+//                    their inline string concatenation/str()/round1()
+//                    formatting), and present (the present() call
+//                    itself, timed from the SCRIPT side as a
+//                    cross-check against the engine-measured gdi+flush
+//                    sum). Uses clock() (QueryPerformanceCounter-backed,
+//                    see SystemNatives.pas) at each phase boundary —
+//                    no new engine natives needed. Like
+//                    callback/gdi/flush, these are read one frame
+//                    lagged (captured at the end of frame N, reported
+//                    at the top of frame N+1) so they stay correlated
+//                    to the SAME frame as each other. Note this
+//                    instrumentation is itself not free — the extra
+//                    clock() calls and the 3 extra drawText lines to
+//                    report them add a small amount of overhead to
+//                    "bookkeeping"/"drawing" that wouldn't exist
+//                    without this diagnostic screen; treat it as a
+//                    coarse attribution, not a zero-overhead one.
+//
+// IMPORTANT: none of this instrumentation can say WHY any of these are
+// slow on a given frame (CPU cache effects, GDI/driver internals,
+// GPU/display driver behavior, OS thread scheduling, and message-pump
+// content are all still unruled-out — see finding doc §4c). This test
+// only narrows down WHICH piece of the frame's OWN accounting the time
+// is going into, and whether the dt/callback+loop equation balances at
+// all — it's a prerequisite for choosing what to profile next, not a
+// substitute for real OS-level profiling.
+//
+// Also reports displayRefreshHz() — the refresh rate the engine's own
+// dt-snapping logic believes it's running at, for whichever monitor
+// this window is currently on. If testing on a multi-monitor setup,
+// drag this window between monitors and confirm the reported Hz
+// tracks each one correctly (compare against Windows Display
+// Settings) — see docs/pacing-test-144hz-judder-finding.md §5a for the
+// bug this used to have (hwnd=NULL ignored which monitor the window
+// was actually on) and its current, incomplete fallback fix.
+
+setCanvasSize(480, 340);
+
+var frame = 0;
+var t = 0;
+var dtMin = 1;
+var dtMax = 0;
+var gdiMin = 1000;
+var gdiMax = 0;
+var flushMin = 1000;
+var flushMax = 0;
+var loopMin = 1000;
+var loopMax = 0;
+var flushFailCount = 0;
+var flushFailDtMs = -1;   // dt (ms) observed on the frame a flush failure lined up with, -1 = none seen
+var gdiFlushFailCount = 0;
+var callbackMin = 1000;
+var callbackMax = 0;
+var scriptOnlyMin = 1000;
+var scriptOnlyMax = 0;
+// dt histogram buckets, centered on 1x/2x the 143.99Hz refresh period
+// this was investigated on (6.94ms / 13.89ms) — see header comment.
+var bucketBelow = 0;    // dt < 5.5ms
+var bucket1x = 0;       // 5.5ms <= dt < 8.5ms
+var bucketMid = 0;      // 8.5ms <= dt < 12ms
+var bucket2x = 0;       // 12ms <= dt < 16ms
+var bucketWorse = 0;    // dt >= 16ms
+
+// Script-side stage breakdown (see header comment). last*Ms holds the
+// PREVIOUS frame's measured stage time, carried over via these module
+// vars since clock() deltas can only be computed after the fact.
+var lastStatsMs = 0;
+var lastDrawMs = 0;
+var lastPresentMs = 0;
+var statsMin = 1000;
+var statsMax = 0;
+var drawMin = 1000;
+var drawMax = 0;
+var presentMin = 1000;
+var presentMax = 0;
+
+var reportDtMin = 0;
+var reportDtMax = 0;
+var reportGdiMin = 0;
+var reportGdiMax = 0;
+var reportFlushMin = 0;
+var reportFlushMax = 0;
+var reportLoopMin = 0;
+var reportLoopMax = 0;
+var reportFlushFailCount = 0;
+var reportFlushFailDtMs = -1;
+var reportGdiFlushFailCount = 0;
+var reportCallbackMin = 0;
+var reportCallbackMax = 0;
+var reportScriptOnlyMin = 0;
+var reportScriptOnlyMax = 0;
+var reportBucketBelow = 0;
+var reportBucket1x = 0;
+var reportBucketMid = 0;
+var reportBucket2x = 0;
+var reportBucketWorse = 0;
+var reportStatsMin = 0;
+var reportStatsMax = 0;
+var reportDrawMin = 0;
+var reportDrawMax = 0;
+var reportPresentMin = 0;
+var reportPresentMax = 0;
+// Cumulative (all-time, never reset) dt histogram — see the matching
+// counters in pacing_test_blank.lox. Lets the two scripts be compared
+// at a much larger N than a single one-second (~137-144 frame) window.
+var totalFrames = 0;
+var totalBelow = 0;
+var total1x = 0;
+var totalMid = 0;
+var total2x = 0;
+var totalWorse = 0;
+
+fun round1(x) {
+  return floor(x * 10 + 0.5) / 10;
+}
+
+onFrame(fun(dt) {
+  var tFrameStart = clock();
+  frame = frame + 1;
+
+  // presentGdiMs()/presentFlushMs()/lastCallbackMs() all report the
+  // PREVIOUS onFrame invocation's timings — i.e. the one that produced
+  // the dt we just received — so read them before this frame's own
+  // present()/callback timing below overwrites them. Because all three
+  // are read at the SAME point, they now all refer to the SAME prior
+  // frame, closing the frame-boundary correlation gap a script-feedback
+  // review flagged (see header comment). loopOverheadMs() reports THIS
+  // iteration's own pre-callback cost (FlushOutput/ClearFrameEdges/
+  // ProcessMessages/DispatchPendingEvents) — it lines up with the SAME
+  // dt we just received, unlike gdi/flush/callback which lag by one
+  // frame. See docs/pacing-test-144hz-judder-finding.md §4d.
+  // presentFlushFailed() ALSO reports the previous present() call, so
+  // it lines up with gdiMs/flushMs above, not with this frame's dt —
+  // a failure here means the PREVIOUS frame's DwmFlush didn't report a
+  // clean wait, which is what produced the dt we just received.
+  // presentGdiFlushFailed() likewise reports the previous present()
+  // call's GdiFlush — see docs/pacing-test-144hz-judder-finding.md §4g:
+  // if GdiFlush didn't fully flush the GDI batch, DwmFlush right after
+  // it could have sampled a stale/partial frame instead of this one.
+  var gdiMs = presentGdiMs();
+  var flushMs = presentFlushMs();
+  var loopMs = loopOverheadMs();
+  var callbackMs = lastCallbackMs();
+  var scriptOnlyMs = callbackMs - gdiMs - flushMs;
+  var flushFailed = presentFlushFailed();
+  var gdiFlushFailed = presentGdiFlushFailed();
+  // Script-side stage breakdown for the frame these gdi/flush/callback
+  // values also belong to — see header comment.
+  var statsMs = lastStatsMs;
+  var drawMs = lastDrawMs;
+  var presentMs = lastPresentMs;
+
+  if (frame > 1) {
+    t = t + dt;
+    if (dt < dtMin) dtMin = dt;
+    if (dt > dtMax) dtMax = dt;
+    if (gdiMs < gdiMin) gdiMin = gdiMs;
+    if (gdiMs > gdiMax) gdiMax = gdiMs;
+    if (flushMs < flushMin) flushMin = flushMs;
+    if (flushMs > flushMax) flushMax = flushMs;
+    if (loopMs < loopMin) loopMin = loopMs;
+    if (loopMs > loopMax) loopMax = loopMs;
+    if (callbackMs < callbackMin) callbackMin = callbackMs;
+    if (callbackMs > callbackMax) callbackMax = callbackMs;
+    if (scriptOnlyMs < scriptOnlyMin) scriptOnlyMin = scriptOnlyMs;
+    if (scriptOnlyMs > scriptOnlyMax) scriptOnlyMax = scriptOnlyMs;
+    if (statsMs < statsMin) statsMin = statsMs;
+    if (statsMs > statsMax) statsMax = statsMs;
+    if (drawMs < drawMin) drawMin = drawMs;
+    if (drawMs > drawMax) drawMax = drawMs;
+    if (presentMs < presentMin) presentMin = presentMs;
+    if (presentMs > presentMax) presentMax = presentMs;
+    // dt histogram — see header comment. Bucketed on dt in ms, not
+    // seconds, to match the on-screen ranges.
+    var dtMsNow = dt * 1000;
+    totalFrames = totalFrames + 1;
+    if (dtMsNow < 5.5) {
+      bucketBelow = bucketBelow + 1;
+      totalBelow = totalBelow + 1;
+    } else if (dtMsNow < 8.5) {
+      bucket1x = bucket1x + 1;
+      total1x = total1x + 1;
+    } else if (dtMsNow < 12) {
+      bucketMid = bucketMid + 1;
+      totalMid = totalMid + 1;
+    } else if (dtMsNow < 16) {
+      bucket2x = bucket2x + 1;
+      total2x = total2x + 1;
+    } else {
+      bucketWorse = bucketWorse + 1;
+      totalWorse = totalWorse + 1;
+    }
+    if (flushFailed) {
+      flushFailCount = flushFailCount + 1;
+      flushFailDtMs = round1(dt * 1000);
+    }
+    if (gdiFlushFailed) gdiFlushFailCount = gdiFlushFailCount + 1;
+    if (t >= 1) {
+      t = t - 1;
+      reportDtMin = round1(dtMin * 1000);
+      reportDtMax = round1(dtMax * 1000);
+      reportGdiMin = round1(gdiMin);
+      reportGdiMax = round1(gdiMax);
+      reportFlushMin = round1(flushMin);
+      reportFlushMax = round1(flushMax);
+      reportLoopMin = round1(loopMin);
+      reportLoopMax = round1(loopMax);
+      reportFlushFailCount = flushFailCount;
+      reportFlushFailDtMs = flushFailDtMs;
+      reportGdiFlushFailCount = gdiFlushFailCount;
+      reportCallbackMin = round1(callbackMin);
+      reportCallbackMax = round1(callbackMax);
+      reportScriptOnlyMin = round1(scriptOnlyMin);
+      reportScriptOnlyMax = round1(scriptOnlyMax);
+      reportBucketBelow = bucketBelow;
+      reportBucket1x = bucket1x;
+      reportBucketMid = bucketMid;
+      reportBucket2x = bucket2x;
+      reportBucketWorse = bucketWorse;
+      reportStatsMin = round1(statsMin);
+      reportStatsMax = round1(statsMax);
+      reportDrawMin = round1(drawMin);
+      reportDrawMax = round1(drawMax);
+      reportPresentMin = round1(presentMin);
+      reportPresentMax = round1(presentMax);
+      dtMin = 1;
+      dtMax = 0;
+      gdiMin = 1000;
+      gdiMax = 0;
+      flushMin = 1000;
+      flushMax = 0;
+      loopMin = 1000;
+      loopMax = 0;
+      callbackMin = 1000;
+      callbackMax = 0;
+      scriptOnlyMin = 1000;
+      scriptOnlyMax = 0;
+      bucketBelow = 0;
+      bucket1x = 0;
+      bucketMid = 0;
+      bucket2x = 0;
+      bucketWorse = 0;
+      statsMin = 1000;
+      statsMax = 0;
+      drawMin = 1000;
+      drawMax = 0;
+      presentMin = 1000;
+      presentMax = 0;
+      flushFailCount = 0;
+      gdiFlushFailCount = 0;
+    }
+  }
+
+  var tAfterStats = clock();
+
+  setColor(15, 15, 20);
+  clearCanvas();
+
+  setColor(255, 255, 255);
+  drawText(4, 8, "PRESENT PHASE SPLIT (temporary diagnostic)");
+  drawText(4, 24, "dt jitter:      " + str(reportDtMin) + "-" + str(reportDtMax) + "ms");
+  drawText(4, 40, "gdi (WM_PAINT): " + str(reportGdiMin) + "-" + str(reportGdiMax) + "ms");
+  drawText(4, 56, "flush (Dwm):    " + str(reportFlushMin) + "-" + str(reportFlushMax) + "ms");
+  drawText(4, 72, "callback (all): " + str(reportCallbackMin) + "-" + str(reportCallbackMax) + "ms");
+  drawText(4, 88, "  script-only:  " + str(reportScriptOnlyMin) + "-" + str(reportScriptOnlyMax) + "ms (callback - gdi - flush)");
+  drawText(4, 104, "loop overhead:  " + str(reportLoopMin) + "-" + str(reportLoopMax) + "ms");
+  drawText(4, 120, "DwmFlush fails/sec: " + str(reportFlushFailCount) + "  dt on fail: " + str(reportFlushFailDtMs) + "ms");
+  drawText(4, 136, "GdiFlush not-flushed/sec: " + str(reportGdiFlushFailCount));
+  drawText(4, 152, "dt histogram/sec (<5.5/5.5-8.5/8.5-12/12-16/>=16ms):");
+  drawText(4, 164, "  " + str(reportBucketBelow) + " / " + str(reportBucket1x) + " / " + str(reportBucketMid) + " / " + str(reportBucket2x) + " / " + str(reportBucketWorse));
+  drawText(4, 180, "script-only breakdown (bookkeeping/drawing/present, clock()):");
+  drawText(4, 192, "  " + str(reportStatsMin) + "-" + str(reportStatsMax) + "ms / " + str(reportDrawMin) + "-" + str(reportDrawMax) + "ms / " + str(reportPresentMin) + "-" + str(reportPresentMax) + "ms");
+  drawText(4, 208, "cumulative (" + str(totalFrames) + " frames):");
+  drawText(4, 220, "  " + str(totalBelow) + " / " + str(total1x) + " / " + str(totalMid) + " / " + str(total2x) + " / " + str(totalWorse));
+  drawText(4, 232, "DWM self-reported (dropped/missed/late): " + str(dwmFramesDropped()) + " / " + str(dwmFramesMissed()) + " / " + str(dwmFramesLate()));
+  var dtCallCount = drawTextCallCount();
+  var avgConvUs = 0;
+  var avgRenderUs = 0;
+  if (dtCallCount > 0) {
+    avgConvUs = round1(drawTextConvMs() / dtCallCount * 1000);
+    avgRenderUs = round1(drawTextRenderMs() / dtCallCount * 1000);
+  }
+  drawText(4, 248, "drawText avg/call us (conv/render): " + str(avgConvUs) + " / " + str(avgRenderUs) + "  (" + str(dtCallCount) + " calls)");
+  drawText(4, 264, "loop = FlushOutput+ClearFrameEdges+ProcessMessages+Dispatch");
+  drawText(4, 276, "callback = full onFrame incl. present(); dt(N+1)~=callback(N)+loop(N+1)");
+  drawText(4, 292, "engine thinks refresh = " + str(round1(displayRefreshHz())) + "Hz");
+  drawText(4, 304, "(compare to the ACTUAL monitor this window is on)");
+
+  var tAfterDraw = clock();
+  present();
+  var tAfterPresent = clock();
+  lastStatsMs = (tAfterStats - tFrameStart) * 1000;
+  lastDrawMs = (tAfterDraw - tAfterStats) * 1000;
+  lastPresentMs = (tAfterPresent - tAfterDraw) * 1000;
+});
+
+runGameLoop(0);
