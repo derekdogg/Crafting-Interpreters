@@ -911,6 +911,93 @@ begin
   PCardinal(FRenderTarget.ScanLine[y])[x] := pixel;
 end;
 
+const
+  CS_INSIDE = 0;
+  CS_LEFT   = 1;
+  CS_RIGHT  = 2;
+  CS_BOTTOM = 4;
+  CS_TOP    = 8;
+
+// 4-bit Cohen-Sutherland region code for (x,y) against an inclusive
+// [xmin..xmax] x [ymin..ymax] rectangle.
+function CSOutCode(x, y, xmin, ymin, xmax, ymax: Integer): Integer; inline;
+begin
+  Result := CS_INSIDE;
+  if x < xmin then Result := Result or CS_LEFT
+  else if x > xmax then Result := Result or CS_RIGHT;
+  if y < ymin then Result := Result or CS_TOP
+  else if y > ymax then Result := Result or CS_BOTTOM;
+end;
+
+// Cohen-Sutherland line clipping. Trims (x1,y1)-(x2,y2) down to the
+// segment inside the inclusive rectangle [xmin..xmax] x [ymin..ymax],
+// mutating the endpoints in place. Returns False when the line lies
+// entirely in one outside region (nothing to draw).
+//
+// This runs once before Bresenham instead of the rasterizer checking
+// bounds on every stepped pixel — a line that's mostly off-screen no
+// longer has to walk every pixel just to discard almost all of them,
+// and once clipped, every pixel Bresenham produces is guaranteed to
+// already be inside the rectangle.
+function ClipLineCohenSutherland(var x1, y1, x2, y2: Integer;
+  xmin, ymin, xmax, ymax: Integer): Boolean;
+var
+  outcode0, outcode1, outcodeOut: Integer;
+  x, y: Double;
+begin
+  outcode0 := CSOutCode(x1, y1, xmin, ymin, xmax, ymax);
+  outcode1 := CSOutCode(x2, y2, xmin, ymin, xmax, ymax);
+  Result := False;
+  while True do
+  begin
+    if (outcode0 or outcode1) = 0 then
+    begin
+      // Both endpoints inside: trivial accept.
+      Result := True;
+      Exit;
+    end;
+    if (outcode0 and outcode1) <> 0 then
+      Exit; // both endpoints share an outside region: trivial reject
+    // Pick whichever endpoint is outside and push it to the boundary
+    // it crosses first.
+    if outcode0 <> 0 then outcodeOut := outcode0 else outcodeOut := outcode1;
+    x := 0;
+    y := 0;
+    if (outcodeOut and CS_TOP) <> 0 then
+    begin
+      x := x1 + (x2 - x1) * (ymin - y1) / (y2 - y1);
+      y := ymin;
+    end
+    else if (outcodeOut and CS_BOTTOM) <> 0 then
+    begin
+      x := x1 + (x2 - x1) * (ymax - y1) / (y2 - y1);
+      y := ymax;
+    end
+    else if (outcodeOut and CS_RIGHT) <> 0 then
+    begin
+      y := y1 + (y2 - y1) * (xmax - x1) / (x2 - x1);
+      x := xmax;
+    end
+    else // CS_LEFT
+    begin
+      y := y1 + (y2 - y1) * (xmin - x1) / (x2 - x1);
+      x := xmin;
+    end;
+    if outcodeOut = outcode0 then
+    begin
+      x1 := Round(x);
+      y1 := Round(y);
+      outcode0 := CSOutCode(x1, y1, xmin, ymin, xmax, ymax);
+    end
+    else
+    begin
+      x2 := Round(x);
+      y2 := Round(y);
+      outcode1 := CSOutCode(x2, y2, xmin, ymin, xmax, ymax);
+    end;
+  end;
+end;
+
 function clearCanvasNative(argCount: integer; args: pValue): TValue;
 var
   r, g, b: Integer;
@@ -2080,16 +2167,18 @@ begin
   y2 := Trunc(GetNumber(args[3])) - FCameraY;
   bw := FClipX2;
   bh := FClipY2;
-  // Trivial reject: every plotted pixel lies inside the line's bounding
-  // box, so if that box misses the clip rect the whole walk is a no-op.
-  // Without this a long off-screen line still stepped every pixel.
-  if (Max(x1, x2) < FClipX1) or (Min(x1, x2) >= bw) or
-     (Max(y1, y2) < FClipY1) or (Min(y1, y2) >= bh) then
+  // Cohen-Sutherland: reject lines entirely outside the clip rect and
+  // trim partially visible ones down to the visible segment before
+  // Bresenham starts. A line that's mostly off-screen no longer has
+  // to walk every pixel just to discard almost all of them.
+  if not ClipLineCohenSutherland(x1, y1, x2, y2, FClipX1, FClipY1, bw - 1, bh - 1) then
   begin
     Result := CreateNilValue;
     Exit;
   end;
-  // Bresenham's line algorithm — crisp single-pixel line
+  // Bresenham's line algorithm — crisp single-pixel line. Clipping above
+  // guarantees every pixel stepped here is already inside the clip rect,
+  // so the inner loop needs no per-pixel bounds check.
   dx := Abs(x2 - x1);
   dy := -Abs(y2 - y1);
   if x1 < x2 then sx := 1 else sx := -1;
@@ -2097,8 +2186,7 @@ begin
   err := dx + dy;
   while True do
   begin
-    if (x1 >= FClipX1) and (x1 < bw) and (y1 >= FClipY1) and (y1 < bh) then
-      PutPixelUnchecked(x1, y1, FCurrentPixel);
+    PutPixelUnchecked(x1, y1, FCurrentPixel);
     if (x1 = x2) and (y1 = y2) then Break;
     e2 := 2 * err;
     if e2 >= dy then begin err := err + dy; x1 := x1 + sx; end;
