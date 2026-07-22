@@ -1,4 +1,4 @@
-unit LoxCanvas;
+﻿unit LoxCanvas;
 
 interface
 
@@ -477,7 +477,22 @@ begin
   // overwritten by the StretchBlt below, inside the same synchronous
   // WM_PAINT handler presentGdiMs() times (see
   // docs/pacing-test-144hz-judder-finding.md §4d).
-  if (dx > 0) or (dy > 0) then
+  //
+  // NOTE: compare against the actual covered dimensions (cw<>dw or
+  // ch<>dh), not just the dx/dy offsets. dx/dy alone miss the case
+  // where the leftover (cw-dw or ch-dh) is exactly 1: integer division
+  // truncates dx (or dy) to 0, so the old "(dx > 0) or (dy > 0)" guard
+  // skipped the clear even though the StretchBlt below still leaves a
+  // genuine 1px uncovered strip (at x=cw-1 or y=ch-1) showing whatever
+  // was in the staging buffer from a previous frame.
+  // dx := (cw - dw) div 2 truncates, so when the leftover is a single pixel
+  //(cw - dw = 1, e.g. logical 320 at scale 1 in a 321px-wide client),
+  //dx = 0 and the guard (dx > 0) or (dy > 0) skips the PatBlt.
+  //The StretchBlt then covers only dw x dh, leaving a 1px column/row of the
+  //persistent staging buffer showing stale/garbage pixels.
+  //The previous unconditional clear masked this.
+  //Gate on the actual uncovered area instead.
+  if (dw < cw) or (dh < ch) then
     PatBlt(stageDC, 0, 0, cw, ch, BLACKNESS);
   // COLORONCOLOR == nearest-neighbor for 32-bit blits. Required for
   // pixel-art crispness; HALFTONE would smooth and ruin the look.
