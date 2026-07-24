@@ -1,0 +1,127 @@
+// circle_test.lox — drawCircle/fillCircle coverage test
+// Row 1: outlined circles, various radii
+// Row 2: filled circles, same shapes
+// Row 3: fill+outline overlay (edges should hug the fill), degenerate
+//        radius cases (0 / 1 / negative), setClipRect() interaction
+// Bottom: off-screen circles — one fully outside the canvas (bounding-
+//         box trivial reject; must render nothing and not crash) and
+//         one straddling the bottom edge (exercises the partially-
+//         clipped, non-"fullyInside" rasterizer path)
+// ESC to quit.
+var w = canvasWidth();
+var h = canvasHeight();
+
+clearCanvas();
+
+// --- Row 1: outlined circles, various radii ---
+setColor(255, 255, 0);
+drawCircle(30, 37, 20);     // medium
+
+setColor(0, 255, 255);
+drawCircle(90, 37, 10);     // small
+
+setColor(255, 100, 50);
+drawCircle(150, 37, 22);    // large
+
+setColor(150, 255, 150);
+drawCircle(210, 37, 3);     // tiny
+
+setColor(255, 150, 255);
+drawCircle(270, 37, 1);     // radius 1
+
+setColor(255, 255, 255);
+drawText(10, 3, "drawCircle (outline)");
+
+// --- Row 2: filled circles, same shapes ---
+setColor(255, 0, 0);
+fillCircle(30, 112, 20);
+setColor(0, 200, 0);
+fillCircle(90, 112, 10);
+setColor(50, 100, 255);
+fillCircle(150, 112, 22);
+setColor(255, 200, 0);
+fillCircle(210, 112, 3);
+setColor(0, 255, 255);
+fillCircle(270, 112, 1);
+
+setColor(255, 255, 255);
+drawText(10, 77, "fillCircle (flat color)");
+
+// --- Row 3, panel A: fill + outline overlay (edges should hug the fill) ---
+setColor(0, 128, 255);
+fillCircle(35, 172, 22);
+setColor(255, 255, 0);
+drawCircle(35, 172, 22);
+
+setColor(255, 255, 255);
+drawText(4, 142, "fill+outline");
+
+// --- Row 3, panel B: degenerate radius cases ---
+// r = 0: a single-pixel "point" circle — must draw exactly one pixel
+// and never crash.
+setColor(255, 0, 255);
+fillCircle(95, 172, 0);
+drawCircle(95, 172, 0);
+
+// r = 1: smallest non-degenerate circle.
+setColor(0, 255, 128);
+fillCircle(120, 172, 1);
+drawCircle(120, 172, 1);
+
+// Negative radius: both natives must silently draw nothing rather
+// than crashing or treating it as abs(r).
+setColor(255, 255, 0);
+fillCircle(150, 172, -8);
+drawCircle(150, 172, -8);
+
+setColor(255, 255, 255);
+drawText(85, 142, "degenerate cases");
+
+// --- Row 3, panel C: setClipRect() interaction ---
+// Circle deliberately overflows the panel on every side; only the
+// portion inside the clip rect should ever get painted.
+var px = 220;
+var py = 145;
+var pw = 90;
+var ph = 55;
+setColor(255, 255, 0);
+drawRect(px - 1, py - 1, pw + 2, ph + 2);
+setClipRect(px, py, pw, ph);
+setColor(255, 0, 128);
+fillCircle(px + pw / 2, py + ph / 2, 50);
+setColor(255, 255, 255);
+drawCircle(px + pw / 2, py + ph / 2, 50);
+clearClipRect();
+
+setColor(255, 255, 255);
+drawText(220, 142, "setClipRect()");
+
+// --- Bottom: off-screen circles ---
+// Fully outside the canvas on every axis: the bounding-box trivial
+// reject must fire and nothing should be painted (and it must not
+// crash).
+setColor(120, 120, 120);
+fillCircle(-100, -100, 20);
+drawCircle(-100, -100, 20);
+
+// Straddling the bottom edge: only the top sliver is visible,
+// exercising the partially-clipped (non-"fullyInside") octant-by-octant
+// path in drawCircle and the per-scanline clipping in fillCircle.
+setColor(0, 150, 255);
+fillCircle(w / 2, h + 30, 60);
+setColor(255, 255, 255);
+drawCircle(w / 2, h + 30, 60);
+
+setColor(255, 255, 0);
+drawText(4, h - 12, "off-screen clip test - ESC to quit");
+
+present();
+
+var running = true;
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+}

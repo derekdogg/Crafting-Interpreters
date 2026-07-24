@@ -17,10 +17,22 @@ uses
 const
   NUM_CHANNELS = 4;
   SAMPLE_RATE  = 44100;
-  SEQ_LOOP_REPEATS = 30;  // repeat melody this many times for "looping"
+  // Ceiling on repeats when looping (see playSequenceNative) — the actual
+  // repeat count is chosen dynamically to fill as much of MAX_SEQ_BYTES as
+  // the phrase allows (a short phrase gets many repeats, a long one gets
+  // fewer), so short loops don't silently go quiet after a couple of
+  // minutes of continuous play. This constant just stops a pathologically
+  // short/degenerate phrase from producing a pathologically large repeat
+  // count (and matching tile-Move count).
+  SEQ_LOOP_REPEATS = 2000;
   MAX_SEQ_BYTES = 30 * 1024 * 1024;  // 30 MB max sequence buffer (~5 min mono 16-bit)
   MAX_NOTE_DURATION_MS = 30000;  // 30 seconds per note max
   MAX_NOTE_FREQ = 20000;  // 20 kHz max frequency
+  // Waveform peak amplitudes (16-bit PCM headroom, tuned by ear per timbre)
+  AMPLITUDE_TRIANGLE = 2000;
+  AMPLITUDE_SAWTOOTH = 1500;
+  AMPLITUDE_PULSE    = 1600;
+  AMPLITUDE_NOISE    = 3000;
 
 var
   FWaveOut: array[0..NUM_CHANNELS-1] of HWAVEOUT;
@@ -160,6 +172,30 @@ begin
   buf[index * 2 + 1] := Byte(Word(value) shr 8);
 end;
 
+// Shared optional-volume-argument parsing for playTone/playSweep/playNoise/
+// playSequence (each has a different arg count, so the volume's index
+// differs, but the validation/clamping was identical in all four).
+// Returns False (and has already called RuntimeError) on a bad volume arg;
+// callers must Exit(CreateNilValue) in that case.
+function TryReadVolume(argCount, volArgIndex: Integer; args: pValue;
+  const FnName: string; out vol: Double): Boolean;
+begin
+  vol := 1.0;
+  Result := True;
+  if argCount > volArgIndex then
+  begin
+    if not isNumber(args[volArgIndex]) then
+    begin
+      RuntimeError(FnName + '() volume must be a number (0.0 to 1.0).');
+      Result := False;
+      Exit;
+    end;
+    vol := GetNumber(args[volArgIndex]);
+    if vol < 0 then vol := 0;
+    if vol > 1 then vol := 1;
+  end;
+end;
+
 function playToneNative(argCount: integer; args: pValue): TValue;
 var
   freq, durMs, n, i: Integer;
@@ -177,18 +213,8 @@ begin
     RuntimeError('playTone() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  vol := 1.0;
-  if (argCount = 3) then
-  begin
-    if not isNumber(args[2]) then
-    begin
-      RuntimeError('playTone() volume must be a number (0.0 to 1.0).');
-      Exit(CreateNilValue);
-    end;
-    vol := GetNumber(args[2]);
-    if vol < 0 then vol := 0;
-    if vol > 1 then vol := 1;
-  end;
+  if not TryReadVolume(argCount, 2, args, 'playTone', vol) then
+    Exit(CreateNilValue);
   freq := Trunc(GetNumber(args[0]));
   durMs := Trunc(GetNumber(args[1]));
   if (freq < 20) or (freq > 20000) then
@@ -238,18 +264,8 @@ begin
     RuntimeError('playSweep() arguments must be numbers.');
     Exit(CreateNilValue);
   end;
-  vol := 1.0;
-  if (argCount = 4) then
-  begin
-    if not isNumber(args[3]) then
-    begin
-      RuntimeError('playSweep() volume must be a number (0.0 to 1.0).');
-      Exit(CreateNilValue);
-    end;
-    vol := GetNumber(args[3]);
-    if vol < 0 then vol := 0;
-    if vol > 1 then vol := 1;
-  end;
+  if not TryReadVolume(argCount, 3, args, 'playSweep', vol) then
+    Exit(CreateNilValue);
   startFreq := Trunc(GetNumber(args[0]));
   endFreq := Trunc(GetNumber(args[1]));
   durMs := Trunc(GetNumber(args[2]));
@@ -299,18 +315,8 @@ begin
     RuntimeError('playNoise() argument must be a number.');
     Exit(CreateNilValue);
   end;
-  vol := 1.0;
-  if (argCount = 2) then
-  begin
-    if not isNumber(args[1]) then
-    begin
-      RuntimeError('playNoise() volume must be a number (0.0 to 1.0).');
-      Exit(CreateNilValue);
-    end;
-    vol := GetNumber(args[1]);
-    if vol < 0 then vol := 0;
-    if vol > 1 then vol := 1;
-  end;
+  if not TryReadVolume(argCount, 1, args, 'playNoise', vol) then
+    Exit(CreateNilValue);
   durMs := Trunc(GetNumber(args[0]));
   if (durMs < 1) or (durMs > 5000) then
   begin
@@ -337,6 +343,7 @@ var
   noteCount, i, j, freq, durMs, n, sampleIdx, repeats: Integer;
   totalSamples: Int64;
   bufferBytes: Int64;
+  maxRepeatsForBudget: Int64;
   notePos, waveType: Integer;
   doLoop: Boolean;
   phase, phaseInc, env, vibrato, vibratoPhase: Double;
@@ -363,18 +370,8 @@ begin
   doLoop := GetBoolean(args[1]);
   // Optional volume (0.0..1.0) so music can sit under SFX in the mix,
   // matching playTone/playSweep/playNoise.
-  vol := 1.0;
-  if argCount = 3 then
-  begin
-    if not isNumber(args[2]) then
-    begin
-      RuntimeError('playSequence() volume must be a number (0.0 to 1.0).');
-      Exit(CreateNilValue);
-    end;
-    vol := GetNumber(args[2]);
-    if vol < 0 then vol := 0;
-    if vol > 1 then vol := 1;
-  end;
+  if not TryReadVolume(argCount, 2, args, 'playSequence', vol) then
+    Exit(CreateNilValue);
 
   if not FReady then InitAudio;
   if not FSeqReady then
@@ -426,15 +423,33 @@ begin
     totalSamples := totalSamples + Int64(SAMPLE_RATE) * durMs div 1000;
   end;
 
-  // Determine repetitions
+  // Determine repetitions. Rather than always using a fixed repeat count
+  // (which makes a short phrase fall silent after just a couple of minutes
+  // of continuous play, since this unit pre-renders the whole "loop" up
+  // front instead of streaming), fill as much of the MAX_SEQ_BYTES budget
+  // as the phrase allows: a short phrase gets many repeats (long practical
+  // loop time), a long one gets fewer but still uses the full budget.
+  // SEQ_LOOP_REPEATS is just a ceiling, to avoid a pathologically short
+  // phrase producing a pathologically large repeat (and tile-Move) count.
   if doLoop then
-    repeats := SEQ_LOOP_REPEATS
+  begin
+    repeats := SEQ_LOOP_REPEATS;
+    if totalSamples > 0 then
+    begin
+      maxRepeatsForBudget := MAX_SEQ_BYTES div (totalSamples * 2);
+      if maxRepeatsForBudget < repeats then
+        repeats := Integer(maxRepeatsForBudget);
+    end;
+    if repeats < 1 then repeats := 1;
+  end
   else
     repeats := 1;
 
-  // Check buffer size before allocating
+  // Check buffer size before allocating. Also guard the Integer(bufferBytes)
+  // cast below explicitly rather than relying on MAX_SEQ_BYTES happening to
+  // stay under MaxInt.
   bufferBytes := totalSamples * repeats * 2;
-  if bufferBytes > MAX_SEQ_BYTES then
+  if (bufferBytes > MAX_SEQ_BYTES) or (bufferBytes > MaxInt) then
   begin
     RuntimeError('playSequence() sequence too long (exceeds max buffer size).');
     Exit(CreateNilValue);
@@ -501,14 +516,14 @@ begin
           // Waveform generation
           case waveType of
             1: // Triangle wave (smooth, mellow)
-              sample := (2.0 * Abs(2.0 * phase - 1.0) - 1.0) * 2000;
+              sample := (2.0 * Abs(2.0 * phase - 1.0) - 1.0) * AMPLITUDE_TRIANGLE;
             2: // Sawtooth (buzzy, harmonically rich)
-              sample := (2.0 * phase - 1.0) * 1500;
+              sample := (2.0 * phase - 1.0) * AMPLITUDE_SAWTOOTH;
             3: // Noise (percussion)
-              sample := (Random - 0.5) * 3000;
+              sample := (Random - 0.5) * AMPLITUDE_NOISE;
           else
             // Pulse 25% duty cycle (bright, chiptune character)
-            if phase < 0.25 then sample := 1600 else sample := -1600;
+            if phase < 0.25 then sample := AMPLITUDE_PULSE else sample := -AMPLITUDE_PULSE;
           end;
 
           // ADSR envelope

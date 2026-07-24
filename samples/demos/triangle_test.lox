@@ -1,0 +1,123 @@
+// triangle_test.lox — drawTriangle/fillTriangle coverage test
+// Row 1: outlined triangles, various orientations (drawTriangleAA —
+//        antialiased, since these are purely visual demonstrations)
+// Row 2: filled triangles, same shapes
+// Row 3: fill+outline overlay (AA outline), degenerate cases
+//        (flat/thin/point), setClipRect() interaction — the last two
+//        deliberately use the aliased drawTriangle() since they are
+//        exercising ITS specific clipping/degenerate-edge handling
+// Bottom: a large off-screen triangle to exercise edge clipping
+// ESC to quit.
+var w = canvasWidth();
+var h = canvasHeight();
+
+clearCanvas();
+
+// --- Row 1: outlined triangles, various orientations ---
+setColor(255, 255, 0);
+drawTriangleAA(10, 60, 50, 60, 30, 15);      // apex up
+
+setColor(0, 255, 255);
+drawTriangleAA(70, 15, 110, 15, 90, 60);     // apex down
+
+setColor(255, 100, 50);
+drawTriangleAA(130, 15, 130, 60, 170, 37);   // apex right
+
+setColor(150, 255, 150);
+drawTriangleAA(230, 15, 230, 60, 190, 37);   // apex left
+
+setColor(255, 150, 255);
+drawTriangleAA(250, 20, 300, 30, 270, 60);   // scalene/irregular
+
+setColor(255, 255, 255);
+drawText(10, 3, "drawTriangleAA (outline)");
+
+// --- Row 2: filled triangles, same shapes ---
+setColor(255, 0, 0);
+fillTriangle(10, 135, 50, 135, 30, 90);
+setColor(0, 200, 0);
+fillTriangle(70, 90, 110, 90, 90, 135);
+setColor(50, 100, 255);
+fillTriangle(130, 90, 130, 135, 170, 112);
+setColor(255, 200, 0);
+fillTriangle(230, 90, 230, 135, 190, 112);
+setColor(0, 255, 255);
+fillTriangle(250, 95, 300, 105, 270, 135);
+
+setColor(255, 255, 255);
+drawText(10, 77, "fillTriangle (flat color)");
+
+// --- Row 3, panel A: fill + outline overlay (edges should hug the fill) ---
+setColor(0, 128, 255);
+fillTriangle(10, 195, 60, 195, 35, 150);
+setColor(255, 255, 0);
+drawTriangleAA(10, 195, 60, 195, 35, 150);
+
+setColor(255, 255, 255);
+drawText(4, 142, "fill+outline");
+
+// --- Row 3, panel B: degenerate cases ---
+// Flat: all 3 vertices share the same y. fillTriangle must skip
+// cleanly (no crash, nothing drawn); drawTriangle still draws the 3
+// overlapping edges as a single horizontal segment.
+setColor(255, 0, 255);
+fillTriangle(75, 170, 125, 170, 100, 170);
+setColor(255, 255, 255);
+drawTriangle(75, 170, 125, 170, 100, 170);
+
+// Thin sliver: valid but very low height, exercises the near-zero
+// short-edge slope math without dividing by zero.
+setColor(0, 255, 128);
+fillTriangle(135, 165, 185, 168, 135, 172);
+drawTriangle(135, 165, 185, 168, 135, 172);
+
+// Single point: all 3 vertices identical. Must draw at most 1 pixel
+// and never crash (RasterLineClipped handles a zero-length "edge").
+setColor(255, 255, 0);
+fillTriangle(200, 168, 200, 168, 200, 168);
+drawTriangle(200, 168, 200, 168, 200, 168);
+
+setColor(255, 255, 255);
+drawText(75, 142, "degenerate cases");
+
+// --- Row 3, panel C: setClipRect() interaction ---
+// Triangle deliberately overflows the panel on every side; only the
+// portion inside the clip rect should ever get painted.
+var px = 220;
+var py = 145;
+var pw = 90;
+var ph = 55;
+setColor(255, 255, 0);
+drawRect(px - 1, py - 1, pw + 2, ph + 2);
+setClipRect(px, py, pw, ph);
+setColor(255, 0, 128);
+fillTriangle(px - 30, py + ph + 20, px + pw + 30, py - 20, px + pw / 2, py + ph + 30);
+setColor(255, 255, 255);
+drawTriangle(px - 30, py + ph + 20, px + pw + 30, py - 20, px + pw / 2, py + ph + 30);
+clearClipRect();
+
+setColor(255, 255, 255);
+drawText(220, 142, "setClipRect()");
+
+// --- Bottom: large off-screen triangle (all 3 vertices outside the
+// canvas) exercising Cohen-Sutherland edge clipping on the outline and
+// bounding-box + per-scanline clipping on the fill. Only a band near
+// the very bottom of the canvas should actually get painted.
+setColor(0, 150, 255);
+fillTriangle(-60, h + 40, w + 60, h + 20, w / 2, h - 30);
+setColor(255, 255, 255);
+drawTriangle(-60, h + 40, w + 60, h + 20, w / 2, h - 30);
+
+setColor(255, 255, 0);
+drawText(4, h - 12, "off-screen clip test - ESC to quit");
+
+present();
+
+var running = true;
+while (running) {
+  processMessages();
+  while (events.hasItems()) {
+    var e = events.dequeue();
+    if (e == "keydown:escape") running = false;
+  }
+}

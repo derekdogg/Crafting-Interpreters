@@ -1,0 +1,1173 @@
+// ============================================================
+// 1942 — a simple arcade tribute
+// ============================================================
+// A vertically-scrolling shoot-'em-up in the spirit of Capcom's 1942:
+// your fighter climbs an endless ocean, enemy planes fly in from the
+// top in weaving, sweeping, or diving patterns, and colliding with one
+// (or its friends) costs a life just like ramming did in the original.
+// The signature move survives too: press Z to pull a barrel ROLL — a
+// few seconds of invulnerability, in limited supply, replenished every
+// time you clear a stage.
+//
+// Controls: ARROWS/WASD fly (4 directions), SPACE fire (hold),
+//           Z barrel roll (dodge), ENTER start/restart, ESC quit.
+// ============================================================
+
+setCanvasSize(384, 600);
+
+var w = canvasWidth();
+var h = canvasHeight();
+
+var SPR = 2;   // sprite scale, same convention as galaga.lox
+var BOSS_SPR = 5;   // boss is drawn noticeably bigger than regular sprites
+
+// ------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------
+fun fmod(a, b) {
+  return a - floor(a / b) * b;
+}
+
+fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  if (ax + aw <= bx) return false;
+  if (bx + bw <= ax) return false;
+  if (ay + ah <= by) return false;
+  if (by + bh <= ay) return false;
+  return true;
+}
+
+// ------------------------------------------------------------
+// Sprites
+// ------------------------------------------------------------
+
+// Player fighter — steel-blue hull, navy trim, amber canopy.
+setPaletteColor("H", 175, 185, 200);
+setPaletteColor("N", 40, 55, 90);
+setPaletteColor("Y", 255, 210, 120);
+var playerSprite = createPaletteSprite(13, 12,
+  "......H......" +
+  "......H......" +
+  ".....HHH....." +
+  ".....HYH....." +
+  "..N..HHH..N.." +
+  "..N.HHHHH.N.." +
+  "..NHHHHHHHN.." +
+  ".NNHHHHHHHNN." +
+  ".NHHHNHNHHHN." +
+  "NNHHHNHNHHHNN" +
+  "NH...HHH...HN" +
+  "N.....H.....N"
+);
+
+// Enemy fighter — khaki wings, olive body, red roundel. Two frames
+// (wings up/down) for a simple flap/bank animation.
+setPaletteColor("K", 190, 170, 110);
+setPaletteColor("G", 90, 110, 55);
+setPaletteColor("R", 200, 40, 40);
+var enemySprite1 = createPaletteSprite(13, 10,
+  "K...........K" +
+  ".K....G....K." +
+  ".KK..GGG..KK." +
+  "..KK.GGG.KK.." +
+  "..KKGGGGGKK.." +
+  "...KGRGRGK..." +
+  "...GGGGGGG..." +
+  "....G.G.G...." +
+  "...G..G..G..." +
+  "..G...G...G.."
+);
+var enemySprite2 = createPaletteSprite(13, 10,
+  "............." +
+  "K.....G.....K" +
+  ".KK..GGG..KK." +
+  "..KK.GGG.KK.." +
+  "..KKGGGGGKK.." +
+  "...KGRGRGK..." +
+  "...GGGGGGG..." +
+  "....G.G.G...." +
+  "....G.G.G...." +
+  "...G..G..G..."
+);
+
+// Explosion — shared two-frame burst.
+setPaletteColor("Y", 255, 255, 120);
+setPaletteColor("O", 255, 180, 40);
+setPaletteColor("R", 255, 90, 20);
+var explSprite1 = createPaletteSprite(12, 10,
+  "R...O..O...R" +
+  "..O.YYYY.O.." +
+  ".O.YYYYYY.O." +
+  "O.YYYYYYYY.O" +
+  "..YYYYYYYY.." +
+  "..YYYYYYYY.." +
+  "O.YYYYYYYY.O" +
+  ".O.YYYYYY.O." +
+  "..O.YYYY.O.." +
+  "R...O..O...R"
+);
+var explSprite2 = createPaletteSprite(12, 10,
+  ".R........R." +
+  "....O..O...." +
+  "..O......O.." +
+  "...O.YY.O..." +
+  "....YYYY...." +
+  "....YYYY...." +
+  "...O.YY.O..." +
+  "..O......O.." +
+  "....O..O...." +
+  ".R........R."
+);
+
+// "POW" pickup — gold diamond, upgrades the player's guns.
+setPaletteColor("G", 255, 200, 40);
+setPaletteColor("W", 255, 250, 200);
+var powerSprite = createPaletteSprite(8, 8,
+  "...GG..." +
+  "..GGGG.." +
+  ".GGWWGG." +
+  "GGWWWWGG" +
+  "GGWWWWGG" +
+  ".GGWWGG." +
+  "..GGGG.." +
+  "...GG..."
+);
+
+// Boss — a giant flying-wing battleship, roughly twice the wingspan
+// of a regular enemy fighter. Diamond-shaped hull with a raised
+// cockpit tip, a red weak-point pair at its widest point, and a
+// trailing engine glow.
+setPaletteColor("B", 70, 80, 110);
+setPaletteColor("D", 140, 155, 190);
+setPaletteColor("C", 255, 210, 120);
+setPaletteColor("W", 230, 60, 60);
+setPaletteColor("E", 255, 150, 60);
+var bossSprite = createPaletteSprite(20, 10,
+  ".........CC........." +
+  "........DDDD........" +
+  ".......BDDDDB......." +
+  "......BBDDDDBB......" +
+  ".....BBBDDDDBBB....." +
+  "....BBBBDDDDBBBB...." +
+  "...BBBBBDWWDBBBBB..." +
+  "....BBBBBDDBBBBB...." +
+  "......BBBDDBBB......" +
+  "........EEEE........"
+);
+
+clearPalette();
+
+// ------------------------------------------------------------
+// Prerendered ocean backdrop — drawn ONCE to an offscreen surface,
+// then tiled vertically (scrolling down = flying forward), the same
+// trick crystal_caverns.lox uses horizontally for its parallax.
+// ------------------------------------------------------------
+var bgSurface = createSurface(w, h);
+setRenderTarget(bgSurface);
+setColor(18, 64, 120);
+fillRect(0, 0, w, h);
+var by = 0;
+while (by < h) {
+  if (fmod(by, 40) < 20) {
+    setColor(26, 82, 148);
+  } else {
+    setColor(16, 58, 112);
+  }
+  fillRect(0, by, w, 4);
+  by = by + 4;
+}
+var fi = 0;
+while (fi < 260) {
+  setColor(205, 228, 248);
+  drawPixel(floor(random() * w), floor(random() * h));
+  fi = fi + 1;
+}
+var ci = 0;
+while (ci < 9) {
+  var cx = floor(random() * w);
+  var cy = floor(random() * h);
+  setColor(235, 245, 255);
+  fillCircle(cx, cy, 14 + floor(random() * 10));
+  fillCircle(cx + 16, cy + 3, 10 + floor(random() * 8));
+  fillCircle(cx - 14, cy + 4, 9 + floor(random() * 8));
+  ci = ci + 1;
+}
+setRenderTarget(-1);
+
+fun drawBackground() {
+  var par = floor(fmod(scrollY, h));
+  drawSurface(bgSurface, 0, par - h);
+  drawSurface(bgSurface, 0, par);
+}
+
+// ------------------------------------------------------------
+// Sound
+// ------------------------------------------------------------
+var PULSE = 0;
+var TRI = 1;
+
+var bgNotes = newArray();
+fun bgNote(f, d, wave) {
+  var n = newArray();
+  arrayPush(n, f);
+  arrayPush(n, d);
+  arrayPush(n, wave);
+  arrayPush(bgNotes, n);
+}
+bgNote(196, 160, TRI); bgNote(0, 40, TRI);
+bgNote(220, 160, TRI); bgNote(0, 40, TRI);
+bgNote(247, 160, TRI); bgNote(0, 40, TRI);
+bgNote(294, 220, TRI); bgNote(0, 80, TRI);
+bgNote(220, 160, TRI); bgNote(0, 40, TRI);
+bgNote(196, 160, TRI); bgNote(0, 40, TRI);
+bgNote(175, 220, TRI); bgNote(0, 120, TRI);
+
+var stageJingle = newArray();
+fun jNote(f, d) {
+  var n = newArray();
+  arrayPush(n, f);
+  arrayPush(n, d);
+  arrayPush(n, PULSE);
+  arrayPush(stageJingle, n);
+}
+jNote(523, 90); jNote(659, 90); jNote(784, 90); jNote(1047, 200);
+
+fun sfxShoot()     { playSweep(1500, 700, 45, 0.18); }
+fun sfxEnemyDie()  { playNoise(160, 0.3); }
+fun sfxPlayerHit() { playSweep(900, 60, 380, 0.5); playNoise(400, 0.4); }
+fun sfxRoll()      { playSweep(400, 1000, 150, 0.25); }
+fun sfxPowerUp()   { playTone(700, 60, 0.25); playTone(1000, 90, 0.25); }
+fun sfxStageUp()   { playSequence(stageJingle, false, 0.4); }
+
+// ------------------------------------------------------------
+// Player state
+// ------------------------------------------------------------
+var playerW = 13 * SPR;
+var playerH = 12 * SPR;
+var playerMinY = h * 0.12;         // can't climb past ~12% from the top
+var playerMaxY = h - playerH - 10;
+var playerX = w / 2 - playerW / 2;
+var playerY = playerMaxY;
+var playerSpeed = 200;
+var playerAlive = true;
+
+var moveLeft = false;
+var moveRight = false;
+var moveUp = false;
+var moveDown = false;
+var firing = false;
+var rollRequested = false;
+
+var fireRate = 0.13;
+var fireCooldown = 0;
+var powerLevel = 1;      // 1 = single shot, 2 = twin shot
+var maxPowerLevel = 2;
+
+var rollDuration = 0.55;
+var rollTimer = 0;
+var rollAngle = 0;
+var rollStock = 3;
+var maxRollStock = 3;
+
+var hitInvulnTimer = 0;
+
+// ------------------------------------------------------------
+// Bullets
+// ------------------------------------------------------------
+var maxBullets = 8;
+var bulletX = newArray();
+var bulletY = newArray();
+var bulletActive = newArray();
+var bulletW = 3;
+var bulletH = 10;
+var bulletSpeed = 440;
+var i = 0;
+while (i < maxBullets) {
+  arrayPush(bulletX, 0);
+  arrayPush(bulletY, 0);
+  arrayPush(bulletActive, false);
+  i = i + 1;
+}
+
+fun spawnBullet(x, y) {
+  var s = 0;
+  while (s < maxBullets) {
+    if (!bulletActive[s]) {
+      bulletX[s] = x;
+      bulletY[s] = y;
+      bulletActive[s] = true;
+      return;
+    }
+    s = s + 1;
+  }
+}
+
+fun firePlayerBullet() {
+  if (powerLevel == 1) {
+    spawnBullet(playerX + playerW / 2 - bulletW / 2, playerY - 4);
+  } else {
+    spawnBullet(playerX + 4, playerY - 2);
+    spawnBullet(playerX + playerW - 4 - bulletW, playerY - 2);
+  }
+  sfxShoot();
+}
+
+// ------------------------------------------------------------
+// Enemies (pool, spawned continuously in waves)
+// ------------------------------------------------------------
+var maxEnemies = 20;
+var enemyW = 13 * SPR;
+var enemyH = 10 * SPR;
+var eAlive = newArray();
+var ePattern = newArray();   // 0 weave, 1 sweep, 2 dive
+var eBaseX = newArray();
+var eStartY = newArray();
+var eSpeedY = newArray();
+var eAmp = newArray();
+var eVX = newArray();
+var eT = newArray();
+var eX = newArray();
+var eY = newArray();
+i = 0;
+while (i < maxEnemies) {
+  arrayPush(eAlive, false);
+  arrayPush(ePattern, 0);
+  arrayPush(eBaseX, 0);
+  arrayPush(eStartY, 0);
+  arrayPush(eSpeedY, 0);
+  arrayPush(eAmp, 0);
+  arrayPush(eVX, 0);
+  arrayPush(eT, 0);
+  arrayPush(eX, 0);
+  arrayPush(eY, 0);
+  i = i + 1;
+}
+
+fun spawnEnemy(x, y, pattern, speedY, amp, vx) {
+  var s = 0;
+  while (s < maxEnemies) {
+    if (!eAlive[s]) {
+      eAlive[s] = true;
+      ePattern[s] = pattern;
+      eBaseX[s] = x;
+      eStartY[s] = y;
+      eSpeedY[s] = speedY;
+      eAmp[s] = amp;
+      eVX[s] = vx;
+      eT[s] = 0;
+      eX[s] = x;
+      eY[s] = y;
+      return;
+    }
+    s = s + 1;
+  }
+}
+
+var enemySpeed = 95;
+var enemySpawnInterval = 1.05;
+var enemySpawnTimer = 0.6;
+
+fun spawnWave() {
+  var pattern = floor(random() * 3);
+  var count = 3 + floor(random() * 2);
+  var k = 0;
+  while (k < count) {
+    if (pattern == 0) {
+      // Weave: enters straight down the top, swaying side to side.
+      var bx = 40 + random() * (w - 80);
+      spawnEnemy(bx, -20 - k * 34, 0, enemySpeed, 46 + random() * 20, 0);
+    } else if (pattern == 1) {
+      // Sweep: enters from one side, cuts diagonally across and down.
+      var fromLeft = random() < 0.5;
+      var sx = -30;
+      var svx = enemySpeed * 0.9;
+      if (!fromLeft) { sx = w + 30; svx = -enemySpeed * 0.9; }
+      spawnEnemy(sx, 20 + k * 40, 1, enemySpeed * 0.6, 0, svx);
+    } else {
+      // Dive: drops from the top, angled to arrive near the player's
+      // current position — the 1942 "kamikaze" run.
+      var bx = 30 + random() * (w - 60);
+      var by2 = -20 - k * 30;
+      var speedY = enemySpeed * 1.15;
+      var travelTime = (playerY - by2) / speedY;
+      if (travelTime < 0.4) travelTime = 0.4;
+      var aimVX = ((playerX + playerW / 2) - bx) / travelTime;
+      spawnEnemy(bx, by2, 2, speedY, 0, aimVX);
+    }
+    k = k + 1;
+  }
+}
+
+// ------------------------------------------------------------
+// Power-ups
+// ------------------------------------------------------------
+var maxPowerUps = 3;
+var powerW = 8 * SPR;
+var powerSpeed = 90;
+var pAlive = newArray();
+var pX = newArray();
+var pY = newArray();
+i = 0;
+while (i < maxPowerUps) {
+  arrayPush(pAlive, false);
+  arrayPush(pX, 0);
+  arrayPush(pY, 0);
+  i = i + 1;
+}
+
+fun maybeSpawnPowerUp(x, y) {
+  if (powerLevel >= maxPowerLevel) return;
+  if (random() > 0.16) return;
+  var s = 0;
+  while (s < maxPowerUps) {
+    if (!pAlive[s]) {
+      pAlive[s] = true;
+      pX[s] = x;
+      pY[s] = y;
+      return;
+    }
+    s = s + 1;
+  }
+}
+
+// ------------------------------------------------------------
+// Explosions
+// ------------------------------------------------------------
+var maxExplosions = 10;
+var explX = newArray();
+var explY = newArray();
+var explTimer = newArray();
+var explActive = newArray();
+i = 0;
+while (i < maxExplosions) {
+  arrayPush(explX, 0);
+  arrayPush(explY, 0);
+  arrayPush(explTimer, 0);
+  arrayPush(explActive, false);
+  i = i + 1;
+}
+var explDuration = 0.3;
+
+fun spawnExplosion(x, y) {
+  var s = 0;
+  while (s < maxExplosions) {
+    if (!explActive[s]) {
+      explX[s] = x;
+      explY[s] = y;
+      explTimer[s] = explDuration;
+      explActive[s] = true;
+      return;
+    }
+    s = s + 1;
+  }
+}
+
+// ------------------------------------------------------------
+// Boss (giant spaceship) — appears every few stages instead of a
+// normal wave. Descends into position, patrols left-right while
+// firing aimed-down bullets from twin cannons, and soaks up player
+// bullets until its health bar empties.
+// ------------------------------------------------------------
+var maxEnemyBullets = 6;
+var ebX = newArray();
+var ebY = newArray();
+var ebActive = newArray();
+var ebW = 4;
+var ebH = 10;
+var ebSpeed = 220;
+i = 0;
+while (i < maxEnemyBullets) {
+  arrayPush(ebX, 0);
+  arrayPush(ebY, 0);
+  arrayPush(ebActive, false);
+  i = i + 1;
+}
+
+var bossActive = false;
+var bossEntering = false;
+var bossHealth = 0;
+var bossMaxHealth = 0;
+var bossX = 0;
+var bossY = -1000;
+var bossTargetY = 0;
+var bossVX = 0;
+var bossW = 20 * BOSS_SPR;
+var bossH = 10 * BOSS_SPR;
+var bossFireTimer = 0;
+var bossFireInterval = 1.1;
+var bossBannerTimer = 0;
+var bossVictoryTimer = 0;
+var nextBossStage = 3;
+var bossEncounterCount = 0;
+
+fun startBossFight() {
+  // Clear any regular enemies so the fight isn't cluttered.
+  var s = 0;
+  while (s < maxEnemies) { eAlive[s] = false; s = s + 1; }
+
+  bossEncounterCount = bossEncounterCount + 1;
+  bossMaxHealth = 30 + bossEncounterCount * 12;
+  bossHealth = bossMaxHealth;
+  bossX = w / 2 - bossW / 2;
+  bossY = -bossH;
+  bossTargetY = h * 0.16;
+  bossVX = 60 + bossEncounterCount * 8;
+  bossEntering = true;
+  bossActive = true;
+  bossFireInterval = max(0.5, 1.1 - bossEncounterCount * 0.08);
+  bossFireTimer = 0.8;
+  bossBannerTimer = 2.2;
+  sfxStageUp();
+}
+
+fun fireBossVolley() {
+  var s = 0;
+  var placed = 0;
+  while (s < maxEnemyBullets and placed < 2) {
+    if (!ebActive[s]) {
+      ebActive[s] = true;
+      if (placed == 0) {
+        ebX[s] = bossX + bossW * 0.28 - ebW / 2;
+      } else {
+        ebX[s] = bossX + bossW * 0.72 - ebW / 2;
+      }
+      ebY[s] = bossY + bossH - 4;
+      placed = placed + 1;
+    }
+    s = s + 1;
+  }
+  sfxShoot();
+}
+
+fun defeatBoss() {
+  bossActive = false;
+  score = score + 2000;
+  var k = 0;
+  while (k < 8) {
+    spawnExplosion(bossX + random() * bossW - 6, bossY + random() * bossH - 5);
+    k = k + 1;
+  }
+  sfxPlayerHit();
+  var s = 0;
+  while (s < maxEnemyBullets) { ebActive[s] = false; s = s + 1; }
+  stage = stage + 1;
+  nextBossStage = nextBossStage + 3;
+  enemySpawnInterval = max(0.45, enemySpawnInterval * 0.88);
+  enemySpeed = enemySpeed + 10;
+  if (rollStock < maxRollStock) rollStock = rollStock + 1;
+  stageTimer = 0;
+  bossVictoryTimer = 2.5;
+}
+
+fun updateBoss(dt) {
+  if (bossBannerTimer > 0) bossBannerTimer = bossBannerTimer - dt;
+
+  if (bossEntering) {
+    bossY = bossY + 70 * dt;
+    if (bossY >= bossTargetY) {
+      bossY = bossTargetY;
+      bossEntering = false;
+    }
+  } else {
+    bossX = bossX + bossVX * dt;
+    if (bossX < 10) { bossX = 10; bossVX = -bossVX; }
+    if (bossX > w - bossW - 10) { bossX = w - bossW - 10; bossVX = -bossVX; }
+
+    bossFireTimer = bossFireTimer - dt;
+    if (bossFireTimer <= 0) {
+      fireBossVolley();
+      bossFireTimer = bossFireInterval;
+    }
+  }
+
+  // --- Boss bullets: move + collide with player ---
+  var i = 0;
+  while (i < maxEnemyBullets) {
+    if (ebActive[i]) {
+      ebY[i] = ebY[i] + ebSpeed * dt;
+      if (ebY[i] > h + 10) {
+        ebActive[i] = false;
+      } else if (playerAlive and hitInvulnTimer <= 0 and rollTimer <= 0) {
+        if (rectsOverlap(ebX[i], ebY[i], ebW, ebH, playerX, playerY, playerW, playerH)) {
+          ebActive[i] = false;
+          hurt();
+        }
+      }
+    }
+    i = i + 1;
+  }
+
+  if (bossEntering) return;
+
+  // --- Player body ramming the boss ---
+  if (playerAlive and hitInvulnTimer <= 0 and rollTimer <= 0) {
+    if (rectsOverlap(bossX, bossY, bossW, bossH, playerX, playerY, playerW, playerH)) {
+      hurt();
+    }
+  }
+
+  // --- Player bullets vs boss ---
+  var bb = 0;
+  while (bb < maxBullets) {
+    if (bulletActive[bb]) {
+      if (rectsOverlap(bulletX[bb], bulletY[bb], bulletW, bulletH, bossX, bossY, bossW, bossH)) {
+        bulletActive[bb] = false;
+        bossHealth = bossHealth - 1;
+        score = score + 20;
+        spawnExplosion(bulletX[bb] - 6, bulletY[bb] - 5);
+        sfxEnemyDie();
+        if (bossHealth <= 0) {
+          defeatBoss();
+          return;
+        }
+      }
+    }
+    bb = bb + 1;
+  }
+}
+
+fun drawBoss() {
+  var i = 0;
+  while (i < maxEnemyBullets) {
+    if (ebActive[i]) {
+      setColor(255, 110, 110);
+      fillRect(floor(ebX[i]), floor(ebY[i]), ebW, ebH);
+    }
+    i = i + 1;
+  }
+
+  drawSpriteScaled(bossSprite, floor(bossX), floor(bossY), BOSS_SPR);
+
+  if (!bossEntering) {
+    var barW = 160;
+    var barX = w / 2 - barW / 2;
+    var barY = 26;
+    setColor(40, 40, 50);
+    fillRect(barX - 2, barY - 2, barW + 4, 10);
+    var pct = bossHealth / bossMaxHealth;
+    if (pct < 0) pct = 0;
+    setColor(70, 220, 110);
+    fillRect(barX, barY, floor(barW * pct), 6);
+  }
+
+  if (bossBannerTimer > 0) {
+    setColor(255, 90, 90);
+    var msg = "WARNING";
+    drawText((w - measureText(msg, 2)) / 2, h / 4, msg, 2);
+  }
+}
+
+// ------------------------------------------------------------
+// Game state
+// ------------------------------------------------------------
+var state = "title";   // title | play | gameover
+var score = 0;
+var lives = 3;
+var stage = 1;
+var stageTimer = 0;
+var stageDuration = 18;
+var bannerTimer = 0;
+var scrollY = 0;
+var scrollSpeed = 70;
+var animTimer = 0;
+var animFrame = 0;
+var decorSpin = 0;
+
+// ------------------------------------------------------------
+// Frame timer — is present() actually keeping up with vsync?
+// displayRefreshHz()/lastCallbackMs() are the same diagnostic natives
+// docs/pacing-test-144hz-judder-finding.md was built around; this is
+// just a small always-on HUD wrapper around them so the answer is
+// visible while the game is running instead of read from a log.
+// ------------------------------------------------------------
+var frameHz = 60;          // falls back to 60 if displayRefreshHz() is 0/unreliable
+var frameBudgetMs = 16.6;  // 1000 / frameHz — the interval vsync allows per frame
+var frameNowMs = 0;        // this frame's dt, in ms (the real wall-clock gap)
+var frameWorkMs = 0;       // lastCallbackMs() — the script's own onFrame + present() cost.
+                           // NOTE: this already INCLUDES present()'s vsync wait below —
+                           // onFrame() calls present() itself, and lastCallbackMs() times
+                           // the whole callback, block included. frameNowMs - frameWorkMs
+                           // is NOT vsync wait; it's message-pump/dispatch overhead
+                           // between loop iterations, outside the callback entirely.
+var frameVsyncMs = 0;      // presentFlushMs() — just the GdiFlush+DwmFlush phase inside
+                           // present(), i.e. the real vsync block (already counted once
+                           // inside frameWorkMs above, not an extra/separate cost).
+var frameWorstMs = 0;      // worst frameNowMs seen in the last full second
+var frameWorstWindow = 0;
+var frameWorstTimer = 0;
+
+// The raw per-frame numbers above bounce around too fast to read (a new
+// value every ~16ms). The HUD only shows the averaged-and-held values
+// below, refreshed a few times a second instead of every frame.
+var frameHoldInterval = 0.25;
+var frameHoldTimer = 0;
+var frameHoldSumMs = 0;
+var frameHoldWorkSumMs = 0;
+var frameHoldVsyncSumMs = 0;
+var frameHoldCount = 0;
+var frameDisplayMs = 0;
+var frameWorkDisplayMs = 0;
+var frameVsyncDisplayMs = 0;
+
+fun updateFrameTimer(dt) {
+  var hz = displayRefreshHz();
+  if (hz > 0) frameHz = hz;
+  frameBudgetMs = 1000 / frameHz;
+  frameNowMs = dt * 1000;
+  frameWorkMs = lastCallbackMs();
+  frameVsyncMs = presentFlushMs();
+  if (frameNowMs > frameWorstWindow) frameWorstWindow = frameNowMs;
+  frameWorstTimer = frameWorstTimer + dt;
+  if (frameWorstTimer >= 1.0) {
+    frameWorstTimer = frameWorstTimer - 1.0;
+    frameWorstMs = frameWorstWindow;
+    frameWorstWindow = 0;
+  }
+
+  frameHoldSumMs = frameHoldSumMs + frameNowMs;
+  frameHoldWorkSumMs = frameHoldWorkSumMs + frameWorkMs;
+  frameHoldVsyncSumMs = frameHoldVsyncSumMs + frameVsyncMs;
+  frameHoldCount = frameHoldCount + 1;
+  frameHoldTimer = frameHoldTimer + dt;
+  if (frameHoldTimer >= frameHoldInterval) {
+    frameHoldTimer = frameHoldTimer - frameHoldInterval;
+    frameDisplayMs = frameHoldSumMs / frameHoldCount;
+    frameWorkDisplayMs = frameHoldWorkSumMs / frameHoldCount;
+    frameVsyncDisplayMs = frameHoldVsyncSumMs / frameHoldCount;
+    frameHoldSumMs = 0;
+    frameHoldWorkSumMs = 0;
+    frameHoldVsyncSumMs = 0;
+    frameHoldCount = 0;
+  }
+}
+
+// Green: comfortably inside budget. Orange: blew the budget but still
+// within a single missed refresh. Red: missed more than one refresh —
+// that's a visible judder/skip, not just jitter.
+fun frameSeverityColor(ms) {
+  if (ms <= frameBudgetMs * 1.15) {
+    setColor(120, 255, 140);
+  } else if (ms <= frameBudgetMs * 2.2) {
+    setColor(255, 190, 60);
+  } else {
+    setColor(255, 90, 90);
+  }
+}
+
+fun drawFrameTimer() {
+  var line0 = "vsync " + str(floor(frameVsyncDisplayMs)) + "ms";
+  // Not severity-colored like the lines below: a LONG vsync wait here is
+  // a GOOD sign (script + present's own GDI work finished early, so it
+  // sat waiting for the next refresh), not a bad one — red/orange/green
+  // budget thresholds don't apply to this number the way they do to
+  // frame/work/worst.
+  setColor(140, 200, 220);
+  drawText(w - measureText(line0) - 6, h - 52, line0);
+
+  var line1 = str(floor(frameHz)) + "Hz  budget " + str(floor(frameBudgetMs)) + "ms";
+  setColor(200, 210, 225);
+  drawText(w - measureText(line1) - 6, h - 40, line1);
+
+  var line2 = "frame " + str(floor(frameDisplayMs)) + "ms  work " + str(floor(frameWorkDisplayMs)) + "ms";
+  frameSeverityColor(frameDisplayMs);
+  drawText(w - measureText(line2) - 6, h - 28, line2);
+
+  var line3 = "worst " + str(floor(frameWorstMs)) + "ms (1s)";
+  frameSeverityColor(frameWorstMs);
+  drawText(w - measureText(line3) - 6, h - 16, line3);
+}
+
+fun hurt() {
+  if (hitInvulnTimer > 0 or rollTimer > 0) return;
+  lives = lives - 1;
+  sfxPlayerHit();
+  spawnExplosion(playerX + playerW / 2 - 6, playerY + playerH / 2 - 5);
+  if (lives <= 0) {
+    playerAlive = false;
+    state = "gameover";
+    stopSequence();
+  } else {
+    playerX = w / 2 - playerW / 2;
+    playerY = playerMaxY;
+    hitInvulnTimer = 2.0;
+  }
+}
+
+fun resetGame() {
+  score = 0;
+  lives = 3;
+  stage = 1;
+  stageTimer = 0;
+  bannerTimer = 0;
+  scrollY = 0;
+  powerLevel = 1;
+  rollStock = maxRollStock;
+  rollTimer = 0;
+  hitInvulnTimer = 1.0;
+  enemySpeed = 95;
+  enemySpawnInterval = 1.05;
+  enemySpawnTimer = 0.6;
+  playerAlive = true;
+  playerX = w / 2 - playerW / 2;
+  playerY = playerMaxY;
+
+  bossActive = false;
+  bossEntering = false;
+  bossHealth = 0;
+  bossX = w / 2 - bossW / 2;
+  bossY = -1000;
+  bossBannerTimer = 0;
+  bossVictoryTimer = 0;
+  nextBossStage = 3;
+  bossEncounterCount = 0;
+
+  var s = 0;
+  while (s < maxBullets) { bulletActive[s] = false; s = s + 1; }
+  s = 0;
+  while (s < maxEnemies) { eAlive[s] = false; s = s + 1; }
+  s = 0;
+  while (s < maxPowerUps) { pAlive[s] = false; s = s + 1; }
+  s = 0;
+  while (s < maxExplosions) { explActive[s] = false; s = s + 1; }
+  s = 0;
+  while (s < maxEnemyBullets) { ebActive[s] = false; s = s + 1; }
+}
+
+// ------------------------------------------------------------
+// Input
+// ------------------------------------------------------------
+onKeyPressed(fun(key) {
+  if (key == "escape") stopGameLoop();
+  if (state == "play") {
+    if (key == "left" or key == "a")  moveLeft = true;
+    if (key == "right" or key == "d") moveRight = true;
+    if (key == "up" or key == "w")    moveUp = true;
+    if (key == "down" or key == "s")  moveDown = true;
+    if (key == "space") firing = true;
+    if (key == "z") rollRequested = true;
+  } else {
+    if (key == "enter" or key == "space") {
+      resetGame();
+      state = "play";
+      playSequence(bgNotes, true, 0.16);
+    }
+  }
+});
+
+onKeyReleased(fun(key) {
+  if (key == "left" or key == "a")  moveLeft = false;
+  if (key == "right" or key == "d") moveRight = false;
+  if (key == "up" or key == "w")    moveUp = false;
+  if (key == "down" or key == "s")  moveDown = false;
+  if (key == "space") firing = false;
+});
+
+// ------------------------------------------------------------
+// Update
+// ------------------------------------------------------------
+fun updatePlay(dt) {
+  scrollY = scrollY + scrollSpeed * dt;
+  animTimer = animTimer + dt;
+  if (animTimer > 0.18) { animTimer = 0; animFrame = 1 - animFrame; }
+
+  // --- Stage progression (paused during a boss fight) ---
+  if (bannerTimer > 0) bannerTimer = bannerTimer - dt;
+  if (bossVictoryTimer > 0) bossVictoryTimer = bossVictoryTimer - dt;
+  if (!bossActive) {
+    stageTimer = stageTimer + dt;
+    if (stageTimer >= stageDuration) {
+      stageTimer = stageTimer - stageDuration;
+      if (stage + 1 >= nextBossStage) {
+        startBossFight();
+      } else {
+        stage = stage + 1;
+        enemySpawnInterval = max(0.45, enemySpawnInterval * 0.88);
+        enemySpeed = enemySpeed + 10;
+        if (rollStock < maxRollStock) rollStock = rollStock + 1;
+        bannerTimer = 2.0;
+        sfxStageUp();
+      }
+    }
+  }
+
+  // --- Boss ---
+  if (bossActive) updateBoss(dt);
+
+  // --- Roll (dodge) maneuver ---
+  if (rollRequested) {
+    rollRequested = false;
+    if (rollTimer <= 0 and rollStock > 0) {
+      rollTimer = rollDuration;
+      rollStock = rollStock - 1;
+      rollAngle = 0;
+      sfxRoll();
+    }
+  }
+  if (rollTimer > 0) {
+    rollTimer = rollTimer - dt;
+    rollAngle = rollAngle + 960 * dt;
+    if (rollTimer < 0) rollTimer = 0;
+  }
+  if (hitInvulnTimer > 0) hitInvulnTimer = hitInvulnTimer - dt;
+
+  // --- Player movement (4-directional, normalized diagonals) ---
+  var vx = 0;
+  var vy = 0;
+  if (moveLeft)  vx = vx - 1;
+  if (moveRight) vx = vx + 1;
+  if (moveUp)    vy = vy - 1;
+  if (moveDown)  vy = vy + 1;
+  if (vx != 0 or vy != 0) {
+    var len = sqrt(vx * vx + vy * vy);
+    playerX = playerX + (vx / len) * playerSpeed * dt;
+    playerY = playerY + (vy / len) * playerSpeed * dt;
+  }
+  if (playerX < 0) playerX = 0;
+  if (playerX > w - playerW) playerX = w - playerW;
+  if (playerY < playerMinY) playerY = playerMinY;
+  if (playerY > playerMaxY) playerY = playerMaxY;
+
+  // --- Firing ---
+  if (fireCooldown > 0) fireCooldown = fireCooldown - dt;
+  if (firing and rollTimer <= 0 and fireCooldown <= 0) {
+    firePlayerBullet();
+    fireCooldown = fireRate;
+  }
+
+  // --- Bullets ---
+  var b = 0;
+  while (b < maxBullets) {
+    if (bulletActive[b]) {
+      var by3 = bulletY[b] - bulletSpeed * dt;
+      bulletY[b] = by3;
+      if (by3 + bulletH < 0) bulletActive[b] = false;
+    }
+    b = b + 1;
+  }
+
+  // --- Enemy spawning (paused during a boss fight) ---
+  if (!bossActive) {
+    enemySpawnTimer = enemySpawnTimer - dt;
+    if (enemySpawnTimer <= 0) {
+      spawnWave();
+      enemySpawnTimer = enemySpawnInterval + random() * 0.4;
+    }
+  }
+
+  // --- Enemies: move, collide with player, collide with bullets ---
+  var e = 0;
+  while (e < maxEnemies) {
+    if (eAlive[e]) {
+      var t = eT[e] + dt;
+      eT[e] = t;
+      var pat = ePattern[e];
+      var nx;
+      var ny;
+      if (pat == 0) {
+        nx = eBaseX[e] + sin(t * 2.4) * eAmp[e];
+        ny = eStartY[e] + eSpeedY[e] * t;
+      } else {
+        nx = eBaseX[e] + eVX[e] * t;
+        ny = eStartY[e] + eSpeedY[e] * t;
+      }
+      eX[e] = nx;
+      eY[e] = ny;
+
+      if (ny > h + 30 or nx < -60 or nx > w + 60) {
+        eAlive[e] = false;
+      } else {
+        if (playerAlive and hitInvulnTimer <= 0 and rollTimer <= 0) {
+          if (rectsOverlap(nx, ny, enemyW, enemyH, playerX, playerY, playerW, playerH)) {
+            eAlive[e] = false;
+            spawnExplosion(nx + enemyW / 2 - 6, ny + enemyH / 2 - 5);
+            hurt();
+          }
+        }
+        if (eAlive[e]) {
+          var bb = 0;
+          while (bb < maxBullets) {
+            if (bulletActive[bb] and eAlive[e]) {
+              if (rectsOverlap(bulletX[bb], bulletY[bb], bulletW, bulletH, nx, ny, enemyW, enemyH)) {
+                bulletActive[bb] = false;
+                eAlive[e] = false;
+                var pts = 100;
+                if (pat == 1) pts = 150;
+                if (pat == 2) pts = 200;
+                score = score + pts;
+                spawnExplosion(nx + enemyW / 2 - 6, ny + enemyH / 2 - 5);
+                sfxEnemyDie();
+                maybeSpawnPowerUp(nx, ny);
+              }
+            }
+            bb = bb + 1;
+          }
+        }
+      }
+    }
+    e = e + 1;
+  }
+
+  // --- Power-ups ---
+  var p = 0;
+  while (p < maxPowerUps) {
+    if (pAlive[p]) {
+      var py = pY[p] + powerSpeed * dt;
+      pY[p] = py;
+      var px = pX[p];
+      if (py > h + 20) {
+        pAlive[p] = false;
+      } else if (rectsOverlap(px, py, powerW, powerW, playerX, playerY, playerW, playerH)) {
+        pAlive[p] = false;
+        powerLevel = powerLevel + 1;
+        sfxPowerUp();
+      }
+    }
+    p = p + 1;
+  }
+
+  // --- Explosions ---
+  var x = 0;
+  while (x < maxExplosions) {
+    if (explActive[x]) {
+      var et = explTimer[x] - dt;
+      explTimer[x] = et;
+      if (et <= 0) explActive[x] = false;
+    }
+    x = x + 1;
+  }
+}
+
+// ------------------------------------------------------------
+// Draw
+// ------------------------------------------------------------
+fun drawPlay() {
+  drawBackground();
+
+  var b = 0;
+  while (b < maxBullets) {
+    if (bulletActive[b]) {
+      setColor(255, 240, 140);
+      fillRect(floor(bulletX[b]), floor(bulletY[b]), bulletW, bulletH);
+    }
+    b = b + 1;
+  }
+
+  var e = 0;
+  while (e < maxEnemies) {
+    if (eAlive[e]) {
+      var ex = floor(eX[e]);
+      var ey = floor(eY[e]);
+      if (animFrame == 0) {
+        drawSpriteScaled(enemySprite1, ex, ey, SPR);
+      } else {
+        drawSpriteScaled(enemySprite2, ex, ey, SPR);
+      }
+    }
+    e = e + 1;
+  }
+
+  if (bossActive) drawBoss();
+
+  var p = 0;
+  while (p < maxPowerUps) {
+    if (pAlive[p]) {
+      drawSpriteScaled(powerSprite, floor(pX[p]), floor(pY[p]), SPR);
+    }
+    p = p + 1;
+  }
+
+  var x = 0;
+  while (x < maxExplosions) {
+    if (explActive[x]) {
+      if (fmod(explTimer[x], 0.16) < 0.08) {
+        drawSpriteScaled(explSprite1, floor(explX[x]), floor(explY[x]), SPR);
+      } else {
+        drawSpriteScaled(explSprite2, floor(explX[x]), floor(explY[x]), SPR);
+      }
+    }
+    x = x + 1;
+  }
+
+  if (playerAlive) {
+    var visible = true;
+    if (hitInvulnTimer > 0 and rollTimer <= 0 and fmod(hitInvulnTimer, 0.2) < 0.1) visible = false;
+    if (visible) {
+      if (rollTimer > 0) {
+        drawSpriteRotated(playerSprite, playerX + playerW / 2, playerY + playerH / 2, SPR, rollAngle);
+      } else {
+        drawSpriteScaled(playerSprite, floor(playerX), floor(playerY), SPR);
+      }
+    }
+  }
+
+  // HUD
+  setColor(255, 255, 255);
+  drawText(6, 4, "SCORE " + str(score));
+  var li = 0;
+  while (li < lives) {
+    drawSprite(playerSprite, 6 + li * 16, 18);
+    li = li + 1;
+  }
+  var stageText = "STAGE " + str(stage);
+  setColor(255, 255, 255);
+  drawText(w - measureText(stageText) - 6, 4, stageText);
+  var rollText = "ROLL x" + str(rollStock);
+  setColor(140, 220, 255);
+  drawText(w - measureText(rollText) - 6, 16, rollText);
+
+  if (bannerTimer > 0) {
+    setColor(255, 230, 90);
+    var msg = "STAGE " + str(stage);
+    drawText((w - measureText(msg, 2)) / 2, h / 3, msg, 2);
+  } else if (bossVictoryTimer > 0) {
+    setColor(140, 255, 180);
+    var msg = "BOSS DESTROYED";
+    drawText((w - measureText(msg, 2)) / 2, h / 3, msg, 2);
+  }
+}
+
+fun drawCenteredText(y, msg) {
+  drawText((w - measureText(msg)) / 2, y, msg);
+}
+
+fun drawScreen(title, sub1, sub2) {
+  drawBackground();
+  drawSpriteRotated(powerSprite, w / 2, 100, SPR + 1, decorSpin);
+  setColor(140, 220, 255);
+  drawCenteredText(140, title);
+  setColor(255, 255, 255);
+  drawCenteredText(162, sub1);
+  if (sub2 != "") {
+    drawCenteredText(180, sub2);
+  }
+  setColor(170, 190, 210);
+  drawCenteredText(230, "ARROWS/WASD fly   SPACE fire   Z roll");
+  drawCenteredText(246, "ENTER to play   ESC to quit");
+}
+
+// ------------------------------------------------------------
+// The frame callback + engine-owned loop
+// ------------------------------------------------------------
+onFrame(fun(dt) {
+  updateFrameTimer(dt);
+  if (state == "play") {
+    updatePlay(dt);
+    clearCanvas();
+    drawPlay();
+  } else {
+    decorSpin = decorSpin + 50 * dt;
+    scrollY = scrollY + 20 * dt;
+    clearCanvas();
+    if (state == "title") {
+      drawScreen("1942", "an arcade tribute", "");
+    } else {
+      drawScreen("GAME OVER", "SCORE " + str(score), "STAGE " + str(stage));
+    }
+  }
+  drawFrameTimer();
+  present();
+});
+
+runGameLoop();
+
+stopSequence();
+print "Thanks for playing 1942!";

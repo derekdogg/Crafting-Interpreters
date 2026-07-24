@@ -51,7 +51,7 @@
 //     one-time glyph cache and a branch-free fully-visible hot path —
 //     no obvious O(n^2) or per-frame glyph-rasterization bug there).
 
-var MODE = 0;
+var MODE = 1;
 
 setCanvasSize(400, 340);
 
