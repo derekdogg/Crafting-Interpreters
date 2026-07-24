@@ -53,13 +53,36 @@ type
     X, Y: Integer;
   end;
 
+  // Typed pending key/mouse events. Queued and dispatched as records instead
+  // of 'down:sender:key' style strings, to avoid paying a Split/StrToIntDef
+  // parse (plus the string-building allocation on the Queue* side) for every
+  // single event — this runs every frame in a game loop.
+  TPendingKeyEvent = record
+    IsDown: Boolean;
+    Sender: string;
+    KeyName: string;
+  end;
+
+  TPendingMouseEvent = record
+    IsDown: Boolean;
+    Sender: string;
+    Btn, X, Y: Integer;
+  end;
+
   TLoxEventEngine = class
   private
-    FCallbackSlots: TObjectDictionary<string, TCallbackSlot>;
+    // One dictionary per callback kind (keyed by already-lowercased control
+    // name) instead of a single dictionary keyed by a concatenated
+    // 'kind:controlname' string. The old scheme built (IntToStr + concat)
+    // a fresh string key on every single lookup, which runs on every
+    // dispatched event; this way the kind selects the dictionary directly
+    // and the key is just the control name, normalized once at the point
+    // callbacks/events are registered/queued rather than on every read.
+    FCallbackSlots: array[TEventCallbackKind] of TObjectDictionary<string, TCallbackSlot>;
     FPendingMoves: TDictionary<string, TMouseMoveEntry>;
     FHeldKeys: TStringList;
-    FPendingKeys: TStringList;
-    FPendingMouse: TStringList;
+    FPendingKeys: TList<TPendingKeyEvent>;
+    FPendingMouse: TList<TPendingMouseEvent>;
     FPendingClicks: TStringList;
     FDispatching: Boolean;
     FRunning: Boolean;
@@ -73,7 +96,6 @@ type
     // delay is a one-time gate; advanced by FHeldDispatchIntervalMs after each
     // dispatch so subsequent fires are spaced by the interval only.
     FHeldNextDispatchTick: TDictionary<string, DWORD>;
-    function CallbackKey(Kind: TEventCallbackKind; const ControlName: string): string;
     function GetCallback(Kind: TEventCallbackKind; const ControlName: string): TValue;
   public
     constructor Create;
@@ -167,12 +189,15 @@ end;
 // --- TLoxEventEngine ---
 
 constructor TLoxEventEngine.Create;
+var
+  kind: TEventCallbackKind;
 begin
   inherited Create;
-  FCallbackSlots := TObjectDictionary<string, TCallbackSlot>.Create([doOwnsValues]);
+  for kind := Low(TEventCallbackKind) to High(TEventCallbackKind) do
+    FCallbackSlots[kind] := TObjectDictionary<string, TCallbackSlot>.Create([doOwnsValues]);
   FPendingMoves := TDictionary<string, TMouseMoveEntry>.Create;
-  FPendingKeys := TStringList.Create;
-  FPendingMouse := TStringList.Create;
+  FPendingKeys := TList<TPendingKeyEvent>.Create;
+  FPendingMouse := TList<TPendingMouseEvent>.Create;
   FPendingClicks := TStringList.Create;
   FHeldKeys := TStringList.Create;
   FHeldKeys.Sorted := True;
@@ -189,8 +214,11 @@ begin
 end;
 
 destructor TLoxEventEngine.Destroy;
+var
+  kind: TEventCallbackKind;
 begin
-  FCallbackSlots.Free;
+  for kind := Low(TEventCallbackKind) to High(TEventCallbackKind) do
+    FCallbackSlots[kind].Free;
   FPendingMoves.Free;
   FPendingKeys.Free;
   FPendingMouse.Free;
@@ -200,32 +228,40 @@ begin
   inherited;
 end;
 
-function TLoxEventEngine.CallbackKey(Kind: TEventCallbackKind;
-  const ControlName: string): string;
-begin
-  Result := IntToStr(Ord(Kind)) + ':' + LowerCase(ControlName);
-end;
-
 function TLoxEventEngine.GetCallback(Kind: TEventCallbackKind;
   const ControlName: string): TValue;
 var
   slot: TCallbackSlot;
 begin
-  if FCallbackSlots.TryGetValue(CallbackKey(Kind, ControlName), slot) then
+  // ControlName is expected already-canonical (lowercased at the Queue*/
+  // SetCallback boundary) so no LowerCase() call is needed on this hot path.
+  if FCallbackSlots[Kind].TryGetValue(ControlName, slot) then
     Result := slot.Callback
   else
     Result := CreateNilValue;
 end;
 
 procedure TLoxEventEngine.Reset;
+var
+  kind: TEventCallbackKind;
 begin
+  // Safe to destroy callback slots directly here rather than requiring a
+  // prior UnregisterGCRoots call: Reset() is invoked at the START of a run,
+  // BEFORE InitVM creates the new VM instance whose ExtraRoots array
+  // RegisterGCRoots will populate. Any roots from a PREVIOUS run were
+  // already removed by that run's UnregisterGCRoots (called in its
+  // `finally`, before FreeVM) — see TfrmGame.RunScript for the canonical
+  // order: Reset -> InitVM -> RegisterGCRoots -> run -> UnregisterGCRoots
+  // -> FreeVM. So there is never a live VM holding a pointer into a slot
+  // this Reset() is about to free.
   FPendingKeys.Clear;
   FPendingMouse.Clear;
   FPendingClicks.Clear;
   FPendingMoves.Clear;
   FHeldKeys.Clear;
   FHeldNextDispatchTick.Clear;
-  FCallbackSlots.Clear;  // TObjectDictionary frees owned slots
+  for kind := Low(TEventCallbackKind) to High(TEventCallbackKind) do
+    FCallbackSlots[kind].Clear;  // TObjectDictionary frees owned slots
   FRunning := True;
   FGameLoopActive := False;
 end;
@@ -237,6 +273,8 @@ end;
 
 procedure TLoxEventEngine.QueueKeyDown(const KeyName: string;
   const Sender: string);
+var
+  evt: TPendingKeyEvent;
 begin
   if KeyName = '' then Exit;
   // Only fire 'pressed' on genuine first down, not auto-repeat
@@ -249,7 +287,10 @@ begin
     // re-applied after every held dispatch.
     FHeldNextDispatchTick.AddOrSetValue(KeyName,
       GetTickCount + FHeldDispatchInitialDelayMs);
-    FPendingKeys.Add('down:' + Sender + ':' + KeyName);
+    evt.IsDown := True;
+    evt.Sender := LowerCase(Sender);
+    evt.KeyName := KeyName;
+    FPendingKeys.Add(evt);
   end;
 end;
 
@@ -257,6 +298,7 @@ procedure TLoxEventEngine.QueueKeyUp(const KeyName: string;
   const Sender: string);
 var
   idx: Integer;
+  evt: TPendingKeyEvent;
 begin
   if KeyName = '' then Exit;
   idx := FHeldKeys.IndexOf(KeyName);
@@ -265,21 +307,36 @@ begin
     FHeldKeys.Delete(idx);
     FHeldNextDispatchTick.Remove(KeyName);
   end;
-  FPendingKeys.Add('up:' + Sender + ':' + KeyName);
+  evt.IsDown := False;
+  evt.Sender := LowerCase(Sender);
+  evt.KeyName := KeyName;
+  FPendingKeys.Add(evt);
 end;
 
 procedure TLoxEventEngine.QueueMouseDown(btn, x, y: Integer;
   const Sender: string);
+var
+  evt: TPendingMouseEvent;
 begin
-  FPendingMouse.Add('down:' + Sender + ':' + IntToStr(btn) + ':' +
-    IntToStr(x) + ':' + IntToStr(y));
+  evt.IsDown := True;
+  evt.Sender := LowerCase(Sender);
+  evt.Btn := btn;
+  evt.X := x;
+  evt.Y := y;
+  FPendingMouse.Add(evt);
 end;
 
 procedure TLoxEventEngine.QueueMouseUp(btn, x, y: Integer;
   const Sender: string);
+var
+  evt: TPendingMouseEvent;
 begin
-  FPendingMouse.Add('up:' + Sender + ':' + IntToStr(btn) + ':' +
-    IntToStr(x) + ':' + IntToStr(y));
+  evt.IsDown := False;
+  evt.Sender := LowerCase(Sender);
+  evt.Btn := btn;
+  evt.X := x;
+  evt.Y := y;
+  FPendingMouse.Add(evt);
 end;
 
 procedure TLoxEventEngine.QueueMouseMove(x, y: Integer;
@@ -295,131 +352,114 @@ end;
 
 procedure TLoxEventEngine.QueueClick(const Sender: string);
 begin
-  FPendingClicks.Add(Sender);
+  // Canonical lowercase, same as every other Queue* sender — GetCallback no
+  // longer normalizes case itself, so all queued/registered names must land
+  // here already-lowercased.
+  FPendingClicks.Add(LowerCase(Sender));
 end;
 
 procedure TLoxEventEngine.DispatchPendingEvents;
 var
   i: Integer;
-  s, keyName, sender: string;
-  parts: TArray<string>;
+  keyName, sender: string;
   dummy: TValue;
   cb: TValue;
-  btn, x, y: Integer;
   args: array[0..2] of TValue;
-  snapshot: TStringList;
-  moveEntry: TMouseMoveEntry;
+  keyEvents: TArray<TPendingKeyEvent>;
+  mouseEvents: TArray<TPendingMouseEvent>;
+  moveEvents: TArray<TPair<string, TMouseMoveEntry>>;
+  clickSenders: TArray<string>;
+  heldSnapshot: TArray<string>;
   pressTick, nowTick: DWORD;
 begin
   FDispatching := True;
   try
-  // Dispatch key events  (format: 'down:sender:keyname' / 'up:sender:keyname')
-  for i := 0 to FPendingKeys.Count - 1 do
+  // Dispatch key events (typed records — no Split/StrToIntDef parsing).
+  // ToArray + Clear BEFORE invoking any callback: a runtime error partway
+  // through must not leave already-queued events to replay next frame, and a
+  // callback that pumps messages (reentrant QueueKeyDown/Up) must land in the
+  // now-empty live queue rather than the one we're currently reading.
+  if FPendingKeys.Count > 0 then
   begin
-    s := FPendingKeys[i];
-    parts := s.Split([':'], 3);  // at most 3 parts
-    if Length(parts) = 3 then
+    keyEvents := FPendingKeys.ToArray;
+    FPendingKeys.Clear;
+    for i := 0 to High(keyEvents) do
     begin
-      sender := parts[1];
-      keyName := parts[2];
-      if parts[0] = 'down' then
+      if keyEvents[i].IsDown then
+        cb := GetCallback(eckKeyPressed, keyEvents[i].Sender)
+      else
+        cb := GetCallback(eckKeyReleased, keyEvents[i].Sender);
+      if isClosure(cb) then
       begin
-        cb := GetCallback(eckKeyPressed, sender);
-        if isClosure(cb) then
-        begin
-          args[0] := CreateStringValue(AnsiString(keyName));
-          InvokeCallback(cb, [args[0]], dummy);
-          if VM.RuntimeErrorStr <> '' then Exit;
-        end;
-      end
-      else if parts[0] = 'up' then
-      begin
-        cb := GetCallback(eckKeyReleased, sender);
-        if isClosure(cb) then
-        begin
-          args[0] := CreateStringValue(AnsiString(keyName));
-          InvokeCallback(cb, [args[0]], dummy);
-          if VM.RuntimeErrorStr <> '' then Exit;
-        end;
-      end;
-    end;
-  end;
-  FPendingKeys.Clear;
-
-  // Dispatch mouse events  (format: 'down:sender:btn:x:y' / 'up:sender:btn:x:y')
-  for i := 0 to FPendingMouse.Count - 1 do
-  begin
-    s := FPendingMouse[i];
-    parts := s.Split([':']);
-    if Length(parts) = 5 then
-    begin
-      sender := parts[1];
-      btn := StrToIntDef(parts[2], 0);
-      x := StrToIntDef(parts[3], 0);
-      y := StrToIntDef(parts[4], 0);
-      args[0] := CreateNumber(btn);
-      args[1] := CreateNumber(x);
-      args[2] := CreateNumber(y);
-      if parts[0] = 'down' then
-      begin
-        cb := GetCallback(eckMouseDown, sender);
-        if isClosure(cb) then
-        begin
-          InvokeCallback(cb, [args[0], args[1], args[2]], dummy);
-          if VM.RuntimeErrorStr <> '' then Exit;
-        end;
-      end
-      else if parts[0] = 'up' then
-      begin
-        cb := GetCallback(eckMouseUp, sender);
-        if isClosure(cb) then
-        begin
-          InvokeCallback(cb, [args[0], args[1], args[2]], dummy);
-          if VM.RuntimeErrorStr <> '' then Exit;
-        end;
-      end;
-    end;
-  end;
-  FPendingMouse.Clear;
-
-  // Dispatch click events  (each entry is a control name)
-  for i := 0 to FPendingClicks.Count - 1 do
-  begin
-    sender := FPendingClicks[i];
-    cb := GetCallback(eckClick, sender);
-    if isClosure(cb) then
-    begin
-      InvokeCallback(cb, [], dummy);
-      if VM.RuntimeErrorStr <> '' then Exit;
-    end;
-  end;
-  FPendingClicks.Clear;
-
-  // Dispatch mouse moves (coalesced per sender — one event per control per frame).
-  // Snapshot keys + drain the dictionary BEFORE invoking any callback: a Lox
-  // print inside a callback pumps Windows messages (via VM.OnPrint), which can
-  // queue fresh mouse moves and mutate FPendingMoves mid-iteration.
-  if FPendingMoves.Count > 0 then
-  begin
-    snapshot := TStringList.Create;
-    try
-      for sender in FPendingMoves.Keys do
-        snapshot.AddObject(sender, nil);
-      for i := 0 to snapshot.Count - 1 do
-      begin
-        sender := snapshot[i];
-        if not FPendingMoves.TryGetValue(sender, moveEntry) then Continue;
-        cb := GetCallback(eckMouseMove, sender);
-        if not isClosure(cb) then Continue;
-        args[0] := CreateNumber(moveEntry.X);
-        args[1] := CreateNumber(moveEntry.Y);
-        InvokeCallback(cb, [args[0], args[1]], dummy);
+        args[0] := CreateStringValue(AnsiString(keyEvents[i].KeyName));
+        InvokeCallback(cb, [args[0]], dummy);
         if VM.RuntimeErrorStr <> '' then Exit;
       end;
-    finally
-      snapshot.Free;
     end;
+  end;
+
+  // Dispatch mouse events (typed records). Same ToArray-then-Clear-before-
+  // dispatch ordering as keys, above, and for the same reason.
+  if FPendingMouse.Count > 0 then
+  begin
+    mouseEvents := FPendingMouse.ToArray;
+    FPendingMouse.Clear;
+    for i := 0 to High(mouseEvents) do
+    begin
+      args[0] := CreateNumber(mouseEvents[i].Btn);
+      args[1] := CreateNumber(mouseEvents[i].X);
+      args[2] := CreateNumber(mouseEvents[i].Y);
+      if mouseEvents[i].IsDown then
+        cb := GetCallback(eckMouseDown, mouseEvents[i].Sender)
+      else
+        cb := GetCallback(eckMouseUp, mouseEvents[i].Sender);
+      if isClosure(cb) then
+      begin
+        InvokeCallback(cb, [args[0], args[1], args[2]], dummy);
+        if VM.RuntimeErrorStr <> '' then Exit;
+      end;
+    end;
+  end;
+
+  // Dispatch click events (each entry is a control name). Copy + clear
+  // before dispatch, same reasoning as keys/mouse above. Plain array copy
+  // instead of a TStringList.Create/Assign/Free round trip every frame.
+  if FPendingClicks.Count > 0 then
+  begin
+    SetLength(clickSenders, FPendingClicks.Count);
+    for i := 0 to FPendingClicks.Count - 1 do
+      clickSenders[i] := FPendingClicks[i];
+    FPendingClicks.Clear;
+    for i := 0 to High(clickSenders) do
+    begin
+      sender := clickSenders[i];
+      cb := GetCallback(eckClick, sender);
+      if isClosure(cb) then
+      begin
+        InvokeCallback(cb, [], dummy);
+        if VM.RuntimeErrorStr <> '' then Exit;
+      end;
+    end;
+  end;
+
+  // Dispatch mouse moves (coalesced per sender — one event per control per
+  // frame). ToArray + Clear BEFORE invoking any callback: a Lox print inside
+  // a callback pumps Windows messages (via VM.OnPrint), which can queue fresh
+  // mouse moves — those must land in the now-empty live dictionary, not get
+  // lost or double-processed against a dictionary we're mid-iteration on.
+  if FPendingMoves.Count > 0 then
+  begin
+    moveEvents := FPendingMoves.ToArray;
     FPendingMoves.Clear;
+    for i := 0 to High(moveEvents) do
+    begin
+      cb := GetCallback(eckMouseMove, moveEvents[i].Key);
+      if not isClosure(cb) then Continue;
+      args[0] := CreateNumber(moveEvents[i].Value.X);
+      args[1] := CreateNumber(moveEvents[i].Value.Y);
+      InvokeCallback(cb, [args[0], args[1]], dummy);
+      if VM.RuntimeErrorStr <> '' then Exit;
+    end;
   end;
 
   // Dispatch held keys at a capped rate (for continuous movement).
@@ -429,32 +469,29 @@ begin
   cb := GetCallback(eckKeyHeld, '');
   if isClosure(cb) and (FHeldKeys.Count > 0) then
   begin
-    snapshot := TStringList.Create;
-    try
-      snapshot.Assign(FHeldKeys);
-      for i := 0 to snapshot.Count - 1 do
-      begin
-        keyName := snapshot[i];
-        if not FHeldNextDispatchTick.TryGetValue(keyName, pressTick) then
-          Continue;
-        nowTick := GetTickCount;
-        // Tick-wrap-safe comparison: signed delta < 0 means not yet eligible.
-        if Integer(nowTick - pressTick) < 0 then
-          Continue; // still inside the initial-press delay window
-        args[0] := CreateStringValue(AnsiString(keyName));
-        InvokeCallback(cb, [args[0]], dummy);
-        if VM.RuntimeErrorStr <> '' then Exit;
-        // The callback may have pumped Windows messages (e.g. via a Lox print
-        // hooked to a UI memo) and delivered a WM_KEYUP, which removes the
-        // entry from FHeldNextDispatchTick. Only re-arm if the key is still
-        // held; use AddOrSetValue rather than the indexer setter, which would
-        // raise EListError on a missing key.
-        if FHeldKeys.IndexOf(keyName) >= 0 then
-          FHeldNextDispatchTick.AddOrSetValue(keyName,
-            pressTick + FHeldDispatchIntervalMs);
-      end;
-    finally
-      snapshot.Free;
+    SetLength(heldSnapshot, FHeldKeys.Count);
+    for i := 0 to FHeldKeys.Count - 1 do
+      heldSnapshot[i] := FHeldKeys[i];
+    nowTick := GetTickCount;  // one call per dispatch cycle, not per key
+    for i := 0 to High(heldSnapshot) do
+    begin
+      keyName := heldSnapshot[i];
+      if not FHeldNextDispatchTick.TryGetValue(keyName, pressTick) then
+        Continue;
+      // Tick-wrap-safe comparison: signed delta < 0 means not yet eligible.
+      if Integer(nowTick - pressTick) < 0 then
+        Continue; // still inside the initial-press delay window
+      args[0] := CreateStringValue(AnsiString(keyName));
+      InvokeCallback(cb, [args[0]], dummy);
+      if VM.RuntimeErrorStr <> '' then Exit;
+      // The callback may have pumped Windows messages (e.g. via a Lox print
+      // hooked to a UI memo) and delivered a WM_KEYUP, which removes the
+      // entry from FHeldNextDispatchTick. Only re-arm if the key is still
+      // held; use AddOrSetValue rather than the indexer setter, which would
+      // raise EListError on a missing key.
+      if FHeldKeys.IndexOf(keyName) >= 0 then
+        FHeldNextDispatchTick.AddOrSetValue(keyName,
+          pressTick + FHeldDispatchIntervalMs);
     end;
   end;
   finally
@@ -474,10 +511,14 @@ var
   key: string;
   slot: TCallbackSlot;
 begin
-  key := CallbackKey(Kind, ControlName);
-  if FCallbackSlots.TryGetValue(key, slot) then
+  key := LowerCase(ControlName);
+  if FCallbackSlots[Kind].TryGetValue(key, slot) then
   begin
-    // Existing slot — just update the value (GC root address unchanged)
+    // Existing slot — just update the value (GC root address unchanged).
+    // No write barrier needed: Suto's GC roots (VM.ExtraRoots) store the
+    // ADDRESS of this TValue field, not a snapshot of its contents, so a
+    // plain assignment through that same memory is automatically visible
+    // to the next mark pass — there's nothing to notify.
     slot.Callback := Value;
   end
   else
@@ -485,7 +526,7 @@ begin
     // New slot — allocate and register as GC root
     slot := TCallbackSlot.Create;
     slot.Callback := Value;
-    FCallbackSlots.Add(key, slot);
+    FCallbackSlots[Kind].Add(key, slot);
     Suto.RegisterGCRoot(slot.Callback);
   end;
 end;
@@ -501,22 +542,26 @@ end;
 
 procedure TLoxEventEngine.RegisterGCRoots;
 var
+  kind: TEventCallbackKind;
   slot: TCallbackSlot;
 begin
   // Only register slots that aren't already rooted. SetCallback self-registers
   // new slots, so calling this after callbacks exist must not create duplicates
   // (UnregisterGCRoot only removes the first match, leaving orphans behind).
-  for slot in FCallbackSlots.Values do
-    if not Suto.IsGCRootRegistered(slot.Callback) then
-      Suto.RegisterGCRoot(slot.Callback);
+  for kind := Low(TEventCallbackKind) to High(TEventCallbackKind) do
+    for slot in FCallbackSlots[kind].Values do
+      if not Suto.IsGCRootRegistered(slot.Callback) then
+        Suto.RegisterGCRoot(slot.Callback);
 end;
 
 procedure TLoxEventEngine.UnregisterGCRoots;
 var
+  kind: TEventCallbackKind;
   slot: TCallbackSlot;
 begin
-  for slot in FCallbackSlots.Values do
-    Suto.UnregisterGCRoot(slot.Callback);
+  for kind := Low(TEventCallbackKind) to High(TEventCallbackKind) do
+    for slot in FCallbackSlots[kind].Values do
+      Suto.UnregisterGCRoot(slot.Callback);
 end;
 
 class function TLoxEventEngine.MapVKToName(Key: Word): string;

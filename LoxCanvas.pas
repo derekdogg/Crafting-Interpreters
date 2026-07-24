@@ -382,7 +382,7 @@ end;
 procedure EnsureBackBuffer;
 begin
   // Back buffer is always the fixed logical resolution. We never resize
-  // it to match the host control � that's what the present() scale step
+  // it to match the host control that's what the present() scale step
   // is for. This guarantees pixel-perfect art and stable fill cost.
   if FBackBuffer = nil then
   begin
@@ -911,6 +911,124 @@ begin
   PCardinal(FRenderTarget.ScanLine[y])[x] := pixel;
 end;
 
+const
+  CS_INSIDE = 0;
+  CS_LEFT   = 1;
+  CS_RIGHT  = 2;
+  CS_BOTTOM = 4;
+  CS_TOP    = 8;
+
+// 4-bit Cohen-Sutherland region code for (x,y) against an inclusive
+// [xmin..xmax] x [ymin..ymax] rectangle.
+function CSOutCode(x, y, xmin, ymin, xmax, ymax: Integer): Integer; inline;
+begin
+  Result := CS_INSIDE;
+  if x < xmin then Result := Result or CS_LEFT
+  else if x > xmax then Result := Result or CS_RIGHT;
+  if y < ymin then Result := Result or CS_TOP
+  else if y > ymax then Result := Result or CS_BOTTOM;
+end;
+
+// Cohen-Sutherland line clipping. Trims (x1,y1)-(x2,y2) down to the
+// segment inside the inclusive rectangle [xmin..xmax] x [ymin..ymax],
+// mutating the endpoints in place. Returns False when the line lies
+// entirely in one outside region (nothing to draw).
+//
+// This runs once before Bresenham instead of the rasterizer checking
+// bounds on every stepped pixel — a line that's mostly off-screen no
+// longer has to walk every pixel just to discard almost all of them,
+// and once clipped, every pixel Bresenham produces is guaranteed to
+// already be inside the rectangle.
+function ClipLineCohenSutherland(var x1, y1, x2, y2: Integer;
+  xmin, ymin, xmax, ymax: Integer): Boolean;
+var
+  outcode0, outcode1, outcodeOut: Integer;
+  x, y: Double;
+begin
+  outcode0 := CSOutCode(x1, y1, xmin, ymin, xmax, ymax);
+  outcode1 := CSOutCode(x2, y2, xmin, ymin, xmax, ymax);
+  Result := False;
+  while True do
+  begin
+    if (outcode0 or outcode1) = 0 then
+    begin
+      // Both endpoints inside: trivial accept.
+      Result := True;
+      Exit;
+    end;
+    if (outcode0 and outcode1) <> 0 then
+      Exit; // both endpoints share an outside region: trivial reject
+    // Pick whichever endpoint is outside and push it to the boundary
+    // it crosses first.
+    if outcode0 <> 0 then outcodeOut := outcode0 else outcodeOut := outcode1;
+    x := 0;
+    y := 0;
+    if (outcodeOut and CS_TOP) <> 0 then
+    begin
+      x := x1 + (x2 - x1) * (ymin - y1) / (y2 - y1);
+      y := ymin;
+    end
+    else if (outcodeOut and CS_BOTTOM) <> 0 then
+    begin
+      x := x1 + (x2 - x1) * (ymax - y1) / (y2 - y1);
+      y := ymax;
+    end
+    else if (outcodeOut and CS_RIGHT) <> 0 then
+    begin
+      y := y1 + (y2 - y1) * (xmax - x1) / (x2 - x1);
+      x := xmax;
+    end
+    else // CS_LEFT
+    begin
+      y := y1 + (y2 - y1) * (xmin - x1) / (x2 - x1);
+      x := xmin;
+    end;
+    if outcodeOut = outcode0 then
+    begin
+      x1 := Round(x);
+      y1 := Round(y);
+      outcode0 := CSOutCode(x1, y1, xmin, ymin, xmax, ymax);
+    end
+    else
+    begin
+      x2 := Round(x);
+      y2 := Round(y);
+      outcode1 := CSOutCode(x2, y2, xmin, ymin, xmax, ymax);
+    end;
+  end;
+end;
+
+// Clip (x1,y1)-(x2,y2) against the current clip rect via
+// ClipLineCohenSutherland, then rasterize whatever's left with
+// Bresenham directly onto the render target — no per-pixel clip
+// branch needed since the clip already guarantees every stepped pixel
+// is in bounds. Shared by drawLine() and drawTriangle(): each triangle
+// edge is just a clipped line, so this gives both natives the exact
+// same clip-before-rasterize treatment for free.
+procedure RasterLineClipped(x1, y1, x2, y2: Integer);
+var
+  dx, dy, sx, sy, err, e2: Integer;
+  bw, bh: Integer;
+begin
+  bw := FClipX2;
+  bh := FClipY2;
+  if not ClipLineCohenSutherland(x1, y1, x2, y2, FClipX1, FClipY1, bw - 1, bh - 1) then
+    Exit;
+  dx := Abs(x2 - x1);
+  dy := -Abs(y2 - y1);
+  if x1 < x2 then sx := 1 else sx := -1;
+  if y1 < y2 then sy := 1 else sy := -1;
+  err := dx + dy;
+  while True do
+  begin
+    PutPixelUnchecked(x1, y1, FCurrentPixel);
+    if (x1 = x2) and (y1 = y2) then Break;
+    e2 := 2 * err;
+    if e2 >= dy then begin err := err + dy; x1 := x1 + sx; end;
+    if e2 <= dx then begin err := err + dx; y1 := y1 + sy; end;
+  end;
+end;
+
 function clearCanvasNative(argCount: integer; args: pValue): TValue;
 var
   r, g, b: Integer;
@@ -1333,6 +1451,7 @@ const
 var
   x, y, scale, i, gx, gy, charIdx, k, n: Integer;
   ax, ay, px, py, bw, bh: Integer;
+  strLen, chunkStart: Integer;
   s: AnsiString;
   ch: Byte;
   rowBits: Byte;
@@ -1430,91 +1549,133 @@ begin
     // call regardless of string length, not 7*length. Produces
     // bit-identical output to the original nested-loop order — same
     // pixels, same fullyVisible/per-pixel-clip fast/slow split, just a
-    // different iteration order. Capped at MAX_DRAWTEXT_CHARS per call
-    // (well beyond any on-screen line's practical length at LOGICAL_W)
-    // to keep the precompute arrays fixed-size (no per-call heap
-    // allocation).
-    n := Length(s);
-    if n > MAX_DRAWTEXT_CHARS then n := MAX_DRAWTEXT_CHARS;
-    for i := 0 to n - 1 do
+    // different iteration order.
+    //
+    // Processed in fixed-size chunks of up to MAX_DRAWTEXT_CHARS so the
+    // fixed-capacity precompute arrays don't silently truncate strings
+    // longer than the cap (found 2026-07-22 in the scale>1 path and
+    // fixed there first; same bug applies here): each chunk gets its
+    // own precompute pass + row-major render pass, with `x` carrying
+    // over between chunks so a multi-chunk string still lays out
+    // contiguously. Strings at or under the cap (the overwhelming
+    // common case) run exactly one chunk — unchanged behaviour from
+    // before.
+    strLen := Length(s);
+    chunkStart := 0;
+    while chunkStart < strLen do
     begin
-      ch := Ord(s[i + 1]);
-      if (ch < FONT_FIRST) or (ch > FONT_LAST) then
-        ch := FONT_FIRST;
-      charCh[i] := ch;
-      charX[i] := x;
-      charSkip[i] := (x + FONT_W <= FClipX1) or (x >= bw) or
-                     (y + FONT_H <= FClipY1) or (y >= bh);
-      charFullyVisible[i] := (x >= FClipX1) and (x + FONT_W <= bw) and
-                             (y >= FClipY1) and (y + FONT_H <= bh);
-      x := x + FONT_ADVANCE;
-    end;
-    for gy := 0 to FONT_H - 1 do
-    begin
-      ay := y + gy;
-      if (ay < FClipY1) or (ay >= bh) then Continue;
-      dstRow := nil;
+      n := strLen - chunkStart;
+      if n > MAX_DRAWTEXT_CHARS then n := MAX_DRAWTEXT_CHARS;
       for i := 0 to n - 1 do
       begin
-        if charSkip[i] then Continue;
-        ch := charCh[i];
-        cnt := FGlyphCount[ch, gy];
-        if cnt = 0 then Continue;
-        if dstRow = nil then
-          dstRow := FRenderTarget.ScanLine[ay];  // once per ROW, not per character
-        if charFullyVisible[i] then
-        begin
-          for k := 0 to cnt - 1 do
-            dstRow[charX[i] + FGlyphCol[ch, gy, k]] := FCurrentPixel;
-        end
-        else
-        begin
-          for k := 0 to cnt - 1 do
-          begin
-            ax := charX[i] + FGlyphCol[ch, gy, k];
-            if (ax >= FClipX1) and (ax < bw) then
-              dstRow[ax] := FCurrentPixel;
-          end;
-        end;
-      end;
-    end;
-  end
-  else
-  begin
-    // Scaled path. Each set glyph pixel becomes a scale x scale block.
-    for i := 1 to Length(s) do
-    begin
-      ch := Ord(s[i]);
-      if (ch < FONT_FIRST) or (ch > FONT_LAST) then
-        ch := FONT_FIRST;
-      // Skip fully off-screen glyphs entirely (mirrors the scale=1 path).
-      if (x + FONT_W * scale <= FClipX1) or (x >= bw) or
-         (y + FONT_H * scale <= FClipY1) or (y >= bh) then
-      begin
-        x := x + FONT_ADVANCE * scale;
-        Continue;
+        ch := Ord(s[chunkStart + i + 1]);
+        if (ch < FONT_FIRST) or (ch > FONT_LAST) then
+          ch := FONT_FIRST;
+        charCh[i] := ch;
+        charX[i] := x;
+        charSkip[i] := (x + FONT_W <= FClipX1) or (x >= bw) or
+                       (y + FONT_H <= FClipY1) or (y >= bh);
+        charFullyVisible[i] := (x >= FClipX1) and (x + FONT_W <= bw) and
+                               (y >= FClipY1) and (y + FONT_H <= bh);
+        x := x + FONT_ADVANCE;
       end;
       for gy := 0 to FONT_H - 1 do
       begin
-        cnt := FGlyphCount[ch, gy];
-        if cnt = 0 then Continue;
-        for py := 0 to scale - 1 do
+        ay := y + gy;
+        if (ay < FClipY1) or (ay >= bh) then Continue;
+        dstRow := nil;
+        for i := 0 to n - 1 do
         begin
-          ay := y + gy * scale + py;
-          if (ay < FClipY1) or (ay >= bh) then Continue;
-          dstRow := FRenderTarget.ScanLine[ay];
-          for k := 0 to cnt - 1 do
+          if charSkip[i] then Continue;
+          ch := charCh[i];
+          cnt := FGlyphCount[ch, gy];
+          if cnt = 0 then Continue;
+          if dstRow = nil then
+            dstRow := FRenderTarget.ScanLine[ay];  // once per ROW, not per character
+          if charFullyVisible[i] then
           begin
-            for px := 0 to scale - 1 do
+            for k := 0 to cnt - 1 do
+              dstRow[charX[i] + FGlyphCol[ch, gy, k]] := FCurrentPixel;
+          end
+          else
+          begin
+            for k := 0 to cnt - 1 do
             begin
-              ax := x + FGlyphCol[ch, gy, k] * scale + px;
+              ax := charX[i] + FGlyphCol[ch, gy, k];
               if (ax >= FClipX1) and (ax < bw) then
                 dstRow[ax] := FCurrentPixel;
             end;
           end;
         end;
       end;
-      x := x + FONT_ADVANCE * scale;
+      Inc(chunkStart, n);
+    end;
+  end
+  else
+  begin
+    // Scaled path. Each set glyph pixel becomes a scale x scale block.
+    //
+    // Row-major rendering (same restructuring as the scale=1 hot path
+    // above, applied here too): the ORIGINAL loop nested character ->
+    // glyph-row -> scale-sub-row and called FRenderTarget.ScanLine[ay]
+    // at the innermost of those three, i.e. once per (character,
+    // glyph-row, scale-sub-row). For a 40-character line at scale=3
+    // that's up to 840 ScanLine property-getter calls, when every
+    // character shares the same FONT_H*scale absolute screen rows.
+    // Precompute each character's glyph code / x position / skip flag
+    // ONCE in a first pass, then iterate screen rows in the OUTER loop
+    // and characters in the INNER loop, so ScanLine is called at most
+    // FONT_H * scale times per drawText() call regardless of string
+    // length. Bit-identical output to the original nesting.
+    //
+    // Processed in fixed-size chunks of up to MAX_DRAWTEXT_CHARS so the
+    // fixed-capacity precompute arrays don't silently truncate strings
+    // longer than the cap: each chunk gets its own precompute pass +
+    // row-major render pass, with `x` carrying over between chunks so
+    // a multi-chunk string still lays out contiguously. Strings at or
+    // under the cap (the overwhelming common case) run exactly one
+    // chunk — unchanged behaviour from before.
+    strLen := Length(s);
+    chunkStart := 0;
+    while chunkStart < strLen do
+    begin
+      n := strLen - chunkStart;
+      if n > MAX_DRAWTEXT_CHARS then n := MAX_DRAWTEXT_CHARS;
+      for i := 0 to n - 1 do
+      begin
+        ch := Ord(s[chunkStart + i + 1]);
+        if (ch < FONT_FIRST) or (ch > FONT_LAST) then
+          ch := FONT_FIRST;
+        charCh[i] := ch;
+        charX[i] := x;
+        charSkip[i] := (x + FONT_W * scale <= FClipX1) or (x >= bw) or
+                       (y + FONT_H * scale <= FClipY1) or (y >= bh);
+        x := x + FONT_ADVANCE * scale;
+      end;
+      for gy := 0 to FONT_H - 1 do
+        for py := 0 to scale - 1 do
+        begin
+          ay := y + gy * scale + py;
+          if (ay < FClipY1) or (ay >= bh) then Continue;
+          dstRow := nil;
+          for i := 0 to n - 1 do
+          begin
+            if charSkip[i] then Continue;
+            ch := charCh[i];
+            cnt := FGlyphCount[ch, gy];
+            if cnt = 0 then Continue;
+            if dstRow = nil then
+              dstRow := FRenderTarget.ScanLine[ay];  // once per screen row per chunk
+            for k := 0 to cnt - 1 do
+            begin
+              ax := charX[i] + FGlyphCol[ch, gy, k] * scale;
+              for px := 0 to scale - 1 do
+                if (ax + px >= FClipX1) and (ax + px < bw) then
+                  dstRow[ax + px] := FCurrentPixel;
+            end;
+          end;
+        end;
+      Inc(chunkStart, n);
     end;
   end;
   // TEMPORARY diagnostic (see FDrawTextRenderMs above): everything from
@@ -2059,8 +2220,6 @@ end;
 function drawLineNative(argCount: integer; args: pValue): TValue;
 var
   x1, y1, x2, y2: Integer;
-  dx, dy, sx, sy, err, e2: Integer;
-  bw, bh: Integer;
 begin
   if argCount <> 4 then
   begin
@@ -2078,32 +2237,9 @@ begin
   y1 := Trunc(GetNumber(args[1])) - FCameraY;
   x2 := Trunc(GetNumber(args[2])) - FCameraX;
   y2 := Trunc(GetNumber(args[3])) - FCameraY;
-  bw := FClipX2;
-  bh := FClipY2;
-  // Trivial reject: every plotted pixel lies inside the line's bounding
-  // box, so if that box misses the clip rect the whole walk is a no-op.
-  // Without this a long off-screen line still stepped every pixel.
-  if (Max(x1, x2) < FClipX1) or (Min(x1, x2) >= bw) or
-     (Max(y1, y2) < FClipY1) or (Min(y1, y2) >= bh) then
-  begin
-    Result := CreateNilValue;
-    Exit;
-  end;
-  // Bresenham's line algorithm — crisp single-pixel line
-  dx := Abs(x2 - x1);
-  dy := -Abs(y2 - y1);
-  if x1 < x2 then sx := 1 else sx := -1;
-  if y1 < y2 then sy := 1 else sy := -1;
-  err := dx + dy;
-  while True do
-  begin
-    if (x1 >= FClipX1) and (x1 < bw) and (y1 >= FClipY1) and (y1 < bh) then
-      PutPixelUnchecked(x1, y1, FCurrentPixel);
-    if (x1 = x2) and (y1 = y2) then Break;
-    e2 := 2 * err;
-    if e2 >= dy then begin err := err + dy; x1 := x1 + sx; end;
-    if e2 <= dx then begin err := err + dx; y1 := y1 + sy; end;
-  end;
+  // Cohen-Sutherland pre-clip + unchecked Bresenham, shared with
+  // drawTriangle() (see RasterLineClipped above).
+  RasterLineClipped(x1, y1, x2, y2);
   Result := CreateNilValue;
 end;
 
@@ -2143,10 +2279,14 @@ begin
 end;
 
 // Xiaolin Wu's antialiased line. Smooth diagonals at the cost of two
-// blended pixel writes per step instead of one.
-function drawLineAANative(argCount: integer; args: pValue): TValue;
+// blended pixel writes per step instead of one. Extracted into its own
+// procedure (rather than living inline in drawLineAANative) so
+// drawTriangleAA() can reuse it for each of its 3 edges — exactly the
+// same relationship RasterLineClipped has to drawLine()/drawTriangle().
+// Coordinates are already in render-target space; callers apply the
+// camera offset before calling in.
+procedure RasterLineAAClipped(fx1, fy1, fx2, fy2: Single);
 var
-  fx1, fy1, fx2, fy2: Single;
   steep: Boolean;
   dx, dy, gradient, intery, xend, yend, xgap: Single;
   xpx1, ypx1, xpx2, ypx2, x: Integer;
@@ -2163,22 +2303,29 @@ var
   end;
 
 begin
-  if argCount <> 4 then
-  begin
-    RuntimeError('drawLineAA() takes 4 arguments (x1, y1, x2, y2).');
-    Exit(CreateNilValue);
-  end;
-  if (not isNumber(args[0])) or (not isNumber(args[1])) or
-     (not isNumber(args[2])) or (not isNumber(args[3])) then
-  begin
-    RuntimeError('drawLineAA() arguments must be numbers.');
-    Exit(CreateNilValue);
-  end;
-  EnsureBackBuffer;
-  fx1 := GetNumber(args[0]) - FCameraX;
-  fy1 := GetNumber(args[1]) - FCameraY;
-  fx2 := GetNumber(args[2]) - FCameraX;
-  fy2 := GetNumber(args[3]) - FCameraY;
+  // Trivial reject: mirrors the bounding-box check drawLine() uses
+  // before Bresenham. Without it, a long or fully off-screen AA line
+  // still walks its whole pixel range — every step still pays for a
+  // PutPixelBlend() bounds check — just to discover every pixel lands
+  // outside the clip rect.
+  //
+  // The exclusion region is expanded by 1 pixel on each side (rather
+  // than testing against FClipX1/FClipX2/FClipY1/FClipY2 directly)
+  // because this is an ANTIALIASED line: the endpoint cap rounds fx to
+  // the nearest pixel (Round can shift a coordinate up to 0.5px toward
+  // the clip rect), and every plotted point blends TWO rows/columns —
+  // Floor(yend) and Floor(yend)+1 (or the x-equivalent when steep) —
+  // so a raw float coordinate up to 1px beyond the rect can still
+  // contribute real coverage to the first/last visible pixel. A tight
+  // (non-expanded) reject would silently drop that fringe. Only reject
+  // when BOTH endpoints are more than 1px past the same edge, which
+  // still catches the common fully-off-screen / very-long-line case
+  // this check exists for.
+  if ((fx1 < FClipX1 - 1) and (fx2 < FClipX1 - 1)) or
+     ((fx1 >= FClipX2 + 1) and (fx2 >= FClipX2 + 1)) or
+     ((fy1 < FClipY1 - 1) and (fy2 < FClipY1 - 1)) or
+     ((fy1 >= FClipY2 + 1) and (fy2 >= FClipY2 + 1)) then
+    Exit;
 
   steep := Abs(fy2 - fy1) > Abs(fx2 - fx1);
   if steep then
@@ -2250,7 +2397,24 @@ begin
       intery := intery + gradient;
     end;
   end;
+end;
 
+function drawLineAANative(argCount: integer; args: pValue): TValue;
+begin
+  if argCount <> 4 then
+  begin
+    RuntimeError('drawLineAA() takes 4 arguments (x1, y1, x2, y2).');
+    Exit(CreateNilValue);
+  end;
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) then
+  begin
+    RuntimeError('drawLineAA() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  RasterLineAAClipped(GetNumber(args[0]) - FCameraX, GetNumber(args[1]) - FCameraY,
+                       GetNumber(args[2]) - FCameraX, GetNumber(args[3]) - FCameraY);
   Result := CreateNilValue;
 end;
 
@@ -2475,6 +2639,257 @@ begin
       HLine(cx - y, cx + y, cy + x);
     end;
   end;
+  Result := CreateNilValue;
+end;
+
+// drawTriangle(x1,y1, x2,y2, x3,y3): wireframe outline. Each of the 3
+// edges is just a clipped line, so this reuses RasterLineClipped (the
+// same Cohen-Sutherland pre-clip + unchecked Bresenham drawLine() uses)
+// instead of re-deriving line clipping/rasterization a third time.
+function drawTriangleNative(argCount: integer; args: pValue): TValue;
+var
+  x1, y1, x2, y2, x3, y3: Integer;
+begin
+  if argCount <> 6 then
+  begin
+    RuntimeError('drawTriangle() takes 6 arguments (x1, y1, x2, y2, x3, y3).');
+    Exit(CreateNilValue);
+  end;
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) or
+     (not isNumber(args[4])) or (not isNumber(args[5])) then
+  begin
+    RuntimeError('drawTriangle() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x1 := Trunc(GetNumber(args[0])) - FCameraX;
+  y1 := Trunc(GetNumber(args[1])) - FCameraY;
+  x2 := Trunc(GetNumber(args[2])) - FCameraX;
+  y2 := Trunc(GetNumber(args[3])) - FCameraY;
+  x3 := Trunc(GetNumber(args[4])) - FCameraX;
+  y3 := Trunc(GetNumber(args[5])) - FCameraY;
+  RasterLineClipped(x1, y1, x2, y2);
+  RasterLineClipped(x2, y2, x3, y3);
+  RasterLineClipped(x3, y3, x1, y1);
+  Result := CreateNilValue;
+end;
+
+// drawTriangleAA(x1,y1, x2,y2, x3,y3): antialiased wireframe outline.
+// Same reuse relationship drawTriangle() has with RasterLineClipped,
+// but built on the Xiaolin Wu rasterizer (RasterLineAAClipped) instead
+// — each edge is just an antialiased clipped line, so there's no
+// separate triangle-specific antialiasing to derive. Unlike
+// drawTriangle(), coordinates are kept as floats (not Trunc()'d) so the
+// sub-pixel precision that makes the antialiasing worthwhile survives
+// all the way to RasterLineAAClipped.
+function drawTriangleAANative(argCount: integer; args: pValue): TValue;
+var
+  x1, y1, x2, y2, x3, y3: Single;
+begin
+  if argCount <> 6 then
+  begin
+    RuntimeError('drawTriangleAA() takes 6 arguments (x1, y1, x2, y2, x3, y3).');
+    Exit(CreateNilValue);
+  end;
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) or
+     (not isNumber(args[4])) or (not isNumber(args[5])) then
+  begin
+    RuntimeError('drawTriangleAA() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x1 := GetNumber(args[0]) - FCameraX;
+  y1 := GetNumber(args[1]) - FCameraY;
+  x2 := GetNumber(args[2]) - FCameraX;
+  y2 := GetNumber(args[3]) - FCameraY;
+  x3 := GetNumber(args[4]) - FCameraX;
+  y3 := GetNumber(args[5]) - FCameraY;
+  RasterLineAAClipped(x1, y1, x2, y2);
+  RasterLineAAClipped(x2, y2, x3, y3);
+  RasterLineAAClipped(x3, y3, x1, y1);
+  Result := CreateNilValue;
+end;
+
+// fillTriangle(x1,y1, x2,y2, x3,y3): flat-color scanline fill.
+// Standard sort-by-y + split-at-the-middle-vertex scanline algorithm:
+// the "long" edge (v0->v2) spans the full height, and the "short" edge
+// is v0->v1 for the top half, v1->v2 for the bottom half. Each
+// scanline's span between the two edges is filled with FillDWord (rep
+// stosd), same fast-fill primitive fillRect/fillCircle use.
+function fillTriangleNative(argCount: integer; args: pValue): TValue;
+var
+  x0, y0, x1, y1, x2, y2: Integer;
+  area: Int64;
+  minX, maxX: Integer;
+  bw, bh: Integer;
+  ay0, ay1, ay, loopStart, loopEnd: Integer;
+  xa, xb: Double;
+  dxLong, dxTop, dxBottom: Double;
+  row: PCardinal;
+
+  procedure SwapI(var a, b: Integer); inline;
+  var
+    t: Integer;
+  begin
+    t := a; a := b; b := t;
+  end;
+
+  procedure HLine(hx0, hx1, hy: Integer);
+  begin
+    if (hy < FClipY1) or (hy >= bh) then Exit;
+    if hx0 < FClipX1 then hx0 := FClipX1;
+    if hx1 >= bw then hx1 := bw - 1;
+    if hx0 > hx1 then Exit;
+    row := FRenderTarget.ScanLine[hy];
+    FillDWord(row[hx0], hx1 - hx0 + 1, FCurrentPixel);
+  end;
+
+  // Rounds span endpoints (fa, fb) and fills them on row hy. Shared by
+  // all three scanline phases below so the left/right ordering and
+  // rounding rule only lives in one place.
+  procedure FillSpan(fa, fb: Double; hy: Integer);
+  var
+    lx, rx: Integer;
+  begin
+    if fa <= fb then
+    begin
+      lx := Round(fa);
+      rx := Round(fb);
+    end
+    else
+    begin
+      lx := Round(fb);
+      rx := Round(fa);
+    end;
+    if lx <= rx then
+      HLine(lx, rx, hy);
+  end;
+
+begin
+  if argCount <> 6 then
+  begin
+    RuntimeError('fillTriangle() takes 6 arguments (x1, y1, x2, y2, x3, y3).');
+    Exit(CreateNilValue);
+  end;
+  if (not isNumber(args[0])) or (not isNumber(args[1])) or
+     (not isNumber(args[2])) or (not isNumber(args[3])) or
+     (not isNumber(args[4])) or (not isNumber(args[5])) then
+  begin
+    RuntimeError('fillTriangle() arguments must be numbers.');
+    Exit(CreateNilValue);
+  end;
+  EnsureBackBuffer;
+  x0 := Trunc(GetNumber(args[0])) - FCameraX;
+  y0 := Trunc(GetNumber(args[1])) - FCameraY;
+  x1 := Trunc(GetNumber(args[2])) - FCameraX;
+  y1 := Trunc(GetNumber(args[3])) - FCameraY;
+  x2 := Trunc(GetNumber(args[4])) - FCameraX;
+  y2 := Trunc(GetNumber(args[5])) - FCameraY;
+
+  // Degenerate/collinear rejection via the signed area of the triangle
+  // (twice the true area — the factor of 2 doesn't matter since only
+  // zero/non-zero is tested). Computed on the ORIGINAL vertex order,
+  // before the y-sort below, since a swap only flips the sign, never
+  // the zero-ness. This catches every degenerate case in one test —
+  // zero-height (horizontal), zero-width (vertical), and any other set
+  // of collinear points — where the old "y0 = y2" check only caught
+  // the horizontal case.
+  area := Int64(x1 - x0) * Int64(y2 - y0) - Int64(y1 - y0) * Int64(x2 - x0);
+  if area = 0 then
+  begin
+    Result := CreateNilValue;
+    Exit;
+  end;
+
+  // Sort vertices by y ascending (y0 <= y1 <= y2) — a fixed 3-element
+  // sorting network, same style as a manual insertion sort.
+  if y0 > y1 then begin SwapI(x0, x1); SwapI(y0, y1); end;
+  if y1 > y2 then begin SwapI(x1, x2); SwapI(y1, y2); end;
+  if y0 > y1 then begin SwapI(x0, x1); SwapI(y0, y1); end;
+
+  bw := FClipX2;
+  bh := FClipY2;
+
+  // Trivial reject: bounding box entirely outside the clip rect (same
+  // pattern as drawCircle/drawRect) before any scanline work starts.
+  minX := x0; if x1 < minX then minX := x1; if x2 < minX then minX := x2;
+  maxX := x0; if x1 > maxX then maxX := x1; if x2 > maxX then maxX := x2;
+  if (maxX < FClipX1) or (minX >= bw) or (y2 < FClipY1) or (y0 >= bh) then
+  begin
+    Result := CreateNilValue;
+    Exit;
+  end;
+  // Note: y0 = y2 (zero height) already implies area = 0 (since sorted
+  // y0 <= y1 <= y2 collapses to y0 = y1 = y2), so it's already excluded
+  // by the area check above — y2 > y0 is guaranteed from here on,
+  // making the dxLong division below safe without re-testing it here.
+
+  // Pre-clip the scanline range vertically so the loop below only
+  // touches rows that are both inside the triangle AND inside the
+  // clip rect.
+  ay0 := y0; if ay0 < FClipY1 then ay0 := FClipY1;
+  ay1 := y2; if ay1 >= bh then ay1 := bh - 1;
+
+  // Incremental edge stepping: precompute each edge's dx/dy slope ONCE
+  // instead of re-deriving x = x0 + dx*(ay-y0)/dy (2 multiplies + 1
+  // divide) from scratch on every scanline. The long edge (v0->v2)
+  // spans the whole triangle; the short edge is v0->v1 for the top
+  // half and v1->v2 for the bottom half — same two guarded slopes the
+  // original per-scanline branch used, just computed once up front.
+  dxLong := (x2 - x0) / (y2 - y0);
+  if y1 > y0 then dxTop := (x1 - x0) / (y1 - y0) else dxTop := 0;
+  if y2 > y1 then dxBottom := (x2 - x1) / (y2 - y1) else dxBottom := 0;
+
+  // Phase 1: top half (ay < y1). Both edges are now stepped by simple
+  // addition instead of a fresh multiply+divide per row. Only runs
+  // when the clipped range actually reaches above y1.
+  loopEnd := y1 - 1;
+  if loopEnd > ay1 then loopEnd := ay1;
+  if ay0 <= loopEnd then
+  begin
+    xa := x0 + dxLong * (ay0 - y0);
+    xb := x0 + dxTop * (ay0 - y0);
+    for ay := ay0 to loopEnd do
+    begin
+      FillSpan(xa, xb, ay);
+      xa := xa + dxLong;
+      xb := xb + dxTop;
+    end;
+  end;
+
+  // Phase 2: the single scanline at ay = y1, where the short edge
+  // switches from v0->v1 to v1->v2. Computed directly (not stepped)
+  // to exactly preserve the original flat-bottom tie-break (y2 = y1 ->
+  // x2; otherwise the bottom edge formula evaluated at ay = y1, which
+  // is always x1) rather than inheriting it from either phase's slope.
+  if (y1 >= ay0) and (y1 <= ay1) then
+  begin
+    xa := x0 + dxLong * (y1 - y0);
+    if y2 = y1 then
+      xb := x2
+    else
+      xb := x1;
+    FillSpan(xa, xb, y1);
+  end;
+
+  // Phase 3: bottom half (ay > y1) — long edge continues stepping by
+  // dxLong, short edge now stepped by dxBottom.
+  loopStart := y1 + 1;
+  if loopStart < ay0 then loopStart := ay0;
+  if loopStart <= ay1 then
+  begin
+    xa := x0 + dxLong * (loopStart - y0);
+    xb := x1 + dxBottom * (loopStart - y1);
+    for ay := loopStart to ay1 do
+    begin
+      FillSpan(xa, xb, ay);
+      xa := xa + dxLong;
+      xb := xb + dxBottom;
+    end;
+  end;
+
   Result := CreateNilValue;
 end;
 
@@ -2888,7 +3303,7 @@ function drawSpriteRotatedNative(argCount: integer; args: pValue): TValue;
 var
   id, x, y, scale, sw, sh, dw, dh: Integer;
   bmp: TBitmap;
-  angle, cosA, sinA, srcCx, srcCy: Double;
+  angleDeg, angle, cosA, sinA, srcCx, srcCy: Double;
   dx, dy, sx, sy, bw, bh: Integer;
   baseX, baseY: Integer;
   dx0, dx1, dy0, dy1: Integer;
@@ -2906,6 +3321,12 @@ var
   outR, outG, outB, missing: Integer;
   scaleIsOne: Boolean;
   lastSy: Integer;
+  // True for 0/90/180/270-degree rotations (mod 360, within float
+  // epsilon): every destination pixel then maps onto exactly one source
+  // pixel with full coverage, so the 2x2 supersampling below buys no
+  // antialiasing benefit and is skipped in favor of a single
+  // nearest-neighbor sample per pixel (see the isAxisAligned branch).
+  isAxisAligned: Boolean;
 begin
   if argCount <> 5 then
   begin
@@ -2930,9 +3351,14 @@ begin
   y := Trunc(GetNumber(args[2])) - FCameraY;
   scale := Trunc(GetNumber(args[3]));
   if scale < 1 then scale := 1;
-  angle := GetNumber(args[4]) * Pi / 180.0; // degrees to radians
+  angleDeg := GetNumber(args[4]);
+  angle := angleDeg * Pi / 180.0; // degrees to radians
   cosA := Cos(angle);
   sinA := Sin(angle);
+  // Checked on the raw DEGREE value (not cosA/sinA) to avoid floating-
+  // point round-trip noise through radians - e.g. Cos(Pi/2) is ~6e-17,
+  // not exactly 0, so comparing cosA/sinA to 0/1/-1 would be unreliable.
+  isAxisAligned := Abs(angleDeg - 90.0 * Round(angleDeg / 90.0)) < 1e-6;
 
   bmp := FSprites[id];
   if bmp = nil then
@@ -3007,86 +3433,142 @@ begin
   // Initialize so the "did we already fetch this row?" cache is unset.
   srcRow := nil;
 
-  for dy := dy0 to dy1 - 1 do
+  if isAxisAligned then
   begin
-    dstRow := FRenderTarget.ScanLine[baseY + dy];
-    fxc := fxcRow;
-    fyc := fycRow;
-    for dx := dx0 to dx1 - 1 do
+    // Fast path: axis-aligned rotation (see isAxisAligned comment above).
+    // Same bounding box / centering / DDA stepping as the general path
+    // below, but ONE nearest-neighbor sample per destination pixel
+    // instead of 2x2 supersampling: with source and destination grids
+    // staying axis-aligned there is no partial-pixel coverage to
+    // antialias, so a hit is always full coverage (direct opaque write)
+    // and a miss (transparency key) is always a full skip — no
+    // averaging/blending math needed either way.
+    for dy := dy0 to dy1 - 1 do
     begin
-      sumR := 0; sumG := 0; sumB := 0; cnt := 0;
-      // ScanLine cache: most rotations have shallow angles, so all 4
-      // sub-samples within a pixel usually fall on the same source row.
-      // Reset per output pixel so the cache reflects reality.
+      dstRow := FRenderTarget.ScanLine[baseY + dy];
+      fxc := fxcRow;
+      fyc := fycRow;
+      // Reset once per ROW rather than per pixel (unlike the SSAA path
+      // below): at 0/180 degrees, dx steps move along a single source
+      // row, so this still saves a ScanLine call per row instead of per
+      // pixel; at 90/270 it's a harmless no-op since every pixel needs a
+      // fresh source row anyway.
       lastSy := -1;
-
-      for i := 0 to 3 do
+      for dx := dx0 to dx1 - 1 do
       begin
-        // Floor, not Trunc: Trunc rounds toward zero, so sample positions
-        // in (-1, 0) — just outside the left/top edge — mapped to texel 0
-        // and slipped past the bounds check, growing an asymmetric fringe
-        // on two edges at some angles.
-        ifx := Floor(fxc + fxOff[i]);
-        ify := Floor(fyc + fyOff[i]);
-        if (ifx < 0) or (ifx >= sw) or (ify < 0) or (ify >= sh) then Continue;
-        if scaleIsOne then
+        ifx := Floor(fxc);
+        ify := Floor(fyc);
+        if (ifx >= 0) and (ifx < sw) and (ify >= 0) and (ify < sh) then
         begin
-          sx := ifx;
-          sy := ify;
-        end
-        else
-        begin
-          sx := ifx div scale;
-          sy := ify div scale;
+          if scaleIsOne then
+          begin
+            sx := ifx;
+            sy := ify;
+          end
+          else
+          begin
+            sx := ifx div scale;
+            sy := ify div scale;
+          end;
+          if sy <> lastSy then
+          begin
+            srcRow := bmp.ScanLine[sy];
+            lastSy := sy;
+          end;
+          pixel := PCardinal(@srcRow[sx])^;
+          if pixel <> $00FF00FF then
+            dstRow[baseX + dx] := pixel or $FF000000;
         end;
-        if sy <> lastSy then
-        begin
-          srcRow := bmp.ScanLine[sy];
-          lastSy := sy;
-        end;
-        pixel := PCardinal(@srcRow[sx])^;
-        if pixel = $00FF00FF then Continue;
-        sumB := sumB + Integer(pixel and $FF);
-        sumG := sumG + Integer((pixel shr 8) and $FF);
-        sumR := sumR + Integer((pixel shr 16) and $FF);
-        cnt := cnt + 1;
+        fxc := fxc + cosA;
+        fyc := fyc - sinA;
       end;
-
-      if cnt <> 0 then
-      begin
-        if cnt = 4 then
-        begin
-          // Full coverage: pure average, no blend with destination.
-          outB := sumB shr 2;
-          outG := sumG shr 2;
-          outR := sumR shr 2;
-        end
-        else
-        begin
-          // Partial coverage: alpha-blend averaged source over existing
-          // destination pixel. cnt samples contribute source color,
-          // (4 - cnt) samples contribute destination color.
-          missing := 4 - cnt;
-          dstPx := dstRow[baseX + dx];
-          outB := (sumB + Integer(dstPx and $FF) * missing) shr 2;
-          outG := (sumG + Integer((dstPx shr 8) and $FF) * missing) shr 2;
-          outR := (sumR + Integer((dstPx shr 16) and $FF) * missing) shr 2;
-        end;
-        // Alpha must be $FF like every other writer: drawSurface treats
-        // zero-alpha pixels as transparent, so without this a rotated
-        // sprite drawn onto a surface vanishes when the surface is blitted.
-        dstRow[baseX + dx] := (Cardinal(outR) shl 16) or
-                              (Cardinal(outG) shl 8) or
-                               Cardinal(outB) or $FF000000;
-      end;
-
-      // Step source coords by one destination column.
-      fxc := fxc + cosA;
-      fyc := fyc - sinA;
+      fxcRow := fxcRow + sinA;
+      fycRow := fycRow + cosA;
     end;
-    // Step source coords by one destination row.
-    fxcRow := fxcRow + sinA;
-    fycRow := fycRow + cosA;
+  end
+  else
+  begin
+    for dy := dy0 to dy1 - 1 do
+    begin
+      dstRow := FRenderTarget.ScanLine[baseY + dy];
+      fxc := fxcRow;
+      fyc := fycRow;
+      for dx := dx0 to dx1 - 1 do
+      begin
+        sumR := 0; sumG := 0; sumB := 0; cnt := 0;
+        // ScanLine cache: most rotations have shallow angles, so all 4
+        // sub-samples within a pixel usually fall on the same source row.
+        // Reset per output pixel so the cache reflects reality.
+        lastSy := -1;
+
+        for i := 0 to 3 do
+        begin
+          // Floor, not Trunc: Trunc rounds toward zero, so sample positions
+          // in (-1, 0) — just outside the left/top edge — mapped to texel 0
+          // and slipped past the bounds check, growing an asymmetric fringe
+          // on two edges at some angles.
+          ifx := Floor(fxc + fxOff[i]);
+          ify := Floor(fyc + fyOff[i]);
+          if (ifx < 0) or (ifx >= sw) or (ify < 0) or (ify >= sh) then Continue;
+          if scaleIsOne then
+          begin
+            sx := ifx;
+            sy := ify;
+          end
+          else
+          begin
+            sx := ifx div scale;
+            sy := ify div scale;
+          end;
+          if sy <> lastSy then
+          begin
+            srcRow := bmp.ScanLine[sy];
+            lastSy := sy;
+          end;
+          pixel := PCardinal(@srcRow[sx])^;
+          if pixel = $00FF00FF then Continue;
+          sumB := sumB + Integer(pixel and $FF);
+          sumG := sumG + Integer((pixel shr 8) and $FF);
+          sumR := sumR + Integer((pixel shr 16) and $FF);
+          cnt := cnt + 1;
+        end;
+
+        if cnt <> 0 then
+        begin
+          if cnt = 4 then
+          begin
+            // Full coverage: pure average, no blend with destination.
+            outB := sumB shr 2;
+            outG := sumG shr 2;
+            outR := sumR shr 2;
+          end
+          else
+          begin
+            // Partial coverage: alpha-blend averaged source over existing
+            // destination pixel. cnt samples contribute source color,
+            // (4 - cnt) samples contribute destination color.
+            missing := 4 - cnt;
+            dstPx := dstRow[baseX + dx];
+            outB := (sumB + Integer(dstPx and $FF) * missing) shr 2;
+            outG := (sumG + Integer((dstPx shr 8) and $FF) * missing) shr 2;
+            outR := (sumR + Integer((dstPx shr 16) and $FF) * missing) shr 2;
+          end;
+          // Alpha must be $FF like every other writer: drawSurface treats
+          // zero-alpha pixels as transparent, so without this a rotated
+          // sprite drawn onto a surface vanishes when the surface is blitted.
+          dstRow[baseX + dx] := (Cardinal(outR) shl 16) or
+                                (Cardinal(outG) shl 8) or
+                                 Cardinal(outB) or $FF000000;
+        end;
+
+        // Step source coords by one destination column.
+        fxc := fxc + cosA;
+        fyc := fyc - sinA;
+      end;
+      // Step source coords by one destination row.
+      fxcRow := fxcRow + sinA;
+      fycRow := fycRow + cosA;
+    end;
   end;
   Result := CreateNilValue;
 end;
@@ -3508,19 +3990,53 @@ begin
     Result := CreateNumber(tm.Tiles[row * tm.Cols + col]);
 end;
 
+// floor(A/B) for B > 0 — unlike Delphi's `div`, which truncates toward
+// zero. Needed because scrollX/scrollY below can be negative (scrolled
+// past the tilemap's origin): `div` rounds a negative, non-exact
+// quotient UP (toward zero) instead of down, e.g. (-1) div 32 = 0 but
+// floor(-1/32) = -1.
+function FloorDiv(A, B: Integer): Integer; inline;
+begin
+  Result := A div B;
+  if (A < 0) and (A mod B <> 0) then
+    Dec(Result);
+end;
+
+const
+  // Cap on tile columns precomputed per row-chunk in drawTilemap's
+  // row-major render below — mirrors the MAX_DRAWTEXT_CHARS chunking
+  // pattern in drawTextNative. Comfortably covers any practical canvas
+  // width / tile size combination; wider visible spans are processed in
+  // multiple chunks rather than silently truncated.
+  MAX_TILEMAP_VISIBLE_COLS = 512;
+
 function drawTilemapNative(argCount: integer; args: pValue): TValue;
 var
   mapId, scrollX, scrollY: Integer;
   tm: TTilemap;
   startCol, startRow, endCol, endRow: Integer;
-  c, r, tileIdx, dx, dy: Integer;
+  c, r, tileIdx, dx, dy, rowBase: Integer;
   bmp: TBitmap;
-  sx, sy, px, py, bw, bh: Integer;
+  sx, sy, px, py, bw, bh, sxFrac2: Integer;
   px0, px1, py0, py1: Integer;
-  oneToOne, opaque: Boolean;
+  chunkStart, chunkEnd, colCount, i: Integer;
   srcRow: PRGBQuadArray;
   dstRow: PCardinal;
   pixel: Cardinal;
+  // Row-major precompute (same pattern drawTextNative uses for glyphs):
+  // per-column tile info gathered ONCE per row/chunk and reused across
+  // every scanline (py), instead of being recomputed — and ScanLine'd —
+  // once per (row, column, py) triple. dy (and therefore dy+py) is the
+  // same for every column in a map row, so the original tile-major loop
+  // called FRenderTarget.ScanLine once per COLUMN per scanline even
+  // though every column in that scanline shares the same destination row.
+  colTileValid: array[0..MAX_TILEMAP_VISIBLE_COLS - 1] of Boolean;
+  colBmp: array[0..MAX_TILEMAP_VISIBLE_COLS - 1] of TBitmap;
+  colDx: array[0..MAX_TILEMAP_VISIBLE_COLS - 1] of Integer;
+  colPx0: array[0..MAX_TILEMAP_VISIBLE_COLS - 1] of Integer;
+  colPx1: array[0..MAX_TILEMAP_VISIBLE_COLS - 1] of Integer;
+  colOneToOne: array[0..MAX_TILEMAP_VISIBLE_COLS - 1] of Boolean;
+  colOpaque: array[0..MAX_TILEMAP_VISIBLE_COLS - 1] of Boolean;
 begin
   if argCount <> 3 then
   begin
@@ -3544,11 +4060,18 @@ begin
   scrollX := Trunc(GetNumber(args[1])) + FCameraX;
   scrollY := Trunc(GetNumber(args[2])) + FCameraY;
 
-  // Calculate visible tile range
-  startCol := scrollX div tm.TileW;
-  startRow := scrollY div tm.TileH;
-  endCol := (scrollX + FRenderTarget.Width) div tm.TileW;
-  endRow := (scrollY + FRenderTarget.Height) div tm.TileH;
+  // Calculate visible tile range. FloorDiv (not `div`) — see comment
+  // above FloorDiv. startCol/startRow are clamped to >= 0 immediately
+  // below regardless, so FloorDiv vs. div is unobservable there; it
+  // matters for endCol/endRow, which have no equivalent lower clamp:
+  // with plain `div`, a fully off-the-negative-edge viewport could
+  // round endCol/endRow up to 0 and admit one bogus out-of-range tile
+  // into the loop below (harmless — the per-tile px0>=px1/py0>=py1
+  // clip check further down still culls it — but wasted work).
+  startCol := FloorDiv(scrollX, tm.TileW);
+  startRow := FloorDiv(scrollY, tm.TileH);
+  endCol := FloorDiv(scrollX + FRenderTarget.Width, tm.TileW);
+  endRow := FloorDiv(scrollY + FRenderTarget.Height, tm.TileH);
   if startCol < 0 then startCol := 0;
   if startRow < 0 then startRow := 0;
   if endCol >= tm.Cols then endCol := tm.Cols - 1;
@@ -3561,87 +4084,112 @@ begin
   end;
   bw := FClipX2;
   bh := FClipY2;
+
   for r := startRow to endRow do
-    for c := startCol to endCol do
+  begin
+    rowBase := r * tm.Cols;  // hoisted out of the column loop
+    dy := r * tm.TileH - scrollY;
+    // Vertical clip range is the SAME for every column in this map row
+    // (dy depends only on r), so compute it once per row rather than
+    // once per tile.
+    py0 := FClipY1 - dy; if py0 < 0 then py0 := 0;
+    py1 := bh - dy;      if py1 > tm.TileH then py1 := tm.TileH;
+    if py0 >= py1 then Continue;  // whole row clipped vertically
+
+    chunkStart := startCol;
+    while chunkStart <= endCol do
     begin
-      tileIdx := tm.Tiles[r * tm.Cols + c];
-      if (tileIdx < 0) or (tileIdx >= FSprites.Count) then Continue;
-      bmp := FSprites[tileIdx];
-      if bmp = nil then Continue;  // freed sprite - skip tile
-      dx := c * tm.TileW - scrollX;
-      dy := r * tm.TileH - scrollY;
+      chunkEnd := chunkStart + MAX_TILEMAP_VISIBLE_COLS - 1;
+      if chunkEnd > endCol then chunkEnd := endCol;
+      colCount := chunkEnd - chunkStart + 1;
 
-      // Pre-clip the tile's visible rectangle in tile-local coords so
-      // the inner loops have no per-pixel screen-clip branches.
-      px0 := FClipX1 - dx; if px0 < 0 then px0 := 0;
-      py0 := FClipY1 - dy; if py0 < 0 then py0 := 0;
-      px1 := bw - dx;      if px1 > tm.TileW then px1 := tm.TileW;
-      py1 := bh - dy;      if py1 > tm.TileH then py1 := tm.TileH;
-      if (px0 >= px1) or (py0 >= py1) then Continue;
-
-      // 1:1 sprite-to-tile dimensions enable a much faster inner loop:
-      // no per-pixel scaling math, and (if opaque) a Move() memcpy.
-      oneToOne := (bmp.Width = tm.TileW) and (bmp.Height = tm.TileH);
-      opaque := (FSpriteOpaque <> nil) and (tileIdx < FSpriteOpaque.Count)
-                and FSpriteOpaque[tileIdx];
-
-      if oneToOne and opaque then
+      // Precompute each visible tile's sprite/clip info ONCE per chunk
+      // (not per scanline) — cheap array writes, no ScanLine calls.
+      for i := 0 to colCount - 1 do
       begin
-        // Fast path: opaque tile, no scaling - one Move() per row.
-        for py := py0 to py1 - 1 do
-        begin
-          srcRow := bmp.ScanLine[py];
-          dstRow := FRenderTarget.ScanLine[dy + py];
-          Move(srcRow[px0], dstRow[dx + px0], (px1 - px0) * SizeOf(Cardinal));
-        end;
-      end
-      else if oneToOne then
+        c := chunkStart + i;
+        colTileValid[i] := False;
+        tileIdx := tm.Tiles[rowBase + c];
+        if (tileIdx < 0) or (tileIdx >= FSprites.Count) then Continue;
+        bmp := FSprites[tileIdx];
+        if bmp = nil then Continue;  // freed sprite - skip tile
+        dx := c * tm.TileW - scrollX;
+        px0 := FClipX1 - dx; if px0 < 0 then px0 := 0;
+        px1 := bw - dx;      if px1 > tm.TileW then px1 := tm.TileW;
+        if px0 >= px1 then Continue;
+        colBmp[i] := bmp;
+        colDx[i] := dx;
+        colPx0[i] := px0;
+        colPx1[i] := px1;
+        // 1:1 sprite-to-tile dimensions enable a much faster inner loop:
+        // no per-pixel scaling math, and (if opaque) a Move() memcpy.
+        colOneToOne[i] := (bmp.Width = tm.TileW) and (bmp.Height = tm.TileH);
+        colOpaque[i] := (FSpriteOpaque <> nil) and (tileIdx < FSpriteOpaque.Count)
+                        and FSpriteOpaque[tileIdx];
+        colTileValid[i] := True;
+      end;
+
+      // Row-major render: scanlines in the OUTER loop, tiles in the
+      // INNER loop, so FRenderTarget.ScanLine is called once per
+      // scanline and shared by every tile column in this chunk — not
+      // once per (column, scanline) pair. Produces bit-identical output
+      // to the original nesting; same per-pixel decisions, same
+      // opaque/keyed/scaled branch split.
+      for py := py0 to py1 - 1 do
       begin
-        // No scaling, but transparency-keyed: tight per-pixel copy
-        // without the div math.
-        for py := py0 to py1 - 1 do
+        dstRow := FRenderTarget.ScanLine[dy + py];
+        for i := 0 to colCount - 1 do
         begin
-          srcRow := bmp.ScanLine[py];
-          dstRow := FRenderTarget.ScanLine[dy + py];
-          for px := px0 to px1 - 1 do
+          if not colTileValid[i] then Continue;
+          bmp := colBmp[i];
+          dx := colDx[i];
+          px0 := colPx0[i];
+          px1 := colPx1[i];
+          if colOneToOne[i] then
           begin
-            pixel := PCardinal(@srcRow[px])^;
-            if pixel <> $00FF00FF then
-              dstRow[dx + px] := pixel;
-          end;
-        end;
-      end
-      else
-      begin
-        // Sprite is not the tile's native size: stretch/shrink to fit.
-        // Inner loop uses a fractional-counter (Bresenham-style) advance
-        // for sx so we avoid an integer division per destination pixel.
-        for py := py0 to py1 - 1 do
-        begin
-          sy := (py * bmp.Height) div tm.TileH;
-          srcRow := bmp.ScanLine[sy];
-          dstRow := FRenderTarget.ScanLine[dy + py];
-          // Initial sx for px0 (one div, hoisted out of the inner loop).
-          sx := (px0 * bmp.Width) div tm.TileW;
-          // Fractional accumulator over tm.TileW units.
-          // After each px, advance by bmp.Width; while >= tm.TileW, Inc(sx).
-          // (Works for both stretching and shrinking ratios.)
-          var sxFrac2: Integer := (px0 * bmp.Width) mod tm.TileW;
-          for px := px0 to px1 - 1 do
+            // No scaling: sy = py directly.
+            srcRow := bmp.ScanLine[py];
+            if colOpaque[i] then
+              // Fast path: opaque tile, no scaling - one Move() per row.
+              Move(srcRow[px0], dstRow[dx + px0], (px1 - px0) * SizeOf(Cardinal))
+            else
+              // No scaling, but transparency-keyed: tight per-pixel copy
+              // without the div math.
+              for px := px0 to px1 - 1 do
+              begin
+                pixel := PCardinal(@srcRow[px])^;
+                if pixel <> $00FF00FF then
+                  dstRow[dx + px] := pixel;
+              end;
+          end
+          else
           begin
-            pixel := PCardinal(@srcRow[sx])^;
-            if pixel <> $00FF00FF then
-              dstRow[dx + px] := pixel;
-            Inc(sxFrac2, bmp.Width);
-            while sxFrac2 >= tm.TileW do
+            // Sprite is not the tile's native size: stretch/shrink to
+            // fit. Fractional-counter (Bresenham-style) advance for sx
+            // avoids an integer division per destination pixel.
+            sy := (py * bmp.Height) div tm.TileH;
+            srcRow := bmp.ScanLine[sy];
+            sx := (px0 * bmp.Width) div tm.TileW;
+            sxFrac2 := (px0 * bmp.Width) mod tm.TileW;
+            for px := px0 to px1 - 1 do
             begin
-              Dec(sxFrac2, tm.TileW);
-              Inc(sx);
+              pixel := PCardinal(@srcRow[sx])^;
+              if pixel <> $00FF00FF then
+                dstRow[dx + px] := pixel;
+              Inc(sxFrac2, bmp.Width);
+              while sxFrac2 >= tm.TileW do
+              begin
+                Dec(sxFrac2, tm.TileW);
+                Inc(sx);
+              end;
             end;
           end;
         end;
       end;
+
+      Inc(chunkStart, MAX_TILEMAP_VISIBLE_COLS);
     end;
+  end;
   Result := CreateNilValue;
 end;
 
@@ -3769,6 +4317,8 @@ begin
   begin
     idx := FSurfaceFreelist[FSurfaceFreelist.Count - 1];
     FSurfaceFreelist.Delete(FSurfaceFreelist.Count - 1);
+    Assert((idx >= 0) and (idx < FSurfaces.Count), 'AllocSurfaceSlot: freelist index out of range');
+    Assert(FSurfaces[idx] = nil, 'AllocSurfaceSlot: freelist slot was not actually empty');
     FSurfaces[idx] := bmp;
     Result := idx;
   end else
@@ -3798,9 +4348,14 @@ begin
     Exit(CreateNilValue);
   end;
   bmp := TBitmap.Create;
-  bmp.PixelFormat := pf32bit;
-  bmp.SetSize(w, h);
-  ClearBuffer(bmp);
+  try
+    bmp.PixelFormat := pf32bit;
+    bmp.SetSize(w, h);
+    ClearBuffer(bmp);
+  except
+    bmp.Free;
+    raise;
+  end;
   Result := CreateNumber(AllocSurfaceSlot(bmp));
 end;
 
@@ -3868,6 +4423,16 @@ begin
     RuntimeError('drawSurface() invalid surface id.');
     Exit(CreateNilValue);
   end;
+  // A translation offset (x<>0 or y<>0) with src = dest means rows already
+  // overwritten by an earlier iteration get read as source data later in
+  // the same pass — a genuine corruption risk (unlike a memmove, this is a
+  // plain top-to-bottom scalar copy with no overlap handling). Disallow
+  // rather than silently producing overlap-dependent garbage.
+  if FRenderTargetId = id then
+  begin
+    RuntimeError('drawSurface() cannot draw a surface onto itself (surface is the current render target).');
+    Exit(CreateNilValue);
+  end;
   src := FSurfaces[id];
   EnsureBackBuffer;
   x := Trunc(GetNumber(args[1])) - FCameraX;
@@ -3893,7 +4458,10 @@ begin
     for sx := sx0 to sx1 - 1 do
     begin
       pixel := PCardinal(@srcRow[sx])^;
-      // Skip fully transparent pixels (alpha = 0, i.e. cleared buffer)
+      // Skip fully transparent pixels (alpha = 0, i.e. cleared buffer).
+      // This is a binary key, not a blend: any alpha > 0 is copied as
+      // fully opaque, overwriting the destination pixel outright —
+      // there is no partial-alpha compositing here.
       if (pixel and $FF000000) = 0 then Continue;
       dstRow[x + sx] := pixel;
     end;
@@ -3947,11 +4515,14 @@ end;
 // camera offset — pass buffer coordinates, not world coordinates.
 // Primarily a scripted-testing hook: lets a test assert exactly what
 // fillRect/drawLine/clip/camera produced. Compare against
-// r*65536 + g*256 + b.
+// r*65536 + g*256 + b. Note -1 is only a valid sentinel because black
+// (0x000000) is itself a legitimate return value — don't test the
+// result for truthiness, compare it against -1 explicitly.
 function getPixelNative(argCount: integer; args: pValue): TValue;
 var
   x, y: Integer;
   pixel: Cardinal;
+  target: TBitmap;
 begin
   if argCount <> 2 then
   begin
@@ -3964,13 +4535,71 @@ begin
     Exit(CreateNilValue);
   end;
   EnsureBackBuffer;
+  // Snapshot FRenderTarget once: EnsureBackBuffer only ever repoints it
+  // when there's no valid surface bound (see its own fallback check),
+  // so a surface selected via setRenderTarget() is preserved here, but
+  // caching it locally protects the two accesses below from any future
+  // refactor that might mutate FRenderTarget in between.
+  target := FRenderTarget;
   x := Trunc(GetNumber(args[0]));
   y := Trunc(GetNumber(args[1]));
-  if (x < 0) or (y < 0) or (x >= FRenderTarget.Width) or
-     (y >= FRenderTarget.Height) then
+  if (x < 0) or (y < 0) or (x >= target.Width) or (y >= target.Height) then
     Exit(CreateNumber(-1));
-  pixel := PCardinal(FRenderTarget.ScanLine[y])[x];
-  Result := CreateNumber(pixel and $00FFFFFF);  // BGRA -> 0xRRGGBB
+  pixel := PCardinal(target.ScanLine[y])[x];
+  // Render targets are pf32bit BGRA in memory, which a little-endian
+  // read as a Cardinal yields as $AARRGGBB — no byte reordering happens
+  // here, just stripping the alpha byte down to 0xRRGGBB.
+  Result := CreateNumber(pixel and $00FFFFFF);
+end;
+
+// surfaceWidth(id) / surfaceHeight(id) -> number — dimensions of a
+// surface created via createSurface(), mirroring spriteWidth()/
+// spriteHeight() for sprites. Without these, scripts have to track
+// surface dimensions manually alongside the id.
+function surfaceWidthNative(argCount: integer; args: pValue): TValue;
+var
+  id: Integer;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('surfaceWidth() takes 1 argument (surface id).');
+    Exit(CreateNilValue);
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('surfaceWidth() argument must be a number.');
+    Exit(CreateNilValue);
+  end;
+  id := Trunc(GetNumber(args[0]));
+  if (FSurfaces = nil) or (id < 0) or (id >= FSurfaces.Count) or (FSurfaces[id] = nil) then
+  begin
+    RuntimeError('surfaceWidth() invalid surface id.');
+    Exit(CreateNilValue);
+  end;
+  Result := CreateNumber(FSurfaces[id].Width);
+end;
+
+function surfaceHeightNative(argCount: integer; args: pValue): TValue;
+var
+  id: Integer;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('surfaceHeight() takes 1 argument (surface id).');
+    Exit(CreateNilValue);
+  end;
+  if not isNumber(args[0]) then
+  begin
+    RuntimeError('surfaceHeight() argument must be a number.');
+    Exit(CreateNilValue);
+  end;
+  id := Trunc(GetNumber(args[0]));
+  if (FSurfaces = nil) or (id < 0) or (id >= FSurfaces.Count) or (FSurfaces[id] = nil) then
+  begin
+    RuntimeError('surfaceHeight() invalid surface id.');
+    Exit(CreateNilValue);
+  end;
+  Result := CreateNumber(FSurfaces[id].Height);
 end;
 
 procedure RegisterCanvasNatives;
@@ -4024,6 +4653,9 @@ begin
   defineNative('drawRect', drawRectNative, 4);
   defineNative('drawCircle', drawCircleNative, 3);
   defineNative('fillCircle', fillCircleNative, 3);
+  defineNative('drawTriangle', drawTriangleNative, 6);
+  defineNative('drawTriangleAA', drawTriangleAANative, 6);
+  defineNative('fillTriangle', fillTriangleNative, 6);
   defineNative('drawPixel', drawPixelNative, 2);
   defineNative('getPixel', getPixelNative, 2);
   defineNative('rgb', rgbNative, 3);
@@ -4049,6 +4681,8 @@ begin
   defineNative('setRenderTarget', setRenderTargetNative, 1);
   defineNative('drawSurface', drawSurfaceNative, 3);
   defineNative('freeSurface', freeSurfaceNative, 1);
+  defineNative('surfaceWidth', surfaceWidthNative, 1);
+  defineNative('surfaceHeight', surfaceHeightNative, 1);
   defineNative('setClipRect', setClipRectNative, 4);
   defineNative('clearClipRect', clearClipRectNative, 0);
   defineNative('measureText', measureTextNative, -1);

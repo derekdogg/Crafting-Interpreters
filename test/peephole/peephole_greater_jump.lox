@@ -1,0 +1,404 @@
+// Tests for the OP_GREATER_JUMP_IF_FALSE peephole optimization.
+// The compiler fuses OP_GREATER + OP_JUMP_IF_FALSE_POP into a single opcode
+// when a > comparison directly controls a conditional jump (for loops, if).
+// Mirrors peephole_less_jump.lox's coverage for the '>' operator, including
+// the tricky interaction with `and`/`or` short-circuit operators.
+
+// ---------------------------------------------------------------------------
+// Test 1: Basic for-loop (countdown) — the peephole's primary target for '>'
+// ---------------------------------------------------------------------------
+{
+  var sum = 0;
+  for (var i = 10; i > 0; i = i - 1) {
+    sum = sum + i;
+  }
+  assert(sum == 55, "T1: basic countdown for loop sum");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: Nested for-loops — both should get the optimization
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  for (var i = 5; i > 0; i = i - 1) {
+    for (var j = 5; j > 0; j = j - 1) {
+      count = count + 1;
+    }
+  }
+  assert(count == 25, "T2: nested countdown for loops");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: if (x > y) — peephole fires for simple if condition
+// ---------------------------------------------------------------------------
+{
+  var a = 7;
+  var b = 3;
+  var result = "none";
+  if (a > b) {
+    result = "greater";
+  }
+  assert(result == "greater", "T3a: simple if greater (true)");
+
+  if (b > a) {
+    result = "wrong";
+  }
+  assert(result == "greater", "T3b: simple if greater (false)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: and with > on the RIGHT side — the bug class fixed for '<'
+// When `and` short-circuits (left is false), execution must skip past the
+// fused instruction correctly.
+// ---------------------------------------------------------------------------
+{
+  var x = 5;
+  var result = "default";
+
+  // Left side false, right side has >
+  if (false and x > 1) {
+    result = "wrong";
+  }
+  assert(result == "default", "T4a: false and x>1 should not enter then-branch");
+
+  // Left side true, right side true
+  if (true and x > 1) {
+    result = "entered";
+  }
+  assert(result == "entered", "T4b: true and x>1 should enter then-branch");
+
+  // Left side true, right side false
+  result = "default";
+  if (true and x > 8) {
+    result = "wrong";
+  }
+  assert(result == "default", "T4c: true and x>8 should not enter");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: and with > on the right, complex left expression
+// Matches the exact pattern shape from the '<' peephole regression test.
+// ---------------------------------------------------------------------------
+{
+  // i=1: left is false (1%3 != 0), should NOT enter branch
+  var i = 1;
+  var entered = false;
+  if (i % 3 == 0 and i > 0) {
+    entered = true;
+  }
+  assert(entered == false, "T5a: 1%3==0 is false, should short-circuit");
+
+  // i=3: left is true (3%3 == 0), right is true (3 > 0)
+  i = 3;
+  entered = false;
+  if (i % 3 == 0 and i > 0) {
+    entered = true;
+  }
+  assert(entered == true, "T5b: 3%3==0 and 3>0, should enter");
+
+  // i=0: left is true (0%3 == 0), right is false (0 > 0 is false)
+  i = 0;
+  entered = false;
+  if (i % 3 == 0 and i > 0) {
+    entered = true;
+  }
+  assert(entered == false, "T5c: 0%3==0 but 0>0 is false");
+
+  // i=61: left is false (61%3 == 1), should short-circuit
+  i = 61;
+  entered = false;
+  if (i % 3 == 0 and i > 100) {
+    entered = true;
+  }
+  assert(entered == false, "T5d: 61%3!=0, should short-circuit");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: or with > on the RIGHT side
+// When `or` short-circuits (left is true), execution must skip the right side.
+// ---------------------------------------------------------------------------
+{
+  var x = 5;
+  var result = "default";
+
+  // Left true — or short-circuits, right side (x > 1) not evaluated
+  if (true or x > 1) {
+    result = "entered";
+  }
+  assert(result == "entered", "T6a: true or x>1 enters (short-circuit)");
+
+  // Left false — must evaluate right side (x > 1 = true)
+  result = "default";
+  if (false or x > 1) {
+    result = "entered";
+  }
+  assert(result == "entered", "T6b: false or x>1 enters (right is true)");
+
+  // Left false, right false
+  result = "default";
+  if (false or x > 8) {
+    result = "wrong";
+  }
+  assert(result == "default", "T6c: false or x>8 should not enter");
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Chained and/or with > — multiple short-circuit points
+// ---------------------------------------------------------------------------
+{
+  var a = 8;
+  var b = 5;
+  var c = 2;
+  var result = "none";
+
+  // a > b is true, b > c is true — all pass
+  if (a > b and b > c) {
+    result = "both";
+  }
+  assert(result == "both", "T7a: a>b and b>c both true");
+
+  // a > b is true, c > b is false
+  result = "none";
+  if (a > b and c > b) {
+    result = "wrong";
+  }
+  assert(result == "none", "T7b: a>b true but c>b false");
+
+  // c > b is false (short-circuit), b > c never evaluated
+  result = "none";
+  if (c > b and b > c) {
+    result = "wrong";
+  }
+  assert(result == "none", "T7c: c>b false, short-circuits");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: if-else if-else chain with > in conditions
+// Multiple consecutive peephole opportunities
+// ---------------------------------------------------------------------------
+{
+  var x = 15;
+  var result = "none";
+
+  if (x > 100) {
+    result = "huge";
+  } else if (x > 50) {
+    result = "large";
+  } else if (x > 10) {
+    result = "medium";
+  } else {
+    result = "small";
+  }
+  assert(result == "medium", "T8: if-else-if chain with >");
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: while loop with >
+// ---------------------------------------------------------------------------
+{
+  var i = 99;
+  var sum = 0;
+  while (i > -1) {
+    sum = sum + i;
+    i = i - 1;
+  }
+  assert(sum == 4950, "T9: while loop with >");
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: > in and/or within a for-loop body
+// The for-loop condition uses > (peephole candidate), and the body
+// also has `and` with another >.
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  for (var i = 99; i > -1; i = i - 1) {
+    if (i % 2 == 0 and i > 89) {
+      count = count + 1;
+    }
+  }
+  // Even numbers greater than 89 (and <= 99): 90, 92, 94, 96, 98 = 5
+  assert(count == 5, "T10: and with > inside for loop body");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Negated condition — > with not
+// ---------------------------------------------------------------------------
+{
+  var x = 3;
+  var result = "default";
+  if (!(x > 5)) {
+    result = "negated";
+  }
+  assert(result == "negated", "T11: negated > condition");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: > comparison result used as a value (not just control flow)
+// The peephole should NOT fire here — the result is assigned, not jumped on.
+// ---------------------------------------------------------------------------
+{
+  var a = 7;
+  var b = 3;
+  var isGreater = a > b;
+  assert(isGreater == true, "T12a: > as value (true)");
+
+  isGreater = b > a;
+  assert(isGreater == false, "T12b: > as value (false)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: Multiple and clauses all using >
+// ---------------------------------------------------------------------------
+{
+  var a = 4;
+  var b = 3;
+  var c = 2;
+  var d = 1;
+
+  var result = false;
+  if (a > b and b > c and c > d) {
+    result = true;
+  }
+  assert(result == true, "T13a: three > conditions all true");
+
+  result = false;
+  if (a > b and c > b and c > d) {
+    result = true;
+  }
+  assert(result == false, "T13b: middle > false, short-circuits");
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Zero-iteration loops — false path of fused opcode
+// Verifies the jump fires correctly when the condition is immediately false.
+// ---------------------------------------------------------------------------
+{
+  var count = 0;
+  for (var i = 0; i > 0; i = i - 1) {
+    count = count + 1;
+  }
+  assert(count == 0, "T14a: zero-iteration for loop");
+
+  var j = 0;
+  while (j > 0) {
+    j = j - 1;
+  }
+  assert(j == 0, "T14b: zero-iteration while loop");
+
+  // Also test where initial value is already below bound
+  count = 0;
+  for (var k = 0; k > 100; k = k - 1) {
+    count = count + 1;
+  }
+  assert(count == 0, "T14c: initial < bound, never enters");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: Empty loop body
+// Jump target lands directly on the increment/decrement section.
+// ---------------------------------------------------------------------------
+{
+  var i = 10;
+  for (; i > 0; i = i - 1) {
+  }
+  assert(i == 0, "T15a: empty for-loop body");
+
+  var j = 5;
+  while (j > 0) {
+    j = j - 1;
+  }
+  assert(j == 0, "T15b: minimal while body");
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: > at end of longer boolean chain
+// Exercises jump patching when the fused instruction isn't the first term.
+// ---------------------------------------------------------------------------
+{
+  var entered = false;
+  if (true and true and 2 > 1) {
+    entered = true;
+  }
+  assert(entered == true, "T16a: two ands then > (all true)");
+
+  entered = false;
+  if (true and true and 3 > 5) {
+    entered = true;
+  }
+  assert(entered == false, "T16b: two ands then > (last false)");
+
+  entered = false;
+  if (false or false or 2 > 1) {
+    entered = true;
+  }
+  assert(entered == true, "T16c: two ors then > (last true)");
+
+  entered = false;
+  if (false or false or 3 > 5) {
+    entered = true;
+  }
+  assert(entered == false, "T16d: two ors then > (all false)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Nested short-circuit groups with parentheses
+// Verifies interaction between multiple patched jumps.
+// ---------------------------------------------------------------------------
+{
+  var entered = false;
+  if ((false and 2 > 1) or true) {
+    entered = true;
+  }
+  assert(entered == true, "T17a: (false and >) or true");
+
+  entered = false;
+  if ((true and 2 > 1) or false) {
+    entered = true;
+  }
+  assert(entered == true, "T17b: (true and >true) or false");
+
+  entered = false;
+  if ((true and 3 > 5) or false) {
+    entered = true;
+  }
+  assert(entered == false, "T17c: (true and >false) or false");
+
+  entered = false;
+  if ((false and 2 > 1) or (true and 5 > 3)) {
+    entered = true;
+  }
+  assert(entered == true, "T17d: (false and >) or (true and >true)");
+
+  entered = false;
+  if ((true and 3 > 5) or (true and 2 > 8)) {
+    entered = true;
+  }
+  assert(entered == false, "T17e: both groups false");
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Function return path — jump target before return
+// ---------------------------------------------------------------------------
+{
+  fun earlyReturn(a, b) {
+    if (a > b) return "greater";
+    return "not greater";
+  }
+  assert(earlyReturn(5, 1) == "greater", "T18a: early return on >");
+  assert(earlyReturn(1, 5) == "not greater", "T18b: falls through");
+  assert(earlyReturn(3, 3) == "not greater", "T18c: equal falls through");
+
+  fun multiReturn(x) {
+    if (x > 100) return "huge";
+    if (x > 10) return "large";
+    if (x > 0) return "small";
+    return "non-positive";
+  }
+  assert(multiReturn(200) == "huge", "T18d: first > triggers");
+  assert(multiReturn(50) == "large", "T18e: second > triggers");
+  assert(multiReturn(5) == "small", "T18f: third > triggers");
+  assert(multiReturn(-5) == "non-positive", "T18g: none trigger");
+}
+
+print "pass: peephole_greater_jump"; // expect: pass: peephole_greater_jump

@@ -1,0 +1,106 @@
+// while_vs_for.lox — while-loop vs for-loop overhead.
+//
+// A `for` loop is supposed to be pure sugar over a `while` loop, but this
+// VM's compiler treats `for (var i = ...; ...; ...)` specially: when the
+// loop clause declares its own loop variable with `var`, the compiler
+// pushes a fresh per-iteration scope and copies the loop variable into it
+// every iteration (see forStatement() in Suto.pas) so that closures created
+// inside the body each capture their own binding, matching Lox/JS semantics
+// instead of C's single-shared-variable behavior. That copy is a real,
+// measurable cost that a hand-written `while` loop (or a `for` loop that
+// reuses an already-declared outer variable, skipping the `var` clause)
+// does not pay.
+//
+// This benchmark isolates that cost:
+//   (a) while loop with a plain outer variable       — no per-iter copy
+//   (b) for (var i = 0; ...)                         — pays the copy
+//   (c) for (i = 0; ...) reusing a pre-declared var   — no `var`, no copy
+// (b) vs (a)/(c) shows the price of per-iteration closure-safe binding;
+// (a) vs (c) shows whether `for` vs `while` has any overhead once that
+// extra copy is out of the picture (it shouldn't — same bytecode shape).
+
+var REPS = 2000000;
+
+fun bench(label, fn) {
+  var start = clock();
+  var r = fn(REPS);
+  var elapsed = clock() - start;
+  print label;
+  print elapsed;
+  print r;
+}
+
+// (a) while loop — baseline, no per-iteration variable copy.
+fun whileLoop(n) {
+  var s = 0;
+  var i = 0;
+  while (i < n) {
+    s = s + i;
+    i = i + 1;
+  }
+  return s;
+}
+
+// (b) for loop with its own `var` loop variable — the common, idiomatic
+// form. Pays the per-iteration closure-safe copy described above even
+// though this loop never creates a closure.
+fun forLoopVar(n) {
+  var s = 0;
+  for (var i = 0; i < n; i = i + 1) {
+    s = s + i;
+  }
+  return s;
+}
+
+// (c) for loop reusing a pre-declared outer variable (no `var` in the
+// clause) — structurally identical to (a)'s while loop, just spelled
+// with `for`. Should match whileLoop's speed since neither pays the
+// per-iteration copy.
+fun forLoopReuse(n) {
+  var s = 0;
+  var i = 0;
+  for (i = 0; i < n; i = i + 1) {
+    s = s + i;
+  }
+  return s;
+}
+
+// (d) nested version of (a): while loops all the way down.
+fun whileNested(n) {
+  var outer = 3000;
+  var inner = n / outer;
+  if (inner < 1) inner = 1;
+  var s = 0;
+  var o = 0;
+  while (o < outer) {
+    var i = 0;
+    while (i < inner) {
+      s = s + i;
+      i = i + 1;
+    }
+    o = o + 1;
+  }
+  return s;
+}
+
+// (e) nested version of (b): for loops all the way down, both with `var`.
+fun forNestedVar(n) {
+  var outer = 3000;
+  var inner = n / outer;
+  if (inner < 1) inner = 1;
+  var s = 0;
+  for (var o = 0; o < outer; o = o + 1) {
+    for (var i = 0; i < inner; i = i + 1) {
+      s = s + i;
+    }
+  }
+  return s;
+}
+
+print "=== while vs for ===";
+bench("while loop            ", whileLoop);
+bench("for (var i ...)       ", forLoopVar);
+bench("for (i ...) reused var", forLoopReuse);
+bench("nested while          ", whileNested);
+bench("nested for (var ...)  ", forNestedVar);
+print "=== done ===";

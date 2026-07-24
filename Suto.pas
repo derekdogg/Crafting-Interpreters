@@ -119,8 +119,9 @@ const
   OP_ADD_RETURN = 68;  // Fused ADD + RETURN. No operands. Adds top two, returns result to caller.
   OP_DUP = 69;  // Duplicate top of stack. Push copy of stack[-1].
   OP_DUP2 = 70;  // Duplicate top two stack slots. Push copies of stack[-2] and stack[-1].
+  OP_GREATER_JUMP_IF_FALSE = 71;  // Fused OP_GREATER + OP_JUMP_IF_FALSE_POP. 2-byte offset operand. Pops both number operands, jumps if NOT (a > b). Mirrors OP_LESS_JUMP_IF_FALSE for the '>' operator.
 
-  OP_STRINGS : array[0..70] of string = (
+  OP_STRINGS : array[0..71] of string = (
     'OP_CONSTANT',
     'OP_NEGATE',
     'OP_ADD',
@@ -179,7 +180,8 @@ const
     'OP_ADD_SET_LOCAL_POP',
     'OP_ADD_RETURN',
     'OP_DUP',
-    'OP_DUP2');
+    'OP_DUP2',
+    'OP_GREATER_JUMP_IF_FALSE');
 
   UINT8_COUNT = 256;
   FRAMES_MAX = 512;
@@ -6841,6 +6843,22 @@ begin
           Dec(stack.StackTop, 2);
         end;
 
+        OP_GREATER_JUMP_IF_FALSE: begin
+          // Fused OP_GREATER + OP_JUMP_IF_FALSE_POP: compare two numbers,
+          // pop both, jump if NOT (a > b). Saves one dispatch cycle. Mirrors
+          // OP_LESS_JUMP_IF_FALSE for '>' conditions (e.g. countdown loops).
+          offset := ReadJumpOffset(ip);
+          if not (isNumber(stack.StackTop[-1]) and isNumber(stack.StackTop[-2])) then
+          begin
+            runtimeError('Operands must be numbers.');
+            outcome.code := INTERPRET_RUNTIME_ERROR;
+            exit;
+          end;
+          if not (GetNumber(stack.StackTop[-2]) > GetNumber(stack.StackTop[-1])) then
+            Inc(ip, offset);
+          Dec(stack.StackTop, 2);
+        end;
+
         OP_GET_LOCAL_CONST_SUBTRACT: begin
           // Fused GET_LOCAL + CONSTANT + SUBTRACT. Operands: <slot> <const_idx>.
           // Pushes locals[slot] - constants[const_idx]. Saves two dispatch cycles.
@@ -10010,23 +10028,30 @@ end;
 
 function emitJump(instruction : byte) : integer; inline;
 begin
-  // Peephole: fuse OP_LESS + OP_JUMP_IF_FALSE_POP into OP_LESS_JUMP_IF_FALSE.
-  // Guards (all required):
+  // Peephole: fuse OP_LESS/OP_GREATER + OP_JUMP_IF_FALSE_POP into
+  // OP_LESS_JUMP_IF_FALSE/OP_GREATER_JUMP_IF_FALSE. Guards (all required):
   //   - lastOpcodeOffset = count-1 confirms the previous byte is genuinely
   //     an opcode boundary, not an operand byte that happens to equal
-  //     OP_LESS (13).
-  //   - lastPatchTarget checks that the OP_LESS position is not a jump
+  //     OP_LESS (13) or OP_GREATER (12).
+  //   - lastPatchTarget checks that the comparison's position is not a jump
   //     landing point (fusing would corrupt the target).
+  // NOTE: <=, >=, ==, != are NOT fused here (they compile as GREATER/LESS/
+  // EQUAL + OP_NOT, and the NOT breaks this pattern) — only bare '<' and '>'
+  // conditions get the 1-dispatch fast path.
   if (instruction = OP_JUMP_IF_FALSE_POP) and
      (lastOpcodeOffset >= 0) and
      (lastOpcodeOffset = CurrentChunk.count - 1) and
-     (CurrentChunk.code[lastOpcodeOffset] = OP_LESS) and
+     ((CurrentChunk.code[lastOpcodeOffset] = OP_LESS) or
+      (CurrentChunk.code[lastOpcodeOffset] = OP_GREATER)) and
      (lastPatchTarget <> CurrentChunk.count) and
      (lastPatchTarget <> lastOpcodeOffset) then
   begin
-    // Overwrite OP_LESS in place with the fused opcode. Its offset is still
-    // a valid opcode boundary, so lastOpcodeOffset stays as-is.
-    CurrentChunk.code[lastOpcodeOffset] := OP_LESS_JUMP_IF_FALSE;
+    // Overwrite LESS/GREATER in place with the fused opcode. Its offset is
+    // still a valid opcode boundary, so lastOpcodeOffset stays as-is.
+    if CurrentChunk.code[lastOpcodeOffset] = OP_LESS then
+      CurrentChunk.code[lastOpcodeOffset] := OP_LESS_JUMP_IF_FALSE
+    else
+      CurrentChunk.code[lastOpcodeOffset] := OP_GREATER_JUMP_IF_FALSE;
     emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
     emitByte($FF, CurrentChunk, parser.previous.line, vm.MemTracker);
     Result := CurrentChunk.count - 2;
