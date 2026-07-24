@@ -204,6 +204,41 @@ begin
   Result := CreateNumber(Random);
 end;
 
+// rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) -> bool
+// Axis-aligned bounding-box overlap test. Ported from the identical
+// hand-written Lox helper used by every game demo's collision detection
+// (e.g. samples/demos/1942.lox's rectsOverlap) - called many times per
+// frame in tight nested loops (every bullet against every enemy, every
+// enemy against the player, etc.), so moving it to a native cuts out a
+// Lox function-call + 4 comparisons' worth of VM dispatch per check.
+// Same edge case as the original: touching-but-not-crossing edges
+// (e.g. ax+aw = bx) do NOT count as overlapping.
+function rectsOverlapNative(argCount: integer; args: pValue): TValue;
+var
+  ax, ay, aw, ah, bx, bY, bw, bh: Double;
+  i: Integer;
+begin
+  if argCount <> 8 then
+  begin
+    RuntimeError('rectsOverlap() takes exactly 8 arguments (ax, ay, aw, ah, bx, by, bw, bh).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  for i := 0 to 7 do
+    if not isNumber(args[i]) then
+    begin
+      RuntimeError('rectsOverlap() arguments must be numbers.');
+      Result := CreateNilValue;
+      Exit;
+    end;
+  ax := GetNumber(args[0]); ay := GetNumber(args[1]);
+  aw := GetNumber(args[2]); ah := GetNumber(args[3]);
+  bx := GetNumber(args[4]); bY := GetNumber(args[5]);
+  bw := GetNumber(args[6]); bh := GetNumber(args[7]);
+  Result := CreateBoolean((ax + aw > bx) and (bx + bw > ax) and
+                          (ay + ah > bY) and (bY + bh > ay));
+end;
+
 procedure RegisterMathNatives;
 begin
   defineNative('abs', absNative, 1);
@@ -217,6 +252,7 @@ begin
   defineNative('sin', sinNative, 1);
   defineNative('cos', cosNative, 1);
   defineNative('random', randomNative, 0);
+  defineNative('rectsOverlap', rectsOverlapNative, 8);
 end;
 
 initialization

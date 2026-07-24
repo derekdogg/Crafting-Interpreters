@@ -202,6 +202,72 @@ begin
   Dec(arr^.Count);
 end;
 
+// arrayFill(array, value) -> array
+// Sets every element to `value` in one native call instead of a Lox
+// `while` loop doing one VM-dispatched OP_SET_INDEX per element. Common
+// pool-reset pattern in game demos, e.g. 1942.lox's resetGame()/
+// startBossFight()/defeatBoss() each reset a whole `xActive` array to
+// false via a hand-written while loop. Returns the array for chaining
+// (matches arrayPush's convention).
+function arrayFillNative(argCount: integer; args: pValue): TValue;
+var
+  arr : pObjArray;
+  i : integer;
+begin
+  if argCount <> 2 then
+  begin
+    RuntimeError('arrayFill() takes 2 arguments (array, value).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isArray(args[0]) then
+  begin
+    RuntimeError('First argument to arrayFill() must be an array.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  arr := pObjArray(GetObject(args[0]));
+  for i := 0 to arr^.Count - 1 do
+    arr^.Elements[i] := args[1];
+  Result := args[0];
+end;
+
+// arrayFindFalse(array) -> number
+// Linear scan for the index of the first falsey (false/nil) element, or
+// -1 if every element is truthy. One native call instead of a Lox
+// `while` loop doing one VM-dispatched read + falsey-check per element.
+// Matches the "find first free pool slot" search every spawn* helper in
+// game demos repeats (spawnBullet/spawnEnemy/spawnExplosion/
+// maybeSpawnPowerUp in 1942.lox all scan an xActive/xAlive array this
+// way) - callers still do the actual slot write in Lox, this only
+// replaces the search.
+function arrayFindFalseNative(argCount: integer; args: pValue): TValue;
+var
+  arr : pObjArray;
+  i : integer;
+begin
+  if argCount <> 1 then
+  begin
+    RuntimeError('arrayFindFalse() takes 1 argument (array).');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  if not isArray(args[0]) then
+  begin
+    RuntimeError('First argument to arrayFindFalse() must be an array.');
+    Result := CreateNilValue;
+    Exit;
+  end;
+  arr := pObjArray(GetObject(args[0]));
+  for i := 0 to arr^.Count - 1 do
+    if IsFalsey(arr^.Elements[i]) then
+    begin
+      Result := CreateNumber(i);
+      Exit;
+    end;
+  Result := CreateNumber(-1);
+end;
+
 procedure RegisterArrayNatives;
 begin
   defineNative('newArray', arrayNewNative, 0);
@@ -211,6 +277,8 @@ begin
   defineNative('arraySet', arraySetNative, 3);
   defineNative('arrayLen', arrayLenNative, 1);
   defineNative('arrayRemove', arrayRemoveNative, 2);
+  defineNative('arrayFill', arrayFillNative, 2);
+  defineNative('arrayFindFalse', arrayFindFalseNative, 1);
 end;
 
 initialization

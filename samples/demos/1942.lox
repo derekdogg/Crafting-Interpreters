@@ -24,17 +24,13 @@ var BOSS_SPR = 5;   // boss is drawn noticeably bigger than regular sprites
 // ------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------
-fun fmod(a, b) {
-  return a - floor(a / b) * b;
-}
 
-fun rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
-  if (ax + aw <= bx) return false;
-  if (bx + bw <= ax) return false;
-  if (ay + ah <= by) return false;
-  if (by + bh <= ay) return false;
-  return true;
-}
+// rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) is now a native (see
+// Natives/MathNatives.pas) - it was called in tight nested loops here
+// (every bullet against every enemy, every enemy against the player,
+// boss checks, etc.), so moving the AABB test into Pascal cuts out a
+// Lox call + 4 comparisons of VM dispatch per check without changing
+// behavior (same touching-edges-don't-count semantics).
 
 // ------------------------------------------------------------
 // Sprites
@@ -167,7 +163,7 @@ setColor(18, 64, 120);
 fillRect(0, 0, w, h);
 var by = 0;
 while (by < h) {
-  if (fmod(by, 40) < 20) {
+  if (by % 40 < 20) {
     setColor(26, 82, 148);
   } else {
     setColor(16, 58, 112);
@@ -194,7 +190,7 @@ while (ci < 9) {
 setRenderTarget(-1);
 
 fun drawBackground() {
-  var par = floor(fmod(scrollY, h));
+  var par = floor(scrollY % h);
   drawSurface(bgSurface, 0, par - h);
   drawSurface(bgSurface, 0, par);
 }
@@ -289,16 +285,11 @@ while (i < maxBullets) {
 }
 
 fun spawnBullet(x, y) {
-  var s = 0;
-  while (s < maxBullets) {
-    if (!bulletActive[s]) {
-      bulletX[s] = x;
-      bulletY[s] = y;
-      bulletActive[s] = true;
-      return;
-    }
-    s = s + 1;
-  }
+  var s = arrayFindFalse(bulletActive);
+  if (s < 0) return;
+  bulletX[s] = x;
+  bulletY[s] = y;
+  bulletActive[s] = true;
 }
 
 fun firePlayerBullet() {
@@ -343,23 +334,18 @@ while (i < maxEnemies) {
 }
 
 fun spawnEnemy(x, y, pattern, speedY, amp, vx) {
-  var s = 0;
-  while (s < maxEnemies) {
-    if (!eAlive[s]) {
-      eAlive[s] = true;
-      ePattern[s] = pattern;
-      eBaseX[s] = x;
-      eStartY[s] = y;
-      eSpeedY[s] = speedY;
-      eAmp[s] = amp;
-      eVX[s] = vx;
-      eT[s] = 0;
-      eX[s] = x;
-      eY[s] = y;
-      return;
-    }
-    s = s + 1;
-  }
+  var s = arrayFindFalse(eAlive);
+  if (s < 0) return;
+  eAlive[s] = true;
+  ePattern[s] = pattern;
+  eBaseX[s] = x;
+  eStartY[s] = y;
+  eSpeedY[s] = speedY;
+  eAmp[s] = amp;
+  eVX[s] = vx;
+  eT[s] = 0;
+  eX[s] = x;
+  eY[s] = y;
 }
 
 var enemySpeed = 95;
@@ -417,16 +403,11 @@ while (i < maxPowerUps) {
 fun maybeSpawnPowerUp(x, y) {
   if (powerLevel >= maxPowerLevel) return;
   if (random() > 0.16) return;
-  var s = 0;
-  while (s < maxPowerUps) {
-    if (!pAlive[s]) {
-      pAlive[s] = true;
-      pX[s] = x;
-      pY[s] = y;
-      return;
-    }
-    s = s + 1;
-  }
+  var s = arrayFindFalse(pAlive);
+  if (s < 0) return;
+  pAlive[s] = true;
+  pX[s] = x;
+  pY[s] = y;
 }
 
 // ------------------------------------------------------------
@@ -448,17 +429,12 @@ while (i < maxExplosions) {
 var explDuration = 0.3;
 
 fun spawnExplosion(x, y) {
-  var s = 0;
-  while (s < maxExplosions) {
-    if (!explActive[s]) {
-      explX[s] = x;
-      explY[s] = y;
-      explTimer[s] = explDuration;
-      explActive[s] = true;
-      return;
-    }
-    s = s + 1;
-  }
+  var s = arrayFindFalse(explActive);
+  if (s < 0) return;
+  explX[s] = x;
+  explY[s] = y;
+  explTimer[s] = explDuration;
+  explActive[s] = true;
 }
 
 // ------------------------------------------------------------
@@ -501,8 +477,7 @@ var bossEncounterCount = 0;
 
 fun startBossFight() {
   // Clear any regular enemies so the fight isn't cluttered.
-  var s = 0;
-  while (s < maxEnemies) { eAlive[s] = false; s = s + 1; }
+  arrayFill(eAlive, false);
 
   bossEncounterCount = bossEncounterCount + 1;
   bossMaxHealth = 30 + bossEncounterCount * 12;
@@ -520,20 +495,17 @@ fun startBossFight() {
 }
 
 fun fireBossVolley() {
-  var s = 0;
-  var placed = 0;
-  while (s < maxEnemyBullets and placed < 2) {
-    if (!ebActive[s]) {
+  var s = arrayFindFalse(ebActive);
+  if (s >= 0) {
+    ebActive[s] = true;
+    ebX[s] = bossX + bossW * 0.28 - ebW / 2;
+    ebY[s] = bossY + bossH - 4;
+    s = arrayFindFalse(ebActive);
+    if (s >= 0) {
       ebActive[s] = true;
-      if (placed == 0) {
-        ebX[s] = bossX + bossW * 0.28 - ebW / 2;
-      } else {
-        ebX[s] = bossX + bossW * 0.72 - ebW / 2;
-      }
+      ebX[s] = bossX + bossW * 0.72 - ebW / 2;
       ebY[s] = bossY + bossH - 4;
-      placed = placed + 1;
     }
-    s = s + 1;
   }
   sfxShoot();
 }
@@ -547,8 +519,7 @@ fun defeatBoss() {
     k = k + 1;
   }
   sfxPlayerHit();
-  var s = 0;
-  while (s < maxEnemyBullets) { ebActive[s] = false; s = s + 1; }
+  arrayFill(ebActive, false);
   stage = stage + 1;
   nextBossStage = nextBossStage + 3;
   enemySpawnInterval = max(0.45, enemySpawnInterval * 0.88);
@@ -708,6 +679,40 @@ var frameDisplayMs = 0;
 var frameWorkDisplayMs = 0;
 var frameVsyncDisplayMs = 0;
 
+// frameWorkMs above is a single lump covering the WHOLE onFrame
+// callback (update logic + every draw call + present()'s vsync wait),
+// which makes it hard to tell whether a slow frame is game logic,
+// rendering, or the vsync block itself. These three clock()-measured
+// phases split that lump into update / draw / present, using the same
+// hold-and-average display pattern as the frame/vsync numbers above so
+// the HUD is readable instead of flickering every frame.
+var perfHoldTimer = 0;
+var perfHoldUpdateSumMs = 0;
+var perfHoldDrawSumMs = 0;
+var perfHoldPresentSumMs = 0;
+var perfHoldCount = 0;
+var updateDisplayMs = 0;
+var drawDisplayMs = 0;
+var presentDisplayMs = 0;
+
+fun recordPerfBreakdown(dt, uMs, dMs, pMs) {
+  perfHoldUpdateSumMs = perfHoldUpdateSumMs + uMs;
+  perfHoldDrawSumMs = perfHoldDrawSumMs + dMs;
+  perfHoldPresentSumMs = perfHoldPresentSumMs + pMs;
+  perfHoldCount = perfHoldCount + 1;
+  perfHoldTimer = perfHoldTimer + dt;
+  if (perfHoldTimer >= frameHoldInterval) {
+    perfHoldTimer = perfHoldTimer - frameHoldInterval;
+    updateDisplayMs = perfHoldUpdateSumMs / perfHoldCount;
+    drawDisplayMs = perfHoldDrawSumMs / perfHoldCount;
+    presentDisplayMs = perfHoldPresentSumMs / perfHoldCount;
+    perfHoldUpdateSumMs = 0;
+    perfHoldDrawSumMs = 0;
+    perfHoldPresentSumMs = 0;
+    perfHoldCount = 0;
+  }
+}
+
 fun updateFrameTimer(dt) {
   var hz = displayRefreshHz();
   if (hz > 0) frameHz = hz;
@@ -754,6 +759,16 @@ fun frameSeverityColor(ms) {
 }
 
 fun drawFrameTimer() {
+  // Where within the frame is the time actually going? update = game
+  // logic (updatePlay, or the title/gameover decor tween), draw = every
+  // rendering call including this HUD, present = just the present()
+  // native call (its own GDI/vsync breakdown is the vsync line below).
+  var lineB = "update " + str(floor(updateDisplayMs)) + "ms  draw " +
+              str(floor(drawDisplayMs)) + "ms  present " +
+              str(floor(presentDisplayMs)) + "ms";
+  setColor(180, 220, 180);
+  drawText(w - measureText(lineB) - 6, h - 64, lineB);
+
   var line0 = "vsync " + str(floor(frameVsyncDisplayMs)) + "ms";
   // Not severity-colored like the lines below: a LONG vsync wait here is
   // a GOOD sign (script + present's own GDI work finished early, so it
@@ -820,16 +835,11 @@ fun resetGame() {
   nextBossStage = 3;
   bossEncounterCount = 0;
 
-  var s = 0;
-  while (s < maxBullets) { bulletActive[s] = false; s = s + 1; }
-  s = 0;
-  while (s < maxEnemies) { eAlive[s] = false; s = s + 1; }
-  s = 0;
-  while (s < maxPowerUps) { pAlive[s] = false; s = s + 1; }
-  s = 0;
-  while (s < maxExplosions) { explActive[s] = false; s = s + 1; }
-  s = 0;
-  while (s < maxEnemyBullets) { ebActive[s] = false; s = s + 1; }
+  arrayFill(bulletActive, false);
+  arrayFill(eAlive, false);
+  arrayFill(pAlive, false);
+  arrayFill(explActive, false);
+  arrayFill(ebActive, false);
 }
 
 // ------------------------------------------------------------
@@ -1078,7 +1088,7 @@ fun drawPlay() {
   var x = 0;
   while (x < maxExplosions) {
     if (explActive[x]) {
-      if (fmod(explTimer[x], 0.16) < 0.08) {
+      if (explTimer[x] % 0.16 < 0.08) {
         drawSpriteScaled(explSprite1, floor(explX[x]), floor(explY[x]), SPR);
       } else {
         drawSpriteScaled(explSprite2, floor(explX[x]), floor(explY[x]), SPR);
@@ -1089,7 +1099,7 @@ fun drawPlay() {
 
   if (playerAlive) {
     var visible = true;
-    if (hitInvulnTimer > 0 and rollTimer <= 0 and fmod(hitInvulnTimer, 0.2) < 0.1) visible = false;
+    if (hitInvulnTimer > 0 and rollTimer <= 0 and hitInvulnTimer % 0.2 < 0.1) visible = false;
     if (visible) {
       if (rollTimer > 0) {
         drawSpriteRotated(playerSprite, playerX + playerW / 2, playerY + playerH / 2, SPR, rollAngle);
@@ -1149,22 +1159,33 @@ fun drawScreen(title, sub1, sub2) {
 // ------------------------------------------------------------
 onFrame(fun(dt) {
   updateFrameTimer(dt);
+
+  var tUpdateStart = clock();
   if (state == "play") {
     updatePlay(dt);
-    clearCanvas();
-    drawPlay();
   } else {
     decorSpin = decorSpin + 50 * dt;
     scrollY = scrollY + 20 * dt;
-    clearCanvas();
-    if (state == "title") {
-      drawScreen("1942", "an arcade tribute", "");
-    } else {
-      drawScreen("GAME OVER", "SCORE " + str(score), "STAGE " + str(stage));
-    }
+  }
+
+  var tDrawStart = clock();
+  clearCanvas();
+  if (state == "play") {
+    drawPlay();
+  } else if (state == "title") {
+    drawScreen("1942", "an arcade tribute", "");
+  } else {
+    drawScreen("GAME OVER", "SCORE " + str(score), "STAGE " + str(stage));
   }
   drawFrameTimer();
+
+  var tPresentStart = clock();
   present();
+  var tEnd = clock();
+
+  recordPerfBreakdown(dt, (tDrawStart - tUpdateStart) * 1000,
+                      (tPresentStart - tDrawStart) * 1000,
+                      (tEnd - tPresentStart) * 1000);
 });
 
 runGameLoop();
